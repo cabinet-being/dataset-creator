@@ -1,184 +1,253 @@
-<h1 align="center"> 🍍TimCixo's DatasetCreator🍍 </h1>
+<h1 align="center"> 🍍 DatasetCreator 🍍 </h1>
 
-<!-- BADGES -->
-</br>
 <p align="center">
   <img src="https://img.shields.io/github/repo-size/TimCixo/DatasetCreator">
-  <img src="https://img.shields.io/badge/react-18-blue">
-  <img src="https://img.shields.io/badge/typescript-ready-blue">
-  <img src="https://img.shields.io/badge/vite-powered-purple">
-  <img src="https://img.shields.io/badge/local--first-browser-green">
+  <img src="https://img.shields.io/github/license/TimCixo/DatasetCreator">
+  <img src="https://img.shields.io/github/last-commit/TimCixo/DatasetCreator">
+</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/react-18-61DAFB?logo=react">
+  <img src="https://img.shields.io/badge/typescript-5-3178C6?logo=typescript&logoColor=white">
+  <img src="https://img.shields.io/badge/vite-5-9135FF?logo=vite">
+  <img src="https://img.shields.io/badge/tailwindcss-3-06B6D4?logo=tailwindcss">
+  <img src="https://img.shields.io/badge/zustand-state-443E38">
+  <img src="https://img.shields.io/badge/ONNX%20Runtime-Web-005CED">
+  <img src="https://img.shields.io/badge/local--first-browser-2EA44F">
 </p>
 
-</br>
+DatasetCreator is a local-first web app for preparing image datasets for Stable Diffusion training. It guides images through import, duplicate review, cleanup, cropping, augmentation, tagging, and export into ready-to-train PNG and TXT pairs.
 
-## 📚 Table of Contents
+## Overview
 
-* [🚀 Getting Started](#-getting-started)
-* [🧭 Workflow](#-workflow)
-* [🏷️ Local Auto-Tagger](#️-local-auto-tagger)
-* [📦 Export](#-export)
-* [💾 Storage](#-storage)
-* [🛠️ Tech Stack](#️-tech-stack)
-* [🌐 Deployment](#-deployment)
-* [⚠️ Known Limitations](#️-known-limitations)
-* [📄 License](#-license)
+The project is built around an eight-stage dataset workflow that keeps image processing in the browser. Users can import image files or folders, inspect similarity groups, clean and crop source images, generate augmentation variants, review the final set, add manual or local ONNX tags, and export a complete training dataset without a required backend.
 
-<!-- INFO -->
+DatasetCreator uses React 18, TypeScript, Vite, Tailwind CSS, Zustand, JSZip, Lucide React, and ONNX Runtime Web. Project state is browser-first, with IndexedDB-backed persistence where supported and local object URLs for previews.
 
-</br>
-<h2 align="left"> 📝 Description </h2>
+## Features
 
-<!-- Preview image placeholder: add a screenshot/GIF here when a repository asset is available. -->
+- Image and folder import for building a dataset from local files.
+- Similarity review for finding duplicate or near-duplicate images.
+- Browser-based cleanup tools with brush, erase, zoom, undo, and redo support.
+- Multi-aspect crop workflow with aspect ratio locks.
+- Dataset augmentation with flips, color variants, and rotations.
+- Final review stage for inspecting generated dataset relationships.
+- Manual and bulk tag editing before export.
+- Local Danbooru-style ONNX auto-tagging from a user-selected model folder.
+- Training-ready export as matching PNG and TXT file pairs.
+- Local-first workflow with no required backend for the main pipeline.
+- Static build suitable for GitHub Pages and other static hosts.
 
-DatasetCreator is a local-first web app for preparing image datasets for Stable Diffusion training.</br>
-Import images, clean them, crop them, augment them, review similarity, tag everything, and export ready-to-train PNG + TXT pairs.
+## Screenshots
 
-* 🖼️ Import individual images or whole folders;
-* 🔍 Review duplicates and similarity clusters;
-* 🎨 Clean images with non-destructive editing tools;
-* ✂️ Create multi-aspect crops for training sets;
-* 🔄 Generate augmentation variants;
-* 🕸️ Inspect final dataset relationships in Graph view;
-* 🏷️ Add manual, bulk, or local ONNX auto-tags;
-* 📦 Export clean PNG + TXT dataset files.
+Screenshots can be added here when repository assets are available.
 
-</br>
+```text
+docs/screenshots/import.png
+docs/screenshots/tagging.png
+```
 
-<!-- HOW TO USE -->
+## Installation
 
-## 🚀 Getting Started
+1. Install the required tooling:
+   - Node.js 16 or newer;
+   - npm;
+   - a modern desktop browser.
 
-### Requirements
+2. Clone the repository:
 
-* Node.js 16+
-* npm
+```bash
+git clone https://github.com/TimCixo/DatasetCreator.git
+cd DatasetCreator
+```
 
-### Run locally
+3. Install dependencies:
 
 ```bash
 npm install
+```
+
+4. Build the project when preparing a production bundle:
+
+```bash
+npm run build
+```
+
+## Usage
+
+Run the Vite development server:
+
+```bash
 npm run dev
 ```
 
-Open the local Vite URL, usually:
+Open the local Vite URL in a browser, usually:
 
 ```text
 http://localhost:5173
 ```
 
-### Build
+Use the stages in order:
 
-```bash
-npm run build
-npm run preview
-```
+1. Import images from files or folders.
+2. Review duplicate and similarity groups.
+3. Clean images with browser-based editing tools.
+4. Create training crops with the required aspect ratios.
+5. Generate augmentation variants.
+6. Inspect the final dataset.
+7. Add manual, bulk, or local ONNX-generated tags.
+8. Export PNG images with matching TXT prompts.
 
-## 🧭 Workflow
-
-DatasetCreator follows an 8-stage dataset pipeline:
-
-1. **Import Images** - add files or folders.
-2. **Remove Duplicates** - inspect similarity groups and remove repeats.
-3. **Clean Images** - brush, erase, zoom, undo, and redo.
-4. **Crop Images** - create multiple crop frames with aspect ratio locks.
-5. **Augment Dataset** - generate flips, color variants, and rotations.
-6. **Final Review** - inspect the dataset and graph relationships.
-7. **Tag Images** - edit tags manually, bulk apply tags, or use a local tagger.
-8. **Export Dataset** - save PNG images with matching TXT prompts.
-
-## 🏷️ Local Auto-Tagger
-
-Stage 7 supports a user-provided Danbooru-style ONNX tagger in the browser.</br>
-No backend is required for the default local workflow, and images are not uploaded to a server.
-
-### Supported v1 bundle
-
-Select a local folder with this exact structure:
+For the local auto-tagger, select a folder that contains:
 
 ```text
 model.onnx
 selected_tags.csv
 ```
 
-The app validates the folder before enabling auto-tagging. Unknown arbitrary model layouts are not supported in v1.
+Compatible tagger models include `wd-vit-tagger-v3`, `wd-convnext-tagger-v3`, `wd-swinv2-tagger-v3`, and `wd-vit-large-tagger-v3` from SmilingWolf on Hugging Face. Model access is session-based in the browser, so reconnecting the folder may be required after a reload.
 
-### Recommended compatible models
-
-For full Stage 7 auto-tagging, download one compatible tagger model manually:
-
-* [`wd-vit-tagger-v3`](https://huggingface.co/SmilingWolf/wd-vit-tagger-v3/tree/main)
-* [`wd-convnext-tagger-v3`](https://huggingface.co/SmilingWolf/wd-convnext-tagger-v3)
-* [`wd-swinv2-tagger-v3`](https://huggingface.co/SmilingWolf/wd-swinv2-tagger-v3)
-* [`wd-vit-large-tagger-v3`](https://huggingface.co/SmilingWolf/wd-vit-large-tagger-v3) - heavier optional model
-
-Download a compatible model manually, place `model.onnx` and `selected_tags.csv` in one folder, then connect it from Stage 7 with **Connect model**.
-
-### Browser notes
-
-* Directory access requires user-selected files or folders.
-* `localhost` or HTTPS is recommended for secure browser APIs.
-* WebGPU is used when available, with ONNX Runtime WebAssembly as fallback.
-* Model access is session-based; after reload, reconnecting may be required.
-
-## 📦 Export
-
-Export creates training-ready file pairs:
-
-```text
-1.png
-1.txt
-2.png
-2.txt
-```
-
-The dataset keyword is handled at export time, so editable Stage 7 tags stay clean.
-
-## 💾 Storage
-
-* Browser-first project state;
-* Local object URLs for previews;
-* IndexedDB-backed persistence where supported;
-* No required backend for the main workflow.
-
-## 🛠️ Tech Stack
-
-* React 18
-* TypeScript
-* Vite
-* Tailwind CSS
-* Zustand
-* JSZip
-* ONNX Runtime Web
-* Lucide React
-
-## 🌐 Deployment
-
-DatasetCreator is a static client-side app and is ready for GitHub Pages.
+Preview a production build locally:
 
 ```bash
-npm run build
+npm run preview
 ```
 
-Pushes to `main` deploy through GitHub Actions to:
+## Project Structure
 
-```text
-https://timcixo.github.io/DatasetCreator/
-```
-
-For another static host, deploy the generated `dist/` folder.
-
-## ⚠️ Known Limitations
-
-* Desktop browsers are the main target.
-* Safari and iOS have limited File System API support.
-* Very large datasets can be slower because processing happens client-side.
-* Local model performance depends on browser, hardware, and backend support.
-
-## 📄 License
-
-MIT
-
+```mermaid
 ---
+config:
+    theme: default
+    themeVariables:
+        treeView:
+            labelColor: '#717171'
+            lineColor: '#717171'
+    treeView:
+        showIcons: true
+---
+treeView-beta
 
-Made with ❤️ for Stable Diffusion dataset workflows.
+dataset-creator/
+  package.json ## scripts and dependencies
+  vite.config.ts
+  tailwind.config.ts
+  components.json
+  public/
+  src/ ## application source
+    App.tsx
+    main.tsx
+    components/
+      stages/ ## dataset workflow screens
+        import
+        similarity review
+        cleanup
+        crop
+        augmentation
+        final review
+        tagging
+        export
+    lib/
+    services/ ## workflow and browser processing logic
+      cleanup/
+      similarity/
+      crop/
+      augmentation/
+      tagging/
+      export/
+      image processing
+      persistence
+    stores/ ## Zustand state stores
+      project state
+      UI state
+      local tagger state
+    types/ ## shared TypeScript models
+```
+
+## Configuration
+
+DatasetCreator is a static client-side application. The main workflow does not require a backend or server-side configuration.
+
+The Vite configuration lives in `vite.config.ts`. Styling is configured through `tailwind.config.ts`, `postcss.config.js`, `src/index.css`, and `src/App.css`. UI component metadata is kept in `components.json`.
+
+Browser storage is handled by the persistence service under `src/services/persistence`. Image files and model files are selected by the user through browser file APIs. For reliable local folder access and model loading, use `localhost` during development or HTTPS in hosted environments.
+
+The local auto-tagger expects a user-selected folder containing `model.onnx` and `selected_tags.csv`. WebGPU is used when available, with ONNX Runtime WebAssembly as a fallback.
+
+## Development
+
+- Runtime: static browser application served by Vite.
+- Frontend: React 18 with TypeScript.
+- Styling: Tailwind CSS 3 with local CSS layers.
+- State: Zustand stores for project, UI, and local tagger state.
+- Image workflow: dedicated services for cleanup, similarity, cropping, augmentation, and export.
+- Persistence: IndexedDB-backed browser storage where supported.
+- Tagging: ONNX Runtime Web for local model inference.
+
+Recommended development flow:
+
+1. Start the Vite dev server.
+2. Work on one pipeline stage at a time under `src/components/stages`.
+3. Keep image-processing behavior inside the relevant service folder.
+4. Keep shared project state changes in the Zustand stores.
+5. Run linting and a production build before publishing.
+
+Useful commands:
+
+```bash
+npm run dev
+npm run lint
+npm run build
+npm run preview
+```
+
+## Roadmap
+
+```mermaid
+timeline
+    Import workflow : file and folder intake
+    Review workflow : duplicate and similarity inspection
+    Editing workflow : cleanup, crop, and augmentation
+    Tagging workflow : manual, bulk, and local ONNX tags
+    Export workflow : PNG and TXT training pairs
+```
+
+## Development Board
+
+```mermaid
+---
+config:
+  kanban:
+    ticketBaseUrl: 'https://github.com/TimCixo/DatasetCreator/issues/#TICKET#'
+---
+kanban
+    backlog[Backlog]
+    todo[Todo]
+    inProgress[In Progress]
+    testing[Testing]
+    done[Done]
+```
+
+## Contributing
+
+Contributions are welcome.
+
+You can help by:
+- reporting bugs;
+- suggesting dataset workflow improvements;
+- improving documentation;
+- testing with different image formats, dataset sizes, and browser environments;
+- submitting pull requests.
+
+Before making large changes, please open an issue first to discuss the idea.
+
+## License
+
+The previous project documentation identifies this project as MIT licensed.
+
+Add a `LICENSE` file to the repository to make the license terms explicit for package registries, GitHub, and contributors.
+
+## Credits
+
+Created by [TimCixo](https://github.com/TimCixo).
+
+Built for local-first Stable Diffusion dataset preparation workflows.
