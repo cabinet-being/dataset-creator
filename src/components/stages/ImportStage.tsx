@@ -10,6 +10,7 @@ import {
   getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
 } from '../../lib/workspaceImages';
+import { BrickMasonry } from '../ui/BrickMasonry';
 import { getImageDimensions, createThumbnail } from '../../services/image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
 
@@ -346,10 +347,12 @@ export const ImportStage = () => {
             </span>
           </div>
 
-          <div className="gallery-masonry">
-            {images.map((image) => (
+          <BrickMasonry
+            items={images}
+            getKey={(image) => image.id}
+            getEstimate={(image) => image.height / Math.max(1, image.width)}
+            renderItem={(image) => (
               <div
-                key={image.id}
                 className={`gallery-masonry-item rounded-lg overflow-hidden ${getWorkspaceKindFrameClass('source')} ${
                   image.hidden ? 'opacity-60' : ''
                 }`}
@@ -412,8 +415,8 @@ export const ImportStage = () => {
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
+            )}
+          />
 
           <div className="mt-4 p-4 rounded-lg bg-secondary/50 border border-border">
             <p className="text-sm text-muted-foreground">

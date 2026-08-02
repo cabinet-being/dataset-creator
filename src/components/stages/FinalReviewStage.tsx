@@ -24,6 +24,7 @@ import {
 } from '../../lib/workspaceImages';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
+import { BrickMasonry } from '../ui/BrickMasonry';
 import type { AspectRatio, StageName, WorkspaceImageKind } from '../../types';
 
 type PreviewMap = Record<string, string>;
@@ -617,10 +618,12 @@ export const FinalReviewStage = () => {
       </div>
 
       {sortedItems.length > 0 ? (
-        <div className="gallery-masonry">
-          {sortedItems.map((item) => (
+        <BrickMasonry
+          items={sortedItems}
+          getKey={(item) => item.id}
+          getEstimate={(item) => item.height / Math.max(1, item.width)}
+          renderItem={(item) => (
             <ReviewCard
-              key={item.id}
               item={item}
               previewUrl={previewUrls[item.id]}
               menuOpen={openItemMenuId === item.id}
@@ -633,8 +636,8 @@ export const FinalReviewStage = () => {
               onToggleActive={handleToggleActive}
               onOpenTool={handleOpenTool}
             />
-          ))}
-        </div>
+          )}
+        />
       ) : (
         <div className="text-center py-12 rounded-lg bg-secondary/50 border border-dashed border-border">
           <p className="text-muted-foreground">No items match the selected filters.</p>

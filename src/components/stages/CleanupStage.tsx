@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { getImageDimensions } from '../../services/image/imageProcessor';
+import { BrickMasonry } from '../ui/BrickMasonry';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { createSyntheticImage } from '../../types';
@@ -516,10 +517,12 @@ export const CleanupStage = () => {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      <div className="gallery-masonry">
-        {workspaceImages.map((image) => (
+      <BrickMasonry
+        items={workspaceImages}
+        getKey={(image) => image.id}
+        getEstimate={(image) => image.height / Math.max(1, image.width)}
+        renderItem={(image) => (
           <button
-            key={image.id}
             onClick={() => {
               resetEditorState();
               setSelectedImageKey(image.id);
@@ -555,8 +558,8 @@ export const CleanupStage = () => {
               </div>
             </div>
           </button>
-        ))}
-      </div>
+        )}
+      />
     </div>
   );
 };

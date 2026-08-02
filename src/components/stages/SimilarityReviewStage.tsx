@@ -10,7 +10,9 @@ import {
   getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
   toWorkspaceImages,
+  type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { BrickMasonry } from '../ui/BrickMasonry';
 import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
 
 type WorkspacePreviewRecord = {
@@ -280,16 +282,15 @@ export const SimilarityReviewStage = () => {
 
                 {selectedClusterId === cluster.id && (
                   <div className="border-t border-border p-4 bg-secondary/30">
-                    <div className="gallery-masonry mb-4">
-                      {cluster.imageIds.map((imageId) => {
-                        const image = imageById.get(imageId);
-                        if (!image) {
-                          return null;
-                        }
-
-                        return (
+                    <BrickMasonry
+                      className="mb-4"
+                      items={cluster.imageIds
+                        .map((imageId) => imageById.get(imageId))
+                        .filter((image): image is WorkspaceImage => Boolean(image))}
+                      getKey={(image) => image.id}
+                      getEstimate={(image) => image.height / Math.max(1, image.width)}
+                      renderItem={(image) => (
                           <div
-                            key={imageId}
                             className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-black ${getWorkspaceKindFrameClass(image.kind)}`}
                             style={getWorkspaceKindFrameStyle(image.kind)}
                           >
@@ -315,7 +316,7 @@ export const SimilarityReviewStage = () => {
 
                             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                               <button
-                                onClick={() => handleRemoveImage(imageId)}
+                                onClick={() => handleRemoveImage(image.id)}
                                 className="p-2 bg-destructive text-destructive-foreground rounded-md hover:opacity-90"
                               >
                                 <Trash2 size={16} />
@@ -331,9 +332,8 @@ export const SimilarityReviewStage = () => {
                               </span>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+                      )}
+                    />
 
                     <button
                       onClick={() => handleRemoveCluster(cluster.imageIds)}

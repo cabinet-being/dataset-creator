@@ -19,6 +19,7 @@ import {
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { BrickMasonry } from '../ui/BrickMasonry';
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
@@ -249,11 +250,7 @@ const TaggingCard = memo(
     return (
       <div
         className={`gallery-masonry-item rounded-lg overflow-hidden bg-card ${getWorkspaceKindFrameClass(item.kind)}`}
-        style={{
-          contentVisibility: 'auto',
-          containIntrinsicSize: '420px',
-          ...getWorkspaceKindFrameStyle(item.kind),
-        }}
+        style={getWorkspaceKindFrameStyle(item.kind)}
       >
         <div className="relative min-h-[12rem] bg-black overflow-hidden flex items-center justify-center">
           {previewUrl ? (
@@ -1430,10 +1427,12 @@ export const TaggingStage = () => {
       </div>
 
       <div>
-        <div className="gallery-masonry">
-          {items.map((item) => (
+        <BrickMasonry
+          items={items}
+          getKey={(item) => item.id}
+          getEstimate={(item) => item.height / Math.max(1, item.width) + 0.85}
+          renderItem={(item) => (
             <TaggingCard
-              key={item.id}
               item={item}
               previewUrl={previewUrls[item.id]}
               inputValue={tagInputs[item.id] ?? ''}
@@ -1444,8 +1443,8 @@ export const TaggingStage = () => {
               onRemoveTag={handleRemoveTag}
               suggestions={manualTagSuggestions}
             />
-          ))}
-        </div>
+          )}
+        />
       </div>
 
     </div>

@@ -34,6 +34,7 @@ import {
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { BrickMasonry } from '../ui/BrickMasonry';
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
@@ -883,11 +884,7 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
           ? `${getWorkspaceKindFrameClass(item.kind, true)} shadow-[0_0_0_2px_rgba(59,130,246,0.35)]`
           : getWorkspaceKindFrameClass(item.kind)
       } ${item.deleted ? 'opacity-50 line-through' : ''}`}
-      style={{
-        contentVisibility: 'auto',
-        containIntrinsicSize: '280px',
-        ...getWorkspaceKindFrameStyle(item.kind),
-      }}
+      style={getWorkspaceKindFrameStyle(item.kind)}
     >
       <div className="relative min-h-[12rem] bg-black overflow-hidden flex items-center justify-center">
         {previewUrl ? (
@@ -2216,17 +2213,19 @@ export const AnalysisStage = () => {
             </div>
           </div>
 
-          <div className="gallery-masonry">
-            {previewItems.map((item) => (
+          <BrickMasonry
+            items={previewItems}
+            getKey={(item) => item.id}
+            getEstimate={(item) => item.height / Math.max(1, item.width)}
+            renderItem={(item) => (
               <ReviewCard
-                key={item.id}
                 item={item}
                 previewUrl={previewUrls[item.id]}
                 onDelete={handleDeleteItem}
                 highlighted={highlightedIds.has(item.id)}
               />
-            ))}
-          </div>
+            )}
+          />
         </div>
       )}
 
