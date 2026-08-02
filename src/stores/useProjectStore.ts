@@ -130,8 +130,21 @@ export const useProjectStore = create<ProjectStore>()(
             }
 
             const { [id]: _, ...rest } = state.sourceImages;
+            const remainingDatasetItems = Object.fromEntries(
+              Object.entries(state.datasetItems).filter(([, item]) => item.sourceImageId !== id)
+            );
             void dbDelete(OBJECT_STORES.SOURCE_IMAGES, id);
-            return { ...state, sourceImages: rest, lastModified: new Date() };
+            for (const item of Object.values(state.datasetItems)) {
+              if (item.sourceImageId === id) {
+                void dbDelete(OBJECT_STORES.DATASET_ITEMS, item.id);
+              }
+            }
+            return {
+              ...state,
+              sourceImages: rest,
+              datasetItems: remainingDatasetItems,
+              lastModified: new Date(),
+            };
           }),
         
         updateSourceImage: (id: string, updates: Partial<SourceImage>) =>
@@ -206,6 +219,9 @@ export const useProjectStore = create<ProjectStore>()(
         
         softDeleteDatasetItem: (id: string) =>
           set((state) => {
+            if (!state.datasetItems[id]) {
+              return state;
+            }
             const updatedItem = {
               ...state.datasetItems[id],
               deleted: true,

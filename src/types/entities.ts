@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 export type AspectRatio = '2:3' | '3:2' | '1:1';
 
-export type ImageType = 'original' | 'crop' | 'augmented';
+export type ImageType = 'cleaned' | 'crop' | 'augmented';
 
 export type WorkspaceImageKind = 'source' | 'synthetic';
 
@@ -26,6 +26,7 @@ export interface SourceImage {
   embedding?: Float32Array;
   hash?: string;
   tags?: string[];
+  hidden?: boolean;
   createdAt: Date;
 }
 
@@ -160,7 +161,7 @@ export const createSyntheticImage = (
   imageData: Blob,
   width: number,
   height: number,
-  type: ImageType = 'original',
+  type: ImageType = 'cleaned',
   aspectRatio: AspectRatio = '1:1'
 ): SyntheticImage => ({
   id: uuidv4(),

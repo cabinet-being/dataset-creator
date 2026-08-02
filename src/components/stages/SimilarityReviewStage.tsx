@@ -1,18 +1,36 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { computeDistanceMatrix, performClustering } from '../../services/similarity/similarityService';
 import { SimilarityCluster } from '../../types';
+import {
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+  toWorkspaceImages,
+} from '../../lib/workspaceImages';
 import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
 
+type WorkspacePreviewRecord = {
+  blob: Blob;
+  previewUrl: string;
+  width: number;
+  height: number;
+};
+
 export const SimilarityReviewStage = () => {
-  const sourceImages = useProjectStore((state) => state.sourceImages);
-  const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
-  const setStageState = useProjectStore((state) => state.setStageState);
+  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const syntheticImages = useProjectStore((state) =>
+    Object.values(state.datasetItems).filter((item) => !item.deleted)
+  );
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
+  const syntheticPreviewCacheRef = useRef<Record<string, { blob: Blob; url: string }>>({});
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [uiThreshold, setUiThreshold] = useState(0.7);
+  const [syntheticPreviewRecords, setSyntheticPreviewRecords] = useState<Record<string, WorkspacePreviewRecord>>({});
   const similarityThreshold = useMemo(() => {
     const remapped = 0.2 + 0.8 * Math.sqrt(uiThreshold);
     if (import.meta.env.DEV) {
@@ -21,7 +39,72 @@ export const SimilarityReviewStage = () => {
     return remapped;
   }, [uiThreshold]);
 
-  const images = useMemo(() => Object.values(sourceImages), [sourceImages]);
+  useEffect(() => {
+    setSyntheticPreviewRecords((previous) => {
+      const next: Record<string, WorkspacePreviewRecord> = {};
+      const activeIds = new Set(syntheticImages.map((image) => image.id));
+
+      for (const image of syntheticImages) {
+        const workspaceId = `synthetic:${image.id}`;
+        const cached = syntheticPreviewCacheRef.current[image.id];
+        if (cached && cached.blob === image.imageData) {
+          next[workspaceId] = {
+            blob: image.imageData,
+            previewUrl: cached.url,
+            width: image.width,
+            height: image.height,
+          };
+          continue;
+        }
+
+        if (cached) {
+          URL.revokeObjectURL(cached.url);
+        }
+
+        const url = URL.createObjectURL(image.imageData);
+        syntheticPreviewCacheRef.current[image.id] = { blob: image.imageData, url };
+        next[workspaceId] = {
+          blob: image.imageData,
+          previewUrl: url,
+          width: image.width,
+          height: image.height,
+        };
+      }
+
+      for (const [id, cached] of Object.entries(syntheticPreviewCacheRef.current)) {
+        if (activeIds.has(id)) {
+          continue;
+        }
+        URL.revokeObjectURL(cached.url);
+        delete syntheticPreviewCacheRef.current[id];
+      }
+
+      const previousKeys = Object.keys(previous);
+      const nextKeys = Object.keys(next);
+      const changed =
+        previousKeys.length !== nextKeys.length ||
+        nextKeys.some((id) => previous[id]?.previewUrl !== next[id]?.previewUrl);
+
+      return changed ? next : previous;
+    });
+  }, [syntheticImages]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(syntheticPreviewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
+      syntheticPreviewCacheRef.current = {};
+    };
+  }, []);
+
+  const images = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages, syntheticPreviewRecords),
+    [sourceImages, syntheticImages, syntheticPreviewRecords]
+  );
+  const imageById = useMemo(() => new Map(images.map((image) => [image.id, image])), [images]);
+  const sourceImageById = useMemo(
+    () => Object.fromEntries(sourceImages.map((image) => [image.id, image])),
+    [sourceImages]
+  );
   const cleanupInputReason = images.length > 0 ? 'synced to cleanup tool' : 'no images remaining';
 
   const duplicateGroups = useMemo<SimilarityCluster[]>(() => {
@@ -32,8 +115,9 @@ export const SimilarityReviewStage = () => {
 
     const embeddings = new Map<string, Float32Array>();
     for (const image of images) {
-      if (image.embedding) {
-        embeddings.set(image.id, image.embedding);
+      const embedding = sourceImageById[image.sourceImageId]?.embedding;
+      if (embedding) {
+        embeddings.set(image.id, embedding);
       }
     }
 
@@ -65,30 +149,12 @@ export const SimilarityReviewStage = () => {
     }
   }, [duplicateGroups, selectedClusterId]);
 
-  useEffect(() => {
-    const remainingImageIds = images.map((image) => image.id);
-    const latestCleanState =
-      (useProjectStore.getState().stageState.clean as
-        | { sourceImageIds?: string[]; workingEdits?: Record<string, unknown> }
-        | undefined) ?? {};
-    const currentIds = latestCleanState.sourceImageIds ?? [];
-
-    if (currentIds.join('|') === remainingImageIds.join('|')) {
-      return;
-    }
-
-    setStageState('clean', {
-      ...latestCleanState,
-      sourceImageIds: remainingImageIds,
-    });
-
-    if (import.meta.env.DEV) {
-      console.log(`[duplicates] cleanup input synced: ${remainingImageIds.length}`);
-    }
-  }, [images, setStageState]);
-
   const handleRemoveImage = (id: string) => {
-    removeSourceImage(id);
+    if (id.startsWith('source:')) {
+      updateSourceImage(id.replace(/^source:/, ''), { hidden: true });
+    } else {
+      softDeleteDatasetItem(id.replace(/^synthetic:/, ''));
+    }
     const remainingImages = Math.max(images.length - 1, 0);
 
     if (import.meta.env.DEV) {
@@ -102,7 +168,7 @@ export const SimilarityReviewStage = () => {
     const idsToRemove = clusterIds.slice(1);
 
     for (const id of idsToRemove) {
-      removeSourceImage(id);
+      handleRemoveImage(id);
     }
 
     if (import.meta.env.DEV) {
@@ -211,7 +277,7 @@ export const SimilarityReviewStage = () => {
                   <div className="border-t border-border p-4 bg-secondary/30">
                     <div className="gallery-masonry mb-4">
                       {cluster.imageIds.map((imageId) => {
-                        const image = sourceImages[imageId];
+                        const image = imageById.get(imageId);
                         if (!image) {
                           return null;
                         }
@@ -219,13 +285,14 @@ export const SimilarityReviewStage = () => {
                         return (
                           <div
                             key={imageId}
-                            className="gallery-masonry-item group relative rounded-lg overflow-hidden bg-black border border-border"
+                            className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-black ${getWorkspaceKindFrameClass(image.kind)}`}
+                            style={getWorkspaceKindFrameStyle(image.kind)}
                           >
                             <div className="relative min-h-[12rem] flex items-center justify-center overflow-hidden">
                               {image.previewUrl ? (
                                 <img
                                   src={image.previewUrl}
-                                  alt={image.fileName}
+                                  alt={`${image.label} #${image.displayIdentity}`}
                                   className="w-full h-auto object-contain"
                                 />
                               ) : (
@@ -248,8 +315,11 @@ export const SimilarityReviewStage = () => {
 
                             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
                               <p className="text-xs text-white truncate">
-                                {image.fileName}
+                                {image.label} #{image.displayIdentity}
                               </p>
+                              <span className={`mt-1 ${getWorkspaceKindBadgeClass(image.kind)}`}>
+                                {image.label}
+                              </span>
                             </div>
                           </div>
                         );
