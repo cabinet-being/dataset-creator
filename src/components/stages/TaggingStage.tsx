@@ -32,9 +32,26 @@ type DirectoryPickerWindow = Window &
 
 const parseTagInput = (value: string): string[] =>
   value
-    .split(',')
+    .split(/[,;\n\r]+/)
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
+
+const normalizeUniqueTags = (tags: string[]): string[] => {
+  const nextTags: string[] = [];
+  const seen = new Set<string>();
+
+  for (const tag of tags) {
+    const normalizedTag = tag.trim().toLowerCase();
+    if (!normalizedTag || seen.has(normalizedTag)) {
+      continue;
+    }
+
+    seen.add(normalizedTag);
+    nextTags.push(normalizedTag);
+  }
+
+  return nextTags;
+};
 
 const parseCsvCells = (value: string): string[] => {
   const cells: string[] = [];
@@ -124,9 +141,11 @@ const TaggingCard = memo(
     const [dropdownPosition, setDropdownPosition] = useState<SuggestionDropdownPosition | null>(null);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const fragment = getCurrentTagFragment(inputValue);
+    const displayTags = useMemo(() => normalizeUniqueTags(item.tags ?? []), [item.tags]);
+    const displayTagSet = useMemo(() => new Set(displayTags), [displayTags]);
     const filteredSuggestions = fragment
-      ? suggestions
-          .filter((tag) => tag.includes(fragment) && !(item.tags ?? []).includes(tag))
+      ? Array.from(new Set(suggestions))
+          .filter((tag) => tag.includes(fragment) && !displayTagSet.has(tag))
           .slice(0, 24)
       : [];
     const hasSuggestions = filteredSuggestions.length > 0;
@@ -269,8 +288,8 @@ const TaggingCard = memo(
         <div className="p-3 space-y-3">
           <div className="rounded-md border border-border bg-secondary/40 p-2 h-20 overflow-y-auto">
             <div className="flex flex-wrap gap-2 content-start">
-              {item.tags && item.tags.length > 0 ? (
-                item.tags.map((tag) => (
+              {displayTags.length > 0 ? (
+                displayTags.map((tag) => (
                   <span
                     key={tag}
                     className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded text-xs"
@@ -357,7 +376,7 @@ const TaggingCard = memo(
               >
                 {filteredSuggestions.map((tag, index) => (
                   <button
-                    key={tag}
+                    key={`${tag}-${index}`}
                     ref={(node) => {
                       suggestionButtonRefs.current[index] = node;
                     }}
@@ -465,6 +484,12 @@ export const TaggingStage = () => {
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]
   );
+  const normalizedDatasetKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+  const bulkTags = useMemo(
+    () => Array.from(new Set(parseTagInput(globalTagsToAdd).filter((tag) => tag !== normalizedDatasetKeyword))),
+    [globalTagsToAdd, normalizedDatasetKeyword]
+  );
+  const hasBulkTags = bulkTags.length > 0;
 
   const canUseDirectoryPicker =
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
@@ -587,7 +612,7 @@ export const TaggingStage = () => {
     const blacklist = new Set(taggingConfig.blacklist);
     const normalizedKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
 
-    return suggestionTags.filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
+    return normalizeUniqueTags(suggestionTags).filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
   }, [suggestionTags, taggingConfig.blacklist, taggingConfig.datasetKeyword]);
 
   useEffect(() => {
@@ -603,12 +628,14 @@ export const TaggingStage = () => {
 
   const updateWorkspaceImageTags = useCallback(
     (item: WorkspaceImage, tags: string[]) => {
+      const nextTags = normalizeUniqueTags(tags);
+
       if (item.kind === 'source') {
-        updateSourceImage(item.sourceImageId, { tags });
+        updateSourceImage(item.sourceImageId, { tags: nextTags });
         return;
       }
 
-      updateDatasetItem(item.id.replace(/^synthetic:/, ''), { tags });
+      updateDatasetItem(item.id.replace(/^synthetic:/, ''), { tags: nextTags });
     },
     [updateDatasetItem, updateSourceImage]
   );
@@ -866,21 +893,25 @@ export const TaggingStage = () => {
   };
 
   const handleAddGlobalTags = () => {
-    const normalizedKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
-    const parsedTags = parseTagInput(globalTagsToAdd).filter((tag) => tag !== normalizedKeyword);
-    if (parsedTags.length === 0) {
+    if (bulkTags.length === 0) {
+      addNotification('warning', 'No eligible bulk tags to add');
+      return;
+    }
+
+    const blacklist = new Set(taggingConfig.blacklist.map((tag) => tag.trim().toLowerCase()));
+    const normalizedBulkTags = bulkTags.filter((tag) => !blacklist.has(tag));
+
+    if (normalizedBulkTags.length === 0) {
       addNotification('warning', 'No eligible bulk tags to add');
       return;
     }
 
     for (const item of items) {
-      const blacklist = new Set(taggingConfig.blacklist);
       const normalizedExisting = (item.tags ?? [])
         .map((tag) => tag.trim().toLowerCase())
         .filter(Boolean)
-        .filter((tag) => tag !== normalizedKeyword)
+        .filter((tag) => tag !== normalizedDatasetKeyword)
         .filter((tag) => !blacklist.has(tag));
-      const normalizedBulkTags = parsedTags.filter((tag) => !blacklist.has(tag));
       const nextTags: string[] = [];
       const seen = new Set<string>();
 
@@ -914,10 +945,49 @@ export const TaggingStage = () => {
       }
     }
 
-    addNotification('success', `Added ${parsedTags.length} caption tag(s) across the current workspace`);
+    addNotification('success', `Applied ${normalizedBulkTags.length} caption tag(s) across the current workspace`);
     if (import.meta.env.DEV) {
       console.log('[tagging] dataset keyword insertion skipped during bulk add');
       console.log(`[tagging] shared insert mode: ${taggingConfig.insertMode}`);
+    }
+    setGlobalTagsToAdd('');
+  };
+
+  const handleRemoveGlobalTags = () => {
+    const tagsToRemove = new Set(bulkTags);
+
+    if (tagsToRemove.size === 0) {
+      addNotification('warning', 'No eligible bulk tags to remove');
+      return;
+    }
+
+    let changedImageCount = 0;
+    let removedTagCount = 0;
+
+    for (const item of items) {
+      const previousTags = item.tags ?? [];
+      const nextTags = previousTags.filter((tag) => !tagsToRemove.has(tag.trim().toLowerCase()));
+      const itemRemovedTagCount = previousTags.length - nextTags.length;
+
+      if (itemRemovedTagCount > 0) {
+        changedImageCount += 1;
+        removedTagCount += itemRemovedTagCount;
+        updateWorkspaceImageTags(item, nextTags);
+      }
+    }
+
+    if (changedImageCount === 0) {
+      addNotification('info', 'No matching tags found in the current workspace');
+      return;
+    }
+
+    addNotification(
+      'success',
+      `Removed ${removedTagCount} caption tag(s) from ${changedImageCount} image${changedImageCount !== 1 ? 's' : ''}`
+    );
+    if (import.meta.env.DEV) {
+      console.log(`[tagging] bulk removed tags: ${JSON.stringify(Array.from(tagsToRemove))}`);
+      console.log(`[tagging] images changed by bulk remove: ${changedImageCount}`);
     }
     setGlobalTagsToAdd('');
   };
@@ -990,7 +1060,8 @@ export const TaggingStage = () => {
         return;
       }
 
-      const nextTags = item.tags.filter((entry) => entry !== tag);
+      const normalizedTag = tag.trim().toLowerCase();
+      const nextTags = item.tags.filter((entry) => entry.trim().toLowerCase() !== normalizedTag);
       updateWorkspaceImageTags(item, nextTags);
 
       if (import.meta.env.DEV) {
@@ -1098,9 +1169,18 @@ export const TaggingStage = () => {
                 <button
                   type="button"
                   onClick={handleAddGlobalTags}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                  disabled={!hasBulkTags || items.length === 0}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Apply to All {items.length} Images
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRemoveGlobalTags}
+                  disabled={!hasBulkTags || items.length === 0}
+                  className="rounded-md border border-destructive/60 px-4 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive hover:text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-destructive"
+                >
+                  Remove from All {items.length} Images
                 </button>
                 <button
                   type="button"
