@@ -35,9 +35,13 @@ export const ExportStage = () => {
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]
   );
-  const totalSize = useMemo(
-    () => items.reduce((sum, item) => sum + item.imageData.size, 0),
+  const exportItems = useMemo(
+    () => items.filter((item) => !item.excludedFromDataset),
     [items]
+  );
+  const totalSize = useMemo(
+    () => exportItems.reduce((sum, item) => sum + item.imageData.size, 0),
+    [exportItems]
   );
 
   useEffect(() => {
@@ -48,7 +52,7 @@ export const ExportStage = () => {
   }, [localTaggerStatus]);
 
   const handleExport = async () => {
-    if (items.length === 0) {
+    if (exportItems.length === 0) {
       addNotification('warning', 'No images to export');
       return;
     }
@@ -61,13 +65,13 @@ export const ExportStage = () => {
         const success = await saveDirectoryViaFilesystemAPI(
           {
             datasetKeyword: taggingConfig.datasetKeyword,
-            items,
+            items: exportItems,
           },
           taggingConfig.blacklist
         );
 
         if (success) {
-          addNotification('success', `Exported ${items.length} images and tag files`);
+          addNotification('success', `Exported ${exportItems.length} images and tag files`);
           setIsExporting(false);
           return;
         }
@@ -79,13 +83,13 @@ export const ExportStage = () => {
       const zipBlob = await exportAsZip(
         {
           datasetKeyword: taggingConfig.datasetKeyword,
-          items,
+          items: exportItems,
         },
         taggingConfig.blacklist
       );
 
       downloadZipFile(zipBlob, `dataset-${new Date().toISOString().split('T')[0]}.zip`);
-      addNotification('success', `Exported ${items.length} images as ZIP`);
+      addNotification('success', `Exported ${exportItems.length} images as ZIP`);
     } catch (error) {
       console.error('Export failed:', error);
       addNotification('error', 'Failed to export images');
@@ -109,7 +113,10 @@ export const ExportStage = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground mb-1">Total Images</p>
-          <p className="text-2xl font-bold">{items.length}</p>
+          <p className="text-2xl font-bold">{exportItems.length}</p>
+          {items.length !== exportItems.length && (
+            <p className="mt-1 text-xs text-muted-foreground">{items.length - exportItems.length} inactive</p>
+          )}
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground mb-1">Total Size</p>
@@ -118,7 +125,7 @@ export const ExportStage = () => {
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground mb-1">Tagged</p>
           <p className="text-2xl font-bold">
-            {items.filter((i) => i.tags && i.tags.length > 0).length}/{items.length}
+            {exportItems.filter((i) => i.tags && i.tags.length > 0).length}/{exportItems.length}
           </p>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
@@ -174,7 +181,7 @@ export const ExportStage = () => {
       <div className="rounded-lg border border-border bg-card p-6 space-y-4">
         <h3 className="text-lg font-semibold">Preview</h3>
         <div className="space-y-2 max-h-64 overflow-y-auto">
-          {items.slice(0, 5).map((item, index) => (
+          {exportItems.slice(0, 5).map((item, index) => (
             <div key={item.id} className="p-2 bg-secondary/50 rounded text-sm font-mono text-xs">
               <div className="flex items-center gap-2 font-semibold">
                 <span>{index + 1}.png / {index + 1}.txt</span>
@@ -190,9 +197,9 @@ export const ExportStage = () => {
               </div>
             </div>
           ))}
-          {items.length > 5 && (
+          {exportItems.length > 5 && (
             <div className="p-2 text-xs text-muted-foreground">
-              ... and {items.length - 5} more files
+              ... and {exportItems.length - 5} more files
             </div>
           )}
         </div>
@@ -204,7 +211,7 @@ export const ExportStage = () => {
         disabled={isExporting}
         className="w-full px-6 py-4 bg-primary text-primary-foreground rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity font-semibold text-lg"
       >
-        {isExporting ? 'Exporting...' : `Export ${items.length} Images`}
+        {isExporting ? 'Exporting...' : `Export ${exportItems.length} Images`}
       </button>
 
       {/* Notes */}

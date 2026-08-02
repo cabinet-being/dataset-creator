@@ -1,5 +1,17 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowUpDown, Check, ChevronDown, Trash2 } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowUpDown,
+  BarChart3,
+  Check,
+  ChevronDown,
+  Edit3,
+  EyeOff,
+  Tags,
+  MoreVertical,
+  Trash2,
+  Undo2,
+} from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
 import {
   getWorkspaceKindBadgeClass,
@@ -10,22 +22,33 @@ import {
 } from '../../lib/workspaceImages';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
-import type { AspectRatio, WorkspaceImageKind } from '../../types';
+import type { AspectRatio, StageName, WorkspaceImageKind } from '../../types';
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
-type FilterMenu = 'aspect' | 'kind' | 'sort' | null;
+type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | null;
 type SortMode = 'identity-asc' | 'identity-desc' | 'kind' | 'aspect' | 'size-desc' | 'size-asc';
+type ExportStatus = 'active' | 'inactive';
 
 type ReviewCardProps = {
   item: WorkspaceImage;
   previewUrl?: string;
+  menuOpen: boolean;
+  onToggleMenu: (id: string) => void;
+  onCloseMenu: () => void;
   onDelete: (item: WorkspaceImage) => void;
+  onToggleActive: (item: WorkspaceImage) => void;
+  onOpenTool: (stage: StageName) => void;
 };
 
 const KIND_LABELS: Record<WorkspaceImageKind, string> = {
   source: 'Source',
   synthetic: 'Synthetic',
+};
+
+const STATUS_LABELS: Record<ExportStatus, string> = {
+  active: 'Active',
+  inactive: 'Inactive',
 };
 
 const SORT_LABELS: Record<SortMode, string> = {
@@ -45,15 +68,29 @@ const compareDisplayIdentity = (left: WorkspaceImage, right: WorkspaceImage) =>
     sensitivity: 'base',
   });
 
-const ReviewCard = memo(({ item, previewUrl, onDelete }: ReviewCardProps) => {
+const ReviewCard = memo(
+  ({
+    item,
+    previewUrl,
+    menuOpen,
+    onToggleMenu,
+    onCloseMenu,
+    onDelete,
+    onToggleActive,
+    onOpenTool,
+  }: ReviewCardProps) => {
   return (
-    <div className={`gallery-masonry-item group relative overflow-hidden rounded-lg ${getWorkspaceKindFrameClass(item.kind)}`}>
-      <div className="relative min-h-[12rem] bg-black flex items-center justify-center">
+    <div
+      className={`gallery-masonry-item group relative overflow-visible rounded-lg ${
+        item.excludedFromDataset ? 'border-muted opacity-75' : getWorkspaceKindFrameClass(item.kind)
+      }`}
+    >
+      <div className="relative min-h-[12rem] overflow-visible rounded-lg bg-black flex items-center justify-center">
         {previewUrl ? (
           <img
             src={previewUrl}
             alt={`Image ${item.displayIdentity}`}
-            className="w-full h-auto object-contain"
+            className={`w-full h-auto object-contain ${item.excludedFromDataset ? 'grayscale' : ''}`}
           />
         ) : (
           <div className="flex h-48 w-full items-center justify-center text-sm text-muted-foreground">
@@ -62,12 +99,80 @@ const ReviewCard = memo(({ item, previewUrl, onDelete }: ReviewCardProps) => {
         )}
 
         <button
-          onClick={() => onDelete(item)}
-          className="absolute top-2 right-2 p-2 rounded-md bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-          title="Remove from review"
+          type="button"
+          onClick={() => onToggleMenu(item.id)}
+          className="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md bg-black/65 text-white opacity-0 transition-opacity hover:bg-black/85 group-hover:opacity-100 focus:opacity-100"
+          title="Image actions"
         >
-          <Trash2 size={14} />
+          <MoreVertical size={16} />
         </button>
+
+        {menuOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Close image menu"
+              className="fixed inset-0 z-30 cursor-default"
+              onClick={onCloseMenu}
+            />
+            <div className="absolute right-2 top-11 z-40 w-56 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
+              <button
+                type="button"
+                onClick={() => {
+                  onToggleActive(item);
+                  onCloseMenu();
+                }}
+                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+              >
+                {item.excludedFromDataset ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                <span>{item.excludedFromDataset ? 'Activate' : 'Deactivate'}</span>
+              </button>
+              <div className="my-1 h-px bg-border" />
+              <button
+                type="button"
+                onClick={() => onOpenTool('clean')}
+                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+              >
+                <Edit3 className="h-4 w-4" />
+                <span>Edit</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenTool('analysis')}
+                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+              >
+                <BarChart3 className="h-4 w-4" />
+                <span>Analysis</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenTool('tagging')}
+                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+              >
+                <Tags className="h-4 w-4" />
+                <span>Caption</span>
+              </button>
+              <div className="my-1 h-px bg-border" />
+              <button
+                type="button"
+                onClick={() => {
+                  onDelete(item);
+                  onCloseMenu();
+                }}
+                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>Delete</span>
+              </button>
+            </div>
+          </>
+        )}
+
+        {item.excludedFromDataset && (
+          <div className="absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white">
+            Inactive
+          </div>
+        )}
 
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
           <div className="flex items-end justify-between gap-2">
@@ -88,7 +193,8 @@ const ReviewCard = memo(({ item, previewUrl, onDelete }: ReviewCardProps) => {
       </div>
     </div>
   );
-});
+  }
+);
 
 ReviewCard.displayName = 'ReviewCard';
 
@@ -103,6 +209,8 @@ export const FinalReviewStage = () => {
   );
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
+  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const addNotification = useUIStore((state) => state.addNotification);
 
   const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<AspectRatio>>(
@@ -111,7 +219,11 @@ export const FinalReviewStage = () => {
   const [selectedKinds, setSelectedKinds] = useState<Set<WorkspaceImageKind>>(
     new Set(['source', 'synthetic'])
   );
+  const [selectedStatuses, setSelectedStatuses] = useState<Set<ExportStatus>>(
+    new Set(['active', 'inactive'])
+  );
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
+  const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
   const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
   const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
@@ -193,6 +305,21 @@ export const FinalReviewStage = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [openMenu]);
 
+  useEffect(() => {
+    if (!openItemMenuId) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenItemMenuId(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [openItemMenuId]);
+
   const aspectRatioCounts = useMemo(
     () =>
       Object.fromEntries(
@@ -212,12 +339,27 @@ export const FinalReviewStage = () => {
     [items]
   );
 
+  const inactiveCount = useMemo(
+    () => items.filter((item) => item.excludedFromDataset).length,
+    [items]
+  );
+  const statusCounts = useMemo(
+    () => ({
+      active: items.filter((item) => !item.excludedFromDataset).length,
+      inactive: items.filter((item) => item.excludedFromDataset).length,
+    }),
+    [items]
+  );
+
   const filteredItems = useMemo(
     () =>
       items.filter(
-        (item) => selectedAspectRatios.has(item.aspectRatio) && selectedKinds.has(item.kind)
+        (item) =>
+          selectedAspectRatios.has(item.aspectRatio) &&
+          selectedKinds.has(item.kind) &&
+          selectedStatuses.has(item.excludedFromDataset ? 'inactive' : 'active')
       ),
-    [items, selectedAspectRatios, selectedKinds]
+    [items, selectedAspectRatios, selectedKinds, selectedStatuses]
   );
 
   const sortedItems = useMemo(() => {
@@ -267,6 +409,18 @@ export const FinalReviewStage = () => {
     });
   };
 
+  const toggleStatus = (status: ExportStatus) => {
+    setSelectedStatuses((previous) => {
+      const next = new Set(previous);
+      if (next.has(status)) {
+        next.delete(status);
+      } else {
+        next.add(status);
+      }
+      return next;
+    });
+  };
+
   const handleDeleteItem = (item: WorkspaceImage) => {
     if (item.kind === 'source' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { hidden: true });
@@ -274,6 +428,21 @@ export const FinalReviewStage = () => {
       softDeleteDatasetItem(item.syntheticImageId);
     }
     addNotification('info', 'Image removed from review');
+  };
+
+  const handleToggleActive = (item: WorkspaceImage) => {
+    const excludedFromDataset = !item.excludedFromDataset;
+    if (item.kind === 'source' && item.sourceImageId) {
+      updateSourceImage(item.sourceImageId, { excludedFromDataset });
+    } else if (item.syntheticImageId) {
+      updateDatasetItem(item.syntheticImageId, { excludedFromDataset });
+    }
+    addNotification('info', excludedFromDataset ? 'Image deactivated' : 'Image activated');
+  };
+
+  const handleOpenTool = (stage: StageName) => {
+    setOpenItemMenuId(null);
+    setCurrentStage(stage);
   };
 
   if (items.length === 0) {
@@ -365,6 +534,38 @@ export const FinalReviewStage = () => {
           <div className="relative">
             <button
               type="button"
+              onClick={() => setOpenMenu((menu) => (menu === 'status' ? null : 'status'))}
+              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                openMenu === 'status' ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+            >
+              Status
+              <span className="font-mono text-xs text-muted-foreground">{selectedStatuses.size}/2</span>
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            {openMenu === 'status' && (
+              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+                {(['active', 'inactive'] as const).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => toggleStatus(status)}
+                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
+                  >
+                    <span className="flex h-4 w-4 items-center justify-center">
+                      {selectedStatuses.has(status) && <Check className="h-4 w-4" />}
+                    </span>
+                    <span className="flex-1">{STATUS_LABELS[status]}</span>
+                    <span className="font-mono text-xs text-muted-foreground">{statusCounts[status]}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="relative">
+            <button
+              type="button"
               onClick={() => setOpenMenu((menu) => (menu === 'sort' ? null : 'sort'))}
               className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                 openMenu === 'sort' ? 'bg-secondary' : 'hover:bg-secondary'
@@ -400,6 +601,11 @@ export const FinalReviewStage = () => {
           <div className="ml-auto rounded-md border border-border bg-background px-3 py-2 text-sm">
             <span className="text-muted-foreground">Visible</span>
             <span className="ml-2 font-mono font-medium">{sortedItems.length}</span>
+            {inactiveCount > 0 && (
+              <span className="ml-3 text-muted-foreground">
+                Inactive <span className="font-mono text-foreground">{inactiveCount}</span>
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -411,7 +617,15 @@ export const FinalReviewStage = () => {
               key={item.id}
               item={item}
               previewUrl={previewUrls[item.id]}
+              menuOpen={openItemMenuId === item.id}
+              onToggleMenu={(id) => {
+                setOpenMenu(null);
+                setOpenItemMenuId((current) => (current === id ? null : id));
+              }}
+              onCloseMenu={() => setOpenItemMenuId(null)}
               onDelete={handleDeleteItem}
+              onToggleActive={handleToggleActive}
+              onOpenTool={handleOpenTool}
             />
           ))}
         </div>

@@ -23,6 +23,7 @@ export type WorkspaceImage = {
   aspectRatio: AspectRatio;
   syntheticType?: SyntheticImage['type'];
   exportOrder?: number;
+  excludedFromDataset?: boolean;
   deleted?: boolean;
   hidden?: boolean;
 };
@@ -106,6 +107,7 @@ export const toWorkspaceImages = (
       height: workingEdit?.height ?? image.height,
       tags: image.tags,
       hidden: image.hidden,
+      excludedFromDataset: image.excludedFromDataset,
       aspectRatio: inferAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
     };
   });
@@ -136,6 +138,7 @@ export const toWorkspaceImages = (
         aspectRatio: image.aspectRatio,
         syntheticType: image.type,
         exportOrder: image.exportOrder,
+        excludedFromDataset: image.excludedFromDataset,
         deleted: image.deleted,
       };
     });
