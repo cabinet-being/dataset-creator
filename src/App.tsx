@@ -8,11 +8,14 @@ import {
   ExternalLink,
   FilePlus,
   FolderOpen,
+  Check,
   Layers3,
   Menu,
+  Moon,
   Pencil,
   ScanSearch,
   Save,
+  Sun,
   Tags,
   Upload,
   X,
@@ -111,6 +114,7 @@ function App() {
   } = useUIStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -134,7 +138,7 @@ function App() {
   }, [currentStage, setCurrentStage]);
 
   useEffect(() => {
-    if (!sidebarOpen && !fileMenuOpen) {
+    if (!sidebarOpen && !fileMenuOpen && !viewMenuOpen) {
       return;
     }
 
@@ -142,12 +146,13 @@ function App() {
       if (event.key === 'Escape') {
         setSidebarOpen(false);
         setFileMenuOpen(false);
+        setViewMenuOpen(false);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fileMenuOpen, sidebarOpen]);
+  }, [fileMenuOpen, sidebarOpen, viewMenuOpen]);
 
   const activeLabel = STAGE_LABELS[currentStage] ?? 'Image Workspace';
   const activeDescription =
@@ -162,6 +167,12 @@ function App() {
     setCurrentStage(stage);
     setSidebarOpen(false);
     setFileMenuOpen(false);
+    setViewMenuOpen(false);
+  };
+
+  const handleThemeChange = (nextDarkMode: boolean) => {
+    setDarkMode(nextDarkMode);
+    setViewMenuOpen(false);
   };
 
   const handleProjectFileError = (error: unknown, message: string) => {
@@ -393,12 +404,15 @@ function App() {
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
-          {fileMenuOpen && (
+          {(fileMenuOpen || viewMenuOpen) && (
             <button
               type="button"
-              aria-label="Close file menu"
+              aria-label="Close menu"
               className="fixed inset-0 z-30 cursor-default"
-              onClick={() => setFileMenuOpen(false)}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setViewMenuOpen(false);
+              }}
             />
           )}
           <div className="relative z-40">
@@ -407,7 +421,10 @@ function App() {
               className={`rounded px-3 py-1.5 font-medium transition-colors ${
                 fileMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
               }`}
-              onClick={() => setFileMenuOpen((open) => !open)}
+              onClick={() => {
+                setViewMenuOpen(false);
+                setFileMenuOpen((open) => !open);
+              }}
             >
               File
             </button>
@@ -475,6 +492,42 @@ function App() {
                 >
                   <Download className="h-4 w-4" />
                   <span className="flex-1">Export Dataset</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                viewMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setViewMenuOpen((open) => !open);
+              }}
+            >
+              View
+            </button>
+            {viewMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-48 rounded-md border border-border bg-popover p-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => handleThemeChange(false)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Sun className="h-4 w-4" />
+                  <span className="flex-1">Light</span>
+                  {!darkMode && <Check className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleThemeChange(true)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Moon className="h-4 w-4" />
+                  <span className="flex-1">Dark</span>
+                  {darkMode && <Check className="h-4 w-4" />}
                 </button>
               </div>
             )}
