@@ -15,6 +15,7 @@ export type WorkspaceImage = {
   label: 'Source' | 'Synthetic';
   displayIdentity: string;
   imageData: Blob;
+  psdData?: Blob;
   width: number;
   height: number;
   previewUrl?: string;
@@ -127,6 +128,7 @@ export const toWorkspaceImages = (
         label: 'Synthetic',
         displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
         imageData: workingEdit?.blob ?? image.imageData,
+        psdData: image.psdData,
         previewUrl: workingEdit?.previewUrl,
         width: workingEdit?.width ?? image.width,
         height: workingEdit?.height ?? image.height,

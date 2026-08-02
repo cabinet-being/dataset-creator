@@ -75,6 +75,7 @@ export interface SyntheticImage {
   id: string;
   sourceImageId: string;
   imageData: Blob;
+  psdData?: Blob;
   width: number;
   height: number;
   type: ImageType;

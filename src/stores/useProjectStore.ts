@@ -10,11 +10,12 @@ import {
   CleanupOverlay,
 } from '../types';
 import { OBJECT_STORES } from '../lib/constants';
-import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
+import { dbBatchPut, dbClear, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
 
 interface ProjectStore extends ProjectState {
   // Project management
   initializeProject: (name: string) => void;
+  loadProject: (project: ProjectState) => void;
   setCurrentStage: (stage: StageName) => void;
   
   // Source images
@@ -54,6 +55,41 @@ export const useProjectStore = create<ProjectStore>()(
         
         initializeProject: (name: string) =>
           set(() => createProject(name)),
+
+        loadProject: (project: ProjectState) =>
+          set((state) => {
+            for (const image of Object.values(state.sourceImages)) {
+              if (image.previewUrl) {
+                try {
+                  URL.revokeObjectURL(image.previewUrl);
+                } catch (error) {
+                  console.warn('Failed to revoke preview URL', error);
+                }
+              }
+            }
+
+            void Promise.all([
+              dbClear(OBJECT_STORES.SOURCE_IMAGES),
+              dbClear(OBJECT_STORES.DATASET_ITEMS),
+              dbClear(OBJECT_STORES.CLEANUP_OVERLAYS),
+            ]).then(() =>
+              Promise.all([
+                dbBatchPut(
+                  OBJECT_STORES.SOURCE_IMAGES,
+                  Object.values(project.sourceImages).map((image) => ({
+                    ...image,
+                    previewUrl: undefined,
+                  }))
+                ),
+                dbBatchPut(OBJECT_STORES.DATASET_ITEMS, Object.values(project.datasetItems)),
+              ])
+            );
+
+            return {
+              ...project,
+              lastModified: new Date(),
+            };
+          }),
         
         setCurrentStage: (stage: StageName) =>
           set((state) => ({

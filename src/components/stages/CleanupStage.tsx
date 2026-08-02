@@ -20,7 +20,9 @@ type PhotopeaPhase =
   | 'clearing-documents'
   | 'opening-buffer'
   | 'opening-source'
-  | 'saving';
+  | 'preparing-synthetic-psd'
+  | 'saving-png'
+  | 'saving-psd';
 
 const PHOTOPEA_ORIGIN = 'https://www.photopea.com';
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
@@ -30,6 +32,11 @@ const CLOSE_ALL_DOCUMENTS_SCRIPT = [
   '}',
 ].join('\n');
 
+type PhotopeaSaveBuffers = {
+  png?: ArrayBuffer;
+  psd?: ArrayBuffer;
+};
+
 const createPhotopeaUrl = () => {
   const config = {
     environment: {
@@ -37,7 +44,7 @@ const createPhotopeaUrl = () => {
       localsave: false,
       customIO: {
         open: 'app.echoToOE("Open");',
-        save: 'app.activeDocument.saveToOE("png");',
+        save: 'app.echoToOE("Save");',
         exportAs: true,
       },
       panels: [0, 2],
@@ -51,6 +58,7 @@ export const CleanupStage = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
+  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const addNotification = useUIStore((state) => state.addNotification);
@@ -59,10 +67,12 @@ export const CleanupStage = () => {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const phaseRef = useRef<PhotopeaPhase>('waiting-ready');
   const saveModeRef = useRef<boolean | null>(null);
-  const saveBufferRef = useRef<ArrayBuffer | null>(null);
+  const saveBuffersRef = useRef<PhotopeaSaveBuffers>({});
   const loadedImageKeyRef = useRef<string | null>(null);
   const loadingImageKeyRef = useRef<string | null>(null);
   const pendingImageRef = useRef<WorkspaceImage | null>(null);
+  const pendingSyntheticPsdBufferRef = useRef<ArrayBuffer | null>(null);
+  const pendingSyntheticPsdUpgradeRef = useRef(false);
   const syntheticPreviewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
   const [selectedImageKey, setSelectedImageKey] = useState<string | null>(null);
@@ -140,10 +150,12 @@ export const CleanupStage = () => {
   const resetEditorState = useCallback((status = 'Loading Photopea...') => {
     phaseRef.current = 'waiting-ready';
     saveModeRef.current = null;
-    saveBufferRef.current = null;
+    saveBuffersRef.current = {};
     loadedImageKeyRef.current = null;
     loadingImageKeyRef.current = null;
     pendingImageRef.current = null;
+    pendingSyntheticPsdBufferRef.current = null;
+    pendingSyntheticPsdUpgradeRef.current = false;
     setPhotopeaReady(false);
     setDocumentReady(false);
     setIsProcessing(false);
@@ -190,7 +202,10 @@ export const CleanupStage = () => {
     try {
       setEditorStatus('Opening image in Photopea...');
       setDocumentReady(false);
-      const buffer = await image.imageData.arrayBuffer();
+      pendingSyntheticPsdUpgradeRef.current =
+        image.kind === 'synthetic' && Boolean(image.syntheticImageId) && !image.psdData;
+      const editableBlob = image.kind === 'synthetic' && image.psdData ? image.psdData : image.imageData;
+      const buffer = await editableBlob.arrayBuffer();
       phaseRef.current = 'opening-buffer';
       pendingImageRef.current = image;
       photopeaWindow.postMessage(buffer, '*', [buffer]);
@@ -230,12 +245,19 @@ export const CleanupStage = () => {
   }, [openImageInPhotopea, photopeaReady, selectedImage?.id]);
 
   const saveEditedImage = useCallback(
-    async (buffer: ArrayBuffer, saveCopy: boolean, image: WorkspaceImage) => {
+    async (buffers: PhotopeaSaveBuffers, saveCopy: boolean, image: WorkspaceImage) => {
       setIsProcessing(true);
       setEditorStatus('Saving edited image...');
 
       try {
-        const editedBlob = new Blob([buffer], { type: 'image/png' });
+        if (!buffers.png) {
+          throw new Error('Missing edited PNG preview');
+        }
+
+        const editedBlob = new Blob([buffers.png], { type: 'image/png' });
+        const psdBlob = buffers.psd
+          ? new Blob([buffers.psd], { type: 'image/vnd.adobe.photoshop' })
+          : undefined;
         const imageInfo = await getImageDimensions(editedBlob).catch(() => ({
           width: image.width,
           height: image.height,
@@ -249,6 +271,7 @@ export const CleanupStage = () => {
           'cleaned',
           image.aspectRatio
         );
+        syntheticImage.psdData = psdBlob;
 
         addDatasetItem(syntheticImage);
 
@@ -269,7 +292,7 @@ export const CleanupStage = () => {
       } finally {
         setIsProcessing(false);
         saveModeRef.current = null;
-        saveBufferRef.current = null;
+        saveBuffersRef.current = {};
         phaseRef.current = 'idle';
       }
     },
@@ -285,8 +308,19 @@ export const CleanupStage = () => {
       const data = event.data;
 
       if (data instanceof ArrayBuffer) {
+        if (phaseRef.current === 'preparing-synthetic-psd') {
+          pendingSyntheticPsdBufferRef.current = data;
+          setEditorStatus('Receiving Synthetic PSD from Photopea...');
+          return;
+        }
+
         if (saveModeRef.current !== null) {
-          saveBufferRef.current = data;
+          if (phaseRef.current === 'saving-png') {
+            saveBuffersRef.current = { ...saveBuffersRef.current, png: data };
+          }
+          if (phaseRef.current === 'saving-psd') {
+            saveBuffersRef.current = { ...saveBuffersRef.current, psd: data };
+          }
           setEditorStatus('Receiving edited image from Photopea...');
         }
         return;
@@ -298,6 +332,11 @@ export const CleanupStage = () => {
 
       if (data === 'Open') {
         setEditorStatus('Use the gallery to choose a workspace image.');
+        return;
+      }
+
+      if (data === 'Save') {
+        requestPhotopeaSave(false);
         return;
       }
 
@@ -336,6 +375,13 @@ export const CleanupStage = () => {
       }
 
       if (phaseRef.current === 'opening-source') {
+        if (pendingSyntheticPsdUpgradeRef.current) {
+          phaseRef.current = 'preparing-synthetic-psd';
+          setEditorStatus('Preparing Synthetic PSD...');
+          iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', '*');
+          return;
+        }
+
         phaseRef.current = 'idle';
         loadedImageKeyRef.current = pendingImageRef.current?.id ?? loadingImageKeyRef.current;
         loadingImageKeyRef.current = null;
@@ -346,11 +392,44 @@ export const CleanupStage = () => {
         return;
       }
 
-      if (phaseRef.current === 'saving') {
+      if (phaseRef.current === 'preparing-synthetic-psd') {
+        const pendingImage = pendingImageRef.current;
+        const psdBuffer = pendingSyntheticPsdBufferRef.current;
+        if (!pendingImage?.syntheticImageId || !psdBuffer) {
+          phaseRef.current = 'idle';
+          loadingImageKeyRef.current = null;
+          pendingImageRef.current = null;
+          pendingSyntheticPsdBufferRef.current = null;
+          pendingSyntheticPsdUpgradeRef.current = false;
+          setEditorStatus('Failed to prepare Synthetic PSD.');
+          addNotification('error', 'Failed to prepare Synthetic PSD');
+          return;
+        }
+
+        const psdData = new Blob([psdBuffer], { type: 'image/vnd.adobe.photoshop' });
+        updateDatasetItem(pendingImage.syntheticImageId, { psdData });
+        pendingImageRef.current = { ...pendingImage, psdData };
+        pendingSyntheticPsdBufferRef.current = null;
+        pendingSyntheticPsdUpgradeRef.current = false;
+        loadedImageKeyRef.current = null;
+        phaseRef.current = 'clearing-documents';
+        setEditorStatus('Opening Synthetic PSD...');
+        iframeRef.current?.contentWindow?.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, '*');
+        return;
+      }
+
+      if (phaseRef.current === 'saving-png') {
+        phaseRef.current = 'saving-psd';
+        setEditorStatus('Requesting PSD from Photopea...');
+        iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', '*');
+        return;
+      }
+
+      if (phaseRef.current === 'saving-psd') {
         const saveCopy = saveModeRef.current;
-        const saveBuffer = saveBufferRef.current;
-        if (saveCopy !== null && saveBuffer && selectedImage) {
-          void saveEditedImage(saveBuffer, saveCopy, selectedImage);
+        const saveBuffers = saveBuffersRef.current;
+        if (saveCopy !== null && saveBuffers.png && selectedImage) {
+          void saveEditedImage(saveBuffers, saveCopy, selectedImage);
         } else {
           phaseRef.current = 'idle';
           setIsProcessing(false);
@@ -362,7 +441,7 @@ export const CleanupStage = () => {
 
     window.addEventListener('message', handlePhotopeaMessage);
     return () => window.removeEventListener('message', handlePhotopeaMessage);
-  }, [addNotification, saveEditedImage, selectedImage, sendImageBufferToPhotopea]);
+  }, [addNotification, saveEditedImage, selectedImage, sendImageBufferToPhotopea, updateDatasetItem]);
 
   const requestPhotopeaSave = (saveCopy: boolean) => {
     if (!selectedImage || !documentReady || isProcessing) {
@@ -376,10 +455,10 @@ export const CleanupStage = () => {
     }
 
     setIsProcessing(true);
-    setEditorStatus('Requesting edited image from Photopea...');
+    setEditorStatus('Requesting PNG preview from Photopea...');
     saveModeRef.current = saveCopy;
-    saveBufferRef.current = null;
-    phaseRef.current = 'saving';
+    saveBuffersRef.current = {};
+    phaseRef.current = 'saving-png';
     photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', '*');
   };
 
