@@ -1,5 +1,6 @@
 import {
   Archive,
+  BarChart3,
   Brush,
   Download,
   Layers3,
@@ -21,6 +22,7 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Upload,
   select: ScanSearch,
   clean: Brush,
+  analysis: BarChart3,
   review: Layers3,
   tagging: Tags,
   export: Download,
