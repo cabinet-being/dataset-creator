@@ -271,11 +271,23 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     };
   }
 
+  const loadedStageState = manifest.project.stageState as Partial<Record<string, unknown>>;
+
   return {
     ...manifest.project,
     sourceImages,
     datasetItems,
     cleanupOverlays: {},
+    stageState: {
+      hub: loadedStageState.hub ?? {},
+      import: loadedStageState.import ?? {},
+      select: loadedStageState.select ?? {},
+      clean: loadedStageState.clean ?? {},
+      analysis: loadedStageState.analysis ?? {},
+      review: loadedStageState.review ?? {},
+      tagging: loadedStageState.tagging ?? {},
+      export: loadedStageState.export ?? {},
+    },
     lastModified: new Date(manifest.project.lastModified),
     createdAt: new Date(manifest.project.createdAt),
   };

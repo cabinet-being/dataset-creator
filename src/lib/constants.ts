@@ -3,16 +3,17 @@ export const WORKFLOW_TOOLS = [
   'import',
   'select',
   'clean',
+  'analysis',
   'review',
   'tagging',
   'export',
 ] as const;
 
-export const HUB_TOOL_CARDS = ['select', 'clean', 'review', 'tagging'] as const;
+export const HUB_TOOL_CARDS = ['select', 'clean', 'analysis', 'review', 'tagging'] as const;
 
 export const SIDEBAR_PRIMARY_TOOLS = [] as const;
 
-export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'review', 'tagging'] as const;
+export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'analysis', 'review', 'tagging'] as const;
 
 export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
 
@@ -21,6 +22,7 @@ export const STAGE_LABELS: Record<string, string> = {
   import: 'Import',
   select: 'Remove Duplicates',
   clean: 'Edit',
+  analysis: 'Analysis',
   review: 'Review',
   tagging: 'Caption',
   export: 'Export',
@@ -30,7 +32,8 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   import: 'Load Source image files or folders into the shared workspace.',
   select: 'Find duplicate and near-duplicate source images before editing.',
   clean: 'Edit Source and Synthetic images in Photopea from the browser workspace.',
-  review: 'Inspect Source and Synthetic images with relationship maps before captioning.',
+  analysis: 'Analyze Source and Synthetic images with relationship maps and similarity groups.',
+  review: 'Preview Source and Synthetic images before captioning.',
   tagging: 'Edit captions manually, in bulk, or with a local ONNX tagger.',
   export: 'Save PNG and TXT training pairs as a folder or ZIP archive.',
 };
@@ -39,6 +42,7 @@ export const TOOL_REQUIREMENTS: Record<string, 'none' | 'sourceImages' | 'worksp
   import: 'none',
   select: 'sourceImages',
   clean: 'sourceImages',
+  analysis: 'workspaceImages',
   review: 'workspaceImages',
   tagging: 'workspaceImages',
   export: 'workspaceImages',
@@ -48,9 +52,9 @@ export const TOOL_REQUIREMENTS: Record<string, 'none' | 'sourceImages' | 'worksp
 export const ASPECT_RATIOS = ['2:3', '3:2', '1:1'] as const;
 
 export const ASPECT_RATIO_LABELS: Record<string, string> = {
-  '2:3': 'Portrait (2:3)',
-  '3:2': 'Landscape (3:2)',
-  '1:1': 'Square (1:1)',
+  '2:3': 'Portrait',
+  '3:2': 'Landscape',
+  '1:1': 'Square',
 };
 
 // Storage keys

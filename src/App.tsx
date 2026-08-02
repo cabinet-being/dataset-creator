@@ -3,6 +3,7 @@ import type { ChangeEvent, ComponentType } from 'react';
 import {
   Archive,
   ArrowLeft,
+  BarChart3,
   Brush,
   Download,
   ExternalLink,
@@ -44,6 +45,7 @@ import { ToolHub } from './components/ToolHub';
 import { ImportStage } from './components/stages/ImportStage';
 import { SimilarityReviewStage } from './components/stages/SimilarityReviewStage';
 import { CleanupStage } from './components/stages/CleanupStage';
+import { AnalysisStage } from './components/stages/AnalysisStage';
 import { FinalReviewStage } from './components/stages/FinalReviewStage';
 import { TaggingStage } from './components/stages/TaggingStage';
 import { ExportStage } from './components/stages/ExportStage';
@@ -57,6 +59,7 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Upload,
   select: ScanSearch,
   clean: Brush,
+  analysis: BarChart3,
   review: Layers3,
   tagging: Tags,
   export: Download,
@@ -72,6 +75,8 @@ const renderTool = (currentStage: StageName) => {
       return <SimilarityReviewStage />;
     case 'clean':
       return <CleanupStage />;
+    case 'analysis':
+      return <AnalysisStage />;
     case 'review':
       return <FinalReviewStage />;
     case 'tagging':
@@ -550,7 +555,7 @@ function App() {
               </div>
               <p className="truncate text-sm text-muted-foreground">
                 {activeDescription}{' '}
-                {currentStage === 'review' || currentStage === 'clean'
+                {currentStage === 'analysis' || currentStage === 'review' || currentStage === 'clean'
                   ? `${workspaceImages.length} images in scope.`
                   : ''}
               </p>
