@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ArrowLeft } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import {
@@ -14,7 +15,6 @@ import {
   getWorkspaceKindFrameStyle,
   toWorkspaceImages,
 } from '../../lib/workspaceImages';
-import { AlertCircle, Check } from 'lucide-react';
 
 type CleanupWorkingEdit = {
   blob: Blob;
@@ -29,19 +29,15 @@ type CleanupStageState = {
 
 type PreviewCacheEntry = { blob: Blob; url: string };
 
-type AugmentTypeState = {
-  config: AugmentationConfig;
-  selectedImageKeys: string[];
-};
-
 type AugmentStageState = {
   selectedType?: AugmentationConfig['type'];
-  byType?: Partial<Record<AugmentationConfig['type'], AugmentTypeState>>;
+  configsByType?: Partial<Record<AugmentationConfig['type'], AugmentationConfig>>;
 };
 
 type AugmentCandidate = {
   key: string;
   displayIdentity: string;
+  label: string;
   kind: 'source' | 'synthetic';
   blob: Blob;
   previewUrl?: string;
@@ -50,6 +46,7 @@ type AugmentCandidate = {
   aspectRatio: AspectRatio;
   sourceImageId: string;
   syntheticImageId?: string;
+  syntheticType?: string;
 };
 
 const TYPE_LABELS: Record<AugmentationConfig['type'], string> = {
@@ -82,7 +79,8 @@ export const AugmentationStage = () => {
     Object.values(state.datasetItems).filter((item) => !item.deleted)
   );
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
-  const removeDatasetItem = useProjectStore((state) => state.removeDatasetItem);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const setStageState = useProjectStore((state) => state.setStageState);
   const cleanupStageState = useProjectStore(
     (state) => (state.stageState.clean as CleanupStageState | undefined) ?? {}
@@ -92,7 +90,10 @@ export const AugmentationStage = () => {
   );
   const { addNotification } = useUIStore();
 
+  const [selectedImageKey, setSelectedImageKey] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [syntheticPreviewUrls, setSyntheticPreviewUrls] = useState<Record<string, string>>({});
   const syntheticPreviewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
@@ -148,218 +149,180 @@ export const AugmentationStage = () => {
   }, []);
 
   const candidates = useMemo<AugmentCandidate[]>(() => {
-    const candidates = workspaceImages.map((item) => {
-      return {
-        key: item.id,
-        displayIdentity: item.displayIdentity,
-        kind: item.kind,
-        blob: item.imageData,
-        previewUrl: item.previewUrl ?? (item.syntheticImageId ? syntheticPreviewUrls[item.syntheticImageId] : undefined),
-        width: item.width,
-        height: item.height,
-        aspectRatio: item.aspectRatio,
-        sourceImageId: item.sourceImageId,
-        syntheticImageId: item.syntheticImageId,
-      };
-    });
-
-    if (import.meta.env.DEV) {
-      console.log(`[augment] workspace candidates included: ${candidates.length}`);
-    }
-
-    return candidates;
+    return workspaceImages.map((item) => ({
+      key: item.id,
+      displayIdentity: item.displayIdentity,
+      label: item.label,
+      kind: item.kind,
+      blob: item.imageData,
+      previewUrl: item.previewUrl ?? (item.syntheticImageId ? syntheticPreviewUrls[item.syntheticImageId] : undefined),
+      width: item.width,
+      height: item.height,
+      aspectRatio: item.aspectRatio,
+      sourceImageId: item.sourceImageId,
+      syntheticImageId: item.syntheticImageId,
+      syntheticType: item.syntheticType,
+    }));
   }, [syntheticPreviewUrls, workspaceImages]);
 
+  const selectedCandidate = useMemo(
+    () => candidates.find((candidate) => candidate.key === selectedImageKey) ?? null,
+    [candidates, selectedImageKey]
+  );
+
+  useEffect(() => {
+    if (selectedImageKey && !selectedCandidate) {
+      setSelectedImageKey(null);
+    }
+  }, [selectedCandidate, selectedImageKey]);
+
   const selectedType = augmentStageState.selectedType ?? 'flip_h';
-
-  const currentTypeState = augmentStageState.byType?.[selectedType] ?? {
-    config: getDefaultConfig(selectedType),
-    selectedImageKeys: [],
-  };
-
-  const selectedImageKeys = new Set(currentTypeState.selectedImageKeys);
+  const currentConfig = useMemo(
+    () => augmentStageState.configsByType?.[selectedType] ?? getDefaultConfig(selectedType),
+    [augmentStageState.configsByType, selectedType]
+  );
 
   const updateAugmentStageState = (nextState: AugmentStageState) => {
     setStageState('augment', nextState);
   };
 
-  const updateCurrentTypeState = (nextTypeState: AugmentTypeState) => {
+  const updateCurrentConfig = (nextConfig: AugmentationConfig) => {
     updateAugmentStageState({
       ...augmentStageState,
       selectedType,
-      byType: {
-        ...(augmentStageState.byType ?? {}),
-        [selectedType]: nextTypeState,
+      configsByType: {
+        ...(augmentStageState.configsByType ?? {}),
+        [selectedType]: {
+          ...nextConfig,
+          type: selectedType,
+        },
       },
     });
-
-    if (import.meta.env.DEV) {
-      console.log(`[augment] selected augmentation type: ${selectedType}`);
-      console.log(`[augment] parameter values per type: ${JSON.stringify(nextTypeState.config)}`);
-      console.log(
-        `[augment] assigned image ids per type: ${JSON.stringify(nextTypeState.selectedImageKeys)}`
-      );
-    }
   };
 
-  const plannedTypesByImage = useMemo(() => {
-    const planned = new Map<string, AugmentationConfig['type'][]>();
-    for (const [type, state] of Object.entries(augmentStageState.byType ?? {}) as Array<
-      [AugmentationConfig['type'], AugmentTypeState]
-    >) {
-      for (const imageKey of state.selectedImageKeys) {
-        const current = planned.get(imageKey) ?? [];
-        current.push(type);
-        planned.set(imageKey, current);
-      }
-    }
-    return planned;
-  }, [augmentStageState.byType]);
-
-  const previewConfigs = useMemo(() => {
-    return generateAugmentationConfigs({
-      ...currentTypeState.config,
-      type: selectedType,
-      rotationSeed: currentTypeState.config.rotationSeed ?? 12345,
-    });
-  }, [currentTypeState.config, selectedType]);
-
   const handleTypeChange = (type: AugmentationConfig['type']) => {
-    const restoredState = augmentStageState.byType?.[type] ?? {
-      config: getDefaultConfig(type),
-      selectedImageKeys: [],
-    };
-
     updateAugmentStageState({
       ...augmentStageState,
       selectedType: type,
-      byType: {
-        ...(augmentStageState.byType ?? {}),
-        [type]: restoredState,
+      configsByType: {
+        ...(augmentStageState.configsByType ?? {}),
+        [type]: augmentStageState.configsByType?.[type] ?? getDefaultConfig(type),
       },
-    });
-
-    if (import.meta.env.DEV) {
-      console.log(`[augment] selected augmentation type: ${type}`);
-      console.log(`[augment] restored settings: ${JSON.stringify(restoredState.config)}`);
-      console.log(`[augment] restored selected images: ${JSON.stringify(restoredState.selectedImageKeys)}`);
-    }
-  };
-
-  const toggleImageSelection = (imageKey: string) => {
-    const nextSelectedImageKeys = new Set(currentTypeState.selectedImageKeys);
-    if (nextSelectedImageKeys.has(imageKey)) {
-      nextSelectedImageKeys.delete(imageKey);
-    } else {
-      nextSelectedImageKeys.add(imageKey);
-    }
-
-    updateCurrentTypeState({
-      ...currentTypeState,
-      selectedImageKeys: Array.from(nextSelectedImageKeys),
-    });
-  };
-
-  const selectAllForCurrentType = () => {
-    updateCurrentTypeState({
-      ...currentTypeState,
-      selectedImageKeys: candidates.map((candidate) => candidate.key),
-    });
-  };
-
-  const clearCurrentType = () => {
-    updateCurrentTypeState({
-      ...currentTypeState,
-      selectedImageKeys: [],
     });
   };
 
   const handleRotationDegreesChange = (rotationDegrees: number) => {
-    updateCurrentTypeState({
-      ...currentTypeState,
-      config: {
-        ...currentTypeState.config,
-        type: selectedType,
-        rotationDegrees,
-      },
+    updateCurrentConfig({
+      ...currentConfig,
+      rotationDegrees,
     });
   };
 
   const handleRotationVariantsChange = (rotationVariants: number) => {
-    updateCurrentTypeState({
-      ...currentTypeState,
-      config: {
-        ...currentTypeState.config,
-        type: selectedType,
-        rotationVariants,
-      },
+    updateCurrentConfig({
+      ...currentConfig,
+      rotationVariants,
     });
   };
 
-  const handleApplyAugmentations = async () => {
+  const outputConfigs = useMemo(() => {
+    if (!selectedCandidate) {
+      return [];
+    }
+
+    return generateAugmentationConfigs({
+      ...currentConfig,
+      type: selectedType,
+      rotationSeed:
+        currentConfig.rotationSeed ?? generateSeedFromImage(`${selectedCandidate.key}:${selectedType}`),
+    });
+  }, [currentConfig, selectedCandidate, selectedType]);
+
+  useEffect(() => {
+    let canceled = false;
+    let localUrl: string | null = null;
+
+    setPreviewUrl(null);
+
+    if (!selectedCandidate || outputConfigs.length === 0) {
+      setIsPreviewLoading(false);
+      return () => undefined;
+    }
+
+    setIsPreviewLoading(true);
+
+    applyAugmentation(selectedCandidate.blob, outputConfigs[0])
+      .then((blob) => {
+        if (canceled) {
+          return;
+        }
+        localUrl = URL.createObjectURL(blob);
+        setPreviewUrl(localUrl);
+      })
+      .catch((error) => {
+        console.error('Failed to build augmentation preview:', error);
+        if (!canceled) {
+          addNotification('error', 'Failed to build augmentation preview');
+        }
+      })
+      .finally(() => {
+        if (!canceled) {
+          setIsPreviewLoading(false);
+        }
+      });
+
+    return () => {
+      canceled = true;
+      if (localUrl) {
+        URL.revokeObjectURL(localUrl);
+      }
+    };
+  }, [addNotification, outputConfigs, selectedCandidate]);
+
+  const closeEditor = () => {
+    setSelectedImageKey(null);
+  };
+
+  const handleSaveAugmentation = async (saveCopy: boolean) => {
+    if (!selectedCandidate || outputConfigs.length === 0) {
+      return;
+    }
+
     setIsProcessing(true);
 
     try {
-      const augmentationAssignments = Array.from(
-        Object.entries(augmentStageState.byType ?? {})
-      ) as Array<[AugmentationConfig['type'], AugmentTypeState]>;
-
-      const existingGeneratedItems = datasetItems.filter((item) => item.type === 'augmented');
-      for (const item of existingGeneratedItems) {
-        removeDatasetItem(item.id);
+      for (const config of outputConfigs) {
+        const augmentedBlob = await applyAugmentation(selectedCandidate.blob, config);
+        const augmentedItem = createSyntheticImage(
+          selectedCandidate.sourceImageId,
+          augmentedBlob,
+          selectedCandidate.width,
+          selectedCandidate.height,
+          'augmented',
+          selectedCandidate.aspectRatio
+        );
+        augmentedItem.augmentationConfig = config;
+        addDatasetItem(augmentedItem);
       }
 
-      let generatedAugmentedOutputs = 0;
-      for (const [type, state] of augmentationAssignments) {
-        const baseConfig = {
-          ...state.config,
-          type,
-          rotationSeed: state.config.rotationSeed ?? generateSeedFromImage(type),
-        };
-        const configs = generateAugmentationConfigs(baseConfig);
-
-        for (const imageKey of state.selectedImageKeys) {
-          const candidate = candidates.find((item) => item.key === imageKey);
-          if (!candidate) {
-            continue;
-          }
-
-          for (const config of configs) {
-            const augmentedBlob = await applyAugmentation(candidate.blob, config);
-            const augmentedItem = createSyntheticImage(
-              candidate.sourceImageId,
-              augmentedBlob,
-              candidate.width,
-              candidate.height,
-              'augmented',
-              candidate.aspectRatio
-            );
-            augmentedItem.augmentationConfig = config;
-            addDatasetItem(augmentedItem);
-            generatedAugmentedOutputs += 1;
-          }
+      if (!saveCopy) {
+        if (selectedCandidate.kind === 'source') {
+          updateSourceImage(selectedCandidate.sourceImageId, { hidden: true });
+        } else if (selectedCandidate.syntheticImageId) {
+          softDeleteDatasetItem(selectedCandidate.syntheticImageId);
         }
       }
 
-      if (import.meta.env.DEV) {
-        console.log(
-          `[augment-transition] remembered augmentation assignments: ${augmentationAssignments.reduce(
-            (sum, [, state]) => sum + state.selectedImageKeys.length,
-            0
-          )}`
-        );
-        console.log(`[augment] generated augmented outputs: ${generatedAugmentedOutputs}`);
-        console.log(
-          `[augment] final Synthetic count available to review/tagging: ${
-            useProjectStore.getState().getDatasetItems(false).length
-          }`
-        );
-      }
-
-      addNotification('success', `Applied ${generatedAugmentedOutputs} augmented item(s)`);
+      addNotification(
+        'success',
+        saveCopy
+          ? `Saved ${outputConfigs.length} augmented copy item(s)`
+          : `Saved ${outputConfigs.length} augmented item(s)`
+      );
+      closeEditor();
     } catch (error) {
-      console.error('Failed to finalize augmentation stage:', error);
-      addNotification('error', 'Failed to prepare augmentations for review');
+      console.error('Failed to save augmentation:', error);
+      addNotification('error', 'Failed to save augmentation');
     } finally {
       setIsProcessing(false);
     }
@@ -375,119 +338,27 @@ export const AugmentationStage = () => {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-lg border border-border bg-card p-4 space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Augmentation Type</label>
-            <p className="text-xs text-muted-foreground">
-              Each type remembers its own image assignments and parameter values.
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <select
-              value={selectedType}
-              onChange={(event) => handleTypeChange(event.target.value as AugmentationConfig['type'])}
-              className="px-3 py-2 rounded-md border border-border bg-background text-sm"
-            >
-              <option value="flip_h">Flip Horizontal</option>
-              <option value="flip_v">Flip Vertical</option>
-              <option value="color">Gradient Map</option>
-              <option value="rotate">Rotate</option>
-            </select>
-            <button
-              onClick={selectAllForCurrentType}
-              className="px-3 py-2 text-sm bg-secondary hover:bg-muted rounded-md transition-colors"
-            >
-              Select All
-            </button>
-            <button
-              onClick={clearCurrentType}
-              className="px-3 py-2 text-sm bg-secondary hover:bg-muted rounded-md transition-colors"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-
-        {selectedType === 'rotate' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="rounded-lg border border-border bg-card overflow-hidden min-h-[calc(100vh-13rem)] flex flex-col">
+      {!selectedCandidate ? (
+        <>
+          <div className="border-b border-border p-4 flex items-center justify-between gap-4">
             <div>
-              <label className="block text-sm font-medium mb-2">
-                Max Rotation: {currentTypeState.config.rotationDegrees ?? 15}°
-              </label>
-              <input
-                type="range"
-                min="1"
-                max="180"
-                value={currentTypeState.config.rotationDegrees ?? 15}
-                onChange={(event) => handleRotationDegreesChange(parseInt(event.target.value, 10))}
-                className="w-full"
-              />
+              <h3 className="text-lg font-semibold">Augmentation Gallery</h3>
+              <p className="text-sm text-muted-foreground">
+                Choose an image to augment. Source and Synthetic images are edited one at a time.
+              </p>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Variants per Image: {currentTypeState.config.rotationVariants ?? 3}
-              </label>
-              <input
-                type="range"
-                min="1"
-                max="10"
-                value={currentTypeState.config.rotationVariants ?? 3}
-                onChange={(event) => handleRotationVariantsChange(parseInt(event.target.value, 10))}
-                className="w-full"
-              />
-            </div>
-          </div>
-        )}
-
-        <div className="rounded-md bg-secondary/40 border border-border px-3 py-2 text-sm text-muted-foreground">
-          Current type: <strong>{TYPE_LABELS[selectedType]}</strong> • Assigned images:{' '}
-          <strong>{currentTypeState.selectedImageKeys.length}</strong> • Planned variants:{' '}
-          <strong>{previewConfigs.length}</strong>
-        </div>
-      </div>
-
-      <div>
-        <div className="flex items-center justify-between mb-4 gap-4">
-          <div>
-            <h3 className="text-lg font-semibold">Augmentation Gallery</h3>
-            <p className="text-sm text-muted-foreground">
-              Source and Synthetic images can both be assigned augmentations.
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
             <div className="text-sm text-muted-foreground">
-              {candidates.length} candidate{candidates.length !== 1 ? 's' : ''}
+              {candidates.length} image{candidates.length !== 1 ? 's' : ''}
             </div>
-            <button
-              onClick={() => void handleApplyAugmentations()}
-              disabled={isProcessing}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity text-sm font-medium"
-            >
-              {isProcessing ? 'Applying Augmentations...' : 'Apply Augmentations'}
-            </button>
           </div>
-        </div>
 
-        <div className="gallery-masonry">
-          {candidates.map((candidate) => {
-            const plannedTypes = plannedTypesByImage.get(candidate.key) ?? [];
-            const isSelectedForCurrentType = selectedImageKeys.has(candidate.key);
-            const statusText =
-              plannedTypes.length > 0
-                ? plannedTypes.map((type) => TYPE_LABELS[type]).join(', ')
-                : 'No augmentations assigned';
-
-            return (
+          <div className="p-6 gallery-masonry overflow-y-auto">
+            {candidates.map((candidate, index) => (
               <button
                 key={candidate.key}
-                onClick={() => toggleImageSelection(candidate.key)}
-                className={`gallery-masonry-item group relative rounded-lg overflow-hidden border transition-colors text-left ${
-                  isSelectedForCurrentType
-                    ? `${getWorkspaceKindFrameClass(candidate.kind, true)} bg-primary/5`
-                    : `${getWorkspaceKindFrameClass(candidate.kind)} bg-secondary hover:border-primary/50`
-                }`}
+                onClick={() => setSelectedImageKey(candidate.key)}
+                className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(candidate.kind)} hover:border-primary transition-colors text-left`}
                 style={getWorkspaceKindFrameStyle(candidate.kind)}
               >
                 <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
@@ -503,19 +374,14 @@ export const AugmentationStage = () => {
                     </span>
                   )}
 
-                  <div className="absolute top-2 right-2 flex items-center gap-1">
-                    {isSelectedForCurrentType && (
-                      <span className="p-1 rounded-full bg-primary text-primary-foreground">
-                        <Check size={12} />
-                      </span>
-                    )}
-                  </div>
-
+                  <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
                     <div className="flex items-end justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-white">Image #{candidate.displayIdentity}</p>
-                        <p className="line-clamp-2 text-xs text-gray-300">{statusText}</p>
+                        <p className="text-sm font-medium text-white">Image #{index + 1}</p>
+                        <p className="line-clamp-1 text-xs text-gray-300">
+                          {candidate.syntheticType === 'augmented' ? 'Augmented' : 'Ready to augment'}
+                        </p>
                       </div>
                       <span className={getWorkspaceKindBadgeClass(candidate.kind)}>
                         {WORKSPACE_KIND_STYLES[candidate.kind].label}
@@ -524,17 +390,139 @@ export const AugmentationStage = () => {
                   </div>
                 </div>
               </button>
-            );
-          })}
-        </div>
-      </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="border-b border-border p-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={closeEditor}
+                className="p-2 rounded-md bg-secondary hover:bg-muted transition-colors"
+                title="Cancel"
+              >
+                <ArrowLeft size={18} />
+              </button>
+              <div>
+                <h3 className="font-semibold">Augment Image</h3>
+                <p className="text-xs text-muted-foreground">
+                  {selectedCandidate.label} #{selectedCandidate.displayIdentity}
+                </p>
+              </div>
+            </div>
 
-      <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-4">
-        <p className="text-sm text-blue-600">
-          Augmentation stores assignments as working state. Outputs are generated when
-          augmentations are applied.
-        </p>
-      </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void handleSaveAugmentation(false)}
+                disabled={isProcessing || outputConfigs.length === 0}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity text-sm font-medium"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => void handleSaveAugmentation(true)}
+                disabled={isProcessing || outputConfigs.length === 0}
+                className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
+              >
+                Save Copy
+              </button>
+              <button
+                onClick={closeEditor}
+                disabled={isProcessing}
+                className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          <div className="border-b border-border p-4 flex items-start gap-4 flex-wrap">
+            <div>
+              <label className="block text-sm font-medium mb-1">Augmentation Type</label>
+              <select
+                value={selectedType}
+                onChange={(event) => handleTypeChange(event.target.value as AugmentationConfig['type'])}
+                className="px-3 py-2 rounded-md border border-border bg-background text-sm"
+              >
+                <option value="flip_h">Flip Horizontal</option>
+                <option value="flip_v">Flip Vertical</option>
+                <option value="color">Gradient Map</option>
+                <option value="rotate">Rotate</option>
+              </select>
+            </div>
+
+            {selectedType === 'rotate' && (
+              <>
+                <div className="min-w-[180px]">
+                  <label className="block text-sm font-medium mb-1">
+                    Max Rotation: {currentConfig.rotationDegrees ?? 15} deg
+                  </label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="180"
+                    value={currentConfig.rotationDegrees ?? 15}
+                    onChange={(event) => handleRotationDegreesChange(parseInt(event.target.value, 10))}
+                    className="w-full"
+                  />
+                </div>
+                <div className="min-w-[180px]">
+                  <label className="block text-sm font-medium mb-1">
+                    Variants: {currentConfig.rotationVariants ?? 3}
+                  </label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="10"
+                    value={currentConfig.rotationVariants ?? 3}
+                    onChange={(event) => handleRotationVariantsChange(parseInt(event.target.value, 10))}
+                    className="w-full"
+                  />
+                </div>
+              </>
+            )}
+
+            <div className="rounded-md bg-secondary/40 border border-border px-3 py-2 text-sm text-muted-foreground">
+              Type: <strong>{TYPE_LABELS[selectedType]}</strong> | Outputs:{' '}
+              <strong>{outputConfigs.length}</strong>
+            </div>
+          </div>
+
+          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2">
+            <div className="min-h-[28rem] bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 lg:border-r border-border">
+              {selectedCandidate.previewUrl ? (
+                <img
+                  src={selectedCandidate.previewUrl}
+                  alt={`Original ${selectedCandidate.displayIdentity}`}
+                  className="max-w-full max-h-full object-contain"
+                />
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  {selectedCandidate.width} x {selectedCandidate.height}
+                </span>
+              )}
+            </div>
+
+            <div className="min-h-[28rem] bg-black flex items-center justify-center overflow-hidden relative">
+              {previewUrl ? (
+                <img
+                  src={previewUrl}
+                  alt={`Augmented preview ${selectedCandidate.displayIdentity}`}
+                  className="max-w-full max-h-full object-contain"
+                />
+              ) : (
+                <span className="text-sm text-muted-foreground">
+                  {isPreviewLoading ? 'Generating preview...' : 'No preview available'}
+                </span>
+              )}
+              <div className="absolute left-3 top-3 rounded-md bg-black/70 px-2 py-1 text-xs text-white">
+                Preview 1 of {outputConfigs.length || 0}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };
