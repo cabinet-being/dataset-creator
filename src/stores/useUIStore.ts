@@ -118,12 +118,23 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
     set({ showHelp: show }),
 
   setEditToolbar: (toolbar) =>
-    set((state) => ({
-      editToolbar: {
+    set((state) => {
+      const nextToolbar = {
         ...state.editToolbar,
         ...toolbar,
-      },
-    })),
+      };
+
+      if (
+        state.editToolbar.visible === nextToolbar.visible &&
+        state.editToolbar.canSave === nextToolbar.canSave &&
+        state.editToolbar.isProcessing === nextToolbar.isProcessing &&
+        state.editToolbar.status === nextToolbar.status
+      ) {
+        return state;
+      }
+
+      return { editToolbar: nextToolbar };
+    }),
   
   addNotification: (type, message) =>
     set((state) => ({

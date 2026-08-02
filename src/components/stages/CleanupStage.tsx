@@ -53,7 +53,8 @@ export const CleanupStage = () => {
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
-  const { addNotification, setEditToolbar } = useUIStore();
+  const addNotification = useUIStore((state) => state.addNotification);
+  const setEditToolbar = useUIStore((state) => state.setEditToolbar);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const phaseRef = useRef<PhotopeaPhase>('waiting-ready');
@@ -156,7 +157,9 @@ export const CleanupStage = () => {
       isProcessing,
       status: selectedImage ? editorStatus : undefined,
     });
+  }, [documentReady, editorStatus, isProcessing, selectedImageKey, setEditToolbar]);
 
+  useEffect(() => {
     return () => {
       setEditToolbar({
         visible: false,
@@ -165,7 +168,7 @@ export const CleanupStage = () => {
         status: undefined,
       });
     };
-  }, [documentReady, editorStatus, isProcessing, selectedImage, setEditToolbar]);
+  }, [setEditToolbar]);
 
   useEffect(() => {
     if (selectedImageKey && !selectedImage) {
