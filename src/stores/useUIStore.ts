@@ -13,6 +13,14 @@ interface UIState {
   // UI flags
   showSettings: boolean;
   showHelp: boolean;
+
+  // Edit tool header actions
+  editToolbar: {
+    visible: boolean;
+    canSave: boolean;
+    isProcessing: boolean;
+    status?: string;
+  };
   
   // Notifications
   notifications: Array<{
@@ -39,6 +47,9 @@ interface UIActions {
   // UI
   setShowSettings: (show: boolean) => void;
   setShowHelp: (show: boolean) => void;
+
+  // Edit tool header actions
+  setEditToolbar: (toolbar: Partial<UIState['editToolbar']>) => void;
   
   // Notifications
   addNotification: (type: UIState['notifications'][0]['type'], message: string) => void;
@@ -53,6 +64,11 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   viewMode: 'grid',
   showSettings: false,
   showHelp: false,
+  editToolbar: {
+    visible: false,
+    canSave: false,
+    isProcessing: false,
+  },
   notifications: [],
   
   toggleSourceImageSelection: (id: string) =>
@@ -100,6 +116,14 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   
   setShowHelp: (show: boolean) =>
     set({ showHelp: show }),
+
+  setEditToolbar: (toolbar) =>
+    set((state) => ({
+      editToolbar: {
+        ...state.editToolbar,
+        ...toolbar,
+      },
+    })),
   
   addNotification: (type, message) =>
     set((state) => ({

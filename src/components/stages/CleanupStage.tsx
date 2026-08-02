@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, ExternalLink } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { getImageDimensions } from '../../services/image/imageProcessor';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
@@ -14,9 +14,21 @@ import {
 } from '../../lib/workspaceImages';
 
 type PreviewCacheEntry = { blob: Blob; url: string };
-type PhotopeaPhase = 'waiting-ready' | 'idle' | 'opening-buffer' | 'opening-source' | 'saving';
+type PhotopeaPhase =
+  | 'waiting-ready'
+  | 'idle'
+  | 'clearing-documents'
+  | 'opening-buffer'
+  | 'opening-source'
+  | 'saving';
 
 const PHOTOPEA_ORIGIN = 'https://www.photopea.com';
+const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
+const CLOSE_ALL_DOCUMENTS_SCRIPT = [
+  'while (app.documents.length > 0) {',
+  '  app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);',
+  '}',
+].join('\n');
 
 const createPhotopeaUrl = () => {
   const config = {
@@ -41,13 +53,15 @@ export const CleanupStage = () => {
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
-  const { addNotification } = useUIStore();
+  const { addNotification, setEditToolbar } = useUIStore();
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const phaseRef = useRef<PhotopeaPhase>('waiting-ready');
   const saveModeRef = useRef<boolean | null>(null);
   const saveBufferRef = useRef<ArrayBuffer | null>(null);
   const loadedImageKeyRef = useRef<string | null>(null);
+  const loadingImageKeyRef = useRef<string | null>(null);
+  const pendingImageRef = useRef<WorkspaceImage | null>(null);
   const syntheticPreviewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
   const [selectedImageKey, setSelectedImageKey] = useState<string | null>(null);
@@ -122,6 +136,8 @@ export const CleanupStage = () => {
     saveModeRef.current = null;
     saveBufferRef.current = null;
     loadedImageKeyRef.current = null;
+    loadingImageKeyRef.current = null;
+    pendingImageRef.current = null;
     setPhotopeaReady(false);
     setDocumentReady(false);
     setIsProcessing(false);
@@ -134,14 +150,32 @@ export const CleanupStage = () => {
   }, [resetEditorState]);
 
   useEffect(() => {
+    setEditToolbar({
+      visible: Boolean(selectedImage),
+      canSave: Boolean(selectedImage && documentReady),
+      isProcessing,
+      status: selectedImage ? editorStatus : undefined,
+    });
+
+    return () => {
+      setEditToolbar({
+        visible: false,
+        canSave: false,
+        isProcessing: false,
+        status: undefined,
+      });
+    };
+  }, [documentReady, editorStatus, isProcessing, selectedImage, setEditToolbar]);
+
+  useEffect(() => {
     if (selectedImageKey && !selectedImage) {
       closeEditor();
     }
   }, [closeEditor, selectedImage, selectedImageKey]);
 
-  const openImageInPhotopea = useCallback(async (image: WorkspaceImage) => {
+  const sendImageBufferToPhotopea = useCallback(async (image: WorkspaceImage) => {
     const photopeaWindow = iframeRef.current?.contentWindow;
-    if (!photopeaWindow || loadedImageKeyRef.current === image.id) {
+    if (!photopeaWindow) {
       return;
     }
 
@@ -150,22 +184,42 @@ export const CleanupStage = () => {
       setDocumentReady(false);
       const buffer = await image.imageData.arrayBuffer();
       phaseRef.current = 'opening-buffer';
-      loadedImageKeyRef.current = image.id;
+      pendingImageRef.current = image;
       photopeaWindow.postMessage(buffer, '*', [buffer]);
     } catch (error) {
       console.error('Failed to send image to Photopea:', error);
       loadedImageKeyRef.current = null;
+      loadingImageKeyRef.current = null;
+      pendingImageRef.current = null;
       phaseRef.current = 'idle';
       setEditorStatus('Failed to open image in Photopea.');
       addNotification('error', 'Failed to open image in Photopea');
     }
   }, [addNotification]);
 
+  const openImageInPhotopea = useCallback((image: WorkspaceImage) => {
+    const photopeaWindow = iframeRef.current?.contentWindow;
+    if (
+      !photopeaWindow ||
+      loadedImageKeyRef.current === image.id ||
+      loadingImageKeyRef.current === image.id
+    ) {
+      return;
+    }
+
+    loadingImageKeyRef.current = image.id;
+    pendingImageRef.current = image;
+    setDocumentReady(false);
+    setEditorStatus('Preparing Photopea...');
+    phaseRef.current = 'clearing-documents';
+    photopeaWindow.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, '*');
+  }, []);
+
   useEffect(() => {
     if (photopeaReady && selectedImage) {
-      void openImageInPhotopea(selectedImage);
+      openImageInPhotopea(selectedImage);
     }
-  }, [openImageInPhotopea, photopeaReady, selectedImage]);
+  }, [openImageInPhotopea, photopeaReady, selectedImage?.id]);
 
   const saveEditedImage = useCallback(
     async (buffer: ArrayBuffer, saveCopy: boolean, image: WorkspaceImage) => {
@@ -250,11 +304,24 @@ export const CleanupStage = () => {
         return;
       }
 
+      if (phaseRef.current === 'clearing-documents') {
+        const pendingImage = pendingImageRef.current;
+        if (pendingImage) {
+          void sendImageBufferToPhotopea(pendingImage);
+        } else {
+          loadingImageKeyRef.current = null;
+          phaseRef.current = 'idle';
+          setEditorStatus('No image selected.');
+        }
+        return;
+      }
+
       if (phaseRef.current === 'opening-buffer') {
+        const pendingImage = pendingImageRef.current;
         phaseRef.current = 'opening-source';
         setEditorStatus('Preparing document...');
         iframeRef.current?.contentWindow?.postMessage(
-          `app.activeDocument.source=${JSON.stringify(selectedImage?.id ?? 'dataset-image')};`,
+          `app.activeDocument.source=${JSON.stringify(pendingImage?.id ?? 'dataset-image')};`,
           '*'
         );
         return;
@@ -262,8 +329,12 @@ export const CleanupStage = () => {
 
       if (phaseRef.current === 'opening-source') {
         phaseRef.current = 'idle';
+        loadedImageKeyRef.current = pendingImageRef.current?.id ?? loadingImageKeyRef.current;
+        loadingImageKeyRef.current = null;
+        pendingImageRef.current = null;
         setDocumentReady(true);
         setEditorStatus('Ready to edit in Photopea.');
+        window.setTimeout(() => iframeRef.current?.focus(), 0);
         return;
       }
 
@@ -283,7 +354,7 @@ export const CleanupStage = () => {
 
     window.addEventListener('message', handlePhotopeaMessage);
     return () => window.removeEventListener('message', handlePhotopeaMessage);
-  }, [addNotification, saveEditedImage, selectedImage]);
+  }, [addNotification, saveEditedImage, selectedImage, sendImageBufferToPhotopea]);
 
   const requestPhotopeaSave = (saveCopy: boolean) => {
     if (!selectedImage || !documentReady || isProcessing) {
@@ -304,6 +375,29 @@ export const CleanupStage = () => {
     photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', '*');
   };
 
+  useEffect(() => {
+    const handleEditCommand = (event: Event) => {
+      const command = (event as CustomEvent<'back' | 'save' | 'saveCopy' | 'cancel'>).detail;
+      switch (command) {
+        case 'back':
+        case 'cancel':
+          if (!isProcessing) {
+            closeEditor();
+          }
+          break;
+        case 'save':
+          requestPhotopeaSave(false);
+          break;
+        case 'saveCopy':
+          requestPhotopeaSave(true);
+          break;
+      }
+    };
+
+    window.addEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
+    return () => window.removeEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
+  });
+
   if (workspaceImages.length === 0) {
     return (
       <div className="text-center py-12">
@@ -314,7 +408,7 @@ export const CleanupStage = () => {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden min-h-[calc(100vh-13rem)] flex flex-col">
+    <div className="h-full min-h-0 rounded-lg border border-border bg-card overflow-hidden flex flex-col">
       {!selectedImage ? (
         <>
           <div className="border-b border-border p-4 flex items-center justify-between gap-4">
@@ -368,69 +462,14 @@ export const CleanupStage = () => {
           </div>
         </>
       ) : (
-        <>
-          <div className="border-b border-border p-4 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={closeEditor}
-                className="p-2 rounded-md bg-secondary hover:bg-muted transition-colors"
-                title="Cancel"
-              >
-                <ArrowLeft size={18} />
-              </button>
-              <div>
-                <h3 className="font-semibold">Edit Image</h3>
-                <p className="text-xs text-muted-foreground">
-                  {selectedImage.label} #{selectedImage.displayIdentity} - {editorStatus}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <a
-                href={PHOTOPEA_ORIGIN}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-2 px-3 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
-              >
-                <ExternalLink size={15} />
-                Photopea
-              </a>
-              <button
-                onClick={() => requestPhotopeaSave(false)}
-                disabled={!documentReady || isProcessing}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity text-sm font-medium"
-              >
-                Save
-              </button>
-              <button
-                onClick={() => requestPhotopeaSave(true)}
-                disabled={!documentReady || isProcessing}
-                className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
-              >
-                Save Copy
-              </button>
-              <button
-                onClick={closeEditor}
-                disabled={isProcessing}
-                className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 min-h-[40rem] bg-black">
-            <iframe
-              key={selectedImage.id}
-              ref={iframeRef}
-              title="Photopea image editor"
-              src={photopeaUrl}
-              className="h-full min-h-[40rem] w-full border-0"
-              allow="clipboard-read; clipboard-write; fullscreen"
-            />
-          </div>
-        </>
+        <iframe
+          key={selectedImage.id}
+          ref={iframeRef}
+          title="Photopea image editor"
+          src={photopeaUrl}
+          className="h-full min-h-0 w-full flex-1 border-0 bg-black"
+          allow="clipboard-read; clipboard-write; fullscreen"
+        />
       )}
     </div>
   );

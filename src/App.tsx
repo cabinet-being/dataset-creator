@@ -2,13 +2,13 @@ import { useEffect } from 'react';
 import type { ComponentType } from 'react';
 import {
   Archive,
+  ArrowLeft,
   Brush,
   Download,
+  ExternalLink,
   Image,
   Layers3,
-  Moon,
   ScanSearch,
-  Sun,
   Tags,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
@@ -30,9 +30,10 @@ import { FinalReviewStage } from './components/stages/FinalReviewStage';
 import { TaggingStage } from './components/stages/TaggingStage';
 import { ExportStage } from './components/stages/ExportStage';
 import { Badge } from './components/ui/badge';
-import { Button } from './components/ui/button';
 import { Separator } from './components/ui/separator';
 import './App.css';
+
+const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Image,
@@ -72,7 +73,7 @@ function App() {
   const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
   const datasetItems = useProjectStore((state) => state.getDatasetItems(false));
   const workspaceImages = toWorkspaceImages(sourceImages, datasetItems);
-  const { darkMode, setDarkMode } = useUIStore();
+  const { darkMode, setDarkMode, editToolbar } = useUIStore();
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -98,6 +99,10 @@ function App() {
     currentStage === 'hub'
       ? 'Choose a tool and keep working from the shared image workspace.'
       : TOOL_DESCRIPTIONS[currentStage] ?? '';
+  const showEditToolbar = currentStage === 'clean' && editToolbar.visible;
+  const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
+    window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
+  };
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -197,21 +202,55 @@ function App() {
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setDarkMode(!darkMode)}
-                title={darkMode ? 'Light mode' : 'Dark mode'}
-              >
-                {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-              </Button>
-            </div>
+            {showEditToolbar && (
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => runEditCommand('back')}
+                  disabled={editToolbar.isProcessing}
+                  className="p-2 rounded-md bg-secondary hover:bg-muted disabled:opacity-50 transition-colors"
+                  title="Back"
+                >
+                  <ArrowLeft size={18} />
+                </button>
+                <a
+                  href="https://www.photopea.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 px-3 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
+                >
+                  <ExternalLink size={15} />
+                  Photopea
+                </a>
+                <button
+                  onClick={() => runEditCommand('save')}
+                  disabled={!editToolbar.canSave || editToolbar.isProcessing}
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity text-sm font-medium"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => runEditCommand('saveCopy')}
+                  disabled={!editToolbar.canSave || editToolbar.isProcessing}
+                  className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
+                >
+                  Save Copy
+                </button>
+                <button
+                  onClick={() => runEditCommand('cancel')}
+                  disabled={editToolbar.isProcessing}
+                  className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
-        <div className="flex-1 overflow-auto">
-          <div className="p-4 md:p-6">{renderTool(currentStage)}</div>
+        <div className={showEditToolbar ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}>
+          <div className={showEditToolbar ? 'h-full min-h-0' : 'p-4 md:p-6'}>
+            {renderTool(currentStage)}
+          </div>
         </div>
       </main>
     </div>
