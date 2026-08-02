@@ -247,7 +247,10 @@ function App() {
                 {currentStage !== 'hub' && <Badge variant="outline">Tool</Badge>}
               </div>
               <p className="truncate text-sm text-muted-foreground">
-                {activeDescription} {currentStage === 'review' ? `${workspaceImages.length} images in scope.` : ''}
+                {activeDescription}{' '}
+                {currentStage === 'review' || currentStage === 'clean'
+                  ? `${workspaceImages.length} images in scope.`
+                  : ''}
               </p>
             </div>
 
