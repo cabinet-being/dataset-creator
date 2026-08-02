@@ -1,6 +1,5 @@
-import * as Dialog from '@radix-ui/react-dialog';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Plug, Settings2, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Plug, Sparkles, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
@@ -19,6 +18,7 @@ import {
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
+type InsertMode = 'prepend' | 'append' | 'overwrite';
 
 type DirectoryPickerWindow = Window &
   typeof globalThis & {
@@ -30,6 +30,12 @@ const parseTagInput = (value: string): string[] =>
     .split(',')
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
+
+const INSERT_MODE_LABELS: Record<InsertMode, string> = {
+  prepend: 'Prepend',
+  append: 'Append',
+  overwrite: 'Overwrite',
+};
 
 type TaggingCardProps = {
   item: WorkspaceImage;
@@ -153,8 +159,7 @@ export const TaggingStage = () => {
   const [tagInputs, setTagInputs] = useState<Record<string, string>>({});
   const [newBlacklistTag, setNewBlacklistTag] = useState('');
   const [globalTagsToAdd, setGlobalTagsToAdd] = useState('');
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  const [bulkInsertMode, setBulkInsertMode] = useState<InsertMode>('append');
   const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
   const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
@@ -328,7 +333,12 @@ export const TaggingStage = () => {
         console.log('[tagging] dataset keyword insertion skipped during manual tagging');
       }
 
-      if (nextTags.length !== (item.tags ?? []).length) {
+      const previousTags = item.tags ?? [];
+      const changed =
+        nextTags.length !== previousTags.length ||
+        nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
+
+      if (changed) {
         updateWorkspaceImageTags(item, nextTags);
       }
 
@@ -471,15 +481,45 @@ export const TaggingStage = () => {
     disconnectLocalTagger();
   }, [disconnectLocalTagger]);
 
-  const handleAddBlacklistTag = () => {
-    const [tag] = parseTagInput(newBlacklistTag);
-    if (!tag || taggingConfig.blacklist.includes(tag)) {
+  const removeTagsFromAllImages = useCallback(
+    (tagsToRemove: string[]) => {
+      const blocked = new Set(tagsToRemove);
+      for (const item of items) {
+        const nextTags = (item.tags ?? []).filter((tag) => !blocked.has(tag));
+        const changed =
+          nextTags.length !== (item.tags ?? []).length ||
+          nextTags.some((tag, tagIndex) => item.tags?.[tagIndex] !== tag);
+
+        if (changed) {
+          updateWorkspaceImageTags(item, nextTags);
+        }
+      }
+    },
+    [items, updateWorkspaceImageTags]
+  );
+
+  const handleAddBlacklistTags = () => {
+    const parsedTags = parseTagInput(newBlacklistTag);
+    const nextBlacklist = [...taggingConfig.blacklist];
+    const addedTags: string[] = [];
+
+    for (const tag of parsedTags) {
+      if (!tag || nextBlacklist.includes(tag)) {
+        continue;
+      }
+
+      nextBlacklist.push(tag);
+      addedTags.push(tag);
+    }
+
+    if (addedTags.length === 0) {
       return;
     }
 
     updateTaggingConfig({
-      blacklist: [...taggingConfig.blacklist, tag],
+      blacklist: nextBlacklist,
     });
+    removeTagsFromAllImages(addedTags);
     setNewBlacklistTag('');
   };
 
@@ -498,19 +538,42 @@ export const TaggingStage = () => {
     }
 
     for (const item of items) {
-      const existingTags = new Set(item.tags ?? []);
-      const nextTags = [...(item.tags ?? [])];
+      const blacklist = new Set(taggingConfig.blacklist);
+      const normalizedExisting = (item.tags ?? [])
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((tag) => tag !== normalizedKeyword)
+        .filter((tag) => !blacklist.has(tag));
+      const normalizedBulkTags = parsedTags.filter((tag) => !blacklist.has(tag));
+      const nextTags: string[] = [];
+      const seen = new Set<string>();
 
-      for (const tag of parsedTags) {
-        if (taggingConfig.blacklist.includes(tag) || existingTags.has(tag)) {
-          continue;
+      const addTag = (tag: string) => {
+        if (!tag || seen.has(tag)) {
+          return;
         }
-
-        existingTags.add(tag);
+        seen.add(tag);
         nextTags.push(tag);
+      };
+
+      if (bulkInsertMode === 'prepend' || bulkInsertMode === 'overwrite') {
+        normalizedBulkTags.forEach(addTag);
       }
 
-      if (nextTags.length !== (item.tags ?? []).length) {
+      if (bulkInsertMode !== 'overwrite') {
+        normalizedExisting.forEach(addTag);
+      }
+
+      if (bulkInsertMode === 'append') {
+        normalizedBulkTags.forEach(addTag);
+      }
+
+      const previousTags = item.tags ?? [];
+      const changed =
+        nextTags.length !== previousTags.length ||
+        nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
+
+      if (changed) {
         updateWorkspaceImageTags(item, nextTags);
       }
     }
@@ -518,41 +581,9 @@ export const TaggingStage = () => {
     addNotification('success', `Added ${parsedTags.length} caption tag(s) across the current workspace`);
     if (import.meta.env.DEV) {
       console.log('[tagging] dataset keyword insertion skipped during bulk add');
+      console.log(`[tagging] bulk insert mode: ${bulkInsertMode}`);
     }
     setGlobalTagsToAdd('');
-  };
-
-  const handleSettingsOpenChange = (open: boolean) => {
-    setIsSettingsOpen(open);
-    if (import.meta.env.DEV) {
-      console.log(`[tagging] modal opened successfully: ${open}`);
-    }
-  };
-
-  const handleAutoTaggingAction = () => {
-    if (import.meta.env.DEV) {
-      console.log('[tagging:settings] save action triggered');
-    }
-
-    try {
-      const message = 'Local auto-tagging settings saved';
-      setSettingsSaveMessage(message);
-      addNotification('success', message);
-
-      if (import.meta.env.DEV) {
-        console.log('[tagging:settings] save success');
-        console.log('[tagging:settings] visible feedback fired');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to save local auto-tagging settings';
-      setSettingsSaveMessage(message);
-      addNotification('error', message);
-
-      if (import.meta.env.DEV) {
-        console.log('[tagging:settings] save failure', error);
-        console.log('[tagging:settings] visible feedback fired');
-      }
-    }
   };
 
   const handleRunLocalAutoTagging = useCallback(async () => {
@@ -646,166 +677,6 @@ export const TaggingStage = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold">Caption</h2>
-          <p className="text-sm text-muted-foreground">
-            Review each image visually, inspect current tags, and add new tags with comma-separated
-            input.
-          </p>
-        </div>
-
-        <Dialog.Root open={isSettingsOpen} onOpenChange={handleSettingsOpenChange}>
-          <Dialog.Trigger asChild>
-            <button className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-secondary hover:bg-muted transition-colors">
-              <Settings2 size={16} />
-              Caption Settings
-            </button>
-          </Dialog.Trigger>
-
-          <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 bg-black/60 z-40" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(720px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-card p-6 shadow-2xl overflow-y-auto">
-              <div className="flex items-start justify-between gap-4 mb-6">
-                <div>
-                  <Dialog.Title className="text-lg font-semibold">Caption Settings</Dialog.Title>
-                  <Dialog.Description className="text-sm text-muted-foreground">
-                    Configure export metadata, blacklist rules, and local auto-caption behavior.
-                  </Dialog.Description>
-                </div>
-                <Dialog.Close asChild>
-                  <button className="p-2 rounded-md hover:bg-secondary transition-colors">
-                    <X size={16} />
-                  </button>
-                </Dialog.Close>
-              </div>
-
-              <div className="space-y-5">
-                <div className="rounded-lg border border-border bg-secondary/20 p-4">
-                  <h3 className="text-sm font-semibold mb-2">Export Keyword</h3>
-                  <p className="mb-3 text-xs text-muted-foreground">
-                    Export-only metadata. It is not inserted into editable Caption tags.
-                  </p>
-                  <input
-                    type="text"
-                    value={taggingConfig.datasetKeyword}
-                    onChange={(event) =>
-                      updateTaggingConfig({ datasetKeyword: event.target.value })
-                    }
-                    placeholder="my_dataset"
-                    className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-                  />
-                </div>
-
-                <div className="rounded-lg border border-border bg-secondary/20 p-4">
-                  <h3 className="text-sm font-semibold mb-2">Blacklist</h3>
-                  <div className="flex gap-2 mb-3">
-                    <input
-                      type="text"
-                      value={newBlacklistTag}
-                      onChange={(event) => setNewBlacklistTag(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          handleAddBlacklistTag();
-                        }
-                      }}
-                      placeholder="tag_to_block"
-                      className="flex-1 px-3 py-2 rounded-md border border-border bg-background text-sm"
-                    />
-                    <button
-                      onClick={handleAddBlacklistTag}
-                      className="px-4 py-2 rounded-md bg-destructive text-destructive-foreground hover:opacity-90"
-                    >
-                      Add
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {taggingConfig.blacklist.length > 0 ? (
-                      taggingConfig.blacklist.map((tag) => (
-                        <button
-                          key={tag}
-                          onClick={() => handleRemoveBlacklistTag(tag)}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-destructive/15 text-destructive hover:bg-destructive/25"
-                        >
-                          {tag}
-                          <X size={12} />
-                        </button>
-                      ))
-                    ) : (
-                      <span className="text-xs text-muted-foreground">No blacklist tags yet</span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border bg-secondary/20 p-4 space-y-4">
-                  <h3 className="text-sm font-semibold">Local Auto-Caption Settings</h3>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs text-muted-foreground mb-2">Threshold</label>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={taggingConfig.threshold}
-                        onChange={(event) =>
-                          updateTaggingConfig({ threshold: parseFloat(event.target.value) })
-                        }
-                        className="w-full"
-                      />
-                      <p className="text-xs font-mono mt-1">{taggingConfig.threshold.toFixed(2)}</p>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs text-muted-foreground mb-2">Max Tags</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={taggingConfig.maxTags}
-                        onChange={(event) =>
-                          updateTaggingConfig({ maxTags: Math.max(1, parseInt(event.target.value || '1', 10)) })
-                        }
-                        className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs text-muted-foreground mb-2">Insert Mode</label>
-                      <select
-                        value={taggingConfig.insertMode}
-                        onChange={(event) =>
-                          updateTaggingConfig({
-                            insertMode: event.target.value as typeof taggingConfig.insertMode,
-                          })
-                        }
-                        className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-                      >
-                        <option value="prepend">Prepend</option>
-                        <option value="append">Append</option>
-                        <option value="overwrite">Overwrite</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleAutoTaggingAction}
-                    className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90"
-                  >
-                    Save Local Auto-Caption Settings
-                  </button>
-                  {settingsSaveMessage ? (
-                    <p className="text-xs text-emerald-500">{settingsSaveMessage}</p>
-                  ) : null}
-                </div>
-              </div>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-      </div>
-
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground mb-1">Tagged Images</p>
@@ -821,53 +692,75 @@ export const TaggingStage = () => {
         </div>
       </div>
 
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="mb-3">
-          <h3 className="text-lg font-semibold">Bulk Tag Action</h3>
-          <p className="text-sm text-muted-foreground">
-            Add shared editable tags to every Source and Synthetic image. The export keyword is still applied
-            only during export.
-          </p>
-        </div>
-        <textarea
-          value={globalTagsToAdd}
-          onChange={(event) => setGlobalTagsToAdd(event.target.value)}
-          placeholder="tag1, tag2, tag3"
-          className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm min-h-20 resize-none"
-        />
-        <button
-          onClick={handleAddGlobalTags}
-          className="mt-3 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90"
-        >
-          Apply to All {items.length} Images
-        </button>
-      </div>
+      <section className="grid gap-4 xl:grid-cols-2">
+        <div className="order-2 rounded-lg border border-border bg-card p-4 space-y-4">
+          <div>
+            <h3 className="text-lg font-semibold">Auto Tagger</h3>
+            <p className="text-sm text-muted-foreground">
+              Configure the local ONNX tagger, connect a model bundle, and run automatic tagging.
+            </p>
+          </div>
 
-      <input
-        ref={(node) => {
-          fallbackDirectoryInputRef.current = node;
-          node?.setAttribute('webkitdirectory', '');
-          node?.setAttribute('directory', '');
-        }}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(event) => void handleFallbackFolderSelected(event.target.files)}
-        aria-hidden="true"
-      />
+          <div className="grid gap-4 md:grid-cols-3">
+            <div>
+              <label className="block text-xs text-muted-foreground mb-2">Threshold</label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={taggingConfig.threshold}
+                onChange={(event) =>
+                  updateTaggingConfig({ threshold: parseFloat(event.target.value) })
+                }
+                className="w-full"
+              />
+              <p className="text-xs font-mono mt-1">{taggingConfig.threshold.toFixed(2)}</p>
+            </div>
 
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-2">
+            <div>
+              <label className="block text-xs text-muted-foreground mb-2">Max auto tags</label>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={taggingConfig.maxTags}
+                onChange={(event) =>
+                  updateTaggingConfig({ maxTags: Math.max(1, parseInt(event.target.value || '1', 10)) })
+                }
+                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-muted-foreground mb-2">Insert mode</label>
+              <select
+                value={taggingConfig.insertMode}
+                onChange={(event) =>
+                  updateTaggingConfig({
+                    insertMode: event.target.value as InsertMode,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+              >
+                {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
+                  <option key={mode} value={mode}>
+                    {INSERT_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-border bg-background p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-lg font-semibold">
-                Local tagger:{' '}
+              <h4 className="text-sm font-semibold">
                 {localTaggerStatus === 'ready' || localTaggerStatus === 'running'
                   ? localTagger?.name ?? 'Ready'
                   : localTaggerStatus === 'not-ready'
-                    ? 'Not ready'
-                    : 'Not connected'}
-              </h3>
+                    ? 'Model not ready'
+                    : 'No model connected'}
+              </h4>
               {localTaggerStatus === 'ready' ? (
                 <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-xs text-emerald-500">
                   Ready
@@ -885,25 +778,24 @@ export const TaggingStage = () => {
               ) : null}
             </div>
 
-            <p className="text-sm text-muted-foreground">{localTaggerMessage}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{localTaggerMessage}</p>
             {localTaggerProgress ? (
-              <p className="text-xs text-muted-foreground">{localTaggerProgress}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{localTaggerProgress}</p>
             ) : null}
             {localTagger ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground">
                 Runtime: {localTagger.runtime.toUpperCase()} | Tags:{' '}
                 {localTagger.tags.length.toLocaleString()} | Input:{' '}
                 {localTagger.inputWidth}x{localTagger.inputHeight} {localTagger.layout.toUpperCase()}
               </p>
             ) : null}
             {!canUseDirectoryPicker ? (
-              <p className="text-xs text-muted-foreground">
-                This browser does not expose the directory picker API. The folder upload fallback is
-                used when supported, and access must be granted again after reload.
+              <p className="mt-1 text-xs text-muted-foreground">
+                Directory picker unavailable; folder upload fallback is used when supported.
               </p>
             ) : null}
             {localTaggerStatus === 'running' ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground">
                 Auto-tagging {autoTaggingProgress.completed} of {autoTaggingProgress.total} images...
               </p>
             ) : null}
@@ -943,7 +835,106 @@ export const TaggingStage = () => {
             </button>
           </div>
         </div>
-      </div>
+
+        <div className="order-1 rounded-lg border border-border bg-card p-4 space-y-4">
+          <div>
+            <h3 className="text-lg font-semibold">Dataset Tags</h3>
+            <p className="text-sm text-muted-foreground">
+              Manage export keyword, blacklist rules, and bulk editable tags.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs text-muted-foreground mb-2">Keyword</label>
+            <input
+              type="text"
+              value={taggingConfig.datasetKeyword}
+              onChange={(event) =>
+                updateTaggingConfig({ datasetKeyword: event.target.value })
+              }
+              placeholder="my_dataset"
+              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-muted-foreground mb-2">Blacklist</label>
+            <div className="flex gap-2 mb-3">
+              <input
+                type="text"
+                value={newBlacklistTag}
+                onChange={(event) => setNewBlacklistTag(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleAddBlacklistTags();
+                  }
+                }}
+                placeholder="tag_to_block, another_tag"
+                className="min-w-0 flex-1 px-3 py-2 rounded-md border border-border bg-background text-sm"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {taggingConfig.blacklist.map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => handleRemoveBlacklistTag(tag)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-destructive/15 text-destructive hover:bg-destructive/25"
+                >
+                  {tag}
+                  <X size={12} />
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[1fr_12rem]">
+            <div>
+              <label className="block text-xs text-muted-foreground mb-2">Bulk tags</label>
+              <textarea
+                value={globalTagsToAdd}
+                onChange={(event) => setGlobalTagsToAdd(event.target.value)}
+                placeholder="tag1, tag2, tag3"
+                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm min-h-24 resize-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-muted-foreground mb-2">Insert mode</label>
+              <select
+                value={bulkInsertMode}
+                onChange={(event) => setBulkInsertMode(event.target.value as InsertMode)}
+                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+              >
+                {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
+                  <option key={mode} value={mode}>
+                    {INSERT_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <button
+            onClick={handleAddGlobalTags}
+            className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90"
+          >
+            Apply to All {items.length} Images
+          </button>
+        </div>
+      </section>
+
+      <input
+        ref={(node) => {
+          fallbackDirectoryInputRef.current = node;
+          node?.setAttribute('webkitdirectory', '');
+          node?.setAttribute('directory', '');
+        }}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => void handleFallbackFolderSelected(event.target.files)}
+        aria-hidden="true"
+      />
 
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="flex items-center justify-between gap-4 mb-4">
@@ -973,16 +964,6 @@ export const TaggingStage = () => {
       </div>
 
       <div>
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <div>
-            <h3 className="text-lg font-semibold">Caption Gallery</h3>
-            <p className="text-sm text-muted-foreground">
-              Each card shows the image, current tags, and a one-line input for adding more tags.
-            </p>
-          </div>
-          <div className="text-sm text-muted-foreground">{items.length} images</div>
-        </div>
-
         <div className="gallery-masonry">
           {items.map((item) => (
             <TaggingCard
