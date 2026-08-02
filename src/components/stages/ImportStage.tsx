@@ -193,7 +193,7 @@ export const ImportStage = () => {
       >
         <div className="text-center">
           <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2">Import Images</h3>
+          <h3 className="text-lg font-semibold mb-2">Import</h3>
           <p className="text-sm text-muted-foreground mb-4">
             Select individual files or an entire folder to begin
           </p>

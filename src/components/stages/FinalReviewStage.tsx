@@ -965,7 +965,7 @@ export const FinalReviewStage = () => {
   const handleThresholdChange = useCallback(
     (value: number) => {
       if (import.meta.env.DEV) {
-        console.log(`[review] active Final Review view before threshold change: ${activeSimilarityView}`);
+        console.log(`[review] active Review view before threshold change: ${activeSimilarityView}`);
       }
       setUiThreshold(value);
     },
@@ -974,8 +974,8 @@ export const FinalReviewStage = () => {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log(`[review] active Final Review view after threshold change: ${activeSimilarityView}`);
-      console.log('[review] threshold update did not force-reset the active Final Review view');
+      console.log(`[review] active Review view after threshold change: ${activeSimilarityView}`);
+      console.log('[review] threshold update did not force-reset the active Review view');
     }
   }, [uiThreshold, activeSimilarityView]);
 
@@ -983,7 +983,7 @@ export const FinalReviewStage = () => {
     if (import.meta.env.DEV) {
       console.log('[review] Heatmap view still registered: false');
       console.log('[review] Graph is the only remaining main visual view: true');
-      console.log('[review] Final Review tab icons configured: Graph, Similar Pairs, Clusters');
+      console.log('[review] Review tab icons configured: Graph, Similar Pairs, Clusters');
       console.log('[review] graph helper text rendered: false');
       console.log('[review] Similar Pairs heading rendered: false');
       console.log('[review] Clusters heading rendered: false');
@@ -1070,8 +1070,8 @@ export const FinalReviewStage = () => {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log(`[review] current active Final Review view: ${activeSimilarityView}`);
-      console.log('[review] bounded Final Review view container applied: true');
+      console.log(`[review] current active Review view: ${activeSimilarityView}`);
+      console.log('[review] bounded Review view container applied: true');
       console.log(
         `[review] Similar Pairs / Clusters internal scroll enabled: ${activeSimilarityView === 'pairs' || activeSimilarityView === 'clusters'}`
       );
@@ -1194,7 +1194,7 @@ export const FinalReviewStage = () => {
 
     if (reviewVisibleItems.length < 2) {
       if (import.meta.env.DEV) {
-        console.log('[review] Final Review graph data exists: false');
+        console.log('[review] Review graph data exists: false');
       }
       return null;
     }
@@ -1224,7 +1224,7 @@ export const FinalReviewStage = () => {
       console.log(`[review] shared threshold value: ${uiThreshold.toFixed(2)}`);
       console.log(`[review] shared threshold remap value: ${similarityThreshold.toFixed(3)}`);
       console.log('[review] graph, pairs, and clusters recomputed from shared threshold change');
-      console.log('[review] Final Review graph data exists: true');
+      console.log('[review] Review graph data exists: true');
       console.log(`[review] graph items included: ${reviewVisibleItems.length}`);
       console.log(
         `[review] graph/review similarity scope: ${reviewVisibleItems.length}/${filteredItems.length} filtered items`
@@ -1730,7 +1730,7 @@ export const FinalReviewStage = () => {
           <div>
             <h3 className="text-lg font-semibold">Similarity Graph</h3>
             <p className="text-sm text-muted-foreground">
-              Final Review uses a much more sensitive similarity threshold than Remove Duplicates.
+              Review uses a much more sensitive similarity threshold than Remove Duplicates.
             </p>
           </div>
           {reviewData && (

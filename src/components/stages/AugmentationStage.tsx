@@ -535,8 +535,8 @@ export const AugmentationStage = () => {
 
       <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-4">
         <p className="text-sm text-blue-600">
-          Stage 5 stores augmentation assignments as working state. Outputs are generated only when
-          proceeding to Final Review.
+          Augmentation stores assignments as working state. Outputs are generated when
+          augmentations are applied.
         </p>
       </div>
     </div>

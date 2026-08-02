@@ -205,7 +205,7 @@ export const TaggingStage = () => {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log('[stage] current stage title rendered: Tag Images');
+      console.log('[stage] current stage title rendered: Caption');
       console.log(`[tagging:model] model connected state on entering Stage 7: ${localTaggerStatus}`);
     }
 
@@ -604,7 +604,7 @@ export const TaggingStage = () => {
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold">Tag Images</h2>
+          <h2 className="text-xl font-semibold">Caption</h2>
           <p className="text-sm text-muted-foreground">
             Review each image visually, inspect current tags, and add new tags with comma-separated
             input.

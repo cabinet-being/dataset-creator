@@ -5,7 +5,6 @@ import {
   Brush,
   Crop,
   Download,
-  Home,
   Image,
   Layers3,
   Moon,
@@ -16,7 +15,12 @@ import {
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
 import { useUIStore } from './stores/useUIStore';
-import { STAGE_LABELS, TOOL_DESCRIPTIONS, WORKFLOW_TOOLS } from './lib/constants';
+import {
+  SIDEBAR_PRIMARY_TOOLS,
+  SIDEBAR_SECONDARY_TOOLS,
+  STAGE_LABELS,
+  TOOL_DESCRIPTIONS,
+} from './lib/constants';
 import { type StageName } from './types';
 import { ToolHub } from './components/ToolHub';
 import { ImportStage } from './components/stages/ImportStage';
@@ -90,7 +94,7 @@ function App() {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
-  const activeLabel = STAGE_LABELS[currentStage] ?? 'Tool Hub';
+  const activeLabel = STAGE_LABELS[currentStage] ?? 'Dataset Creator';
   const activeDescription =
     currentStage === 'hub'
       ? 'Choose a tool and keep working from the shared image workspace.'
@@ -109,9 +113,8 @@ function App() {
                 <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
                   <Archive size={18} />
                 </div>
-                <div>
+                <div className="text-slate-100">
                   <h1 className="font-semibold leading-tight">Dataset Creator</h1>
-                  <p className="text-xs text-muted-foreground">Tool workspace</p>
                 </div>
               </div>
             </div>
@@ -131,37 +134,54 @@ function App() {
           </div>
         </div>
 
-        <Separator className="my-4" />
+        <Separator className="mt-4 mb-3" />
 
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 pb-5">
-          <Button
-            variant={currentStage === 'hub' ? 'secondary' : 'ghost'}
-            className="mb-2 w-full justify-start"
-            onClick={() => setCurrentStage('hub')}
-          >
-            <Home size={16} />
-            Tool Hub
-          </Button>
+        <nav className="flex-1 overflow-y-auto px-3 pb-5">
+          <div className="space-y-1">
+            {SIDEBAR_PRIMARY_TOOLS.map((tool) => {
+              const Icon = toolIcons[tool];
+              const active = tool === currentStage;
 
-          {WORKFLOW_TOOLS.map((tool) => {
-            const Icon = toolIcons[tool];
-            const active = tool === currentStage;
+              return (
+                <button
+                  key={tool}
+                  onClick={() => setCurrentStage(tool as StageName)}
+                  className={`flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
+                    active
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-slate-200 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="block min-w-0 truncate">{STAGE_LABELS[tool]}</span>
+                </button>
+              );
+            })}
+          </div>
 
-            return (
-              <button
-                key={tool}
-                onClick={() => setCurrentStage(tool as StageName)}
-                className={`flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
-                  active
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-slate-200 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span className="block min-w-0 truncate">{STAGE_LABELS[tool]}</span>
-              </button>
-            );
-          })}
+          <Separator className="my-3 bg-border/70" />
+
+          <div className="space-y-1">
+            {SIDEBAR_SECONDARY_TOOLS.map((tool) => {
+              const Icon = toolIcons[tool];
+              const active = tool === currentStage;
+
+              return (
+                <button
+                  key={tool}
+                  onClick={() => setCurrentStage(tool as StageName)}
+                  className={`flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
+                    active
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-slate-200 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="block min-w-0 truncate">{STAGE_LABELS[tool]}</span>
+                </button>
+              );
+            })}
+          </div>
         </nav>
       </aside>
 
@@ -177,10 +197,6 @@ function App() {
             </div>
 
             <div className="flex items-center gap-2">
-              <Button variant="outline" className="shrink-0" onClick={() => setCurrentStage('hub')}>
-                <Home size={16} />
-                <span className="hidden sm:inline">Tools</span>
-              </Button>
               <Button
                 variant="ghost"
                 size="icon"

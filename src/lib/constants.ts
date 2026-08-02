@@ -10,18 +10,24 @@ export const WORKFLOW_TOOLS = [
   'export',
 ] as const;
 
+export const HUB_TOOL_CARDS = ['select', 'clean', 'crop', 'augment', 'tagging'] as const;
+
+export const SIDEBAR_PRIMARY_TOOLS = ['import', 'export', 'review'] as const;
+
+export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'crop', 'augment', 'tagging'] as const;
+
 export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
 
 export const STAGE_LABELS: Record<string, string> = {
-  hub: 'Tool Hub',
-  import: 'Import Images',
+  hub: 'Dataset Creator',
+  import: 'Import',
   select: 'Remove Duplicates',
-  clean: 'Clean Images',
-  crop: 'Crop Images',
-  augment: 'Augment Dataset',
-  review: 'Final Review',
-  tagging: 'Tag Images',
-  export: 'Export Dataset',
+  clean: 'Edit',
+  crop: 'Crop',
+  augment: 'Augmentation',
+  review: 'Review',
+  tagging: 'Caption',
+  export: 'Export',
 };
 
 export const TOOL_DESCRIPTIONS: Record<string, string> = {

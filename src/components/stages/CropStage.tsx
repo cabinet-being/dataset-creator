@@ -781,7 +781,7 @@ export const CropStage = () => {
       console.log(`[augment-transition] cleanup-edited images materialized: ${Object.keys(cleanupEdits).length}`);
       console.log(`[augment-transition] crop-defined outputs materialized: ${createdCount}`);
       console.log(
-        `[augment-transition] final derived input count received by Augment Dataset: ${
+          `[augment-transition] final derived input count received by Augmentation: ${
           useProjectStore.getState().getDatasetItems(false).length
         }`
       );

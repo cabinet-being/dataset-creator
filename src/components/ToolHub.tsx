@@ -10,7 +10,7 @@ import {
   Tags,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { WORKFLOW_TOOLS, STAGE_LABELS, TOOL_DESCRIPTIONS, TOOL_REQUIREMENTS } from '../lib/constants';
+import { HUB_TOOL_CARDS, STAGE_LABELS, TOOL_DESCRIPTIONS, TOOL_REQUIREMENTS } from '../lib/constants';
 import { useProjectStore } from '../stores/useProjectStore';
 import { type StageName } from '../types';
 import { Badge } from './ui/badge';
@@ -73,10 +73,21 @@ export const ToolHub = () => {
               </p>
             </div>
 
-            <Button size="lg" className="whitespace-nowrap" onClick={() => setCurrentStage('import')}>
-              <Image size={18} />
-              Import images
-            </Button>
+            <div className="flex flex-wrap gap-3">
+              <Button size="lg" className="whitespace-nowrap" onClick={() => setCurrentStage('import')}>
+                <Image size={18} />
+                Import
+              </Button>
+              <Button
+                size="lg"
+                variant="outline"
+                className="whitespace-nowrap"
+                onClick={() => setCurrentStage('export')}
+              >
+                <Download size={18} />
+                Export
+              </Button>
+            </div>
           </div>
 
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
@@ -118,12 +129,19 @@ export const ToolHub = () => {
               Source images and generated dataset items are backed by IndexedDB and stay
               available while switching tools.
             </div>
+            <button
+              type="button"
+              onClick={() => setCurrentStage('review')}
+              className="text-left text-sm font-medium text-primary underline underline-offset-4 transition-opacity hover:opacity-80"
+            >
+              Open Review
+            </button>
           </CardContent>
         </Card>
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {WORKFLOW_TOOLS.map((tool, index) => {
+        {HUB_TOOL_CARDS.map((tool, index) => {
           const Icon = toolIcons[tool];
           const requirement = TOOL_REQUIREMENTS[tool];
           const ready =
