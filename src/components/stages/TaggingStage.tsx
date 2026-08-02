@@ -1,5 +1,7 @@
+import * as Dialog from '@radix-ui/react-dialog';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Plug, Sparkles, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { AlertCircle, Plug, Sparkles, Upload, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
@@ -18,6 +20,7 @@ import {
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
+type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
 
 type DirectoryPickerWindow = Window &
@@ -31,23 +34,197 @@ const parseTagInput = (value: string): string[] =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
 
+const parseCsvCells = (value: string): string[] => {
+  const cells: string[] = [];
+  let current = '';
+  let quoted = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const nextChar = value[index + 1];
+
+    if (char === '"' && quoted && nextChar === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+
+    if (!quoted && (char === ',' || char === '\n' || char === '\r' || char === ';')) {
+      cells.push(current);
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current);
+  return cells;
+};
+
+const parseSuggestionCsv = (value: string): string[] =>
+  Array.from(
+    new Set(
+      parseCsvCells(value)
+        .flatMap((cell) => parseTagInput(cell))
+        .filter(Boolean)
+    )
+  ).sort((left, right) => left.localeCompare(right));
+
+const getCurrentTagFragment = (value: string): string => {
+  const fragments = value.split(',');
+  return fragments[fragments.length - 1]?.trim().toLowerCase() ?? '';
+};
+
+const replaceCurrentTagFragment = (value: string, suggestion: string): string => {
+  const fragments = value.split(',');
+  fragments[fragments.length - 1] = suggestion;
+  return fragments.map((fragment) => fragment.trim()).filter(Boolean).join(', ');
+};
+
 const INSERT_MODE_LABELS: Record<InsertMode, string> = {
   prepend: 'Prepend',
   append: 'Append',
   overwrite: 'Overwrite',
 };
 
+const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
+
 type TaggingCardProps = {
   item: WorkspaceImage;
   previewUrl?: string;
   inputValue: string;
   onInputChange: (itemId: string, value: string) => void;
-  onSubmit: (itemId: string) => void;
+  onSubmit: (itemId: string, value: string) => void;
   onRemoveTag: (itemId: string, tag: string) => void;
+  suggestions: string[];
 };
 
 const TaggingCard = memo(
-  ({ item, previewUrl, inputValue, onInputChange, onSubmit, onRemoveTag }: TaggingCardProps) => {
+  ({
+    item,
+    previewUrl,
+    inputValue,
+    onInputChange,
+    onSubmit,
+    onRemoveTag,
+    suggestions,
+  }: TaggingCardProps) => {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const dropdownRef = useRef<HTMLDivElement | null>(null);
+    const suggestionButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
+    const [dropdownPosition, setDropdownPosition] = useState<SuggestionDropdownPosition | null>(null);
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const fragment = getCurrentTagFragment(inputValue);
+    const filteredSuggestions = fragment
+      ? suggestions
+          .filter((tag) => tag.includes(fragment) && !(item.tags ?? []).includes(tag))
+          .slice(0, 24)
+      : [];
+    const hasSuggestions = filteredSuggestions.length > 0;
+    const shouldShowDropdown = hasSuggestions && isDropdownOpen;
+
+    useEffect(() => {
+      setActiveSuggestionIndex(0);
+    }, [inputValue, filteredSuggestions.length]);
+
+    useEffect(() => {
+      suggestionButtonRefs.current = suggestionButtonRefs.current.slice(0, filteredSuggestions.length);
+    }, [filteredSuggestions.length]);
+
+    useEffect(() => {
+      if (!hasSuggestions) {
+        setIsDropdownOpen(false);
+      }
+    }, [hasSuggestions]);
+
+    const updateDropdownPosition = useCallback(() => {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (!rect) {
+        setDropdownPosition(null);
+        return;
+      }
+
+      setDropdownPosition({
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: rect.width,
+      });
+    }, []);
+
+    useEffect(() => {
+      if (!shouldShowDropdown) {
+        setDropdownPosition(null);
+        return;
+      }
+
+      updateDropdownPosition();
+      window.addEventListener('resize', updateDropdownPosition);
+      window.addEventListener('scroll', updateDropdownPosition, true);
+
+      return () => {
+        window.removeEventListener('resize', updateDropdownPosition);
+        window.removeEventListener('scroll', updateDropdownPosition, true);
+      };
+    }, [shouldShowDropdown, updateDropdownPosition]);
+
+    useEffect(() => {
+      if (!shouldShowDropdown) {
+        return;
+      }
+
+      const isInsideTagInput = (target: EventTarget | null) =>
+        target instanceof Node &&
+        (inputRef.current?.contains(target) || dropdownRef.current?.contains(target));
+
+      const handlePointerDown = (event: PointerEvent) => {
+        if (!isInsideTagInput(event.target)) {
+          setIsDropdownOpen(false);
+        }
+      };
+
+      const handleFocusIn = (event: FocusEvent) => {
+        if (!isInsideTagInput(event.target)) {
+          setIsDropdownOpen(false);
+        }
+      };
+
+      document.addEventListener('pointerdown', handlePointerDown);
+      document.addEventListener('focusin', handleFocusIn);
+
+      return () => {
+        document.removeEventListener('pointerdown', handlePointerDown);
+        document.removeEventListener('focusin', handleFocusIn);
+      };
+    }, [shouldShowDropdown]);
+
+    const addSuggestion = (tag: string) => {
+      const nextValue = replaceCurrentTagFragment(inputValue, tag);
+      onInputChange(item.id, nextValue);
+      setIsDropdownOpen(false);
+      window.requestAnimationFrame(() => {
+        onSubmit(item.id, nextValue);
+        inputRef.current?.focus();
+      });
+    };
+
+    const focusSuggestion = (index: number) => {
+      if (!hasSuggestions) {
+        return;
+      }
+
+      setIsDropdownOpen(true);
+      const nextIndex = (index + filteredSuggestions.length) % filteredSuggestions.length;
+      setActiveSuggestionIndex(nextIndex);
+      window.requestAnimationFrame(() => suggestionButtonRefs.current[nextIndex]?.focus());
+    };
+
     return (
       <div
         className={`gallery-masonry-item rounded-lg overflow-hidden bg-card ${getWorkspaceKindFrameClass(item.kind)}`}
@@ -109,19 +286,122 @@ const TaggingCard = memo(
             </div>
           </div>
 
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(event) => onInputChange(item.id, event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onSubmit(item.id);
+          <div className="relative">
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputValue}
+              onChange={(event) => {
+                onInputChange(item.id, event.target.value);
+                setIsDropdownOpen(true);
+                window.requestAnimationFrame(updateDropdownPosition);
+              }}
+              onFocus={() => {
+                setIsDropdownOpen(true);
+                updateDropdownPosition();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  onSubmit(item.id, inputValue);
+                }
+
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setIsDropdownOpen(false);
+                  inputRef.current?.blur();
+                }
+
+                if (event.key === 'Tab' && hasSuggestions) {
+                  event.preventDefault();
+                  focusSuggestion(activeSuggestionIndex);
+                }
+
+                if (event.key === 'ArrowDown' && hasSuggestions) {
+                  event.preventDefault();
+                  focusSuggestion(activeSuggestionIndex + 1);
+                }
+
+                if (event.key === 'ArrowUp' && hasSuggestions) {
+                  event.preventDefault();
+                  focusSuggestion(activeSuggestionIndex - 1);
+                }
+              }}
+              placeholder="Add tags with commas, then press Enter"
+              aria-autocomplete="list"
+              aria-expanded={shouldShowDropdown}
+              aria-controls={`tag-suggestions-${item.id}`}
+              aria-activedescendant={
+                shouldShowDropdown ? `tag-suggestion-${item.id}-${activeSuggestionIndex}` : undefined
               }
-            }}
-            placeholder="Add tags with commas, then press Enter"
-            className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-          />
+              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+            />
+            {shouldShowDropdown && dropdownPosition
+              ? createPortal(
+              <div
+                ref={dropdownRef}
+                id={`tag-suggestions-${item.id}`}
+                role="listbox"
+                className="fixed z-[1000] max-h-[9.25rem] overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-lg"
+                style={{
+                  top: dropdownPosition.top,
+                  left: dropdownPosition.left,
+                  width: dropdownPosition.width,
+                }}
+              >
+                {filteredSuggestions.map((tag, index) => (
+                  <button
+                    key={tag}
+                    ref={(node) => {
+                      suggestionButtonRefs.current[index] = node;
+                    }}
+                    id={`tag-suggestion-${item.id}-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeSuggestionIndex}
+                    onFocus={() => setActiveSuggestionIndex(index)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => addSuggestion(tag)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addSuggestion(tag);
+                      }
+
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        inputRef.current?.focus();
+                      }
+
+                      if (event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        focusSuggestion(index + 1);
+                      }
+
+                      if (event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        focusSuggestion(index - 1);
+                      }
+
+                      if (event.key === 'Tab') {
+                        event.preventDefault();
+                        focusSuggestion(index + 1);
+                      }
+                    }}
+                    className={`block w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
+                      index === activeSuggestionIndex
+                        ? 'bg-primary text-primary-foreground'
+                        : 'hover:bg-secondary'
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>,
+                  document.body
+                )
+              : null}
+          </div>
         </div>
       </div>
     );
@@ -159,10 +439,14 @@ export const TaggingStage = () => {
   const [tagInputs, setTagInputs] = useState<Record<string, string>>({});
   const [newBlacklistTag, setNewBlacklistTag] = useState('');
   const [globalTagsToAdd, setGlobalTagsToAdd] = useState('');
-  const [bulkInsertMode, setBulkInsertMode] = useState<InsertMode>('append');
+  const [isDatasetTagsOpen, setIsDatasetTagsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [suggestionTags, setSuggestionTags] = useState<string[]>([]);
+  const [suggestionFileName, setSuggestionFileName] = useState('');
   const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
   const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
+  const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () =>
@@ -178,6 +462,21 @@ export const TaggingStage = () => {
 
   const canUseDirectoryPicker =
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
+
+  useEffect(() => {
+    const handleTaggingCommand = (event: Event) => {
+      const command = (event as CustomEvent<'datasetTags' | 'settings'>).detail;
+      if (command === 'datasetTags') {
+        setIsDatasetTagsOpen(true);
+      }
+      if (command === 'settings') {
+        setIsSettingsOpen(true);
+      }
+    };
+
+    window.addEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
+    return () => window.removeEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
+  }, []);
 
   useEffect(() => {
     setPreviewUrls((previous) => {
@@ -277,6 +576,13 @@ export const TaggingStage = () => {
 
     return { taggedCount, untaggedCount, topTags, uniqueTagCount: frequencies.size };
   }, [items]);
+
+  const manualTagSuggestions = useMemo(() => {
+    const blacklist = new Set(taggingConfig.blacklist);
+    const normalizedKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+
+    return suggestionTags.filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
+  }, [suggestionTags, taggingConfig.blacklist, taggingConfig.datasetKeyword]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -481,6 +787,30 @@ export const TaggingStage = () => {
     disconnectLocalTagger();
   }, [disconnectLocalTagger]);
 
+  const handleSuggestionCsvSelected = useCallback(
+    async (files: FileList | null) => {
+      const file = files?.[0];
+      if (suggestionCsvInputRef.current) {
+        suggestionCsvInputRef.current.value = '';
+      }
+
+      if (!file) {
+        return;
+      }
+
+      try {
+        const tags = parseSuggestionCsv(await file.text());
+        setSuggestionTags(tags);
+        setSuggestionFileName(file.name);
+        addNotification('success', `Loaded ${tags.length} tag suggestion(s)`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not read tag suggestions CSV.';
+        addNotification('error', message);
+      }
+    },
+    [addNotification]
+  );
+
   const removeTagsFromAllImages = useCallback(
     (tagsToRemove: string[]) => {
       const blocked = new Set(tagsToRemove);
@@ -556,15 +886,15 @@ export const TaggingStage = () => {
         nextTags.push(tag);
       };
 
-      if (bulkInsertMode === 'prepend' || bulkInsertMode === 'overwrite') {
+      if (taggingConfig.insertMode === 'prepend' || taggingConfig.insertMode === 'overwrite') {
         normalizedBulkTags.forEach(addTag);
       }
 
-      if (bulkInsertMode !== 'overwrite') {
+      if (taggingConfig.insertMode !== 'overwrite') {
         normalizedExisting.forEach(addTag);
       }
 
-      if (bulkInsertMode === 'append') {
+      if (taggingConfig.insertMode === 'append') {
         normalizedBulkTags.forEach(addTag);
       }
 
@@ -581,7 +911,7 @@ export const TaggingStage = () => {
     addNotification('success', `Added ${parsedTags.length} caption tag(s) across the current workspace`);
     if (import.meta.env.DEV) {
       console.log('[tagging] dataset keyword insertion skipped during bulk add');
-      console.log(`[tagging] bulk insert mode: ${bulkInsertMode}`);
+      console.log(`[tagging] shared insert mode: ${taggingConfig.insertMode}`);
     }
     setGlobalTagsToAdd('');
   };
@@ -692,236 +1022,278 @@ export const TaggingStage = () => {
         </div>
       </div>
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <div className="order-2 rounded-lg border border-border bg-card p-4 space-y-4">
-          <div>
-            <h3 className="text-lg font-semibold">Auto Tagger</h3>
-            <p className="text-sm text-muted-foreground">
-              Configure the local ONNX tagger, connect a model bundle, and run automatic tagging.
-            </p>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-3">
-            <div>
-              <label className="block text-xs text-muted-foreground mb-2">Threshold</label>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={taggingConfig.threshold}
-                onChange={(event) =>
-                  updateTaggingConfig({ threshold: parseFloat(event.target.value) })
-                }
-                className="w-full"
-              />
-              <p className="text-xs font-mono mt-1">{taggingConfig.threshold.toFixed(2)}</p>
-            </div>
-
-            <div>
-              <label className="block text-xs text-muted-foreground mb-2">Max auto tags</label>
-              <input
-                type="number"
-                min="1"
-                max="50"
-                value={taggingConfig.maxTags}
-                onChange={(event) =>
-                  updateTaggingConfig({ maxTags: Math.max(1, parseInt(event.target.value || '1', 10)) })
-                }
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs text-muted-foreground mb-2">Insert mode</label>
-              <select
-                value={taggingConfig.insertMode}
-                onChange={(event) =>
-                  updateTaggingConfig({
-                    insertMode: event.target.value as InsertMode,
-                  })
-                }
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-              >
-                {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
-                  <option key={mode} value={mode}>
-                    {INSERT_MODE_LABELS[mode]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="rounded-md border border-border bg-background p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <h4 className="text-sm font-semibold">
-                {localTaggerStatus === 'ready' || localTaggerStatus === 'running'
-                  ? localTagger?.name ?? 'Ready'
-                  : localTaggerStatus === 'not-ready'
-                    ? 'Model not ready'
-                    : 'No model connected'}
-              </h4>
-              {localTaggerStatus === 'ready' ? (
-                <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-xs text-emerald-500">
-                  Ready
-                </span>
-              ) : null}
-              {localTaggerStatus === 'running' ? (
-                <span className="rounded-full bg-primary/15 px-2 py-1 text-xs text-primary">
-                  Running
-                </span>
-              ) : null}
-              {localTaggerStatus === 'not-ready' ? (
-                <span className="rounded-full bg-destructive/15 px-2 py-1 text-xs text-destructive">
-                  Not ready
-                </span>
-              ) : null}
-            </div>
-
-            <p className="mt-2 text-sm text-muted-foreground">{localTaggerMessage}</p>
-            {localTaggerProgress ? (
-              <p className="mt-1 text-xs text-muted-foreground">{localTaggerProgress}</p>
-            ) : null}
-            {localTagger ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Runtime: {localTagger.runtime.toUpperCase()} | Tags:{' '}
-                {localTagger.tags.length.toLocaleString()} | Input:{' '}
-                {localTagger.inputWidth}x{localTagger.inputHeight} {localTagger.layout.toUpperCase()}
-              </p>
-            ) : null}
-            {!canUseDirectoryPicker ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Directory picker unavailable; folder upload fallback is used when supported.
-              </p>
-            ) : null}
-            {localTaggerStatus === 'running' ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Auto-tagging {autoTaggingProgress.completed} of {autoTaggingProgress.total} images...
-              </p>
-            ) : null}
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {localTagger ? (
-              <button
-                type="button"
-                onClick={handleDisconnectModel}
-                disabled={localTaggerStatus === 'running'}
-                className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <X size={16} />
-                Disconnect model
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void handleConnectModel()}
-                disabled={localTaggerStatus === 'loading' || localTaggerStatus === 'running'}
-                className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Plug size={16} />
-                Connect model
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => void handleRunLocalAutoTagging()}
-              disabled={!localTagger || localTaggerStatus !== 'ready'}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Sparkles size={16} />
-              Run auto-tagging
-            </button>
-          </div>
-        </div>
-
-        <div className="order-1 rounded-lg border border-border bg-card p-4 space-y-4">
-          <div>
-            <h3 className="text-lg font-semibold">Dataset Tags</h3>
-            <p className="text-sm text-muted-foreground">
-              Manage export keyword, blacklist rules, and bulk editable tags.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-xs text-muted-foreground mb-2">Keyword</label>
-            <input
-              type="text"
-              value={taggingConfig.datasetKeyword}
-              onChange={(event) =>
-                updateTaggingConfig({ datasetKeyword: event.target.value })
-              }
-              placeholder="my_dataset"
-              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs text-muted-foreground mb-2">Blacklist</label>
-            <div className="flex gap-2 mb-3">
-              <input
-                type="text"
-                value={newBlacklistTag}
-                onChange={(event) => setNewBlacklistTag(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    handleAddBlacklistTags();
-                  }
-                }}
-                placeholder="tag_to_block, another_tag"
-                className="min-w-0 flex-1 px-3 py-2 rounded-md border border-border bg-background text-sm"
-              />
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {taggingConfig.blacklist.map((tag) => (
+      <Dialog.Root open={isDatasetTagsOpen} onOpenChange={setIsDatasetTagsOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(760px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <Dialog.Title className="text-lg font-semibold">Dataset Tags</Dialog.Title>
+                <Dialog.Description className="text-sm text-muted-foreground">
+                  Manage shared tag actions for the current workspace.
+                </Dialog.Description>
+              </div>
+              <Dialog.Close asChild>
                 <button
-                  key={tag}
-                  onClick={() => handleRemoveBlacklistTag(tag)}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-destructive/15 text-destructive hover:bg-destructive/25"
+                  type="button"
+                  className="rounded-md p-2 transition-colors hover:bg-secondary"
+                  aria-label="Close Dataset Tags"
                 >
-                  {tag}
-                  <X size={12} />
+                  <X size={16} />
                 </button>
-              ))}
+              </Dialog.Close>
             </div>
-          </div>
 
-          <div className="grid gap-3 md:grid-cols-[1fr_12rem]">
-            <div>
-              <label className="block text-xs text-muted-foreground mb-2">Bulk tags</label>
-              <textarea
-                value={globalTagsToAdd}
-                onChange={(event) => setGlobalTagsToAdd(event.target.value)}
-                placeholder="tag1, tag2, tag3"
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm min-h-24 resize-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-muted-foreground mb-2">Insert mode</label>
-              <select
-                value={bulkInsertMode}
-                onChange={(event) => setBulkInsertMode(event.target.value as InsertMode)}
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-              >
-                {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
-                  <option key={mode} value={mode}>
-                    {INSERT_MODE_LABELS[mode]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-xs text-muted-foreground">Keyword</label>
+                <input
+                  type="text"
+                  value={taggingConfig.datasetKeyword}
+                  onChange={(event) =>
+                    updateTaggingConfig({ datasetKeyword: event.target.value })
+                  }
+                  placeholder="my_dataset"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+              </div>
 
-          <button
-            onClick={handleAddGlobalTags}
-            className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90"
-          >
-            Apply to All {items.length} Images
-          </button>
-        </div>
-      </section>
+              <div className="grid gap-3 md:grid-cols-[1fr_12rem]">
+                <div>
+                  <label className="mb-2 block text-xs text-muted-foreground">Bulk tags</label>
+                  <textarea
+                    value={globalTagsToAdd}
+                    onChange={(event) => setGlobalTagsToAdd(event.target.value)}
+                    placeholder="tag1, tag2, tag3"
+                    className="min-h-28 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-xs text-muted-foreground">Insert mode</label>
+                  <select
+                    value={taggingConfig.insertMode}
+                    onChange={(event) =>
+                      updateTaggingConfig({
+                        insertMode: event.target.value as InsertMode,
+                      })
+                    }
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  >
+                    {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
+                      <option key={mode} value={mode}>
+                        {INSERT_MODE_LABELS[mode]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddGlobalTags}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                >
+                  Apply to All {items.length} Images
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRunLocalAutoTagging()}
+                  disabled={!localTagger || localTaggerStatus !== 'ready'}
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Sparkles size={16} />
+                  Run auto-tagging
+                </button>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(840px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <Dialog.Title className="text-lg font-semibold">Tagging Settings</Dialog.Title>
+                <Dialog.Description className="text-sm text-muted-foreground">
+                  Configure the local model, blacklist, and manual tag suggestions.
+                </Dialog.Description>
+              </div>
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="rounded-md p-2 transition-colors hover:bg-secondary"
+                  aria-label="Close Tagging Settings"
+                >
+                  <X size={16} />
+                </button>
+              </Dialog.Close>
+            </div>
+
+            <div className="space-y-5">
+              <section className="rounded-lg border border-border bg-secondary/20 p-4">
+                <h3 className="mb-3 text-sm font-semibold">Auto Tagger</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-xs text-muted-foreground">Threshold</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={taggingConfig.threshold}
+                      onChange={(event) =>
+                        updateTaggingConfig({ threshold: parseFloat(event.target.value) })
+                      }
+                      className="w-full"
+                    />
+                    <p className="mt-1 text-xs font-mono">{taggingConfig.threshold.toFixed(2)}</p>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs text-muted-foreground">Max auto tags</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={taggingConfig.maxTags}
+                      onChange={(event) =>
+                        updateTaggingConfig({ maxTags: Math.max(1, parseInt(event.target.value || '1', 10)) })
+                      }
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-md border border-border bg-background p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="text-sm font-semibold">
+                      {localTaggerStatus === 'ready' || localTaggerStatus === 'running'
+                        ? localTagger?.name ?? 'Ready'
+                        : localTaggerStatus === 'not-ready'
+                          ? 'Model not ready'
+                          : 'No model connected'}
+                    </h4>
+                    {localTaggerStatus === 'ready' ? (
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-xs text-emerald-500">
+                        Ready
+                      </span>
+                    ) : null}
+                    {localTaggerStatus === 'running' ? (
+                      <span className="rounded-full bg-primary/15 px-2 py-1 text-xs text-primary">
+                        Running
+                      </span>
+                    ) : null}
+                    {localTaggerStatus === 'not-ready' ? (
+                      <span className="rounded-full bg-destructive/15 px-2 py-1 text-xs text-destructive">
+                        Not ready
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <p className="mt-2 text-sm text-muted-foreground">{localTaggerMessage}</p>
+                  {localTaggerProgress ? (
+                    <p className="mt-1 text-xs text-muted-foreground">{localTaggerProgress}</p>
+                  ) : null}
+                  {localTagger ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Runtime: {localTagger.runtime.toUpperCase()} | Tags:{' '}
+                      {localTagger.tags.length.toLocaleString()} | Input:{' '}
+                      {localTagger.inputWidth}x{localTagger.inputHeight} {localTagger.layout.toUpperCase()}
+                    </p>
+                  ) : null}
+                  {!canUseDirectoryPicker ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Directory picker unavailable; folder upload fallback is used when supported.
+                    </p>
+                  ) : null}
+                  {localTaggerStatus === 'running' ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Auto-tagging {autoTaggingProgress.completed} of {autoTaggingProgress.total} images...
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {localTagger ? (
+                    <button
+                      type="button"
+                      onClick={handleDisconnectModel}
+                      disabled={localTaggerStatus === 'running'}
+                      className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <X size={16} />
+                      Disconnect model
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleConnectModel()}
+                      disabled={localTaggerStatus === 'loading' || localTaggerStatus === 'running'}
+                      className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <Plug size={16} />
+                      Connect model
+                    </button>
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-border bg-secondary/20 p-4">
+                <h3 className="mb-3 text-sm font-semibold">Blacklist</h3>
+                <input
+                  type="text"
+                  value={newBlacklistTag}
+                  onChange={(event) => setNewBlacklistTag(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleAddBlacklistTags();
+                    }
+                  }}
+                  placeholder="tag_to_block, another_tag"
+                  className="mb-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+                <div className="flex flex-wrap gap-2">
+                  {taggingConfig.blacklist.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => handleRemoveBlacklistTag(tag)}
+                      className="inline-flex items-center gap-1 rounded bg-destructive/15 px-2 py-1 text-xs text-destructive hover:bg-destructive/25"
+                    >
+                      {tag}
+                      <X size={12} />
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-border bg-secondary/20 p-4">
+                <h3 className="mb-3 text-sm font-semibold">Manual Tag Suggestions</h3>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => suggestionCsvInputRef.current?.click()}
+                    className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm transition-colors hover:bg-muted"
+                  >
+                    <Upload size={16} />
+                    Load CSV
+                  </button>
+                  <span className="text-sm text-muted-foreground">
+                    {suggestionFileName
+                      ? `${suggestionFileName} - ${suggestionTags.length} suggestions`
+                      : 'No CSV loaded'}
+                  </span>
+                </div>
+              </section>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       <input
         ref={(node) => {
@@ -933,6 +1305,14 @@ export const TaggingStage = () => {
         multiple
         className="hidden"
         onChange={(event) => void handleFallbackFolderSelected(event.target.files)}
+        aria-hidden="true"
+      />
+      <input
+        ref={suggestionCsvInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        className="hidden"
+        onChange={(event) => void handleSuggestionCsvSelected(event.target.files)}
         aria-hidden="true"
       />
 
@@ -974,8 +1354,9 @@ export const TaggingStage = () => {
               onInputChange={(itemId, value) =>
                 setTagInputs((previous) => ({ ...previous, [itemId]: value }))
               }
-              onSubmit={(itemId) => applyTagsToItem(itemId, tagInputs[itemId] ?? '')}
+              onSubmit={(itemId, value) => applyTagsToItem(itemId, value)}
               onRemoveTag={handleRemoveTag}
+              suggestions={manualTagSuggestions}
             />
           ))}
         </div>

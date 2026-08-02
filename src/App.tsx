@@ -16,6 +16,7 @@ import {
   Pencil,
   ScanSearch,
   Save,
+  Settings2,
   Sun,
   Tags,
   Upload,
@@ -54,6 +55,7 @@ import { Separator } from './components/ui/separator';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
+const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Upload,
@@ -165,8 +167,12 @@ function App() {
       ? 'Choose a tool and keep working from the shared image workspace.'
       : TOOL_DESCRIPTIONS[currentStage] ?? '';
   const showEditToolbar = currentStage === 'clean' && editToolbar.visible;
+  const showTaggingToolbar = currentStage === 'tagging';
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
+  };
+  const runTaggingCommand = (command: 'datasetTags' | 'settings') => {
+    window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: command }));
   };
   const navigateToStage = (stage: StageName) => {
     setCurrentStage(stage);
@@ -604,6 +610,27 @@ function App() {
                   className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
                 >
                   Cancel
+                </button>
+              </div>
+            )}
+
+            {showTaggingToolbar && (
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => runTaggingCommand('datasetTags')}
+                  className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                >
+                  <Tags size={16} />
+                  Dataset Tags
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runTaggingCommand('settings')}
+                  className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                >
+                  <Settings2 size={16} />
+                  Settings
                 </button>
               </div>
             )}
