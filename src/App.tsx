@@ -21,6 +21,7 @@ import {
   STAGE_LABELS,
   TOOL_DESCRIPTIONS,
 } from './lib/constants';
+import { toWorkspaceImages } from './lib/workspaceImages';
 import { type StageName } from './types';
 import { ToolHub } from './components/ToolHub';
 import { ImportStage } from './components/stages/ImportStage';
@@ -79,6 +80,7 @@ function App() {
   const hydrateDatasetItems = useProjectStore((state) => state.hydrateDatasetItems);
   const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
   const datasetItems = useProjectStore((state) => state.getDatasetItems(false));
+  const workspaceImages = toWorkspaceImages(sourceImages, datasetItems);
   const { darkMode, setDarkMode } = useUIStore();
 
   useEffect(() => {
@@ -94,7 +96,7 @@ function App() {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
-  const activeLabel = STAGE_LABELS[currentStage] ?? 'Dataset Creator';
+  const activeLabel = STAGE_LABELS[currentStage] ?? 'Image Workspace';
   const activeDescription =
     currentStage === 'hub'
       ? 'Choose a tool and keep working from the shared image workspace.'
@@ -114,7 +116,7 @@ function App() {
                   <Archive size={18} />
                 </div>
                 <div>
-                  <h1 className="font-semibold leading-tight">Dataset Creator</h1>
+                  <h1 className="font-semibold leading-tight">Image Workspace</h1>
                 </div>
               </div>
             </div>
@@ -124,11 +126,11 @@ function App() {
         <div className="px-5">
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-md border border-border bg-background p-3">
-              <p className="text-xs text-muted-foreground">Sources</p>
+              <p className="text-xs text-muted-foreground">Source</p>
               <p className="text-xl font-semibold">{sourceImages.length}</p>
             </div>
             <div className="rounded-md border border-border bg-background p-3">
-              <p className="text-xs text-muted-foreground">Dataset</p>
+              <p className="text-xs text-muted-foreground">Synthetic</p>
               <p className="text-xl font-semibold">{datasetItems.length}</p>
             </div>
           </div>
@@ -193,7 +195,9 @@ function App() {
                 <h2 className="truncate text-xl font-semibold">{activeLabel}</h2>
                 {currentStage !== 'hub' && <Badge variant="outline">Tool</Badge>}
               </div>
-              <p className="truncate text-sm text-muted-foreground">{activeDescription}</p>
+              <p className="truncate text-sm text-muted-foreground">
+                {activeDescription} {currentStage === 'review' ? `${workspaceImages.length} images in scope.` : ''}
+              </p>
             </div>
 
             <div className="flex items-center gap-2">

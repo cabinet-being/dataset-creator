@@ -3,7 +3,7 @@ import { devtools, persist } from 'zustand/middleware';
 import {
   ProjectState,
   SourceImage,
-  DatasetItem,
+  SyntheticImage,
   StageName,
   TaggingConfig,
   createProject,
@@ -25,13 +25,13 @@ interface ProjectStore extends ProjectState {
   updateSourceImage: (id: string, updates: Partial<SourceImage>) => void;
   getSourceImages: () => SourceImage[];
   
-  // Dataset items
-  addDatasetItem: (item: DatasetItem) => void;
+  // Synthetic images
+  addDatasetItem: (item: SyntheticImage) => void;
   hydrateDatasetItems: () => Promise<void>;
   removeDatasetItem: (id: string) => void;
-  updateDatasetItem: (id: string, updates: Partial<DatasetItem>) => void;
+  updateDatasetItem: (id: string, updates: Partial<SyntheticImage>) => void;
   softDeleteDatasetItem: (id: string) => void;
-  getDatasetItems: (includeDeleted?: boolean) => DatasetItem[];
+  getDatasetItems: (includeDeleted?: boolean) => SyntheticImage[];
   
   // Cleanup overlays
   addCleanupOverlay: (overlay: CleanupOverlay) => void;
@@ -154,7 +154,7 @@ export const useProjectStore = create<ProjectStore>()(
         
         getSourceImages: () => Object.values(get().sourceImages),
         
-        addDatasetItem: (item: DatasetItem) =>
+        addDatasetItem: (item: SyntheticImage) =>
           set((state) => {
             void dbPut(OBJECT_STORES.DATASET_ITEMS, item);
 
@@ -166,7 +166,7 @@ export const useProjectStore = create<ProjectStore>()(
           }),
 
         hydrateDatasetItems: async () => {
-          const storedItems = await dbGetAll<DatasetItem>(OBJECT_STORES.DATASET_ITEMS);
+          const storedItems = await dbGetAll<SyntheticImage>(OBJECT_STORES.DATASET_ITEMS);
 
           if (storedItems.length === 0) {
             return;
@@ -189,7 +189,7 @@ export const useProjectStore = create<ProjectStore>()(
             return { ...state, datasetItems: rest, lastModified: new Date() };
           }),
         
-        updateDatasetItem: (id: string, updates: Partial<DatasetItem>) =>
+        updateDatasetItem: (id: string, updates: Partial<SyntheticImage>) =>
           set((state) => {
             const updatedItem = { ...state.datasetItems[id], ...updates };
             void dbPut(OBJECT_STORES.DATASET_ITEMS, updatedItem);

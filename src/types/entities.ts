@@ -6,6 +6,8 @@ export type AspectRatio = '2:3' | '3:2' | '1:1';
 
 export type ImageType = 'original' | 'crop' | 'augmented';
 
+export type WorkspaceImageKind = 'source' | 'synthetic';
+
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
 export type StageName = 'hub' | 'import' | 'select' | 'clean' | 'crop' | 'augment' | 'review' | 'tagging' | 'export';
@@ -23,6 +25,7 @@ export interface SourceImage {
   thumbnail?: Blob;
   embedding?: Float32Array;
   hash?: string;
+  tags?: string[];
   createdAt: Date;
 }
 
@@ -65,9 +68,9 @@ export interface AugmentationConfig {
   rotationSeed?: number;
 }
 
-// ============ DATASET ITEM ============
+// ============ SYNTHETIC IMAGE ============
 
-export interface DatasetItem {
+export interface SyntheticImage {
   id: string;
   sourceImageId: string;
   imageData: Blob;
@@ -117,7 +120,7 @@ export interface ProjectState {
   id: string;
   name: string;
   sourceImages: Record<string, SourceImage>;
-  datasetItems: Record<string, DatasetItem>;
+  datasetItems: Record<string, SyntheticImage>;
   cleanupOverlays: Record<string, CleanupOverlay>;
   currentStage: StageName;
   stageState: Record<StageName, unknown>;
@@ -152,14 +155,14 @@ export const createSourceImage = (
   createdAt: new Date(),
 });
 
-export const createDatasetItem = (
+export const createSyntheticImage = (
   sourceImageId: string,
   imageData: Blob,
   width: number,
   height: number,
   type: ImageType = 'original',
   aspectRatio: AspectRatio = '1:1'
-): DatasetItem => ({
+): SyntheticImage => ({
   id: uuidv4(),
   sourceImageId,
   imageData,

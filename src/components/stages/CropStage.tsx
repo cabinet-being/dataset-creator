@@ -8,7 +8,12 @@ import {
   moveCropFrame,
   resizeCropFrameFromHandle,
 } from '../../services/crop/cropService';
-import { createDatasetItem, type CropFrame, type AspectRatio } from '../../types';
+import { createSyntheticImage, type CropFrame, type AspectRatio } from '../../types';
+import {
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+} from '../../lib/workspaceImages';
 import { AlertCircle, ArrowLeft, Check, Move, Plus, Trash2 } from 'lucide-react';
 
 interface CropState {
@@ -760,7 +765,7 @@ export const CropStage = () => {
           frame.height
         );
 
-        const datasetItem = createDatasetItem(
+        const syntheticImage = createSyntheticImage(
           image.id,
           croppedBlob,
           frame.width,
@@ -768,8 +773,8 @@ export const CropStage = () => {
           'crop',
           frame.aspectRatio
         );
-        datasetItem.cropFrame = frame;
-        addDatasetItem(datasetItem);
+        syntheticImage.cropFrame = frame;
+        addDatasetItem(syntheticImage);
         createdCount += 1;
       }
 
@@ -830,7 +835,7 @@ export const CropStage = () => {
             <div>
               <h3 className="text-lg font-semibold">Crop Gallery</h3>
               <p className="text-sm text-muted-foreground">
-                Choose an image to crop. Apply crops to update the shared dataset workspace.
+                Choose a Source image to crop. Apply crops to create Synthetic images.
               </p>
             </div>
             <button
@@ -856,7 +861,8 @@ export const CropStage = () => {
                 <button
                   key={image.id}
                   onClick={() => openImageInEditor(image.id)}
-                  className="gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary border border-border hover:border-primary transition-colors text-left"
+                  className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass('source')} hover:border-primary transition-colors text-left`}
+                  style={getWorkspaceKindFrameStyle('source')}
                 >
                   <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
                     {(cleanupStageState.workingEdits?.[image.id]?.previewUrl ?? image.previewUrl) ? (
@@ -891,9 +897,12 @@ export const CropStage = () => {
                             {frameCount === 0 ? 'No crop frames' : `Frames: ${frameCount}`}
                           </p>
                         </div>
-                        {finalizedImageIds.has(image.id) && (
-                          <Check size={16} className="text-green-400 shrink-0" />
-                        )}
+                        <div className="flex shrink-0 items-center gap-2">
+                          {finalizedImageIds.has(image.id) && (
+                            <Check size={16} className="text-green-400 shrink-0" />
+                          )}
+                          <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                        </div>
                       </div>
                     </div>
                   </div>

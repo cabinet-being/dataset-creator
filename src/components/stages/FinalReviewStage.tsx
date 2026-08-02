@@ -22,9 +22,16 @@ import {
   findSimilarPairs,
   performClustering,
 } from '../../services/similarity/similarityService';
-import type { DatasetItem, SimilarityCluster, SimilarityResult } from '../../types';
+import type { SimilarityCluster, SimilarityResult } from '../../types';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
+import {
+  toWorkspaceImages,
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+  type WorkspaceImage,
+} from '../../lib/workspaceImages';
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
@@ -328,7 +335,7 @@ const selectGraphPairEdges = (
 };
 
 const buildGraphLayout = (
-  items: DatasetItem[],
+  items: WorkspaceImage[],
   clusters: SimilarityCluster[],
   similarPairs: SimilarityResult[],
   threshold: number
@@ -860,7 +867,7 @@ const stepGraphSimulation = (
 };
 
 type ReviewCardProps = {
-  item: DatasetItem;
+  item: WorkspaceImage;
   previewUrl?: string;
   onDelete: (id: string) => void;
   highlighted?: boolean;
@@ -870,15 +877,21 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
   return (
     <div
       className={`gallery-masonry-item group relative rounded-lg overflow-hidden border bg-card ${
-        highlighted ? 'border-primary shadow-[0_0_0_2px_rgba(59,130,246,0.35)]' : 'border-border'
+        highlighted
+          ? `${getWorkspaceKindFrameClass(item.kind, true)} shadow-[0_0_0_2px_rgba(59,130,246,0.35)]`
+          : getWorkspaceKindFrameClass(item.kind)
       } ${item.deleted ? 'opacity-50 line-through' : ''}`}
-      style={{ contentVisibility: 'auto', containIntrinsicSize: '280px' }}
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: '280px',
+        ...getWorkspaceKindFrameStyle(item.kind),
+      }}
     >
       <div className="relative min-h-[12rem] bg-black overflow-hidden flex items-center justify-center">
         {previewUrl ? (
           <img
             src={previewUrl}
-            alt={`${item.type} ${item.width} x ${item.height}`}
+            alt={`${item.label} ${item.width} x ${item.height}`}
             className="w-full h-auto object-contain"
             loading="lazy"
             decoding="async"
@@ -900,12 +913,19 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
         </div>
 
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-          <p className="text-sm text-white font-medium">
-            {item.width} x {item.height}
-          </p>
-          <p className="text-xs text-gray-300">
-            {item.aspectRatio} | {item.type}
-          </p>
+          <div className="flex items-end justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">
+                {item.width} x {item.height}
+              </p>
+              <p className="text-xs text-gray-300">
+                {item.aspectRatio}
+              </p>
+            </div>
+            <span className={getWorkspaceKindBadgeClass(item.kind)}>
+              {item.label}
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -915,12 +935,27 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
 ReviewCard.displayName = 'ReviewCard';
 
 export const FinalReviewStage = () => {
-  const items = useProjectStore((state) =>
+  const syntheticImages = useProjectStore((state) =>
     Object.values(state.datasetItems).filter((item) => !item.deleted)
   );
-  const sourceImages = useProjectStore((state) => state.sourceImages);
+  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const cleanupStageState = useProjectStore(
+    (state) =>
+      (state.stageState.clean as
+        | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
+        | undefined) ?? {}
+  );
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
+  const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const { addNotification } = useUIStore();
+  const items = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
+    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
+  );
+  const sourceImageById = useMemo(
+    () => Object.fromEntries(sourceImages.map((image) => [image.id, image])),
+    [sourceImages]
+  );
 
   const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<string>>(
     new Set(ASPECT_RATIOS)
@@ -1098,7 +1133,7 @@ export const FinalReviewStage = () => {
           continue;
         }
 
-        const sourceEmbedding = sourceImages[item.sourceImageId]?.embedding;
+        const sourceEmbedding = sourceImageById[item.sourceImageId]?.embedding;
         if (sourceEmbedding) {
           embeddingCacheRef.current[item.id] = {
             blob: item.imageData,
@@ -1475,9 +1510,9 @@ export const FinalReviewStage = () => {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log(`[review] current Dataset Preview mode: ${activeSimilarityView}`);
+      console.log(`[review] current Review Preview mode: ${activeSimilarityView}`);
       console.log(
-        `[review] current Dataset Preview item ids: ${JSON.stringify(previewItemIds ?? filteredItems.map((item) => item.id))}`
+        `[review] current Review Preview item ids: ${JSON.stringify(previewItemIds ?? filteredItems.map((item) => item.id))}`
       );
     }
   }, [activeSimilarityView, filteredItems, previewItemIds]);
@@ -1520,10 +1555,14 @@ export const FinalReviewStage = () => {
 
   const handleDeleteItem = useCallback(
     (id: string) => {
-      softDeleteDatasetItem(id);
-      addNotification('info', 'Item marked for deletion');
+      if (id.startsWith('source:')) {
+        removeSourceImage(id.replace(/^source:/, ''));
+      } else {
+        softDeleteDatasetItem(id.replace(/^synthetic:/, ''));
+      }
+      addNotification('info', 'Image removed from review');
     },
-    [addNotification, softDeleteDatasetItem]
+    [addNotification, removeSourceImage, softDeleteDatasetItem]
   );
 
   const showPairs = useCallback(() => {
@@ -1645,25 +1684,25 @@ export const FinalReviewStage = () => {
         (entry) => `${entry.imageId1}:${entry.imageId2}` === selectedPairKey
       );
       if (pair) {
-        return `Dataset Preview (Pair #${reviewData.itemIndexById[pair.imageId1]} and #${reviewData.itemIndexById[pair.imageId2]})`;
+        return `Review Preview (Pair #${reviewData.itemIndexById[pair.imageId1]} and #${reviewData.itemIndexById[pair.imageId2]})`;
       }
     }
 
     if (activeSimilarityView === 'clusters' && selectedClusterId && reviewData) {
       const cluster = reviewData.clusters.find((entry) => entry.id === selectedClusterId);
       if (cluster) {
-        return `Dataset Preview (Cluster with ${cluster.imageIds.length} items)`;
+        return `Review Preview (Cluster with ${cluster.imageIds.length} items)`;
       }
     }
 
-    return `Dataset Preview (${filteredItems.length} items)`;
+    return `Review Preview (${filteredItems.length} items)`;
   }, [activeSimilarityView, filteredItems.length, reviewData, selectedClusterId, selectedPairKey]);
 
   if (items.length === 0) {
     return (
       <div className="text-center py-12">
         <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No dataset items to review.</p>
+        <p className="text-muted-foreground">No Source or Synthetic images to review.</p>
       </div>
     );
   }
@@ -2149,7 +2188,7 @@ export const FinalReviewStage = () => {
                   ? 'Showing only the selected similar pair.'
                   : activeSimilarityView === 'clusters' && selectedClusterId
                     ? 'Showing only the selected similarity cluster.'
-                    : 'Final check before moving to tagging.'}
+                    : 'Final check before moving to Caption.'}
               </p>
             </div>
           </div>
@@ -2176,8 +2215,8 @@ export const FinalReviewStage = () => {
 
       <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-4">
         <p className="text-sm text-blue-600">
-          Review thumbnails and the similarity map here. Tagging and export use this same shared
-          dataset workspace directly.
+          Review thumbnails and the similarity map here. Caption and export use this same shared
+          Source/Synthetic workspace directly.
         </p>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import {
@@ -6,7 +6,13 @@ import {
   generateAugmentationConfigs,
   generateSeedFromImage,
 } from '../../services/augmentation/augmentationService';
-import { createDatasetItem, type AspectRatio, type AugmentationConfig } from '../../types';
+import { createSyntheticImage, type AspectRatio, type AugmentationConfig } from '../../types';
+import {
+  WORKSPACE_KIND_STYLES,
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+} from '../../lib/workspaceImages';
 import { AlertCircle, Check } from 'lucide-react';
 
 type CleanupWorkingEdit = {
@@ -19,6 +25,8 @@ type CleanupWorkingEdit = {
 type CleanupStageState = {
   workingEdits?: Record<string, CleanupWorkingEdit>;
 };
+
+type PreviewCacheEntry = { blob: Blob; url: string };
 
 type AugmentTypeState = {
   config: AugmentationConfig;
@@ -33,14 +41,14 @@ type AugmentStageState = {
 type AugmentCandidate = {
   key: string;
   displayIdentity: string;
-  kind: 'original' | 'crop';
+  kind: 'source' | 'synthetic';
   blob: Blob;
   previewUrl?: string;
   width: number;
   height: number;
   aspectRatio: AspectRatio;
   sourceImageId: string;
-  datasetItemId?: string;
+  syntheticImageId?: string;
 };
 
 const TYPE_LABELS: Record<AugmentationConfig['type'], string> = {
@@ -97,9 +105,11 @@ export const AugmentationStage = () => {
   const { addNotification } = useUIStore();
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [syntheticPreviewUrls, setSyntheticPreviewUrls] = useState<Record<string, string>>({});
+  const syntheticPreviewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
   const cropItems = useMemo(
-    () => datasetItems.filter((item) => item.type === 'crop'),
+    () => datasetItems.filter((item) => item.type === 'crop' || item.type === 'augmented'),
     [datasetItems]
   );
 
@@ -108,27 +118,59 @@ export const AugmentationStage = () => {
     [sourceImages]
   );
 
-  const cropPreviewUrls = useMemo(() => {
-    const entries: Record<string, string> = {};
-    for (const item of cropItems) {
-      entries[item.id] = URL.createObjectURL(item.imageData);
-    }
-    return entries;
+  useEffect(() => {
+    setSyntheticPreviewUrls((previous) => {
+      const next: Record<string, string> = {};
+      const activeIds = new Set(cropItems.map((item) => item.id));
+
+      for (const item of cropItems) {
+        const cached = syntheticPreviewCacheRef.current[item.id];
+        if (cached && cached.blob === item.imageData) {
+          next[item.id] = cached.url;
+          continue;
+        }
+
+        if (cached) {
+          URL.revokeObjectURL(cached.url);
+        }
+
+        const url = URL.createObjectURL(item.imageData);
+        syntheticPreviewCacheRef.current[item.id] = { blob: item.imageData, url };
+        next[item.id] = url;
+      }
+
+      for (const [id, cached] of Object.entries(syntheticPreviewCacheRef.current)) {
+        if (activeIds.has(id)) {
+          continue;
+        }
+        URL.revokeObjectURL(cached.url);
+        delete syntheticPreviewCacheRef.current[id];
+      }
+
+      const previousKeys = Object.keys(previous);
+      const nextKeys = Object.keys(next);
+      const changed =
+        previousKeys.length !== nextKeys.length ||
+        nextKeys.some((id) => previous[id] !== next[id]);
+
+      return changed ? next : previous;
+    });
   }, [cropItems]);
 
   useEffect(() => {
     return () => {
-      Object.values(cropPreviewUrls).forEach((url) => URL.revokeObjectURL(url));
+      Object.values(syntheticPreviewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
+      syntheticPreviewCacheRef.current = {};
     };
-  }, [cropPreviewUrls]);
+  }, []);
 
   const candidates = useMemo<AugmentCandidate[]>(() => {
     const originals: AugmentCandidate[] = sourceImages.map((image) => {
       const workingEdit = cleanupStageState.workingEdits?.[image.id];
       return {
-        key: `original:${image.id}`,
+        key: `source:${image.id}`,
         displayIdentity: `${sourceOrder[image.id]}`,
-        kind: 'original',
+        kind: 'source',
         blob: workingEdit?.blob ?? image.originalFile,
         previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
         width: workingEdit?.width ?? image.width,
@@ -143,16 +185,16 @@ export const AugmentationStage = () => {
       cropIndicesByParent[item.sourceImageId] = (cropIndicesByParent[item.sourceImageId] ?? 0) + 1;
       const cropIndex = cropIndicesByParent[item.sourceImageId];
       return {
-        key: `crop:${item.id}`,
+        key: `synthetic:${item.id}`,
         displayIdentity: `${sourceOrder[item.sourceImageId]}.${cropIndex}`,
-        kind: 'crop',
+        kind: 'synthetic',
         blob: item.imageData,
-        previewUrl: cropPreviewUrls[item.id],
+        previewUrl: syntheticPreviewUrls[item.id],
         width: item.width,
         height: item.height,
         aspectRatio: item.aspectRatio,
         sourceImageId: item.sourceImageId,
-        datasetItemId: item.id,
+        syntheticImageId: item.id,
       };
     });
 
@@ -163,7 +205,7 @@ export const AugmentationStage = () => {
     }
 
     return [...originals, ...crops];
-  }, [cleanupStageState.workingEdits, cropItems, cropPreviewUrls, sourceImages, sourceOrder]);
+  }, [cleanupStageState.workingEdits, cropItems, syntheticPreviewUrls, sourceImages, sourceOrder]);
 
   const selectedType = augmentStageState.selectedType ?? 'flip_h';
 
@@ -299,23 +341,9 @@ export const AugmentationStage = () => {
         Object.entries(augmentStageState.byType ?? {})
       ) as Array<[AugmentationConfig['type'], AugmentTypeState]>;
 
-      const existingGeneratedItems = datasetItems.filter(
-        (item) => item.type === 'original' || item.type === 'augmented'
-      );
+      const existingGeneratedItems = datasetItems.filter((item) => item.type === 'augmented');
       for (const item of existingGeneratedItems) {
         removeDatasetItem(item.id);
-      }
-
-      for (const candidate of candidates.filter((candidate) => candidate.kind === 'original')) {
-        const originalItem = createDatasetItem(
-          candidate.sourceImageId,
-          candidate.blob,
-          candidate.width,
-          candidate.height,
-          'original',
-          candidate.aspectRatio
-        );
-        addDatasetItem(originalItem);
       }
 
       let generatedAugmentedOutputs = 0;
@@ -335,7 +363,7 @@ export const AugmentationStage = () => {
 
           for (const config of configs) {
             const augmentedBlob = await applyAugmentation(candidate.blob, config);
-            const augmentedItem = createDatasetItem(
+            const augmentedItem = createSyntheticImage(
               candidate.sourceImageId,
               augmentedBlob,
               candidate.width,
@@ -359,7 +387,7 @@ export const AugmentationStage = () => {
         );
         console.log(`[augment] generated augmented outputs: ${generatedAugmentedOutputs}`);
         console.log(
-          `[augment] final dataset item count available to review/tagging: ${
+          `[augment] final Synthetic count available to review/tagging: ${
             useProjectStore.getState().getDatasetItems(false).length
           }`
         );
@@ -462,7 +490,7 @@ export const AugmentationStage = () => {
           <div>
             <h3 className="text-lg font-semibold">Augmentation Gallery</h3>
             <p className="text-sm text-muted-foreground">
-              Originals and crop-derived images can both be assigned augmentations.
+              Source and Synthetic images can both be assigned augmentations.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -494,9 +522,10 @@ export const AugmentationStage = () => {
                 onClick={() => toggleImageSelection(candidate.key)}
                 className={`gallery-masonry-item group relative rounded-lg overflow-hidden border transition-colors text-left ${
                   isSelectedForCurrentType
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border bg-secondary hover:border-primary/50'
+                    ? `${getWorkspaceKindFrameClass(candidate.kind, true)} bg-primary/5`
+                    : `${getWorkspaceKindFrameClass(candidate.kind)} bg-secondary hover:border-primary/50`
                 }`}
+                style={getWorkspaceKindFrameStyle(candidate.kind)}
               >
                 <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
                   {candidate.previewUrl ? (
@@ -512,9 +541,6 @@ export const AugmentationStage = () => {
                   )}
 
                   <div className="absolute top-2 right-2 flex items-center gap-1">
-                    <span className="px-2 py-1 rounded-full bg-black/60 text-[10px] font-medium text-white">
-                      {candidate.kind === 'original' ? 'Original' : 'Crop'}
-                    </span>
                     {isSelectedForCurrentType && (
                       <span className="p-1 rounded-full bg-primary text-primary-foreground">
                         <Check size={12} />
@@ -523,8 +549,15 @@ export const AugmentationStage = () => {
                   </div>
 
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-                    <p className="text-sm font-medium text-white">Image #{candidate.displayIdentity}</p>
-                    <p className="text-xs text-gray-300 line-clamp-2">{statusText}</p>
+                    <div className="flex items-end justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white">Image #{candidate.displayIdentity}</p>
+                        <p className="line-clamp-2 text-xs text-gray-300">{statusText}</p>
+                      </div>
+                      <span className={getWorkspaceKindBadgeClass(candidate.kind)}>
+                        {WORKSPACE_KIND_STYLES[candidate.kind].label}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </button>
