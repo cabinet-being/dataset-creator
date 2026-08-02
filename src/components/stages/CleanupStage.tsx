@@ -15,8 +15,8 @@ import {
   toWorkspaceImages,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 
-type PreviewCacheEntry = { blob: Blob; url: string };
 type PhotopeaPhase =
   | 'waiting-ready'
   | 'idle'
@@ -75,14 +75,13 @@ export const CleanupStage = () => {
   const pendingImageRef = useRef<WorkspaceImage | null>(null);
   const pendingSyntheticPsdBufferRef = useRef<ArrayBuffer | null>(null);
   const pendingSyntheticPsdUpgradeRef = useRef(false);
-  const syntheticPreviewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
   const [selectedImageKey, setSelectedImageKey] = useState<string | null>(null);
   const [photopeaReady, setPhotopeaReady] = useState(false);
   const [documentReady, setDocumentReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [editorStatus, setEditorStatus] = useState('Loading Photopea...');
-  const [syntheticPreviewUrls, setSyntheticPreviewUrls] = useState<Record<string, string>>({});
+  const [hasPhotopeaMounted, setHasPhotopeaMounted] = useState(false);
 
   const photopeaUrl = useMemo(createPhotopeaUrl, []);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
@@ -91,65 +90,18 @@ export const CleanupStage = () => {
     [syntheticImagesById]
   );
 
-  useEffect(() => {
-    setSyntheticPreviewUrls((previous) => {
-      const next: Record<string, string> = {};
-      const activeIds = new Set(syntheticImages.map((item) => item.id));
-
-      for (const item of syntheticImages) {
-        const cached = syntheticPreviewCacheRef.current[item.id];
-        if (cached && cached.blob === item.imageData) {
-          next[item.id] = cached.url;
-          continue;
-        }
-
-        if (cached) {
-          URL.revokeObjectURL(cached.url);
-        }
-
-        const url = URL.createObjectURL(item.imageData);
-        syntheticPreviewCacheRef.current[item.id] = { blob: item.imageData, url };
-        next[item.id] = url;
-      }
-
-      for (const [id, cached] of Object.entries(syntheticPreviewCacheRef.current)) {
-        if (activeIds.has(id)) {
-          continue;
-        }
-        URL.revokeObjectURL(cached.url);
-        delete syntheticPreviewCacheRef.current[id];
-      }
-
-      const previousKeys = Object.keys(previous);
-      const nextKeys = Object.keys(next);
-      const changed =
-        previousKeys.length !== nextKeys.length ||
-        nextKeys.some((id) => previous[id] !== next[id]);
-
-      return changed ? next : previous;
-    });
-  }, [syntheticImages]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(syntheticPreviewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
-      syntheticPreviewCacheRef.current = {};
-    };
-  }, []);
-
-  const workspaceImages = useMemo(() => {
-    return toWorkspaceImages(sourceImages, syntheticImages).map((image) => ({
-      ...image,
-      previewUrl: image.previewUrl ?? (image.syntheticImageId ? syntheticPreviewUrls[image.syntheticImageId] : undefined),
-    }));
-  }, [sourceImages, syntheticImages, syntheticPreviewUrls]);
+  const workspaceImages = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages),
+    [sourceImages, syntheticImages]
+  );
+  const previewUrls = useWorkspacePreviewUrls(workspaceImages);
 
   const selectedImage = useMemo(
     () => workspaceImages.find((image) => image.id === selectedImageKey) ?? null,
     [selectedImageKey, workspaceImages]
   );
 
-  const resetEditorState = useCallback((status = 'Loading Photopea...') => {
+  const resetEditorState = useCallback((status = 'Loading Photopea...', resetPhotopea = true) => {
     phaseRef.current = 'waiting-ready';
     saveModeRef.current = null;
     saveBuffersRef.current = {};
@@ -158,7 +110,9 @@ export const CleanupStage = () => {
     pendingImageRef.current = null;
     pendingSyntheticPsdBufferRef.current = null;
     pendingSyntheticPsdUpgradeRef.current = false;
-    setPhotopeaReady(false);
+    if (resetPhotopea) {
+      setPhotopeaReady(false);
+    }
     setDocumentReady(false);
     setIsProcessing(false);
     setEditorStatus(status);
@@ -166,9 +120,19 @@ export const CleanupStage = () => {
 
   const closeEditor = useCallback(() => {
     setSelectedImageKey(null);
-    resetEditorState();
-  }, [resetEditorState]);
+    resetEditorState(photopeaReady ? 'Photopea is ready.' : 'Loading Photopea...', false);
+    phaseRef.current = photopeaReady ? 'idle' : 'waiting-ready';
+  }, [photopeaReady, resetEditorState]);
 
+  const selectImageForEditing = useCallback(
+    (imageId: string) => {
+      const keepLoadedPhotopea = hasPhotopeaMounted;
+      setHasPhotopeaMounted(true);
+      resetEditorState(keepLoadedPhotopea ? 'Preparing Photopea...' : 'Loading Photopea...', !keepLoadedPhotopea);
+      setSelectedImageKey(imageId);
+    },
+    [hasPhotopeaMounted, resetEditorState]
+  );
   useEffect(() => {
     setEditToolbar({
       visible: Boolean(selectedImage),
@@ -210,7 +174,7 @@ export const CleanupStage = () => {
       const buffer = await editableBlob.arrayBuffer();
       phaseRef.current = 'opening-buffer';
       pendingImageRef.current = image;
-      photopeaWindow.postMessage(buffer, '*', [buffer]);
+      photopeaWindow.postMessage(buffer, PHOTOPEA_ORIGIN, [buffer]);
     } catch (error) {
       console.error('Failed to send image to Photopea:', error);
       loadedImageKeyRef.current = null;
@@ -237,7 +201,7 @@ export const CleanupStage = () => {
     setDocumentReady(false);
     setEditorStatus('Preparing Photopea...');
     phaseRef.current = 'clearing-documents';
-    photopeaWindow.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, '*');
+    photopeaWindow.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, PHOTOPEA_ORIGIN);
   }, []);
 
   useEffect(() => {
@@ -307,9 +271,28 @@ export const CleanupStage = () => {
     [addDatasetItem, addNotification, closeEditor, updateDatasetItem, updateSourceImage]
   );
 
+  const requestPhotopeaSave = useCallback((saveCopy: boolean) => {
+    if (!selectedImage || !documentReady || isProcessing) {
+      return;
+    }
+
+    const photopeaWindow = iframeRef.current?.contentWindow;
+    if (!photopeaWindow) {
+      addNotification('error', 'Photopea is not available');
+      return;
+    }
+
+    setIsProcessing(true);
+    setEditorStatus('Requesting PNG preview from Photopea...');
+    saveModeRef.current = saveCopy;
+    saveBuffersRef.current = {};
+    phaseRef.current = 'saving-png';
+    photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN);
+  }, [addNotification, documentReady, isProcessing, selectedImage]);
+
   useEffect(() => {
     const handlePhotopeaMessage = (event: MessageEvent) => {
-      if (event.source !== iframeRef.current?.contentWindow) {
+      if (event.source !== iframeRef.current?.contentWindow || event.origin !== PHOTOPEA_ORIGIN) {
         return;
       }
 
@@ -377,7 +360,7 @@ export const CleanupStage = () => {
         setEditorStatus('Preparing document...');
         iframeRef.current?.contentWindow?.postMessage(
           `app.activeDocument.source=${JSON.stringify(pendingImage?.id ?? 'dataset-image')};`,
-          '*'
+          PHOTOPEA_ORIGIN
         );
         return;
       }
@@ -386,7 +369,7 @@ export const CleanupStage = () => {
         if (pendingSyntheticPsdUpgradeRef.current) {
           phaseRef.current = 'preparing-synthetic-psd';
           setEditorStatus('Preparing Synthetic PSD...');
-          iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', '*');
+          iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', PHOTOPEA_ORIGIN);
           return;
         }
 
@@ -422,14 +405,14 @@ export const CleanupStage = () => {
         loadedImageKeyRef.current = null;
         phaseRef.current = 'clearing-documents';
         setEditorStatus('Opening Synthetic PSD...');
-        iframeRef.current?.contentWindow?.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, '*');
+        iframeRef.current?.contentWindow?.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, PHOTOPEA_ORIGIN);
         return;
       }
 
       if (phaseRef.current === 'saving-png') {
         phaseRef.current = 'saving-psd';
         setEditorStatus('Requesting PSD from Photopea...');
-        iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', '*');
+        iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', PHOTOPEA_ORIGIN);
         return;
       }
 
@@ -449,26 +432,14 @@ export const CleanupStage = () => {
 
     window.addEventListener('message', handlePhotopeaMessage);
     return () => window.removeEventListener('message', handlePhotopeaMessage);
-  }, [addNotification, saveEditedImage, selectedImage, sendImageBufferToPhotopea, updateDatasetItem]);
-
-  const requestPhotopeaSave = (saveCopy: boolean) => {
-    if (!selectedImage || !documentReady || isProcessing) {
-      return;
-    }
-
-    const photopeaWindow = iframeRef.current?.contentWindow;
-    if (!photopeaWindow) {
-      addNotification('error', 'Photopea is not available');
-      return;
-    }
-
-    setIsProcessing(true);
-    setEditorStatus('Requesting PNG preview from Photopea...');
-    saveModeRef.current = saveCopy;
-    saveBuffersRef.current = {};
-    phaseRef.current = 'saving-png';
-    photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', '*');
-  };
+  }, [
+    addNotification,
+    requestPhotopeaSave,
+    saveEditedImage,
+    selectedImage,
+    sendImageBufferToPhotopea,
+    updateDatasetItem,
+  ]);
 
   useEffect(() => {
     const handleEditCommand = (event: Event) => {
@@ -491,7 +462,7 @@ export const CleanupStage = () => {
 
     window.addEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
     return () => window.removeEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
-  });
+  }, [closeEditor, isProcessing, requestPhotopeaSave]);
 
   if (workspaceImages.length === 0) {
     return (
@@ -502,64 +473,59 @@ export const CleanupStage = () => {
     );
   }
 
-  if (selectedImage) {
-    return (
-      <iframe
-        key={selectedImage.id}
-        ref={iframeRef}
-        title="Photopea image editor"
-        src={photopeaUrl}
-        className="h-full min-h-0 w-full border-0 bg-black"
-        allow="clipboard-read; clipboard-write; fullscreen"
-      />
-    );
-  }
-
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
-      <BrickMasonry
-        items={workspaceImages}
-        getKey={(image) => image.id}
-        getEstimate={(image) => image.height / Math.max(1, image.width)}
-        renderItem={(image) => (
-          <button
-            onClick={() => {
-              resetEditorState();
-              setSelectedImageKey(image.id);
-            }}
-            className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(image.kind)} hover:border-primary transition-colors text-left`}
-            style={getWorkspaceKindFrameStyle(image.kind)}
-          >
-            <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
-              {image.previewUrl ? (
-                <img src={image.previewUrl} alt={image.fileName} className="w-full h-auto object-contain" />
-              ) : (
-                <span className="text-xs text-muted-foreground">
-                  {image.width} x {image.height}
-                </span>
-              )}
-              <div
-                className={getWorkspaceKindFrameOverlayClass()}
-                style={getWorkspaceKindFrameOverlayStyle(image.kind)}
-              />
-              <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-                <div className="flex items-end justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-white">{image.fileName}</p>
-                    <p className="text-xs text-gray-300">
-                      {image.width} x {image.height}
-                    </p>
-                  </div>
-                  <span className={getWorkspaceKindBadgeClass(image.kind)}>
-                    {WORKSPACE_KIND_STYLES[image.kind].label}
+    <div className="h-full min-h-0">
+      <div className={selectedImage ? 'hidden' : 'h-full min-h-0 overflow-y-auto'}>
+        <BrickMasonry
+          items={workspaceImages}
+          getKey={(image) => image.id}
+          getEstimate={(image) => image.height / Math.max(1, image.width)}
+          renderItem={(image) => (
+            <button
+              onClick={() => selectImageForEditing(image.id)}
+              className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(image.kind)} hover:border-primary transition-colors text-left`}
+              style={getWorkspaceKindFrameStyle(image.kind)}
+            >
+              <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
+                {previewUrls[image.id] ? (
+                  <img src={previewUrls[image.id]} alt={image.fileName} className="w-full h-auto object-contain" />
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {image.width} x {image.height}
                   </span>
+                )}
+                <div
+                  className={getWorkspaceKindFrameOverlayClass()}
+                  style={getWorkspaceKindFrameOverlayStyle(image.kind)}
+                />
+                <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+                  <div className="flex items-end justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-white">{image.fileName}</p>
+                      <p className="text-xs text-gray-300">
+                        {image.width} x {image.height}
+                      </p>
+                    </div>
+                    <span className={getWorkspaceKindBadgeClass(image.kind)}>
+                      {WORKSPACE_KIND_STYLES[image.kind].label}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          </button>
-        )}
-      />
+            </button>
+          )}
+        />
+      </div>
+      {hasPhotopeaMounted && (
+        <iframe
+          ref={iframeRef}
+          title="Photopea image editor"
+          src={photopeaUrl}
+          className={`h-full min-h-0 w-full border-0 bg-black ${selectedImage ? '' : 'hidden'}`}
+          allow="clipboard-read; clipboard-write; fullscreen"
+        />
+      )}
     </div>
   );
 };

@@ -44,13 +44,14 @@ export const BrickMasonry = <T,>({
       return;
     }
 
-    const updateColumnCount = () => {
-      if (brickColumnCount !== 'auto') {
-        setColumnCount(brickColumnCount);
-        return;
-      }
+    if (brickColumnCount !== 'auto') {
+      setColumnCount((current) => (current === brickColumnCount ? current : brickColumnCount));
+      return;
+    }
 
-      setColumnCount(getColumnCount(container.clientWidth, minColumnWidth, maxColumnCount));
+    const updateColumnCount = () => {
+      const nextColumnCount = getColumnCount(container.clientWidth, minColumnWidth, maxColumnCount);
+      setColumnCount((current) => (current === nextColumnCount ? current : nextColumnCount));
     };
 
     updateColumnCount();

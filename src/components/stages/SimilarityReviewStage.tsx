@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { computeDistanceMatrix, performClustering } from '../../services/similarity/similarityService';
@@ -12,6 +12,7 @@ import {
   toWorkspaceImages,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { getCachedPreviewUrl } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
 
@@ -28,7 +29,6 @@ export const SimilarityReviewStage = () => {
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
-  const syntheticPreviewCacheRef = useRef<Record<string, { blob: Blob; url: string }>>({});
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
@@ -37,7 +37,6 @@ export const SimilarityReviewStage = () => {
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [uiThreshold, setUiThreshold] = useState(0.7);
-  const [syntheticPreviewRecords, setSyntheticPreviewRecords] = useState<Record<string, WorkspacePreviewRecord>>({});
   const similarityThreshold = useMemo(() => {
     const remapped = 0.2 + 0.8 * Math.sqrt(uiThreshold);
     if (import.meta.env.DEV) {
@@ -46,62 +45,21 @@ export const SimilarityReviewStage = () => {
     return remapped;
   }, [uiThreshold]);
 
-  useEffect(() => {
-    setSyntheticPreviewRecords((previous) => {
-      const next: Record<string, WorkspacePreviewRecord> = {};
-      const activeIds = new Set(syntheticImages.map((image) => image.id));
-
-      for (const image of syntheticImages) {
-        const workspaceId = `synthetic:${image.id}`;
-        const cached = syntheticPreviewCacheRef.current[image.id];
-        if (cached && cached.blob === image.imageData) {
-          next[workspaceId] = {
+  const syntheticPreviewRecords = useMemo<Record<string, WorkspacePreviewRecord>>(
+    () =>
+      Object.fromEntries(
+        syntheticImages.map((image) => [
+          `synthetic:${image.id}`,
+          {
             blob: image.imageData,
-            previewUrl: cached.url,
+            previewUrl: getCachedPreviewUrl(`synthetic:${image.id}`, image.imageData),
             width: image.width,
             height: image.height,
-          };
-          continue;
-        }
-
-        if (cached) {
-          URL.revokeObjectURL(cached.url);
-        }
-
-        const url = URL.createObjectURL(image.imageData);
-        syntheticPreviewCacheRef.current[image.id] = { blob: image.imageData, url };
-        next[workspaceId] = {
-          blob: image.imageData,
-          previewUrl: url,
-          width: image.width,
-          height: image.height,
-        };
-      }
-
-      for (const [id, cached] of Object.entries(syntheticPreviewCacheRef.current)) {
-        if (activeIds.has(id)) {
-          continue;
-        }
-        URL.revokeObjectURL(cached.url);
-        delete syntheticPreviewCacheRef.current[id];
-      }
-
-      const previousKeys = Object.keys(previous);
-      const nextKeys = Object.keys(next);
-      const changed =
-        previousKeys.length !== nextKeys.length ||
-        nextKeys.some((id) => previous[id]?.previewUrl !== next[id]?.previewUrl);
-
-      return changed ? next : previous;
-    });
-  }, [syntheticImages]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(syntheticPreviewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
-      syntheticPreviewCacheRef.current = {};
-    };
-  }, []);
+          },
+        ])
+      ),
+    [syntheticImages]
+  );
 
   const images = useMemo(
     () => toWorkspaceImages(sourceImages, syntheticImages, syntheticPreviewRecords),

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowUpDown,
@@ -25,10 +25,9 @@ import {
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { AspectRatio, StageName, WorkspaceImageKind } from '../../types';
 
-type PreviewMap = Record<string, string>;
-type PreviewCacheEntry = { blob: Blob; url: string };
 type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | null;
 type SortMode = 'identity-asc' | 'identity-desc' | 'kind' | 'aspect' | 'size-desc' | 'size-asc';
 type ExportStatus = 'active' | 'inactive';
@@ -232,8 +231,6 @@ export const FinalReviewStage = () => {
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
   const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
-  const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
-  const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
@@ -244,58 +241,7 @@ export const FinalReviewStage = () => {
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]
   );
-
-  useEffect(() => {
-    setPreviewUrls((previous) => {
-      const next: PreviewMap = {};
-      const activeIds = new Set(items.map((item) => item.id));
-
-      for (const item of items) {
-        const cached = previewCacheRef.current[item.id];
-        if (cached && cached.blob === item.imageData) {
-          next[item.id] = cached.url;
-          continue;
-        }
-
-        if (cached) {
-          URL.revokeObjectURL(cached.url);
-        }
-
-        try {
-          const url = URL.createObjectURL(item.imageData);
-          previewCacheRef.current[item.id] = { blob: item.imageData, url };
-          next[item.id] = url;
-        } catch (error) {
-          if (import.meta.env.DEV) {
-            console.warn(`[review] failed preview generation: ${item.id}`, error);
-          }
-        }
-      }
-
-      for (const [id, cached] of Object.entries(previewCacheRef.current)) {
-        if (activeIds.has(id)) {
-          continue;
-        }
-        URL.revokeObjectURL(cached.url);
-        delete previewCacheRef.current[id];
-      }
-
-      const previousKeys = Object.keys(previous);
-      const nextKeys = Object.keys(next);
-      const changed =
-        previousKeys.length !== nextKeys.length ||
-        nextKeys.some((id) => previous[id] !== next[id]);
-
-      return changed ? next : previous;
-    });
-  }, [items]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(previewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
-      previewCacheRef.current = {};
-    };
-  }, []);
+  const previewUrls = useWorkspacePreviewUrls(items);
 
   useEffect(() => {
     if (!openMenu) {
@@ -428,16 +374,16 @@ export const FinalReviewStage = () => {
     });
   };
 
-  const handleDeleteItem = (item: WorkspaceImage) => {
+  const handleDeleteItem = useCallback((item: WorkspaceImage) => {
     if (item.kind === 'source' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { hidden: true });
     } else if (item.syntheticImageId) {
       softDeleteDatasetItem(item.syntheticImageId);
     }
     addNotification('info', 'Image removed from review');
-  };
+  }, [addNotification, softDeleteDatasetItem, updateSourceImage]);
 
-  const handleToggleActive = (item: WorkspaceImage) => {
+  const handleToggleActive = useCallback((item: WorkspaceImage) => {
     const excludedFromDataset = !item.excludedFromDataset;
     if (item.kind === 'source' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { excludedFromDataset });
@@ -445,12 +391,21 @@ export const FinalReviewStage = () => {
       updateDatasetItem(item.syntheticImageId, { excludedFromDataset });
     }
     addNotification('info', excludedFromDataset ? 'Image deactivated' : 'Image activated');
-  };
+  }, [addNotification, updateDatasetItem, updateSourceImage]);
 
-  const handleOpenTool = (stage: StageName) => {
+  const handleOpenTool = useCallback((stage: StageName) => {
     setOpenItemMenuId(null);
     setCurrentStage(stage);
-  };
+  }, [setCurrentStage]);
+
+  const handleToggleItemMenu = useCallback((id: string) => {
+    setOpenMenu(null);
+    setOpenItemMenuId((current) => (current === id ? null : id));
+  }, []);
+
+  const handleCloseItemMenu = useCallback(() => {
+    setOpenItemMenuId(null);
+  }, []);
 
   if (items.length === 0) {
     return (
@@ -627,11 +582,8 @@ export const FinalReviewStage = () => {
               item={item}
               previewUrl={previewUrls[item.id]}
               menuOpen={openItemMenuId === item.id}
-              onToggleMenu={(id) => {
-                setOpenMenu(null);
-                setOpenItemMenuId((current) => (current === id ? null : id));
-              }}
-              onCloseMenu={() => setOpenItemMenuId(null)}
+              onToggleMenu={handleToggleItemMenu}
+              onCloseMenu={handleCloseItemMenu}
               onDelete={handleDeleteItem}
               onToggleActive={handleToggleActive}
               onOpenTool={handleOpenTool}

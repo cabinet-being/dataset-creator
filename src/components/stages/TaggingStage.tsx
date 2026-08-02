@@ -19,10 +19,9 @@ import {
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 
-type PreviewMap = Record<string, string>;
-type PreviewCacheEntry = { blob: Blob; url: string };
 type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
 
@@ -118,9 +117,7 @@ const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 type TaggingCardProps = {
   item: WorkspaceImage;
   previewUrl?: string;
-  inputValue: string;
-  onInputChange: (itemId: string, value: string) => void;
-  onSubmit: (itemId: string, value: string) => void;
+  onSubmit: (itemId: string, value: string) => boolean;
   onRemoveTag: (itemId: string, tag: string) => void;
   suggestions: string[];
 };
@@ -129,8 +126,6 @@ const TaggingCard = memo(
   ({
     item,
     previewUrl,
-    inputValue,
-    onInputChange,
     onSubmit,
     onRemoveTag,
     suggestions,
@@ -141,14 +136,33 @@ const TaggingCard = memo(
     const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
     const [dropdownPosition, setDropdownPosition] = useState<SuggestionDropdownPosition | null>(null);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [inputValue, setInputValue] = useState('');
     const fragment = getCurrentTagFragment(inputValue);
     const displayTags = useMemo(() => normalizeUniqueTags(item.tags ?? []), [item.tags]);
     const displayTagSet = useMemo(() => new Set(displayTags), [displayTags]);
-    const filteredSuggestions = fragment
-      ? Array.from(new Set(suggestions))
-          .filter((tag) => tag.includes(fragment) && !displayTagSet.has(tag))
-          .slice(0, 24)
-      : [];
+    const filteredSuggestions = useMemo(() => {
+      if (!fragment) {
+        return [];
+      }
+
+      const nextSuggestions: string[] = [];
+      const seen = new Set<string>();
+
+      for (const tag of suggestions) {
+        if (seen.has(tag) || !tag.includes(fragment) || displayTagSet.has(tag)) {
+          continue;
+        }
+
+        seen.add(tag);
+        nextSuggestions.push(tag);
+
+        if (nextSuggestions.length >= 24) {
+          break;
+        }
+      }
+
+      return nextSuggestions;
+    }, [displayTagSet, fragment, suggestions]);
     const hasSuggestions = filteredSuggestions.length > 0;
     const shouldShowDropdown = hasSuggestions && isDropdownOpen;
 
@@ -228,10 +242,12 @@ const TaggingCard = memo(
 
     const addSuggestion = (tag: string) => {
       const nextValue = replaceCurrentTagFragment(inputValue, tag);
-      onInputChange(item.id, nextValue);
+      setInputValue(nextValue);
       setIsDropdownOpen(false);
       window.requestAnimationFrame(() => {
-        onSubmit(item.id, nextValue);
+        if (onSubmit(item.id, nextValue)) {
+          setInputValue('');
+        }
         inputRef.current?.focus();
       });
     };
@@ -314,7 +330,7 @@ const TaggingCard = memo(
               type="text"
               value={inputValue}
               onChange={(event) => {
-                onInputChange(item.id, event.target.value);
+                setInputValue(event.target.value);
                 setIsDropdownOpen(true);
                 window.requestAnimationFrame(updateDropdownPosition);
               }}
@@ -325,7 +341,10 @@ const TaggingCard = memo(
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  onSubmit(item.id, inputValue);
+                  if (onSubmit(item.id, inputValue)) {
+                    setInputValue('');
+                    setIsDropdownOpen(false);
+                  }
                 }
 
                 if (event.key === 'Escape') {
@@ -458,15 +477,12 @@ export const TaggingStage = () => {
   const setAutoTaggingProgress = useLocalTaggerStore((state) => state.setAutoTaggingProgress);
   const disconnectLocalTagger = useLocalTaggerStore((state) => state.disconnect);
 
-  const [tagInputs, setTagInputs] = useState<Record<string, string>>({});
   const [newBlacklistTag, setNewBlacklistTag] = useState('');
   const [globalTagsToAdd, setGlobalTagsToAdd] = useState('');
   const [isDatasetTagsOpen, setIsDatasetTagsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [suggestionTags, setSuggestionTags] = useState<string[]>([]);
   const [suggestionFileName, setSuggestionFileName] = useState('');
-  const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
-  const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
@@ -481,6 +497,7 @@ export const TaggingStage = () => {
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]
   );
+  const previewUrls = useWorkspacePreviewUrls(items);
   const normalizedDatasetKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
   const bulkTags = useMemo(
     () => Array.from(new Set(parseTagInput(globalTagsToAdd).filter((tag) => tag !== normalizedDatasetKeyword))),
@@ -504,67 +521,6 @@ export const TaggingStage = () => {
 
     window.addEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
     return () => window.removeEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
-  }, []);
-
-  useEffect(() => {
-    setPreviewUrls((previous) => {
-      const next: PreviewMap = {};
-      const activeIds = new Set(items.map((item) => item.id));
-      let validThumbnailCount = 0;
-
-      for (const item of items) {
-        const cached = previewCacheRef.current[item.id];
-
-        if (cached && cached.blob === item.imageData) {
-          next[item.id] = cached.url;
-          validThumbnailCount++;
-          continue;
-        }
-
-        if (cached) {
-          URL.revokeObjectURL(cached.url);
-        }
-
-        try {
-          const url = URL.createObjectURL(item.imageData);
-          previewCacheRef.current[item.id] = { blob: item.imageData, url };
-          next[item.id] = url;
-          validThumbnailCount++;
-        } catch (error) {
-          if (import.meta.env.DEV) {
-            console.warn(`[tagging] failed preview generation: ${item.id}`, error);
-          }
-        }
-      }
-
-      for (const [id, cached] of Object.entries(previewCacheRef.current)) {
-        if (activeIds.has(id)) {
-          continue;
-        }
-        URL.revokeObjectURL(cached.url);
-        delete previewCacheRef.current[id];
-      }
-
-      if (import.meta.env.DEV) {
-        console.log(`[tagging] gallery item count: ${items.length}`);
-        console.log(`[tagging] cards with valid thumbnail source: ${validThumbnailCount}`);
-      }
-
-      const previousKeys = Object.keys(previous);
-      const nextKeys = Object.keys(next);
-      const changed =
-        previousKeys.length !== nextKeys.length ||
-        nextKeys.some((id) => previous[id] !== next[id]);
-
-      return changed ? next : previous;
-    });
-  }, [items]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(previewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
-      previewCacheRef.current = {};
-    };
   }, []);
 
   useEffect(() => {
@@ -642,7 +598,7 @@ export const TaggingStage = () => {
       const parsedTags = parseTagInput(rawValue);
       const item = items.find((entry) => entry.id === itemId);
       if (!item) {
-        return;
+        return false;
       }
 
       const existingTags = new Set(item.tags ?? []);
@@ -678,7 +634,7 @@ export const TaggingStage = () => {
         updateWorkspaceImageTags(item, nextTags);
       }
 
-      setTagInputs((previous) => ({ ...previous, [itemId]: '' }));
+      return true;
     },
     [items, taggingConfig.blacklist, taggingConfig.datasetKeyword, updateWorkspaceImageTags]
   );
@@ -1435,11 +1391,7 @@ export const TaggingStage = () => {
             <TaggingCard
               item={item}
               previewUrl={previewUrls[item.id]}
-              inputValue={tagInputs[item.id] ?? ''}
-              onInputChange={(itemId, value) =>
-                setTagInputs((previous) => ({ ...previous, [itemId]: value }))
-              }
-              onSubmit={(itemId, value) => applyTagsToItem(itemId, value)}
+              onSubmit={applyTagsToItem}
               onRemoveTag={handleRemoveTag}
               suggestions={manualTagSuggestions}
             />

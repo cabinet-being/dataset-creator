@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ComponentType } from 'react';
 import {
   Archive,
@@ -45,14 +45,6 @@ import {
   writeProjectFileToHandle,
 } from './services/project/projectFileService';
 import { type BrickColumnCount, type StageName } from './types';
-import { ToolHub } from './components/ToolHub';
-import { ImportStage } from './components/stages/ImportStage';
-import { SimilarityReviewStage } from './components/stages/SimilarityReviewStage';
-import { CleanupStage } from './components/stages/CleanupStage';
-import { AnalysisStage } from './components/stages/AnalysisStage';
-import { FinalReviewStage } from './components/stages/FinalReviewStage';
-import { TaggingStage } from './components/stages/TaggingStage';
-import { ExportStage } from './components/stages/ExportStage';
 import { Badge } from './components/ui/badge';
 import { Separator } from './components/ui/separator';
 import './App.css';
@@ -63,6 +55,31 @@ const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
+
+const ToolHub = lazy(() => import('./components/ToolHub').then((module) => ({ default: module.ToolHub })));
+const ImportStage = lazy(() =>
+  import('./components/stages/ImportStage').then((module) => ({ default: module.ImportStage }))
+);
+const SimilarityReviewStage = lazy(() =>
+  import('./components/stages/SimilarityReviewStage').then((module) => ({
+    default: module.SimilarityReviewStage,
+  }))
+);
+const CleanupStage = lazy(() =>
+  import('./components/stages/CleanupStage').then((module) => ({ default: module.CleanupStage }))
+);
+const AnalysisStage = lazy(() =>
+  import('./components/stages/AnalysisStage').then((module) => ({ default: module.AnalysisStage }))
+);
+const FinalReviewStage = lazy(() =>
+  import('./components/stages/FinalReviewStage').then((module) => ({ default: module.FinalReviewStage }))
+);
+const TaggingStage = lazy(() =>
+  import('./components/stages/TaggingStage').then((module) => ({ default: module.TaggingStage }))
+);
+const ExportStage = lazy(() =>
+  import('./components/stages/ExportStage').then((module) => ({ default: module.ExportStage }))
+);
 
 const isStageName = (value: string | null): value is StageName =>
   Boolean(value && (STAGES as readonly string[]).includes(value));
@@ -775,7 +792,15 @@ function App() {
 
         <div className={showEditToolbar ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}>
           <div className={showEditToolbar ? 'h-full min-h-0' : 'p-4 md:p-6'}>
-            {renderTool(currentStage)}
+            <Suspense
+              fallback={
+                <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
+                  Loading tool...
+                </div>
+              }
+            >
+              {renderTool(currentStage)}
+            </Suspense>
           </div>
         </div>
       </main>

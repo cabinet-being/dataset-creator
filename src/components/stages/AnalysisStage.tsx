@@ -34,10 +34,9 @@ import {
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 
-type PreviewMap = Record<string, string>;
-type PreviewCacheEntry = { blob: Blob; url: string };
 type EmbeddingCacheEntry = { blob: Blob; embedding: Float32Array };
 type SimilarityView = 'graph' | 'pairs' | 'clusters';
 type GraphNode = {
@@ -964,7 +963,7 @@ export const AnalysisStage = () => {
   const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<string>>(
     new Set(ASPECT_RATIOS)
   );
-  const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
+  const previewUrls = useWorkspacePreviewUrls(items);
   const [itemEmbeddings, setItemEmbeddings] = useState<Record<string, Float32Array>>({});
   const [uiThreshold, setUiThreshold] = useState(0.12);
   const [activeSimilarityView, setActiveSimilarityView] = useState<SimilarityView>('graph');
@@ -973,7 +972,6 @@ export const AnalysisStage = () => {
   const [previewItemIds, setPreviewItemIds] = useState<string[] | null>(null);
   const [graphViewport, setGraphViewport] = useState({ scale: 1, x: 0, y: 0 });
   const [simulatedGraphNodes, setSimulatedGraphNodes] = useState<GraphNode[] | null>(null);
-  const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
   const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
   const reviewViewContainerRef = useRef<HTMLDivElement | null>(null);
   const graphInteractionRef = useRef<HTMLDivElement | null>(null);
@@ -1031,74 +1029,11 @@ export const AnalysisStage = () => {
   }, []);
 
   useEffect(() => {
-    setPreviewUrls((previous) => {
-      const next: PreviewMap = {};
-      const activeIds = new Set(items.map((item) => item.id));
-      let reusedCount = 0;
-      let recreatedCount = 0;
-      let removedCount = 0;
-
-      for (const item of items) {
-        const cached = previewCacheRef.current[item.id];
-
-        if (cached && cached.blob === item.imageData) {
-          next[item.id] = cached.url;
-          reusedCount++;
-          continue;
-        }
-
-        if (cached) {
-          URL.revokeObjectURL(cached.url);
-        }
-
-        try {
-          const url = URL.createObjectURL(item.imageData);
-          previewCacheRef.current[item.id] = { blob: item.imageData, url };
-          next[item.id] = url;
-          recreatedCount++;
-        } catch (error) {
-          if (import.meta.env.DEV) {
-            console.warn(`[review] failed preview generation: ${item.id}`, error);
-          }
-        }
-      }
-
-      for (const [id, cached] of Object.entries(previewCacheRef.current)) {
-        if (activeIds.has(id)) {
-          continue;
-        }
-
-        URL.revokeObjectURL(cached.url);
-        delete previewCacheRef.current[id];
-        removedCount++;
-      }
-
-      if (import.meta.env.DEV) {
-        console.log(`[review] number of review items: ${items.length}`);
-        console.log(`[review] preview source reused: ${reusedCount}`);
-        console.log(`[review] preview source recreated: ${recreatedCount}`);
-        console.log(`[review] preview source removed: ${removedCount}`);
-        console.log('[review] object URLs generated only in controlled effect cache');
-      }
-
-      const previousKeys = Object.keys(previous);
-      const nextKeys = Object.keys(next);
-      const changed =
-        previousKeys.length !== nextKeys.length ||
-        nextKeys.some((id) => previous[id] !== next[id]);
-
-      return changed ? next : previous;
-    });
-  }, [items]);
-
-  useEffect(() => {
-    return () => {
-      for (const cached of Object.values(previewCacheRef.current)) {
-        URL.revokeObjectURL(cached.url);
-      }
-      previewCacheRef.current = {};
-    };
-  }, []);
+    if (import.meta.env.DEV) {
+      console.log(`[review] number of review items: ${items.length}`);
+      console.log('[review] object URLs shared through workspace preview cache');
+    }
+  }, [items.length]);
 
   const filteredItems = useMemo(
     () => items.filter((item) => selectedAspectRatios.has(item.aspectRatio)),
