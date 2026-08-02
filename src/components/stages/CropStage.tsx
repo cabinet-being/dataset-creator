@@ -134,7 +134,6 @@ export const CropStage = () => {
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const removeDatasetItem = useProjectStore((state) => state.removeDatasetItem);
   const datasetItems = useProjectStore((state) => Object.values(state.datasetItems));
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const setStageState = useProjectStore((state) => state.setStageState);
   const cleanupStageState = useProjectStore(
     (state) => (state.stageState.clean as CleanupStageState | undefined) ?? {}
@@ -800,19 +799,14 @@ export const CropStage = () => {
 
       if (import.meta.env.DEV) {
         console.log(`[crop] current crop frame count at transition time: ${totalFrameCount}`);
-        console.log(`[crop] whether Crop -> Augment was allowed with zero frames: ${totalFrameCount === 0}`);
-      }
-
-      if (import.meta.env.DEV) {
-        console.log('[crop] Finish Crop transition target stage: augment');
+        console.log(`[crop] whether crop materialization was allowed with zero frames: ${totalFrameCount === 0}`);
       }
       addNotification(
         'success',
         createdCount > 0
           ? `Created ${createdCount} crop${createdCount !== 1 ? 's' : ''}`
-          : 'No crop frames created. Proceeding to augmentation with current images.'
+          : 'No crop frames created. Current images are available to dataset tools.'
       );
-      setCurrentStage('augment');
     } catch (error) {
       console.error('Failed to finalize crop stage:', error);
       addNotification('error', 'Failed to finalize crop stage');
@@ -836,14 +830,14 @@ export const CropStage = () => {
             <div>
               <h3 className="text-lg font-semibold">Crop Gallery</h3>
               <p className="text-sm text-muted-foreground">
-                Choose an image to crop. Frames stay in working state until you finish the stage.
+                Choose an image to crop. Apply crops to update the shared dataset workspace.
               </p>
             </div>
             <button
               onClick={() => void handleFinishCrop()}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
             >
-              Finish Crop
+              Apply Crops
             </button>
           </div>
 

@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowRight, Plug, Settings2, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Plug, Settings2, Sparkles, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
@@ -116,7 +116,6 @@ export const TaggingStage = () => {
   );
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const { addNotification } = useUIStore();
   const localTagger = useLocalTaggerStore((state) => state.bundle);
@@ -592,13 +591,6 @@ export const TaggingStage = () => {
     [items, updateDatasetItem]
   );
 
-  const handleProceedToExport = () => {
-    if (import.meta.env.DEV) {
-      console.log(`[tagging:model] model connected state before navigating to Stage 8: ${localTaggerStatus}`);
-    }
-    setCurrentStage('export');
-  };
-
   if (items.length === 0) {
     return (
       <div className="text-center py-12">
@@ -964,15 +956,6 @@ export const TaggingStage = () => {
         </div>
       </div>
 
-      <div className="flex justify-center">
-        <button
-          onClick={handleProceedToExport}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity font-medium"
-        >
-          Proceed to Export
-          <ArrowRight size={16} />
-        </button>
-      </div>
     </div>
   );
 };

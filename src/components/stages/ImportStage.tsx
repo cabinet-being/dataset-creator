@@ -13,7 +13,6 @@ export const ImportStage = () => {
   const {
     addSourceImages,
     removeSourceImage,
-    setCurrentStage,
   } = useProjectStore();
 
   const sourceImages = useProjectStore((state) => state.sourceImages);
@@ -252,7 +251,7 @@ export const ImportStage = () => {
               Imported Images ({images.length})
             </h3>
             <span className="text-sm text-muted-foreground">
-              Embeddings generated • Ready for next stage
+              Embeddings generated • Available to all tools
             </span>
           </div>
 
@@ -307,18 +306,6 @@ export const ImportStage = () => {
               ).toFixed(1)} MB</strong> total
             </p>
           </div>
-        </div>
-      )}
-
-      {/* Next Button */}
-      {images.length > 0 && (
-        <div className="flex justify-center">
-          <button
-            onClick={() => setCurrentStage('select')}
-            className="px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity font-semibold text-lg"
-          >
-            Proceed to Remove Duplicates →
-          </button>
         </div>
       )}
 

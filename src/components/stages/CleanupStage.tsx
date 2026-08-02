@@ -56,7 +56,6 @@ export const CleanupStage = () => {
   const cleanupStageState = useProjectStore(
     (state) => (state.stageState.clean as CleanupStageState | undefined) ?? {}
   );
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const setStageState = useProjectStore((state) => state.setStageState);
   const { addNotification } = useUIStore();
 
@@ -535,7 +534,6 @@ export const CleanupStage = () => {
         );
       }
       addNotification('success', 'Cleanup working edits saved');
-      setCurrentStage('crop');
     } catch (error) {
       console.error('Failed to finish cleanup:', error);
       addNotification('error', 'Failed to save cleanup working edits');
@@ -566,7 +564,7 @@ export const CleanupStage = () => {
               onClick={handleFinishCleanup}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
             >
-              Finish Cleanup
+              Save Cleanup
             </button>
           </div>
 

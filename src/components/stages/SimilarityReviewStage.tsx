@@ -7,12 +7,8 @@ import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
 
 export const SimilarityReviewStage = () => {
   const sourceImages = useProjectStore((state) => state.sourceImages);
-  const cleanupStageState = useProjectStore(
-    (state) => (state.stageState.clean as { sourceImageIds?: string[]; workingEdits?: Record<string, unknown> } | undefined) ?? {}
-  );
   const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const setStageState = useProjectStore((state) => state.setStageState);
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const { addNotification } = useUIStore();
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
@@ -26,8 +22,7 @@ export const SimilarityReviewStage = () => {
   }, [uiThreshold]);
 
   const images = useMemo(() => Object.values(sourceImages), [sourceImages]);
-  const canProceed = images.length > 0;
-  const canProceedReason = canProceed ? 'remaining images available' : 'no images remaining';
+  const cleanupInputReason = images.length > 0 ? 'synced to cleanup tool' : 'no images remaining';
 
   const duplicateGroups = useMemo<SimilarityCluster[]>(() => {
     if (import.meta.env.DEV) {
@@ -71,10 +66,26 @@ export const SimilarityReviewStage = () => {
   }, [duplicateGroups, selectedClusterId]);
 
   useEffect(() => {
-    if (import.meta.env.DEV) {
-      console.log(`[duplicates] canProceed: ${canProceed} (${canProceedReason})`);
+    const remainingImageIds = images.map((image) => image.id);
+    const latestCleanState =
+      (useProjectStore.getState().stageState.clean as
+        | { sourceImageIds?: string[]; workingEdits?: Record<string, unknown> }
+        | undefined) ?? {};
+    const currentIds = latestCleanState.sourceImageIds ?? [];
+
+    if (currentIds.join('|') === remainingImageIds.join('|')) {
+      return;
     }
-  }, [canProceed, canProceedReason]);
+
+    setStageState('clean', {
+      ...latestCleanState,
+      sourceImageIds: remainingImageIds,
+    });
+
+    if (import.meta.env.DEV) {
+      console.log(`[duplicates] cleanup input synced: ${remainingImageIds.length}`);
+    }
+  }, [images, setStageState]);
 
   const handleRemoveImage = (id: string) => {
     removeSourceImage(id);
@@ -101,26 +112,6 @@ export const SimilarityReviewStage = () => {
     }
 
     addNotification('info', `Removed ${idsToRemove.length} duplicate image${idsToRemove.length !== 1 ? 's' : ''} from cluster`);
-  };
-
-  const handleProceedToCleanup = () => {
-    const remainingImageIds = images.map((image) => image.id);
-
-    if (import.meta.env.DEV) {
-      console.log(`[cleanup-transition] remaining images: ${remainingImageIds.length}`);
-      console.log(`[cleanup-transition] writing cleanup input set: ${remainingImageIds.length}`);
-      console.log(
-        `[cleanup-transition] preserving existing cleanup working edits: ${
-          Object.keys(cleanupStageState.workingEdits ?? {}).length
-        }`
-      );
-    }
-
-    setStageState('clean', {
-      ...cleanupStageState,
-      sourceImageIds: remainingImageIds,
-    });
-    setCurrentStage('clean');
   };
 
   if (images.length === 0) {
@@ -169,8 +160,8 @@ export const SimilarityReviewStage = () => {
           <p className="text-2xl font-bold">{duplicateGroups.length}</p>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Can Proceed</p>
-          <p className="text-sm font-medium">{canProceedReason}</p>
+          <p className="text-xs text-muted-foreground mb-1">Cleanup Input</p>
+          <p className="text-sm font-medium">{cleanupInputReason}</p>
         </div>
       </div>
 
@@ -288,15 +279,6 @@ export const SimilarityReviewStage = () => {
         </div>
       )}
 
-      <div className="flex justify-center">
-        <button
-          onClick={handleProceedToCleanup}
-          disabled={!canProceed}
-          className="px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity font-semibold text-lg"
-        >
-          Proceed to Cleanup →
-        </button>
-      </div>
     </div>
   );
 };

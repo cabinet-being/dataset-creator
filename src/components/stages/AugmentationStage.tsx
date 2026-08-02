@@ -87,7 +87,6 @@ export const AugmentationStage = () => {
   );
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const removeDatasetItem = useProjectStore((state) => state.removeDatasetItem);
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const setStageState = useProjectStore((state) => state.setStageState);
   const cleanupStageState = useProjectStore(
     (state) => (state.stageState.clean as CleanupStageState | undefined) ?? {}
@@ -292,7 +291,7 @@ export const AugmentationStage = () => {
     });
   };
 
-  const handleProceedToFinalReview = async () => {
+  const handleApplyAugmentations = async () => {
     setIsProcessing(true);
 
     try {
@@ -358,16 +357,15 @@ export const AugmentationStage = () => {
             0
           )}`
         );
-        console.log(`[augment-transition] generated augmented outputs on transition: ${generatedAugmentedOutputs}`);
+        console.log(`[augment] generated augmented outputs: ${generatedAugmentedOutputs}`);
         console.log(
-          `[augment-transition] final input count received by Final Review: ${
+          `[augment] final dataset item count available to review/tagging: ${
             useProjectStore.getState().getDatasetItems(false).length
           }`
         );
       }
 
-      addNotification('success', `Prepared ${generatedAugmentedOutputs} augmented item(s) for review`);
-      setCurrentStage('review');
+      addNotification('success', `Applied ${generatedAugmentedOutputs} augmented item(s)`);
     } catch (error) {
       console.error('Failed to finalize augmentation stage:', error);
       addNotification('error', 'Failed to prepare augmentations for review');
@@ -472,11 +470,11 @@ export const AugmentationStage = () => {
               {candidates.length} candidate{candidates.length !== 1 ? 's' : ''}
             </div>
             <button
-              onClick={() => void handleProceedToFinalReview()}
+              onClick={() => void handleApplyAugmentations()}
               disabled={isProcessing}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity text-sm font-medium"
             >
-              {isProcessing ? 'Preparing Final Review...' : 'Proceed to Final Review'}
+              {isProcessing ? 'Applying Augmentations...' : 'Apply Augmentations'}
             </button>
           </div>
         </div>

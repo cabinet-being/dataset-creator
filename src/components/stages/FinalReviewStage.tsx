@@ -9,7 +9,6 @@ import {
 } from 'react';
 import {
   AlertCircle,
-  ArrowRight,
   Boxes,
   ChevronRight,
   GitCompareArrows,
@@ -921,7 +920,6 @@ export const FinalReviewStage = () => {
   );
   const sourceImages = useProjectStore((state) => state.sourceImages);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const { addNotification } = useUIStore();
 
   const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<string>>(
@@ -1527,10 +1525,6 @@ export const FinalReviewStage = () => {
     },
     [addNotification, softDeleteDatasetItem]
   );
-
-  const handleProceedToTagging = useCallback(() => {
-    setCurrentStage('tagging');
-  }, [setCurrentStage]);
 
   const showPairs = useCallback(() => {
     setActiveSimilarityView('pairs');
@@ -2182,19 +2176,9 @@ export const FinalReviewStage = () => {
 
       <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-4">
         <p className="text-sm text-blue-600">
-          <strong>Next step:</strong> Review the thumbnails and similarity map, then continue with
-          the remaining dataset flow.
+          Review thumbnails and the similarity map here. Tagging and export use this same shared
+          dataset workspace directly.
         </p>
-      </div>
-
-      <div className="flex justify-center">
-        <button
-          onClick={handleProceedToTagging}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity font-medium"
-        >
-          Proceed to Tag Images
-          <ArrowRight size={16} />
-        </button>
       </div>
     </div>
   );

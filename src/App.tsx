@@ -1,123 +1,204 @@
-import { useEffect } from 'react'
-import { useProjectStore } from './stores/useProjectStore'
-import { useUIStore } from './stores/useUIStore'
-import { STAGE_LABELS, STAGES } from './lib/constants'
-import { ImportStage } from './components/stages/ImportStage'
-import { SimilarityReviewStage } from './components/stages/SimilarityReviewStage'
-import { CleanupStage } from './components/stages/CleanupStage'
-import { CropStage } from './components/stages/CropStage'
-import { AugmentationStage } from './components/stages/AugmentationStage'
-import { FinalReviewStage } from './components/stages/FinalReviewStage'
-import { TaggingStage } from './components/stages/TaggingStage'
-import { ExportStage } from './components/stages/ExportStage'
-import './App.css'
+import { useEffect } from 'react';
+import type { ComponentType } from 'react';
+import {
+  Archive,
+  Brush,
+  Crop,
+  Download,
+  Home,
+  Image,
+  Layers3,
+  Moon,
+  ScanSearch,
+  Sparkles,
+  Sun,
+  Tags,
+} from 'lucide-react';
+import { useProjectStore } from './stores/useProjectStore';
+import { useUIStore } from './stores/useUIStore';
+import { STAGE_LABELS, TOOL_DESCRIPTIONS, WORKFLOW_TOOLS } from './lib/constants';
+import { type StageName } from './types';
+import { ToolHub } from './components/ToolHub';
+import { ImportStage } from './components/stages/ImportStage';
+import { SimilarityReviewStage } from './components/stages/SimilarityReviewStage';
+import { CleanupStage } from './components/stages/CleanupStage';
+import { CropStage } from './components/stages/CropStage';
+import { AugmentationStage } from './components/stages/AugmentationStage';
+import { FinalReviewStage } from './components/stages/FinalReviewStage';
+import { TaggingStage } from './components/stages/TaggingStage';
+import { ExportStage } from './components/stages/ExportStage';
+import { Badge } from './components/ui/badge';
+import { Button } from './components/ui/button';
+import { Separator } from './components/ui/separator';
+import './App.css';
+
+const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
+  import: Image,
+  select: ScanSearch,
+  clean: Brush,
+  crop: Crop,
+  augment: Sparkles,
+  review: Layers3,
+  tagging: Tags,
+  export: Download,
+};
+
+const renderTool = (currentStage: StageName) => {
+  switch (currentStage) {
+    case 'hub':
+      return <ToolHub />;
+    case 'import':
+      return <ImportStage />;
+    case 'select':
+      return <SimilarityReviewStage />;
+    case 'clean':
+      return <CleanupStage />;
+    case 'crop':
+      return <CropStage />;
+    case 'augment':
+      return <AugmentationStage />;
+    case 'review':
+      return <FinalReviewStage />;
+    case 'tagging':
+      return <TaggingStage />;
+    case 'export':
+      return <ExportStage />;
+    default:
+      return <ToolHub />;
+  }
+};
 
 function App() {
-  const currentStage = useProjectStore((state) => state.currentStage)
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage)
-  const initializeProject = useProjectStore((state) => state.initializeProject)
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages))
-  const { darkMode, setDarkMode } = useUIStore()
+  const currentStage = useProjectStore((state) => state.currentStage);
+  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
+  const hydrateSourceImages = useProjectStore((state) => state.hydrateSourceImages);
+  const hydrateDatasetItems = useProjectStore((state) => state.hydrateDatasetItems);
+  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const datasetItems = useProjectStore((state) => state.getDatasetItems(false));
+  const { darkMode, setDarkMode } = useUIStore();
 
   useEffect(() => {
-    // Initialize project on first load
-    initializeProject('My Dataset')
-    
-    // Set dark mode based on system preference or stored value
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    setDarkMode(prefersDark)
-  }, [])
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    setDarkMode(prefersDark);
+
+    Promise.all([hydrateSourceImages(), hydrateDatasetItems()]).catch((error) => {
+      console.warn('Failed to hydrate image workspace', error);
+    });
+  }, [hydrateDatasetItems, hydrateSourceImages, setDarkMode]);
 
   useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark')
-    } else {
-      document.documentElement.classList.remove('dark')
-    }
-  }, [darkMode])
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
 
-  const currentStageIndex = STAGES.indexOf(currentStage as any)
-
-  const goToStage = (stageName: string) => {
-    const targetIndex = STAGES.indexOf(stageName as any)
-    // Allow going back, only allow forward if images are present for next stage
-    if (targetIndex <= currentStageIndex || (targetIndex === 1 && sourceImages.length > 0)) {
-      setCurrentStage(stageName as any)
-    }
-  }
+  const activeLabel = STAGE_LABELS[currentStage] ?? 'Tool Hub';
+  const activeDescription =
+    currentStage === 'hub'
+      ? 'Choose a tool and keep working from the shared image workspace.'
+      : TOOL_DESCRIPTIONS[currentStage] ?? '';
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      {/* Sidebar Navigation */}
-      <aside className="w-56 border-r border-border bg-card p-6 overflow-y-auto">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold">Dataset Creator</h1>
-          <p className="text-sm text-muted-foreground mt-1">SD Training Preparation</p>
+      <aside className="hidden w-72 shrink-0 flex-col border-r border-border bg-card md:flex">
+        <div className="p-5">
+          <button
+            onClick={() => setCurrentStage('hub')}
+            className="block w-full rounded-lg text-left transition-colors hover:bg-secondary/70"
+          >
+            <div className="p-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
+                  <Archive size={18} />
+                </div>
+                <div>
+                  <h1 className="font-semibold leading-tight">Dataset Creator</h1>
+                  <p className="text-xs text-muted-foreground">Tool workspace</p>
+                </div>
+              </div>
+            </div>
+          </button>
         </div>
 
-        <nav className="space-y-2">
-          {STAGES.map((stage, index) => {
-            const isAccessible = index <= currentStageIndex || (index === 1 && sourceImages.length > 0)
+        <div className="px-5">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md border border-border bg-background p-3">
+              <p className="text-xs text-muted-foreground">Sources</p>
+              <p className="text-xl font-semibold">{sourceImages.length}</p>
+            </div>
+            <div className="rounded-md border border-border bg-background p-3">
+              <p className="text-xs text-muted-foreground">Dataset</p>
+              <p className="text-xl font-semibold">{datasetItems.length}</p>
+            </div>
+          </div>
+        </div>
+
+        <Separator className="my-4" />
+
+        <nav className="flex-1 space-y-1 overflow-y-auto px-3 pb-5">
+          <Button
+            variant={currentStage === 'hub' ? 'secondary' : 'ghost'}
+            className="mb-2 w-full justify-start"
+            onClick={() => setCurrentStage('hub')}
+          >
+            <Home size={16} />
+            Tool Hub
+          </Button>
+
+          {WORKFLOW_TOOLS.map((tool) => {
+            const Icon = toolIcons[tool];
+            const active = tool === currentStage;
+
             return (
               <button
-                key={stage}
-                onClick={() => goToStage(stage)}
-                className={`
-                  w-full text-left px-4 py-2 rounded-md text-sm font-medium
-                  transition-colors duration-200
-                  ${
-                    stage === currentStage
-                      ? 'bg-primary text-primary-foreground'
-                      : 'hover:bg-secondary text-foreground'
-                  }
-                  ${!isAccessible ? 'opacity-50 cursor-not-allowed' : ''}
-                `}
-                disabled={!isAccessible}
+                key={tool}
+                onClick={() => setCurrentStage(tool as StageName)}
+                className={`flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
+                  active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-slate-200 hover:bg-white/10 hover:text-white'
+                }`}
               >
-                <span className="flex items-center gap-2">
-                  <span className="text-xs w-5 h-5 rounded-full border border-current flex items-center justify-center">
-                    {index + 1}
-                  </span>
-                  {STAGE_LABELS[stage]}
-                </span>
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="block min-w-0 truncate">{STAGE_LABELS[tool]}</span>
               </button>
-            )
+            );
           })}
         </nav>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <header className="border-b border-border bg-card px-6 py-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold">{STAGE_LABELS[currentStage]}</h2>
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setDarkMode(!darkMode)}
-              className="p-2 rounded-md hover:bg-secondary transition-colors"
-              title={darkMode ? 'Light mode' : 'Dark mode'}
-            >
-              {darkMode ? '☀️' : '🌙'}
-            </button>
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="border-b border-border bg-card px-4 py-4 md:px-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="mb-1 flex items-center gap-2">
+                <h2 className="truncate text-xl font-semibold">{activeLabel}</h2>
+                {currentStage !== 'hub' && <Badge variant="outline">Tool</Badge>}
+              </div>
+              <p className="truncate text-sm text-muted-foreground">{activeDescription}</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button variant="outline" className="shrink-0" onClick={() => setCurrentStage('hub')}>
+                <Home size={16} />
+                <span className="hidden sm:inline">Tools</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setDarkMode(!darkMode)}
+                title={darkMode ? 'Light mode' : 'Dark mode'}
+              >
+                {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+              </Button>
+            </div>
           </div>
         </header>
 
-        {/* Stage Content */}
         <div className="flex-1 overflow-auto">
-          <div className="p-6">
-            {currentStage === 'import' && <ImportStage />}
-            {currentStage === 'select' && <SimilarityReviewStage />}
-            {currentStage === 'clean' && <CleanupStage />}
-            {currentStage === 'crop' && <CropStage />}
-            {currentStage === 'augment' && <AugmentationStage />}
-            {currentStage === 'review' && <FinalReviewStage />}
-            {currentStage === 'tagging' && <TaggingStage />}
-            {currentStage === 'export' && <ExportStage />}
-          </div>
+          <div className="p-4 md:p-6">{renderTool(currentStage)}</div>
         </div>
       </main>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

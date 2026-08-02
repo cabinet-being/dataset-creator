@@ -8,7 +8,7 @@ export type ImageType = 'original' | 'crop' | 'augmented';
 
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
-export type StageName = 'import' | 'select' | 'clean' | 'crop' | 'augment' | 'review' | 'tagging' | 'export';
+export type StageName = 'hub' | 'import' | 'select' | 'clean' | 'crop' | 'augment' | 'review' | 'tagging' | 'export';
 
 // ============ SOURCE IMAGE ============
 
@@ -200,8 +200,9 @@ export const createProject = (name: string): ProjectState => ({
   sourceImages: {},
   datasetItems: {},
   cleanupOverlays: {},
-  currentStage: 'import',
+  currentStage: 'hub',
   stageState: {
+    hub: {},
     import: {},
     select: {},
     clean: {},
