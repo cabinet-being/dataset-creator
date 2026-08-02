@@ -3,18 +3,16 @@ export const WORKFLOW_TOOLS = [
   'import',
   'select',
   'clean',
-  'crop',
-  'augment',
   'review',
   'tagging',
   'export',
 ] as const;
 
-export const HUB_TOOL_CARDS = ['select', 'clean', 'crop', 'augment', 'tagging'] as const;
+export const HUB_TOOL_CARDS = ['select', 'clean', 'tagging'] as const;
 
 export const SIDEBAR_PRIMARY_TOOLS = ['import', 'export', 'review'] as const;
 
-export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'crop', 'augment', 'tagging'] as const;
+export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'tagging'] as const;
 
 export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
 
@@ -23,8 +21,6 @@ export const STAGE_LABELS: Record<string, string> = {
   import: 'Import',
   select: 'Remove Duplicates',
   clean: 'Edit',
-  crop: 'Crop',
-  augment: 'Augmentation',
   review: 'Review',
   tagging: 'Caption',
   export: 'Export',
@@ -33,9 +29,7 @@ export const STAGE_LABELS: Record<string, string> = {
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   import: 'Load Source image files or folders into the shared workspace.',
   select: 'Find duplicate and near-duplicate source images before editing.',
-  clean: 'Apply browser-based cleanup edits to workspace images.',
-  crop: 'Create Synthetic aspect-ratio crops from Source images.',
-  augment: 'Generate Synthetic flips, rotations, and color variants from Source or Synthetic images.',
+  clean: 'Edit Source and Synthetic images in Photopea from the browser workspace.',
   review: 'Inspect Source and Synthetic images with relationship maps before captioning.',
   tagging: 'Edit captions manually, in bulk, or with a local ONNX tagger.',
   export: 'Save PNG and TXT training pairs as a folder or ZIP archive.',
@@ -45,8 +39,6 @@ export const TOOL_REQUIREMENTS: Record<string, 'none' | 'sourceImages' | 'worksp
   import: 'none',
   select: 'sourceImages',
   clean: 'sourceImages',
-  crop: 'sourceImages',
-  augment: 'workspaceImages',
   review: 'workspaceImages',
   tagging: 'workspaceImages',
   export: 'workspaceImages',

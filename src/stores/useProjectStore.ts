@@ -293,7 +293,6 @@ export const useProjectStore = create<ProjectStore>()(
             stageState: {
               ...persistedState.stageState,
               clean: {},
-              crop: {},
             },
           };
         },

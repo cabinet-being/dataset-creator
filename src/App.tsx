@@ -3,13 +3,11 @@ import type { ComponentType } from 'react';
 import {
   Archive,
   Brush,
-  Crop,
   Download,
   Image,
   Layers3,
   Moon,
   ScanSearch,
-  Sparkles,
   Sun,
   Tags,
 } from 'lucide-react';
@@ -18,6 +16,7 @@ import { useUIStore } from './stores/useUIStore';
 import {
   SIDEBAR_PRIMARY_TOOLS,
   SIDEBAR_SECONDARY_TOOLS,
+  STAGES,
   STAGE_LABELS,
   TOOL_DESCRIPTIONS,
 } from './lib/constants';
@@ -27,8 +26,6 @@ import { ToolHub } from './components/ToolHub';
 import { ImportStage } from './components/stages/ImportStage';
 import { SimilarityReviewStage } from './components/stages/SimilarityReviewStage';
 import { CleanupStage } from './components/stages/CleanupStage';
-import { CropStage } from './components/stages/CropStage';
-import { AugmentationStage } from './components/stages/AugmentationStage';
 import { FinalReviewStage } from './components/stages/FinalReviewStage';
 import { TaggingStage } from './components/stages/TaggingStage';
 import { ExportStage } from './components/stages/ExportStage';
@@ -41,8 +38,6 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Image,
   select: ScanSearch,
   clean: Brush,
-  crop: Crop,
-  augment: Sparkles,
   review: Layers3,
   tagging: Tags,
   export: Download,
@@ -58,10 +53,6 @@ const renderTool = (currentStage: StageName) => {
       return <SimilarityReviewStage />;
     case 'clean':
       return <CleanupStage />;
-    case 'crop':
-      return <CropStage />;
-    case 'augment':
-      return <AugmentationStage />;
     case 'review':
       return <FinalReviewStage />;
     case 'tagging':
@@ -95,6 +86,12 @@ function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  useEffect(() => {
+    if (!(STAGES as readonly string[]).includes(currentStage)) {
+      setCurrentStage('hub');
+    }
+  }, [currentStage, setCurrentStage]);
 
   const activeLabel = STAGE_LABELS[currentStage] ?? 'Image Workspace';
   const activeDescription =

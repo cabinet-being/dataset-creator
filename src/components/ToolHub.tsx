@@ -1,12 +1,10 @@
 import {
   Archive,
   Brush,
-  Crop,
   Download,
   Image,
   Layers3,
   ScanSearch,
-  Sparkles,
   Tags,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
@@ -22,8 +20,6 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Image,
   select: ScanSearch,
   clean: Brush,
-  crop: Crop,
-  augment: Sparkles,
   review: Layers3,
   tagging: Tags,
   export: Download,
