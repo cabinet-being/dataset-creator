@@ -35,10 +35,12 @@ type SyntheticImageManifest = Omit<SyntheticImage, 'imageData' | 'psdData' | 'cr
 
 type ProjectFileManifest = {
   format: 'dataset-creator-project';
-  version: 1;
+  version: 1 | 2;
   project: Omit<ProjectState, 'sourceImages' | 'datasetItems' | 'cleanupOverlays' | 'lastModified' | 'createdAt'> & {
-    sourceImages: Record<string, SourceImageManifest>;
-    datasetItems: Record<string, SyntheticImageManifest>;
+    sourceImages?: Record<string, SourceImageManifest>;
+    datasetItems?: Record<string, SyntheticImageManifest>;
+    sourceImageManifests?: Record<string, string>;
+    datasetItemManifests?: Record<string, string>;
     cleanupOverlays: {};
     lastModified: string;
     createdAt: string;
@@ -72,56 +74,71 @@ const toIsoString = (value: Date | string | number | undefined, fallback = new D
   return fallback.toISOString();
 };
 
+const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {
+  const file = zip.file(path);
+  if (!file) {
+    throw new Error(`Project file is missing ${path}`);
+  }
+
+  return JSON.parse(await file.async('string')) as T;
+};
+
 export const createProjectFileBlob = async (project: ProjectState): Promise<Blob> => {
   const zip = new JSZip();
-  const sourceImages: Record<string, SourceImageManifest> = {};
-  const datasetItems: Record<string, SyntheticImageManifest> = {};
+  const sourceImageManifests: Record<string, string> = {};
+  const datasetItemManifests: Record<string, string> = {};
   const exportedAt = new Date();
 
   for (const source of Object.values(project.sourceImages)) {
     const originalFilePath = `sources/${source.id}/original`;
     const thumbnailPath = source.thumbnail ? `sources/${source.id}/thumbnail` : undefined;
+    const manifestPath = `sources/${source.id}/manifest.json`;
     zip.file(originalFilePath, source.originalFile);
     if (source.thumbnail && thumbnailPath) {
       zip.file(thumbnailPath, source.thumbnail);
     }
 
     const { originalFile: _originalFile, previewUrl: _previewUrl, thumbnail: _thumbnail, embedding, ...metadata } = source;
-    sourceImages[source.id] = {
+    const sourceManifest: SourceImageManifest = {
       ...metadata,
       originalFilePath,
       thumbnailPath,
       embedding: embedding ? Array.from(embedding) : undefined,
       createdAt: toIsoString(source.createdAt, exportedAt),
     };
+    sourceImageManifests[source.id] = manifestPath;
+    zip.file(manifestPath, JSON.stringify(sourceManifest, null, 2));
   }
 
   for (const item of Object.values(project.datasetItems)) {
     const imageDataPath = `synthetic/${item.id}/image.png`;
     const psdDataPath = item.psdData ? `synthetic/${item.id}/image.psd` : undefined;
+    const manifestPath = `synthetic/${item.id}/manifest.json`;
     zip.file(imageDataPath, item.imageData);
     if (item.psdData && psdDataPath) {
       zip.file(psdDataPath, item.psdData);
     }
 
     const { imageData: _imageData, psdData: _psdData, createdAt, deletedAt, ...metadata } = item;
-    datasetItems[item.id] = {
+    const itemManifest: SyntheticImageManifest = {
       ...metadata,
       imageDataPath,
       psdDataPath,
       createdAt: toIsoString(createdAt, exportedAt),
       deletedAt: deletedAt ? toIsoString(deletedAt, exportedAt) : undefined,
     };
+    datasetItemManifests[item.id] = manifestPath;
+    zip.file(manifestPath, JSON.stringify(itemManifest, null, 2));
   }
 
   const manifest: ProjectFileManifest = {
     format: 'dataset-creator-project',
-    version: 1,
+    version: 2,
     project: {
       id: project.id,
       name: project.name,
-      sourceImages,
-      datasetItems,
+      sourceImageManifests,
+      datasetItemManifests,
       cleanupOverlays: {},
       currentStage: project.currentStage,
       stageState: project.stageState,
@@ -208,12 +225,27 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   }
 
   const manifest = JSON.parse(await manifestFile.async('string')) as ProjectFileManifest;
-  if (manifest.format !== 'dataset-creator-project' || manifest.version !== 1) {
+  if (manifest.format !== 'dataset-creator-project' || ![1, 2].includes(manifest.version)) {
     throw new Error('Unsupported project file');
   }
 
+  const sourceManifests = manifest.project.sourceImageManifests
+    ? await Promise.all(
+        Object.values(manifest.project.sourceImageManifests).map((path) =>
+          readJsonFile<SourceImageManifest>(zip, path)
+        )
+      )
+    : Object.values(manifest.project.sourceImages ?? {});
+  const syntheticManifests = manifest.project.datasetItemManifests
+    ? await Promise.all(
+        Object.values(manifest.project.datasetItemManifests).map((path) =>
+          readJsonFile<SyntheticImageManifest>(zip, path)
+        )
+      )
+    : Object.values(manifest.project.datasetItems ?? {});
+
   const sourceImages: Record<string, SourceImage> = {};
-  for (const source of Object.values(manifest.project.sourceImages)) {
+  for (const source of sourceManifests) {
     const originalFileBuffer = await zip.file(source.originalFilePath)?.async('arraybuffer');
     if (!originalFileBuffer) {
       throw new Error(`Project file is missing Source data for ${source.id}`);
@@ -243,7 +275,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   }
 
   const datasetItems: Record<string, SyntheticImage> = {};
-  for (const item of Object.values(manifest.project.datasetItems)) {
+  for (const item of syntheticManifests) {
     const imageDataBuffer = await zip.file(item.imageDataPath)?.async('arraybuffer');
     if (!imageDataBuffer) {
       throw new Error(`Project file is missing Synthetic data for ${item.id}`);
@@ -271,10 +303,21 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     };
   }
 
-  const loadedStageState = manifest.project.stageState as Partial<Record<string, unknown>>;
+  const {
+    sourceImages: _sourceImageManifests,
+    datasetItems: _datasetItemManifests,
+    sourceImageManifests: _sourceImageManifestPaths,
+    datasetItemManifests: _datasetItemManifestPaths,
+    cleanupOverlays: _cleanupOverlays,
+    lastModified,
+    createdAt,
+    stageState,
+    ...projectMetadata
+  } = manifest.project;
+  const loadedStageState = stageState as Partial<Record<string, unknown>>;
 
   return {
-    ...manifest.project,
+    ...projectMetadata,
     sourceImages,
     datasetItems,
     cleanupOverlays: {},
@@ -288,7 +331,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
       tagging: loadedStageState.tagging ?? {},
       export: loadedStageState.export ?? {},
     },
-    lastModified: new Date(manifest.project.lastModified),
-    createdAt: new Date(manifest.project.createdAt),
+    lastModified: new Date(lastModified),
+    createdAt: new Date(createdAt),
   };
 };

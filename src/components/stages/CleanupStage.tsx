@@ -62,7 +62,6 @@ export const CleanupStage = () => {
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
-  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const addNotification = useUIStore((state) => state.addNotification);
   const setEditToolbar = useUIStore((state) => state.setEditToolbar);
 
@@ -265,23 +264,29 @@ export const CleanupStage = () => {
           height: image.height,
           mimeType: editedBlob.type,
         }));
-        const syntheticImage = createSyntheticImage(
-          image.sourceImageId,
-          editedBlob,
-          imageInfo.width,
-          imageInfo.height,
-          'cleaned',
-          image.aspectRatio
-        );
-        syntheticImage.psdData = psdBlob;
+        if (!saveCopy && image.kind === 'synthetic' && image.syntheticImageId) {
+          updateDatasetItem(image.syntheticImageId, {
+            imageData: editedBlob,
+            psdData: psdBlob,
+            width: imageInfo.width,
+            height: imageInfo.height,
+            aspectRatio: image.aspectRatio,
+          });
+        } else {
+          const syntheticImage = createSyntheticImage(
+            image.sourceImageId,
+            editedBlob,
+            imageInfo.width,
+            imageInfo.height,
+            'cleaned',
+            image.aspectRatio
+          );
+          syntheticImage.psdData = psdBlob;
 
-        addDatasetItem(syntheticImage);
+          addDatasetItem(syntheticImage);
 
-        if (!saveCopy) {
-          if (image.kind === 'source') {
+          if (!saveCopy && image.kind === 'source') {
             updateSourceImage(image.sourceImageId, { hidden: true });
-          } else if (image.syntheticImageId) {
-            softDeleteDatasetItem(image.syntheticImageId);
           }
         }
 
@@ -298,7 +303,7 @@ export const CleanupStage = () => {
         phaseRef.current = 'idle';
       }
     },
-    [addDatasetItem, addNotification, closeEditor, softDeleteDatasetItem, updateSourceImage]
+    [addDatasetItem, addNotification, closeEditor, updateDatasetItem, updateSourceImage]
   );
 
   useEffect(() => {
