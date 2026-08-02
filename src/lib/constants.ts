@@ -1,4 +1,4 @@
-// Tools in recommended dataset preparation order.
+// Tools in recommended image preparation order.
 export const WORKFLOW_TOOLS = [
   'import',
   'select',
@@ -19,7 +19,7 @@ export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'crop', 'augment', 't
 export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
 
 export const STAGE_LABELS: Record<string, string> = {
-  hub: 'Dataset Creator',
+  hub: 'Image Workspace',
   import: 'Import',
   select: 'Remove Duplicates',
   clean: 'Edit',
@@ -31,25 +31,25 @@ export const STAGE_LABELS: Record<string, string> = {
 };
 
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  import: 'Load image files or folders into the shared workspace.',
+  import: 'Load Source image files or folders into the shared workspace.',
   select: 'Find duplicate and near-duplicate source images before editing.',
   clean: 'Apply browser-based cleanup edits to workspace images.',
-  crop: 'Create aspect-ratio crops for training-ready dataset items.',
-  augment: 'Generate flips, rotations, and color variants from prepared items.',
-  review: 'Inspect final dataset items and relationship maps before tagging.',
-  tagging: 'Edit tags manually, in bulk, or with a local ONNX tagger.',
+  crop: 'Create Synthetic aspect-ratio crops from Source images.',
+  augment: 'Generate Synthetic flips, rotations, and color variants from Source or Synthetic images.',
+  review: 'Inspect Source and Synthetic images with relationship maps before captioning.',
+  tagging: 'Edit captions manually, in bulk, or with a local ONNX tagger.',
   export: 'Save PNG and TXT training pairs as a folder or ZIP archive.',
 };
 
-export const TOOL_REQUIREMENTS: Record<string, 'none' | 'sourceImages' | 'datasetItems'> = {
+export const TOOL_REQUIREMENTS: Record<string, 'none' | 'sourceImages' | 'workspaceImages'> = {
   import: 'none',
   select: 'sourceImages',
   clean: 'sourceImages',
   crop: 'sourceImages',
-  augment: 'datasetItems',
-  review: 'datasetItems',
-  tagging: 'datasetItems',
-  export: 'datasetItems',
+  augment: 'workspaceImages',
+  review: 'workspaceImages',
+  tagging: 'workspaceImages',
+  export: 'workspaceImages',
 };
 
 // Aspect ratios

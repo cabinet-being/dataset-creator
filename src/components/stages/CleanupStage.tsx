@@ -15,6 +15,11 @@ import {
   type CanvasState,
 } from '../../services/cleanup/canvasEditor';
 import { type SourceImage } from '../../types';
+import {
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+} from '../../lib/workspaceImages';
 import { AlertCircle, ArrowLeft, Check, Droplet, Eraser, Pencil, Redo2, Undo2 } from 'lucide-react';
 
 type CleanupWorkingEdit = {
@@ -573,7 +578,8 @@ export const CleanupStage = () => {
               <button
                 key={item.id}
                 onClick={() => void openImageInEditor(item.id)}
-                className="gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary border border-border hover:border-primary transition-colors text-left"
+                className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass('source')} hover:border-primary transition-colors text-left`}
+                style={getWorkspaceKindFrameStyle('source')}
               >
                 <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
                   {item.previewUrl ? (
@@ -592,9 +598,12 @@ export const CleanupStage = () => {
                           {item.hasWorkingEdit ? 'Edited' : 'Not edited'}
                         </p>
                       </div>
-                      {item.hasWorkingEdit && (
-                        <Check size={16} className="text-green-400 shrink-0" />
-                      )}
+                      <div className="flex shrink-0 items-center gap-2">
+                        {item.hasWorkingEdit && (
+                          <Check size={16} className="text-green-400 shrink-0" />
+                        )}
+                        <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -797,9 +806,10 @@ export const CleanupStage = () => {
                     onClick={() => void openImageInEditor(item.id)}
                     className={`w-full text-left rounded-lg border p-2 transition-colors ${
                       item.id === selectedItem.id
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/40 bg-background'
+                        ? `${getWorkspaceKindFrameClass('source', true)} bg-primary/10`
+                        : `${getWorkspaceKindFrameClass('source')} hover:border-primary/40 bg-background`
                     }`}
+                    style={getWorkspaceKindFrameStyle('source')}
                   >
                     <div className="aspect-square rounded-md overflow-hidden bg-black mb-2 flex items-center justify-center">
                       {item.previewUrl ? (
@@ -810,7 +820,10 @@ export const CleanupStage = () => {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs font-medium truncate">{item.label}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="min-w-0 truncate text-xs font-medium">{item.label}</p>
+                      <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                    </div>
                   </button>
                 ))}
               </div>

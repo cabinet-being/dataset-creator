@@ -7,23 +7,32 @@ import {
   downloadZipFile,
   saveDirectoryViaFilesystemAPI,
 } from '../../services/export/exportService';
+import { toWorkspaceImages, getWorkspaceKindBadgeClass } from '../../lib/workspaceImages';
 import { AlertCircle, Download, FolderOpen } from 'lucide-react';
 
 export const ExportStage = () => {
-  const { getDatasetItems, taggingConfig } = useProjectStore();
+  const { taggingConfig } = useProjectStore();
+  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const syntheticImages = useProjectStore((state) => state.getDatasetItems(false));
+  const cleanupStageState = useProjectStore(
+    (state) =>
+      (state.stageState.clean as
+        | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
+        | undefined) ?? {}
+  );
   const { addNotification } = useUIStore();
   const localTaggerStatus = useLocalTaggerStore((state) => state.status);
 
   const [isExporting, setIsExporting] = useState(false);
   const [exportMethod, setExportMethod] = useState<'zip' | 'directory'>('zip');
 
-  const items = getDatasetItems(false);
+  const items = toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits);
   const totalSize = items.reduce((sum, item) => sum + item.imageData.size, 0);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
       console.log(`[tagging:model] model connected state on entering Stage 8: ${localTaggerStatus}`);
-      console.log('[export] dataset keyword is added only during export rendering/output');
+      console.log('[export] export keyword is added only during export rendering/output');
     }
   }, [localTaggerStatus]);
 
@@ -68,7 +77,7 @@ export const ExportStage = () => {
       addNotification('success', `Exported ${items.length} images as ZIP`);
     } catch (error) {
       console.error('Export failed:', error);
-      addNotification('error', 'Failed to export dataset');
+      addNotification('error', 'Failed to export images');
     } finally {
       setIsExporting(false);
     }
@@ -85,7 +94,7 @@ export const ExportStage = () => {
 
   return (
     <div className="space-y-6">
-      {/* Dataset Summary */}
+      {/* Export Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground mb-1">Total Images</p>
@@ -102,7 +111,7 @@ export const ExportStage = () => {
           </p>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Keyword</p>
+          <p className="text-xs text-muted-foreground mb-1">Export Keyword</p>
           <p className="text-sm font-mono font-bold">{taggingConfig.datasetKeyword}</p>
         </div>
       </div>
@@ -156,7 +165,12 @@ export const ExportStage = () => {
         <div className="space-y-2 max-h-64 overflow-y-auto">
           {items.slice(0, 5).map((item, index) => (
             <div key={item.id} className="p-2 bg-secondary/50 rounded text-sm font-mono text-xs">
-              <div className="font-semibold">{index + 1}.png / {index + 1}.txt</div>
+              <div className="flex items-center gap-2 font-semibold">
+                <span>{index + 1}.png / {index + 1}.txt</span>
+                <span className={getWorkspaceKindBadgeClass(item.kind)}>
+                  {item.label}
+                </span>
+              </div>
               <div className="text-muted-foreground">
                 {taggingConfig.datasetKeyword}
                 {item.tags && item.tags.length > 0
@@ -188,7 +202,7 @@ export const ExportStage = () => {
         <ul className="text-sm text-yellow-600 space-y-1 ml-4">
           <li>• Files numbered 1, 2, 3... in final list order</li>
           <li>• Each PNG has matching TXT file with tags</li>
-          <li>• Dataset keyword always first tag</li>
+          <li>• Export keyword always first tag</li>
           <li>• Tags separated by comma + space</li>
           <li>• Blacklisted tags automatically removed</li>
         </ul>

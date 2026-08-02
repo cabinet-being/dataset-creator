@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { HUB_TOOL_CARDS, STAGE_LABELS, TOOL_DESCRIPTIONS, TOOL_REQUIREMENTS } from '../lib/constants';
+import { toWorkspaceImages } from '../lib/workspaceImages';
 import { useProjectStore } from '../stores/useProjectStore';
 import { type StageName } from '../types';
 import { Badge } from './ui/badge';
@@ -31,28 +32,30 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
 const getRequirementLabel = (
   requirement: (typeof TOOL_REQUIREMENTS)[string],
   sourceCount: number,
-  datasetCount: number
+  workspaceCount: number
 ) => {
   if (requirement === 'none') {
     return 'Ready';
   }
 
   if (requirement === 'sourceImages') {
-    return sourceCount > 0 ? 'Ready' : 'Needs sources';
+    return sourceCount > 0 ? 'Ready' : 'Needs Source';
   }
 
-  return datasetCount > 0 ? 'Ready' : 'Needs dataset';
+  return workspaceCount > 0 ? 'Ready' : 'Needs images';
 };
 
 export const ToolHub = () => {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const datasetItems = useProjectStore((state) => state.getDatasetItems(false));
+  const syntheticImages = useProjectStore((state) => state.getDatasetItems(false));
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
 
   const sourceCount = sourceImages.length;
-  const datasetCount = datasetItems.length;
-  const taggedCount = datasetItems.filter((item) => item.tags && item.tags.length > 0).length;
+  const syntheticCount = syntheticImages.length;
+  const workspaceImages = toWorkspaceImages(sourceImages, syntheticImages);
+  const workspaceCount = workspaceImages.length;
+  const taggedCount = workspaceImages.filter((item) => item.tags && item.tags.length > 0).length;
   const totalSourceSize = sourceImages.reduce((sum, image) => {
     return sum + (image.originalFile instanceof Blob ? image.originalFile.size : 0);
   }, 0);
@@ -66,7 +69,7 @@ export const ToolHub = () => {
               <Badge variant="secondary" className="mb-3">
                 Shared workspace
               </Badge>
-              <h1 className="text-3xl font-semibold tracking-normal">Dataset tools</h1>
+              <h1 className="text-3xl font-semibold tracking-normal">Image tools</h1>
               <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                 Import images once, keep them in the browser workspace, and move between tools
                 without restarting the preparation flow.
@@ -92,17 +95,17 @@ export const ToolHub = () => {
 
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
             <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Source images</p>
+              <p className="text-xs font-medium text-muted-foreground">Source</p>
               <p className="mt-2 text-2xl font-semibold">{sourceCount}</p>
             </div>
             <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Dataset items</p>
-              <p className="mt-2 text-2xl font-semibold">{datasetCount}</p>
+              <p className="text-xs font-medium text-muted-foreground">Synthetic</p>
+              <p className="mt-2 text-2xl font-semibold">{syntheticCount}</p>
             </div>
             <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Tagged items</p>
+              <p className="text-xs font-medium text-muted-foreground">Captioned</p>
               <p className="mt-2 text-2xl font-semibold">
-                {taggedCount}/{datasetCount}
+                {taggedCount}/{workspaceCount}
               </p>
             </div>
           </div>
@@ -126,7 +129,7 @@ export const ToolHub = () => {
               <span className="font-mono text-xs font-medium">{taggingConfig.datasetKeyword}</span>
             </div>
             <div className="rounded-md bg-secondary p-3 text-xs text-muted-foreground">
-              Source images and generated dataset items are backed by IndexedDB and stay
+              Source and Synthetic images are backed by IndexedDB and stay
               available while switching tools.
             </div>
             <button
@@ -147,7 +150,7 @@ export const ToolHub = () => {
           const ready =
             requirement === 'none' ||
             (requirement === 'sourceImages' && sourceCount > 0) ||
-            (requirement === 'datasetItems' && datasetCount > 0);
+            (requirement === 'workspaceImages' && workspaceCount > 0);
 
           return (
             <Card key={tool} className="flex min-h-[220px] flex-col">
@@ -160,7 +163,7 @@ export const ToolHub = () => {
                     variant={ready ? 'secondary' : 'outline'}
                     className={!ready ? 'bg-background text-muted-foreground' : undefined}
                   >
-                    {getRequirementLabel(requirement, sourceCount, datasetCount)}
+                    {getRequirementLabel(requirement, sourceCount, workspaceCount)}
                   </Badge>
                 </div>
                 <CardTitle className="flex items-center gap-2">

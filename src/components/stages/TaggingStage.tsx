@@ -9,6 +9,13 @@ import {
   LocalTaggerBundleSource,
   predictLocalTags,
 } from '../../services/tagging/localTaggerService';
+import {
+  toWorkspaceImages,
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+  type WorkspaceImage,
+} from '../../lib/workspaceImages';
 
 type PreviewMap = Record<string, string>;
 type PreviewCacheEntry = { blob: Blob; url: string };
@@ -25,7 +32,7 @@ const parseTagInput = (value: string): string[] =>
     .filter(Boolean);
 
 type TaggingCardProps = {
-  item: ReturnType<typeof useProjectStore.getState>['datasetItems'][string];
+  item: WorkspaceImage;
   previewUrl?: string;
   inputValue: string;
   onInputChange: (itemId: string, value: string) => void;
@@ -37,8 +44,12 @@ const TaggingCard = memo(
   ({ item, previewUrl, inputValue, onInputChange, onSubmit, onRemoveTag }: TaggingCardProps) => {
     return (
       <div
-        className="gallery-masonry-item rounded-lg overflow-hidden border border-border bg-card"
-        style={{ contentVisibility: 'auto', containIntrinsicSize: '420px' }}
+        className={`gallery-masonry-item rounded-lg overflow-hidden bg-card ${getWorkspaceKindFrameClass(item.kind)}`}
+        style={{
+          contentVisibility: 'auto',
+          containIntrinsicSize: '420px',
+          ...getWorkspaceKindFrameStyle(item.kind),
+        }}
       >
         <div className="relative min-h-[12rem] bg-black overflow-hidden flex items-center justify-center">
           {previewUrl ? (
@@ -57,7 +68,12 @@ const TaggingCard = memo(
           )}
 
           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-            <p className="text-sm font-medium text-white">Image #{item.exportOrder ?? item.id.slice(0, 8)}</p>
+            <div className="flex items-end justify-between gap-2">
+              <p className="min-w-0 truncate text-sm font-medium text-white">Image #{item.displayIdentity}</p>
+              <span className={getWorkspaceKindBadgeClass(item.kind)}>
+                {item.label}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -109,13 +125,21 @@ const TaggingCard = memo(
 TaggingCard.displayName = 'TaggingCard';
 
 export const TaggingStage = () => {
-  const items = useProjectStore((state) =>
+  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const syntheticImages = useProjectStore((state) =>
     Object.values(state.datasetItems)
       .filter((item) => !item.deleted)
       .sort((left, right) => (left.exportOrder ?? 0) - (right.exportOrder ?? 0))
   );
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
+  const cleanupStageState = useProjectStore(
+    (state) =>
+      (state.stageState.clean as
+        | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
+        | undefined) ?? {}
+  );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const { addNotification } = useUIStore();
   const localTagger = useLocalTaggerStore((state) => state.bundle);
@@ -138,6 +162,10 @@ export const TaggingStage = () => {
   const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
   const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
+  const items = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
+    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
+  );
 
   const canUseDirectoryPicker =
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
@@ -252,6 +280,18 @@ export const TaggingStage = () => {
     }
   }, [items, taggingConfig.datasetKeyword]);
 
+  const updateWorkspaceImageTags = useCallback(
+    (item: WorkspaceImage, tags: string[]) => {
+      if (item.kind === 'source') {
+        updateSourceImage(item.sourceImageId, { tags });
+        return;
+      }
+
+      updateDatasetItem(item.id.replace(/^synthetic:/, ''), { tags });
+    },
+    [updateDatasetItem, updateSourceImage]
+  );
+
   const applyTagsToItem = useCallback(
     (itemId: string, rawValue: string) => {
       const parsedTags = parseTagInput(rawValue);
@@ -285,12 +325,12 @@ export const TaggingStage = () => {
       }
 
       if (nextTags.length !== (item.tags ?? []).length) {
-        updateDatasetItem(itemId, { tags: nextTags });
+        updateWorkspaceImageTags(item, nextTags);
       }
 
       setTagInputs((previous) => ({ ...previous, [itemId]: '' }));
     },
-    [items, taggingConfig.blacklist, taggingConfig.datasetKeyword, updateDatasetItem]
+    [items, taggingConfig.blacklist, taggingConfig.datasetKeyword, updateWorkspaceImageTags]
   );
 
   const mergeAutoTags = useCallback(
@@ -467,11 +507,11 @@ export const TaggingStage = () => {
       }
 
       if (nextTags.length !== (item.tags ?? []).length) {
-        updateDatasetItem(item.id, { tags: nextTags });
+        updateWorkspaceImageTags(item, nextTags);
       }
     }
 
-    addNotification('success', `Added ${parsedTags.length} tag(s) across the current dataset`);
+    addNotification('success', `Added ${parsedTags.length} caption tag(s) across the current workspace`);
     if (import.meta.env.DEV) {
       console.log('[tagging] dataset keyword insertion skipped during bulk add');
     }
@@ -544,7 +584,7 @@ export const TaggingStage = () => {
           nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
 
         if (changed) {
-          updateDatasetItem(item.id, { tags: nextTags });
+          updateWorkspaceImageTags(item, nextTags);
           changedItemCount += 1;
         }
 
@@ -569,7 +609,7 @@ export const TaggingStage = () => {
     mergeAutoTags,
     taggingConfig.maxTags,
     taggingConfig.threshold,
-    updateDatasetItem,
+    updateWorkspaceImageTags,
   ]);
 
   const handleRemoveTag = useCallback(
@@ -580,7 +620,7 @@ export const TaggingStage = () => {
       }
 
       const nextTags = item.tags.filter((entry) => entry !== tag);
-      updateDatasetItem(itemId, { tags: nextTags });
+      updateWorkspaceImageTags(item, nextTags);
 
       if (import.meta.env.DEV) {
         console.log(`[tagging] tag removed: ${tag}`);
@@ -588,7 +628,7 @@ export const TaggingStage = () => {
         console.log(`[tagging] resulting tag list for that image: ${JSON.stringify(nextTags)}`);
       }
     },
-    [items, updateDatasetItem]
+    [items, updateWorkspaceImageTags]
   );
 
   if (items.length === 0) {
@@ -615,7 +655,7 @@ export const TaggingStage = () => {
           <Dialog.Trigger asChild>
             <button className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-secondary hover:bg-muted transition-colors">
               <Settings2 size={16} />
-              Tagging Settings
+              Caption Settings
             </button>
           </Dialog.Trigger>
 
@@ -624,9 +664,9 @@ export const TaggingStage = () => {
             <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(720px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-card p-6 shadow-2xl overflow-y-auto">
               <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
-                  <Dialog.Title className="text-lg font-semibold">Tagging Settings</Dialog.Title>
+                  <Dialog.Title className="text-lg font-semibold">Caption Settings</Dialog.Title>
                   <Dialog.Description className="text-sm text-muted-foreground">
-                    Configure export metadata, blacklist rules, and local auto-tagging behavior.
+                    Configure export metadata, blacklist rules, and local auto-caption behavior.
                   </Dialog.Description>
                 </div>
                 <Dialog.Close asChild>
@@ -638,9 +678,9 @@ export const TaggingStage = () => {
 
               <div className="space-y-5">
                 <div className="rounded-lg border border-border bg-secondary/20 p-4">
-                  <h3 className="text-sm font-semibold mb-2">Dataset Keyword</h3>
+                  <h3 className="text-sm font-semibold mb-2">Export Keyword</h3>
                   <p className="mb-3 text-xs text-muted-foreground">
-                    Export-only metadata. It is not inserted into editable Stage 7 tags.
+                    Export-only metadata. It is not inserted into editable Caption tags.
                   </p>
                   <input
                     type="text"
@@ -695,7 +735,7 @@ export const TaggingStage = () => {
                 </div>
 
                 <div className="rounded-lg border border-border bg-secondary/20 p-4 space-y-4">
-                  <h3 className="text-sm font-semibold">Local Auto-Tagging Settings</h3>
+                  <h3 className="text-sm font-semibold">Local Auto-Caption Settings</h3>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
@@ -750,7 +790,7 @@ export const TaggingStage = () => {
                     onClick={handleAutoTaggingAction}
                     className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90"
                   >
-                    Save Local Auto-Tagging Settings
+                    Save Local Auto-Caption Settings
                   </button>
                   {settingsSaveMessage ? (
                     <p className="text-xs text-emerald-500">{settingsSaveMessage}</p>
@@ -781,7 +821,7 @@ export const TaggingStage = () => {
         <div className="mb-3">
           <h3 className="text-lg font-semibold">Bulk Tag Action</h3>
           <p className="text-sm text-muted-foreground">
-            Add shared editable tags to every image in Stage 7. The dataset keyword is still applied
+            Add shared editable tags to every Source and Synthetic image. The export keyword is still applied
             only during export.
           </p>
         </div>
@@ -906,7 +946,7 @@ export const TaggingStage = () => {
           <div>
             <h3 className="text-lg font-semibold">Tag Frequency Overview</h3>
             <p className="text-sm text-muted-foreground">
-              Most repeated tags across the current dataset selection.
+              Most repeated tags across Source and Synthetic images.
             </p>
           </div>
         </div>
@@ -931,7 +971,7 @@ export const TaggingStage = () => {
       <div>
         <div className="flex items-center justify-between gap-4 mb-4">
           <div>
-            <h3 className="text-lg font-semibold">Tagging Gallery</h3>
+            <h3 className="text-lg font-semibold">Caption Gallery</h3>
             <p className="text-sm text-muted-foreground">
               Each card shows the image, current tags, and a one-line input for adding more tags.
             </p>

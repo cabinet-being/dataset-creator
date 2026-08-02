@@ -4,18 +4,18 @@
  */
 
 import JSZip from 'jszip';
-import { DatasetItem } from '../../types';
+import type { WorkspaceImage } from '../../lib/workspaceImages';
 
 interface ExportConfig {
   datasetKeyword: string;
-  items: DatasetItem[];
+  items: WorkspaceImage[];
 }
 
 /**
  * Generate tag string for item
  */
 export const generateTagString = (
-  item: DatasetItem,
+  item: WorkspaceImage,
   datasetKeyword: string,
   blacklist: string[]
 ): string => {

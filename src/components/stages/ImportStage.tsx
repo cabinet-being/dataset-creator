@@ -2,6 +2,11 @@ import { useState, useCallback, useRef } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { createSourceImage, type SourceImage } from '../../types';
+import {
+  getWorkspaceKindBadgeClass,
+  getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameStyle,
+} from '../../lib/workspaceImages';
 import { getImageDimensions, createThumbnail } from '../../services/image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
 
@@ -248,17 +253,21 @@ export const ImportStage = () => {
         <div>
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">
-              Imported Images ({images.length})
+              Source ({images.length})
             </h3>
             <span className="text-sm text-muted-foreground">
-              Embeddings generated • Available to all tools
+              Embeddings generated • Source only
             </span>
           </div>
 
           <div className="gallery-masonry">
             {images.map((image) => (
-              <div key={image.id} className="gallery-masonry-item">
-                <div className="group relative rounded-lg overflow-hidden bg-secondary border border-border hover:border-primary transition-colors">
+              <div
+                key={image.id}
+                className={`gallery-masonry-item rounded-lg overflow-hidden ${getWorkspaceKindFrameClass('source')}`}
+                style={getWorkspaceKindFrameStyle('source')}
+              >
+                <div className="group relative bg-secondary transition-colors">
                   <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
                   {typeof image.previewUrl === 'string' && image.previewUrl ? (
                     <img
@@ -286,10 +295,15 @@ export const ImportStage = () => {
                 </div>
 
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
-                  <p className="text-xs text-white truncate">{image.fileName}</p>
-                  <p className="text-xs text-gray-300">
-                    {image.width} × {image.height}
-                  </p>
+                  <div className="flex items-end justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs text-white">{image.fileName}</p>
+                      <p className="text-xs text-gray-300">
+                        {image.width} × {image.height}
+                      </p>
+                    </div>
+                    <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                  </div>
                   </div>
                 </div>
               </div>
