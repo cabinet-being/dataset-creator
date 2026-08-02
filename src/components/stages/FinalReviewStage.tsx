@@ -118,10 +118,10 @@ const ReviewCard = memo(
             <button
               type="button"
               aria-label="Close image menu"
-              className="fixed inset-0 z-30 cursor-default"
+              className="fixed inset-0 z-[900] cursor-default"
               onClick={onCloseMenu}
             />
-            <div className="absolute right-2 top-11 z-40 w-56 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
+            <div className="absolute right-2 top-11 z-[1000] w-56 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
               <button
                 type="button"
                 onClick={() => {
@@ -462,17 +462,17 @@ export const FinalReviewStage = () => {
 
   return (
     <div className="space-y-6">
-      <div className="relative z-20 rounded-lg border border-border bg-card px-3 py-2">
+      <div className="relative z-50 rounded-lg border border-border bg-card px-3 py-2">
         {openMenu && (
           <button
             type="button"
             aria-label="Close review menu"
-            className="fixed inset-0 z-20 cursor-default"
+            className="fixed inset-0 z-[900] cursor-default"
             onClick={() => setOpenMenu(null)}
           />
         )}
 
-        <div className="relative z-30 flex flex-wrap items-center gap-2">
+        <div className="relative z-[1000] flex flex-wrap items-center gap-2">
           <div className="relative">
             <button
               type="button"
@@ -486,7 +486,7 @@ export const FinalReviewStage = () => {
               <ChevronDown className="h-4 w-4" />
             </button>
             {openMenu === 'aspect' && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+              <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
                 {ASPECT_RATIOS.map((ratio) => (
                   <button
                     key={ratio}
@@ -518,7 +518,7 @@ export const FinalReviewStage = () => {
               <ChevronDown className="h-4 w-4" />
             </button>
             {openMenu === 'kind' && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+              <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
                 {(['source', 'synthetic'] as const).map((kind) => (
                   <button
                     key={kind}
@@ -550,7 +550,7 @@ export const FinalReviewStage = () => {
               <ChevronDown className="h-4 w-4" />
             </button>
             {openMenu === 'status' && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+              <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
                 {(['active', 'inactive'] as const).map((status) => (
                   <button
                     key={status}
@@ -583,7 +583,7 @@ export const FinalReviewStage = () => {
               <ChevronDown className="h-4 w-4" />
             </button>
             {openMenu === 'sort' && (
-              <div className="absolute left-0 top-full mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
+              <div className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
                 {SORT_OPTIONS.map((option) => (
                   <button
                     key={option}
