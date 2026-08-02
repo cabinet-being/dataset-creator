@@ -243,13 +243,6 @@ function App() {
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 flex-1">
               <div className="mb-1 flex items-center gap-2">
-                <button
-                  onClick={() => setSidebarOpen(true)}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary hover:bg-muted transition-colors"
-                  title="Open menu"
-                >
-                  <Menu size={16} />
-                </button>
                 <h2 className="truncate text-xl font-semibold">{activeLabel}</h2>
                 {currentStage !== 'hub' && <Badge variant="outline">Tool</Badge>}
               </div>
