@@ -55,20 +55,17 @@ export const generateTagString = (
  */
 export const exportAsZip = async (config: ExportConfig, blacklist: string[] = []): Promise<Blob> => {
   const zip = new JSZip();
-  const itemsFolder = zip.folder('dataset');
-
-  if (!itemsFolder) throw new Error('Failed to create folder');
 
   for (let i = 0; i < config.items.length; i++) {
     const item = config.items[i];
     const basename = getExportBasename(item);
 
     // Add PNG
-    itemsFolder.file(`${basename}.png`, item.imageData);
+    zip.file(`${basename}.png`, item.imageData);
 
     // Generate and add TXT
     const tagString = generateTagString(item, config.datasetKeyword, blacklist);
-    itemsFolder.file(`${basename}.txt`, tagString + '\n');
+    zip.file(`${basename}.txt`, tagString + '\n');
   }
 
   return await zip.generateAsync({ type: 'blob' });

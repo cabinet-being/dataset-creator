@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import JSZip from 'jszip';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { createSourceImage, createStandardImageFileName, type SourceImage } from '../../types';
@@ -15,6 +16,29 @@ import { generateEmbedding, generateImageHash } from '../../services/image/embed
 import { Upload, Trash2 } from 'lucide-react';
 
 const SUPPORTED_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const SUPPORTED_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
+const IMAGE_EXTENSION_TYPES = new Map([
+  ['.gif', 'image/gif'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.webp', 'image/webp'],
+]);
+
+const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '');
+const getArchiveFileName = (path: string): string => path.split('/').pop() ?? path;
+const getArchiveFileStem = (path: string): string => getArchiveFileName(path).replace(/\.[^.]+$/, '');
+const getArchiveExtension = (path: string): string => {
+  const match = path.toLowerCase().match(/\.[^.]+$/);
+  return match?.[0] ?? '';
+};
+const isArchiveFile = (file: File): boolean =>
+  SUPPORTED_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
+const parseCaptionTags = (caption: string): string[] =>
+  caption
+    .split(',')
+    .map((tag) => tag.trim().toLowerCase())
+    .filter(Boolean);
 
 export const ImportStage = () => {
   const {
@@ -32,6 +56,7 @@ export const ImportStage = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
 
   const logDev = useCallback((scope: string, message: string, value: number) => {
     if (import.meta.env.DEV) {
@@ -40,7 +65,7 @@ export const ImportStage = () => {
   }, []);
 
   const processImportedFile = useCallback(
-    async (file: File): Promise<SourceImage | null> => {
+    async (file: File, tags: string[] = []): Promise<SourceImage | null> => {
       if (!SUPPORTED_FORMATS.includes(file.type)) {
         console.warn(`Skipping ${file.name}: unsupported format`);
         return null;
@@ -63,10 +88,55 @@ export const ImportStage = () => {
       sourceImage.thumbnail = thumbnail;
       sourceImage.embedding = embedding;
       sourceImage.hash = hash;
+      sourceImage.tags = tags;
 
       return sourceImage;
     },
     []
+  );
+
+  const processArchiveFile = useCallback(
+    async (file: File): Promise<SourceImage[]> => {
+      const zip = await JSZip.loadAsync(file);
+      const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+      const captionsByPathStem = new Map<string, JSZip.JSZipObject>();
+      const captionsByFileStem = new Map<string, JSZip.JSZipObject>();
+
+      for (const entry of entries) {
+        if (getArchiveExtension(entry.name) !== '.txt') {
+          continue;
+        }
+
+        captionsByPathStem.set(getArchivePathStem(entry.name), entry);
+        captionsByFileStem.set(getArchiveFileStem(entry.name), entry);
+      }
+
+      const importedImages: SourceImage[] = [];
+
+      for (const entry of entries) {
+        const extension = getArchiveExtension(entry.name);
+        const mimeType = IMAGE_EXTENSION_TYPES.get(extension);
+
+        if (!mimeType) {
+          continue;
+        }
+
+        const imageBlob = await entry.async('blob');
+        const imageFile = new File([imageBlob], getArchiveFileName(entry.name), { type: mimeType });
+        const captionEntry =
+          captionsByPathStem.get(getArchivePathStem(entry.name)) ??
+          captionsByFileStem.get(getArchiveFileStem(entry.name));
+        const tags = captionEntry ? parseCaptionTags(await captionEntry.async('string')) : [];
+        const sourceImage = await processImportedFile(imageFile, tags);
+
+        if (sourceImage) {
+          importedImages.push(sourceImage);
+        }
+      }
+
+      return importedImages;
+    },
+    [processImportedFile]
   );
 
   const importImages = useCallback(
@@ -82,6 +152,12 @@ export const ImportStage = () => {
       try {
         for (const file of files) {
           try {
+            if (isArchiveFile(file)) {
+              const archiveImages = await processArchiveFile(file);
+              newImages.push(...archiveImages);
+              continue;
+            }
+
             const sourceImage = await processImportedFile(file);
 
             if (sourceImage) {
@@ -112,7 +188,7 @@ export const ImportStage = () => {
         setIsLoading(false);
       }
     },
-    [addNotification, addSourceImages, logDev, processImportedFile]
+    [addNotification, addSourceImages, logDev, processArchiveFile, processImportedFile]
   );
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -144,6 +220,24 @@ export const ImportStage = () => {
       logDev('folder', 'processed images', processedCount);
       logDev(
         'folder',
+        'store image count',
+        Object.keys(useProjectStore.getState().sourceImages).length
+      );
+    } finally {
+      input.value = '';
+    }
+  };
+
+  const handleArchiveSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const files = input.files ? Array.from(input.files) : [];
+    logDev('archive', 'selected files', files.length);
+
+    try {
+      const processedCount = await importImages(files);
+      logDev('archive', 'processed images', processedCount);
+      logDev(
+        'archive',
         'store image count',
         Object.keys(useProjectStore.getState().sourceImages).length
       );
@@ -208,7 +302,7 @@ export const ImportStage = () => {
           <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
           <h3 className="text-lg font-semibold mb-2">Import</h3>
           <p className="text-sm text-muted-foreground mb-4">
-            Select individual files or an entire folder to begin
+            Select individual files, a folder, or a ZIP archive to begin
           </p>
           
           <div className="flex gap-4 justify-center mb-4">
@@ -226,6 +320,14 @@ export const ImportStage = () => {
               className="px-4 py-2 bg-secondary text-foreground rounded-md hover:bg-muted disabled:opacity-50 transition-colors"
             >
               {isLoading ? 'Processing...' : 'Select Folder'}
+            </button>
+
+            <button
+              onClick={() => archiveInputRef.current?.click()}
+              disabled={isLoading}
+              className="px-4 py-2 bg-secondary text-foreground rounded-md hover:bg-muted disabled:opacity-50 transition-colors"
+            >
+              {isLoading ? 'Processing...' : 'Select ZIP'}
             </button>
           </div>
 
@@ -251,6 +353,15 @@ export const ImportStage = () => {
             accept={SUPPORTED_FORMATS.join(',')}
             {...{ webkitdirectory: 'true', mozdirectory: 'true' } as any}
             onChange={handleFolderSelect}
+            className="hidden"
+          />
+
+          <input
+            ref={archiveInputRef}
+            type="file"
+            multiple
+            accept=".zip,application/zip,application/x-zip-compressed"
+            onChange={handleArchiveSelect}
             className="hidden"
           />
         </div>
