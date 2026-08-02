@@ -73,7 +73,7 @@ export const ToolHub = () => {
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-3">
+            <div className="flex w-full flex-wrap justify-start gap-3 lg:w-auto lg:shrink-0 lg:justify-end">
               <Button size="lg" className="whitespace-nowrap" onClick={() => setCurrentStage('import')}>
                 <Image size={18} />
                 Import

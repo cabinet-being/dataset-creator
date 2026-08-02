@@ -113,7 +113,7 @@ function App() {
                 <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
                   <Archive size={18} />
                 </div>
-                <div className="text-slate-100">
+                <div>
                   <h1 className="font-semibold leading-tight">Dataset Creator</h1>
                 </div>
               </div>
@@ -149,7 +149,7 @@ function App() {
                   className={`flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
                     active
                       ? 'bg-primary text-primary-foreground'
-                      : 'text-slate-200 hover:bg-white/10 hover:text-white'
+                      : 'text-foreground hover:bg-secondary hover:text-secondary-foreground'
                   }`}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
@@ -173,7 +173,7 @@ function App() {
                   className={`flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
                     active
                       ? 'bg-primary text-primary-foreground'
-                      : 'text-slate-200 hover:bg-white/10 hover:text-white'
+                      : 'text-foreground hover:bg-secondary hover:text-secondary-foreground'
                   }`}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
