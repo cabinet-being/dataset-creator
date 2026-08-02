@@ -27,6 +27,7 @@ import {
 } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 
 type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
@@ -274,21 +275,13 @@ const TaggingCard = memo(
         className={`gallery-masonry-item rounded-lg overflow-hidden bg-card ${getWorkspaceKindFrameClass(item.kind)}`}
         style={getWorkspaceKindFrameStyle(item.kind)}
       >
-        <div className="relative min-h-[12rem] bg-black overflow-hidden flex items-center justify-center">
-          {previewUrl ? (
-            <img
-              src={previewUrl}
-              alt={item.fileName}
-              className="w-full h-auto object-contain"
-              loading="lazy"
-              decoding="async"
-              draggable={false}
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
-              Preview unavailable
-            </div>
-          )}
+        <MasonryImageFrame
+          src={previewUrl}
+          alt={item.fileName}
+          width={item.width}
+          height={item.height}
+          placeholder="Preview unavailable"
+        >
           <div
             className={getWorkspaceKindFrameOverlayClass()}
             style={getWorkspaceKindFrameOverlayStyle(item.kind)}
@@ -302,7 +295,7 @@ const TaggingCard = memo(
               </span>
             </div>
           </div>
-        </div>
+        </MasonryImageFrame>
 
         <div className="p-3 space-y-3">
           <div className="rounded-md border border-border bg-secondary/40 p-2 h-20 overflow-y-auto">

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 
 type BrickMasonryProps<T> = {
@@ -38,7 +38,7 @@ export const BrickMasonry = <T,>({
     getEstimateRef.current = getEstimate;
   }, [getEstimate]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) {
       return;

@@ -25,6 +25,7 @@ import {
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { AspectRatio, StageName, WorkspaceImageKind } from '../../types';
 
@@ -87,18 +88,15 @@ const ReviewCard = memo(
         item.excludedFromDataset ? 'border-muted opacity-75' : getWorkspaceKindFrameClass(item.kind)
       }`}
     >
-      <div className="relative min-h-[12rem] overflow-visible rounded-lg bg-black flex items-center justify-center">
-        {previewUrl ? (
-          <img
-            src={previewUrl}
-            alt={item.fileName}
-            className={`w-full h-auto object-contain ${item.excludedFromDataset ? 'grayscale' : ''}`}
-          />
-        ) : (
-          <div className="flex h-48 w-full items-center justify-center text-sm text-muted-foreground">
-            Preview unavailable
-          </div>
-        )}
+      <MasonryImageFrame
+        src={previewUrl}
+        alt={item.fileName}
+        width={item.width}
+        height={item.height}
+        className="rounded-lg"
+        imageClassName={item.excludedFromDataset ? 'grayscale' : ''}
+        placeholder="Preview unavailable"
+      >
         <div
           className={getWorkspaceKindFrameOverlayClass()}
           style={getWorkspaceKindFrameOverlayStyle(item.kind)}
@@ -196,7 +194,7 @@ const ReviewCard = memo(
             </span>
           </div>
         </div>
-      </div>
+      </MasonryImageFrame>
     </div>
   );
   }

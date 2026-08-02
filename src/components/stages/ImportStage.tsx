@@ -11,6 +11,7 @@ import {
   getWorkspaceKindFrameStyle,
 } from '../../lib/workspaceImages';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { getImageDimensions, createThumbnail } from '../../services/image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
 
@@ -359,25 +360,17 @@ export const ImportStage = () => {
                 style={getWorkspaceKindFrameStyle('source')}
               >
                 <div className="group relative bg-secondary transition-colors">
-                  <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
-                  {typeof image.previewUrl === 'string' && image.previewUrl ? (
-                    <img
-                      src={image.previewUrl}
-                      alt={createStandardImageFileName(image.id, image.fileName, image.mimeType)}
-                      className="w-full h-auto object-contain"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-muted text-muted-foreground p-2 text-center">
-                      <span className="text-xs font-medium">
-                        Preview unavailable
-                      </span>
-                    </div>
-                  )}
+                  <MasonryImageFrame
+                    src={typeof image.previewUrl === 'string' ? image.previewUrl : undefined}
+                    alt={createStandardImageFileName(image.id, image.fileName, image.mimeType)}
+                    width={image.width}
+                    height={image.height}
+                    placeholder="Preview unavailable"
+                  >
                   <div
                     className={getWorkspaceKindFrameOverlayClass()}
                     style={getWorkspaceKindFrameOverlayStyle('source')}
                   />
-                </div>
 
                 <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
                   {image.hidden && (
@@ -413,6 +406,7 @@ export const ImportStage = () => {
                     <p className="mt-1 text-[11px] font-medium text-yellow-300">Hidden from tools</p>
                   )}
                   </div>
+                  </MasonryImageFrame>
                 </div>
               </div>
             )}

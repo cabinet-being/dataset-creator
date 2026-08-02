@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { getImageDimensions } from '../../services/image/imageProcessor';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { createSyntheticImage } from '../../types';
@@ -486,14 +487,12 @@ export const CleanupStage = () => {
               className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(image.kind)} hover:border-primary transition-colors text-left`}
               style={getWorkspaceKindFrameStyle(image.kind)}
             >
-              <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
-                {previewUrls[image.id] ? (
-                  <img src={previewUrls[image.id]} alt={image.fileName} className="w-full h-auto object-contain" />
-                ) : (
-                  <span className="text-xs text-muted-foreground">
-                    {image.width} x {image.height}
-                  </span>
-                )}
+              <MasonryImageFrame
+                src={previewUrls[image.id]}
+                alt={image.fileName}
+                width={image.width}
+                height={image.height}
+              >
                 <div
                   className={getWorkspaceKindFrameOverlayClass()}
                   style={getWorkspaceKindFrameOverlayStyle(image.kind)}
@@ -512,7 +511,7 @@ export const CleanupStage = () => {
                     </span>
                   </div>
                 </div>
-              </div>
+              </MasonryImageFrame>
             </button>
           )}
         />

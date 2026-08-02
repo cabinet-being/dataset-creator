@@ -36,6 +36,7 @@ import {
 } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 
 type EmbeddingCacheEntry = { blob: Blob; embedding: Float32Array };
 type SimilarityView = 'graph' | 'pairs' | 'clusters';
@@ -885,21 +886,13 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
       } ${item.deleted ? 'opacity-50 line-through' : ''}`}
       style={getWorkspaceKindFrameStyle(item.kind)}
     >
-      <div className="relative min-h-[12rem] bg-black overflow-hidden flex items-center justify-center">
-        {previewUrl ? (
-          <img
-            src={previewUrl}
-            alt={`${item.label} ${item.width} x ${item.height}`}
-            className="w-full h-auto object-contain"
-            loading="lazy"
-            decoding="async"
-            draggable={false}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
-            Preview unavailable
-          </div>
-        )}
+      <MasonryImageFrame
+        src={previewUrl}
+        alt={`${item.label} ${item.width} x ${item.height}`}
+        width={item.width}
+        height={item.height}
+        placeholder="Preview unavailable"
+      >
         <div
           className={getWorkspaceKindFrameOverlayClass()}
           style={getWorkspaceKindFrameOverlayStyle(item.kind)}
@@ -927,7 +920,7 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
             </span>
           </div>
         </div>
-      </div>
+      </MasonryImageFrame>
     </div>
   );
 });

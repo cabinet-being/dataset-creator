@@ -14,6 +14,7 @@ import {
 } from '../../lib/workspaceImages';
 import { getCachedPreviewUrl } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
+import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
 
 type WorkspacePreviewRecord = {
@@ -252,25 +253,18 @@ export const SimilarityReviewStage = () => {
                             className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-black ${getWorkspaceKindFrameClass(image.kind)}`}
                             style={getWorkspaceKindFrameStyle(image.kind)}
                           >
-                            <div className="relative min-h-[12rem] flex items-center justify-center overflow-hidden">
-                              {image.previewUrl ? (
-                                <img
-                                  src={image.previewUrl}
-                                  alt={image.fileName}
-                                  className="w-full h-auto object-contain"
-                                />
-                              ) : (
-                                <div className="flex h-full w-full items-center justify-center bg-muted text-muted-foreground p-2 text-center">
-                                  <span className="text-xs font-medium">
-                                    Preview unavailable
-                                  </span>
-                                </div>
-                              )}
+                            <MasonryImageFrame
+                              src={image.previewUrl}
+                              alt={image.fileName}
+                              width={image.width}
+                              height={image.height}
+                              placeholder="Preview unavailable"
+                            >
                               <div
                                 className={getWorkspaceKindFrameOverlayClass()}
                                 style={getWorkspaceKindFrameOverlayStyle(image.kind)}
                               />
-                            </div>
+                            </MasonryImageFrame>
 
                             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                               <button
