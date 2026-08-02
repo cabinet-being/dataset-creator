@@ -14,6 +14,8 @@ import {
   toWorkspaceImages,
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameOverlayClass,
+  getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
@@ -238,7 +240,7 @@ const TaggingCard = memo(
           {previewUrl ? (
             <img
               src={previewUrl}
-              alt={`Image ${item.id}`}
+              alt={item.fileName}
               className="w-full h-auto object-contain"
               loading="lazy"
               decoding="async"
@@ -249,10 +251,14 @@ const TaggingCard = memo(
               Preview unavailable
             </div>
           )}
+          <div
+            className={getWorkspaceKindFrameOverlayClass()}
+            style={getWorkspaceKindFrameOverlayStyle(item.kind)}
+          />
 
           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
             <div className="flex items-end justify-between gap-2">
-              <p className="min-w-0 truncate text-sm font-medium text-white">Image #{item.displayIdentity}</p>
+              <p className="min-w-0 truncate text-sm font-medium text-white">{item.fileName}</p>
               <span className={getWorkspaceKindBadgeClass(item.kind)}>
                 {item.label}
               </span>

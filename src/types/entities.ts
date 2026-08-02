@@ -26,6 +26,7 @@ export interface SourceImage {
   id: string;
   originalFile: Blob;
   fileName: string;
+  originalFileName?: string;
   width: number;
   height: number;
   mimeType: string;
@@ -156,16 +157,43 @@ export const createSourceImage = (
   width: number,
   height: number,
   previewUrl?: string
-): SourceImage => ({
-  id: uuidv4(),
-  originalFile: file,
-  fileName,
-  width,
-  height,
-  mimeType: file.type,
-  previewUrl,
-  createdAt: new Date(),
-});
+): SourceImage => {
+  const id = uuidv4();
+
+  return {
+    id,
+    originalFile: file,
+    fileName: createStandardImageFileName(id, fileName, file.type),
+    originalFileName: fileName,
+    width,
+    height,
+    mimeType: file.type,
+    previewUrl,
+    createdAt: new Date(),
+  };
+};
+
+export const createStandardImageFileName = (
+  id: string,
+  fileName = '',
+  mimeType = ''
+): string => `${id}${getImageFileExtension(fileName, mimeType)}`;
+
+export const getImageFileExtension = (fileName: string, mimeType: string): string => {
+  const extension = fileName.match(/\.[a-zA-Z0-9]+$/)?.[0]?.toLowerCase();
+  if (extension) {
+    return extension;
+  }
+
+  const extensionByMimeType: Record<string, string> = {
+    'image/gif': '.gif',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+  };
+
+  return extensionByMimeType[mimeType] ?? '.png';
+};
 
 export const createSyntheticImage = (
   sourceImageId: string,

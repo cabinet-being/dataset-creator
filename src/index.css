@@ -70,6 +70,10 @@ body {
   vertical-align: top;
 }
 
+.workspace-frame-overlay {
+  z-index: 20;
+}
+
 @media (min-width: 640px) {
   .gallery-masonry {
     columns: 3;

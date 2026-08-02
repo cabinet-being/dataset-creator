@@ -17,6 +17,33 @@ export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'analysis', 'review',
 
 export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
 
+export const STAGE_URL_SLUGS: Record<(typeof STAGES)[number], string> = {
+  hub: 'workspace',
+  import: 'import',
+  select: 'remove-duplicates',
+  clean: 'edit',
+  analysis: 'analysis',
+  review: 'review',
+  tagging: 'caption',
+  export: 'export',
+};
+
+export const URL_STAGE_ALIASES: Record<string, (typeof STAGES)[number]> = {
+  workspace: 'hub',
+  hub: 'hub',
+  import: 'import',
+  'remove-duplicates': 'select',
+  select: 'select',
+  edit: 'clean',
+  clean: 'clean',
+  clear: 'clean',
+  analysis: 'analysis',
+  review: 'review',
+  caption: 'tagging',
+  tagging: 'tagging',
+  export: 'export',
+};
+
 export const STAGE_LABELS: Record<string, string> = {
   hub: 'Image Workspace',
   import: 'Import',

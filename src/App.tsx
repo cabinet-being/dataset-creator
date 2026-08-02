@@ -29,7 +29,9 @@ import {
   SIDEBAR_SECONDARY_TOOLS,
   STAGES,
   STAGE_LABELS,
+  STAGE_URL_SLUGS,
   TOOL_DESCRIPTIONS,
+  URL_STAGE_ALIASES,
 } from './lib/constants';
 import { toWorkspaceImages } from './lib/workspaceImages';
 import {
@@ -56,6 +58,49 @@ import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
+
+const isStageName = (value: string | null): value is StageName =>
+  Boolean(value && (STAGES as readonly string[]).includes(value));
+
+const getStageFromUrlSlug = (value: string | null): StageName | null => {
+  if (!value) {
+    return null;
+  }
+
+  return (URL_STAGE_ALIASES[value] ?? null) as StageName | null;
+};
+
+const getUrlSlugForStage = (stage: StageName): string => STAGE_URL_SLUGS[stage] ?? stage;
+
+const readStageFromUrl = (): StageName | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const stage = new URL(window.location.href).searchParams.get('tool');
+  return getStageFromUrlSlug(stage) ?? (isStageName(stage) ? stage : null);
+};
+
+const writeStageToUrl = (stage: StageName, mode: 'push' | 'replace' = 'replace') => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  const stageSlug = getUrlSlugForStage(stage);
+  if (url.searchParams.get('tool') === stageSlug) {
+    return;
+  }
+
+  url.searchParams.set('tool', stageSlug);
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  if (mode === 'push') {
+    window.history.pushState(null, '', nextUrl);
+    return;
+  }
+
+  window.history.replaceState(null, '', nextUrl);
+};
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Upload,
@@ -123,6 +168,7 @@ function App() {
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
+  const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -137,6 +183,30 @@ function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  useEffect(() => {
+    const stageFromUrl = readStageFromUrl();
+    if (stageFromUrl) {
+      setCurrentStage(stageFromUrl);
+    }
+    setIsUrlStageReady(true);
+
+    const handlePopState = () => {
+      const nextStage = readStageFromUrl();
+      if (nextStage) {
+        setCurrentStage(nextStage);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [setCurrentStage]);
+
+  useEffect(() => {
+    if (isUrlStageReady) {
+      writeStageToUrl(currentStage);
+    }
+  }, [currentStage, isUrlStageReady]);
 
   useEffect(() => {
     if (!(STAGES as readonly string[]).includes(currentStage)) {
@@ -175,6 +245,7 @@ function App() {
     window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: command }));
   };
   const navigateToStage = (stage: StageName) => {
+    writeStageToUrl(stage, 'push');
     setCurrentStage(stage);
     setSidebarOpen(false);
     setFileMenuOpen(false);

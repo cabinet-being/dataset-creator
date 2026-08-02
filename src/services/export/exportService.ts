@@ -11,6 +11,9 @@ interface ExportConfig {
   items: WorkspaceImage[];
 }
 
+export const getExportBasename = (item: WorkspaceImage): string =>
+  item.fileName.replace(/\.[^.]+$/, '') || item.id.replace(/^(source|synthetic):/, '');
+
 /**
  * Generate tag string for item
  */
@@ -58,8 +61,7 @@ export const exportAsZip = async (config: ExportConfig, blacklist: string[] = []
 
   for (let i = 0; i < config.items.length; i++) {
     const item = config.items[i];
-    const index = i + 1;
-    const basename = String(index);
+    const basename = getExportBasename(item);
 
     // Add PNG
     itemsFolder.file(`${basename}.png`, item.imageData);
@@ -89,8 +91,7 @@ export const saveDirectoryViaFilesystemAPI = async (
 
     for (let i = 0; i < config.items.length; i++) {
       const item = config.items[i];
-      const index = i + 1;
-      const basename = String(index);
+      const basename = getExportBasename(item);
 
       // Write PNG
       const pngHandle = await dirHandle.getFileHandle(`${basename}.png`, { create: true });

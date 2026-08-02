@@ -6,6 +6,8 @@ import { SimilarityCluster } from '../../types';
 import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameOverlayClass,
+  getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
   toWorkspaceImages,
 } from '../../lib/workspaceImages';
@@ -295,7 +297,7 @@ export const SimilarityReviewStage = () => {
                               {image.previewUrl ? (
                                 <img
                                   src={image.previewUrl}
-                                  alt={`${image.label} #${image.displayIdentity}`}
+                                  alt={image.fileName}
                                   className="w-full h-auto object-contain"
                                 />
                               ) : (
@@ -305,6 +307,10 @@ export const SimilarityReviewStage = () => {
                                   </span>
                                 </div>
                               )}
+                              <div
+                                className={getWorkspaceKindFrameOverlayClass()}
+                                style={getWorkspaceKindFrameOverlayStyle(image.kind)}
+                              />
                             </div>
 
                             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -318,7 +324,7 @@ export const SimilarityReviewStage = () => {
 
                             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
                               <p className="text-xs text-white truncate">
-                                {image.label} #{image.displayIdentity}
+                                {image.fileName}
                               </p>
                               <span className={`mt-1 ${getWorkspaceKindBadgeClass(image.kind)}`}>
                                 {image.label}

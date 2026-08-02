@@ -16,6 +16,8 @@ import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
 import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameOverlayClass,
+  getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
   toWorkspaceImages,
   type WorkspaceImage,
@@ -89,7 +91,7 @@ const ReviewCard = memo(
         {previewUrl ? (
           <img
             src={previewUrl}
-            alt={`Image ${item.displayIdentity}`}
+            alt={item.fileName}
             className={`w-full h-auto object-contain ${item.excludedFromDataset ? 'grayscale' : ''}`}
           />
         ) : (
@@ -97,6 +99,10 @@ const ReviewCard = memo(
             Preview unavailable
           </div>
         )}
+        <div
+          className={getWorkspaceKindFrameOverlayClass()}
+          style={getWorkspaceKindFrameOverlayStyle(item.kind)}
+        />
 
         <button
           type="button"
@@ -177,7 +183,7 @@ const ReviewCard = memo(
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
           <div className="flex items-end justify-between gap-2">
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-white">Image #{item.displayIdentity}</p>
+              <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
               <p className="text-xs text-gray-300">
                 {ASPECT_RATIO_LABELS[item.aspectRatio]} · {item.width} x {item.height}
               </p>

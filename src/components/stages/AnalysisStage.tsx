@@ -29,6 +29,8 @@ import {
   toWorkspaceImages,
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameOverlayClass,
+  getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
@@ -902,6 +904,10 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
             Preview unavailable
           </div>
         )}
+        <div
+          className={getWorkspaceKindFrameOverlayClass()}
+          style={getWorkspaceKindFrameOverlayStyle(item.kind)}
+        />
 
         <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
           <button
@@ -915,11 +921,9 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
           <div className="flex items-end justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-sm font-medium text-white">
-                {item.width} x {item.height}
-              </p>
+              <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
               <p className="text-xs text-gray-300">
-                {item.aspectRatio}
+                {ASPECT_RATIO_LABELS[item.aspectRatio]} · {item.width} x {item.height}
               </p>
             </div>
             <span className={getWorkspaceKindBadgeClass(item.kind)}>
@@ -1495,6 +1499,16 @@ export const AnalysisStage = () => {
     [graphNodesForRender]
   );
 
+  const reviewItemNameById = useMemo(
+    () => new Map((reviewData?.items ?? []).map((item) => [item.id, item.fileName])),
+    [reviewData?.items]
+  );
+
+  const getReviewItemName = useCallback(
+    (id: string) => reviewItemNameById.get(id) ?? id.replace(/^(source|synthetic):/, ''),
+    [reviewItemNameById]
+  );
+
   useEffect(() => {
     if (!reviewData?.similarPairs.some((pair) => `${pair.imageId1}:${pair.imageId2}` === selectedPairKey)) {
       setSelectedPairKey(null);
@@ -1687,7 +1701,7 @@ export const AnalysisStage = () => {
         (entry) => `${entry.imageId1}:${entry.imageId2}` === selectedPairKey
       );
       if (pair) {
-        return `Analysis Preview (Pair #${reviewData.itemIndexById[pair.imageId1]} and #${reviewData.itemIndexById[pair.imageId2]})`;
+        return `Analysis Preview (${getReviewItemName(pair.imageId1)} and ${getReviewItemName(pair.imageId2)})`;
       }
     }
 
@@ -1699,7 +1713,14 @@ export const AnalysisStage = () => {
     }
 
     return `Analysis Preview (${filteredItems.length} items)`;
-  }, [activeSimilarityView, filteredItems.length, reviewData, selectedClusterId, selectedPairKey]);
+  }, [
+    activeSimilarityView,
+    filteredItems.length,
+    getReviewItemName,
+    reviewData,
+    selectedClusterId,
+    selectedPairKey,
+  ]);
 
   if (items.length === 0) {
     return (
@@ -1926,10 +1947,10 @@ export const AnalysisStage = () => {
                             >
                               <title>
                                 {isMembership
-                                  ? `${left.label} membership: image #${reviewData.itemIndexById[edge.targetId]}`
-                                  : `#${reviewData.itemIndexById[edge.sourceId]} to #${
-                                      reviewData.itemIndexById[edge.targetId]
-                                    }: ${((edge.similarity ?? 0) * 100).toFixed(1)}%`}
+                                  ? `${left.label} membership: ${getReviewItemName(edge.targetId)}`
+                                  : `${getReviewItemName(edge.sourceId)} to ${getReviewItemName(edge.targetId)}: ${(
+                                      (edge.similarity ?? 0) * 100
+                                    ).toFixed(1)}%`}
                               </title>
                             </line>
                           );
@@ -2041,7 +2062,7 @@ export const AnalysisStage = () => {
                                   {item && previewUrls[item.id] ? (
                                     <img
                                       src={previewUrls[item.id]}
-                                      alt={`Image ${index}`}
+                                      alt={item.fileName}
                                       className="h-full w-full object-cover"
                                       draggable={false}
                                     />
@@ -2069,7 +2090,7 @@ export const AnalysisStage = () => {
                               >
                               {index}
                               </text>
-                            <title>Image #{index}</title>
+                            <title>{item?.fileName ?? `Image ${index}`}</title>
                             </g>
                           );
                         })}
@@ -2111,8 +2132,7 @@ export const AnalysisStage = () => {
                             }`}
                           >
                             <span>
-                              #{reviewData.itemIndexById[pair.imageId1]} and #
-                              {reviewData.itemIndexById[pair.imageId2]}
+                              {getReviewItemName(pair.imageId1)} and {getReviewItemName(pair.imageId2)}
                             </span>
                             <span className="font-mono text-foreground flex items-center gap-2">
                               {(pair.similarity * 100).toFixed(1)}%
@@ -2155,7 +2175,7 @@ export const AnalysisStage = () => {
                         >
                           <span>
                             {cluster.imageIds
-                              .map((id) => `#${reviewData.itemIndexById[id]}`)
+                              .map((id) => getReviewItemName(id))
                               .join(', ')}
                           </span>
                           <span className="font-mono text-foreground flex items-center gap-2">

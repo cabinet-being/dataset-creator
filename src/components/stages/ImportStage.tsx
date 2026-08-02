@@ -1,10 +1,12 @@
 import { useState, useCallback, useRef } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
-import { createSourceImage, type SourceImage } from '../../types';
+import { createSourceImage, createStandardImageFileName, type SourceImage } from '../../types';
 import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameOverlayClass,
+  getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
 } from '../../lib/workspaceImages';
 import { getImageDimensions, createThumbnail } from '../../services/image/imageProcessor';
@@ -280,7 +282,7 @@ export const ImportStage = () => {
                   {typeof image.previewUrl === 'string' && image.previewUrl ? (
                     <img
                       src={image.previewUrl}
-                      alt={image.fileName}
+                      alt={createStandardImageFileName(image.id, image.fileName, image.mimeType)}
                       className="w-full h-auto object-contain"
                     />
                   ) : (
@@ -290,6 +292,10 @@ export const ImportStage = () => {
                       </span>
                     </div>
                   )}
+                  <div
+                    className={getWorkspaceKindFrameOverlayClass()}
+                    style={getWorkspaceKindFrameOverlayStyle('source')}
+                  />
                 </div>
 
                 <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
@@ -313,7 +319,9 @@ export const ImportStage = () => {
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
                   <div className="flex items-end justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-xs text-white">{image.fileName}</p>
+                      <p className="truncate text-xs text-white">
+                        {createStandardImageFileName(image.id, image.fileName, image.mimeType)}
+                      </p>
                       <p className="text-xs text-gray-300">
                         {image.width} × {image.height}
                       </p>

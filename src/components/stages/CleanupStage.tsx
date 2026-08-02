@@ -8,6 +8,8 @@ import {
   WORKSPACE_KIND_STYLES,
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
+  getWorkspaceKindFrameOverlayClass,
+  getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
   toWorkspaceImages,
   type WorkspaceImage,
@@ -510,7 +512,7 @@ export const CleanupStage = () => {
   return (
     <div className="h-full min-h-0 overflow-y-auto">
       <div className="gallery-masonry">
-        {workspaceImages.map((image, index) => (
+        {workspaceImages.map((image) => (
           <button
             key={image.id}
             onClick={() => {
@@ -522,17 +524,21 @@ export const CleanupStage = () => {
           >
             <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
               {image.previewUrl ? (
-                <img src={image.previewUrl} alt={image.label} className="w-full h-auto object-contain" />
+                <img src={image.previewUrl} alt={image.fileName} className="w-full h-auto object-contain" />
               ) : (
                 <span className="text-xs text-muted-foreground">
                   {image.width} x {image.height}
                 </span>
               )}
+              <div
+                className={getWorkspaceKindFrameOverlayClass()}
+                style={getWorkspaceKindFrameOverlayStyle(image.kind)}
+              />
               <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
                 <div className="flex items-end justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-white">Image #{index + 1}</p>
+                    <p className="truncate text-sm font-medium text-white">{image.fileName}</p>
                     <p className="text-xs text-gray-300">
                       {image.width} x {image.height}
                     </p>

@@ -1,4 +1,10 @@
-import type { AspectRatio, SourceImage, SyntheticImage, WorkspaceImageKind } from '../types';
+import {
+  createStandardImageFileName,
+  type AspectRatio,
+  type SourceImage,
+  type SyntheticImage,
+  type WorkspaceImageKind,
+} from '../types';
 
 type CleanupWorkingEdit = {
   blob: Blob;
@@ -14,6 +20,8 @@ export type WorkspaceImage = {
   kind: WorkspaceImageKind;
   label: 'Source' | 'Synthetic';
   displayIdentity: string;
+  fileName: string;
+  originalFileName?: string;
   imageData: Blob;
   psdData?: Blob;
   width: number;
@@ -68,6 +76,15 @@ export const getWorkspaceKindFrameStyle = (
   boxShadow: WORKSPACE_KIND_STYLES[kind].ringStyle,
 });
 
+export const getWorkspaceKindFrameOverlayStyle = (
+  kind: WorkspaceImageKind
+): Record<string, string> => ({
+  boxShadow: WORKSPACE_KIND_STYLES[kind].ringStyle,
+});
+
+export const getWorkspaceKindFrameOverlayClass = (): string =>
+  'workspace-frame-overlay pointer-events-none absolute inset-0 rounded-lg';
+
 export const getWorkspaceKindBadgeClass = (kind: WorkspaceImageKind): string =>
   `inline-flex items-center rounded-full px-2 py-1 text-[10px] font-medium ${WORKSPACE_KIND_STYLES[kind].badgeClass}`;
 
@@ -101,6 +118,8 @@ export const toWorkspaceImages = (
       kind: 'source',
       label: 'Source',
       displayIdentity: `${index + 1}`,
+      fileName: createStandardImageFileName(image.id, image.fileName, image.mimeType),
+      originalFileName: image.originalFileName,
       imageData: workingEdit?.blob ?? image.originalFile,
       previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
       width: workingEdit?.width ?? image.width,
@@ -129,6 +148,7 @@ export const toWorkspaceImages = (
         kind: 'synthetic',
         label: 'Synthetic',
         displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
+        fileName: `${image.id}.png`,
         imageData: workingEdit?.blob ?? image.imageData,
         psdData: image.psdData,
         previewUrl: workingEdit?.previewUrl,

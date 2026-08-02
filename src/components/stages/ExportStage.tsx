@@ -5,6 +5,7 @@ import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import {
   exportAsZip,
   downloadZipFile,
+  getExportBasename,
   saveDirectoryViaFilesystemAPI,
 } from '../../services/export/exportService';
 import { toWorkspaceImages, getWorkspaceKindBadgeClass } from '../../lib/workspaceImages';
@@ -181,10 +182,12 @@ export const ExportStage = () => {
       <div className="rounded-lg border border-border bg-card p-6 space-y-4">
         <h3 className="text-lg font-semibold">Preview</h3>
         <div className="space-y-2 max-h-64 overflow-y-auto">
-          {exportItems.slice(0, 5).map((item, index) => (
+          {exportItems.slice(0, 5).map((item) => {
+            const basename = getExportBasename(item);
+            return (
             <div key={item.id} className="p-2 bg-secondary/50 rounded text-sm font-mono text-xs">
               <div className="flex items-center gap-2 font-semibold">
-                <span>{index + 1}.png / {index + 1}.txt</span>
+                <span>{basename}.png / {basename}.txt</span>
                 <span className={getWorkspaceKindBadgeClass(item.kind)}>
                   {item.label}
                 </span>
@@ -196,7 +199,8 @@ export const ExportStage = () => {
                   : ' (no tags)'}
               </div>
             </div>
-          ))}
+            );
+          })}
           {exportItems.length > 5 && (
             <div className="p-2 text-xs text-muted-foreground">
               ... and {exportItems.length - 5} more files
@@ -218,7 +222,7 @@ export const ExportStage = () => {
       <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4 space-y-2">
         <p className="text-sm font-medium text-yellow-700">Export Notes:</p>
         <ul className="text-sm text-yellow-600 space-y-1 ml-4">
-          <li>• Files numbered 1, 2, 3... in final list order</li>
+          <li>• Files use each image UID as the standardized basename</li>
           <li>• Each PNG has matching TXT file with tags</li>
           <li>• Export keyword always first tag</li>
           <li>• Tags separated by comma + space</li>
