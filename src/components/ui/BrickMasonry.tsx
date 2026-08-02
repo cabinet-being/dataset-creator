@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useProjectStore } from '../../stores/useProjectStore';
 
 type BrickMasonryProps<T> = {
   items: T[];
@@ -28,6 +29,9 @@ export const BrickMasonry = <T,>({
 }: BrickMasonryProps<T>) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const getEstimateRef = useRef(getEstimate);
+  const brickColumnCount = useProjectStore(
+    (state) => state.workspaceSettings?.brickColumnCount ?? 'auto'
+  );
   const [columnCount, setColumnCount] = useState(1);
 
   useEffect(() => {
@@ -41,6 +45,11 @@ export const BrickMasonry = <T,>({
     }
 
     const updateColumnCount = () => {
+      if (brickColumnCount !== 'auto') {
+        setColumnCount(brickColumnCount);
+        return;
+      }
+
       setColumnCount(getColumnCount(container.clientWidth, minColumnWidth, maxColumnCount));
     };
 
@@ -50,7 +59,7 @@ export const BrickMasonry = <T,>({
     observer.observe(container);
 
     return () => observer.disconnect();
-  }, [maxColumnCount, minColumnWidth]);
+  }, [brickColumnCount, maxColumnCount, minColumnWidth]);
 
   const columns = useMemo(() => {
     const activeColumnCount = Math.min(columnCount, Math.max(1, items.length));

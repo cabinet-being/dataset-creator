@@ -1,6 +1,14 @@
 import JSZip from 'jszip';
 import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
-import type { ProjectState, SourceImage, StageName, SyntheticImage, TaggingConfig } from '../../types';
+import type {
+  BrickColumnCount,
+  ProjectState,
+  SourceImage,
+  StageName,
+  SyntheticImage,
+  TaggingConfig,
+  WorkspaceSettings,
+} from '../../types';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -64,15 +72,18 @@ type SyntheticImageManifest = {
 
 type ProjectFileTaggingConfig = Omit<TaggingConfig, 'autoTaggingEndpoint'>;
 
+type ProjectFileWorkspaceSettings = WorkspaceSettings;
+
 type ProjectFileManifest = {
   format: 'dataset-creator-project';
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   project: {
     id: string;
     name: string;
     currentTool?: string;
     currentStage?: StageName;
     taggingConfig: ProjectFileTaggingConfig;
+    workspaceSettings?: ProjectFileWorkspaceSettings;
     sourceImages?: Record<string, LegacySourceImageManifest>;
     datasetItems?: Record<string, LegacySyntheticImageManifest>;
     sourceImageManifests?: Record<string, string>;
@@ -143,6 +154,17 @@ const deserializeTaggingConfig = (
   blacklist: taggingConfig.blacklist,
 });
 
+const isBrickColumnCount = (value: unknown): value is BrickColumnCount =>
+  value === 'auto' || value === 1 || value === 2 || value === 3 || value === 4 || value === 5;
+
+const deserializeWorkspaceSettings = (
+  workspaceSettings: ProjectFileManifest['project']['workspaceSettings']
+): WorkspaceSettings => ({
+  brickColumnCount: isBrickColumnCount(workspaceSettings?.brickColumnCount)
+    ? workspaceSettings.brickColumnCount
+    : 'auto',
+});
+
 const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {
   const file = zip.file(path);
   if (!file) {
@@ -208,7 +230,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
 
   const manifest: ProjectFileManifest = {
     format: 'dataset-creator-project',
-    version: 3,
+    version: 4,
     project: {
       id: project.id,
       name: project.name,
@@ -216,6 +238,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       sourceImageManifests,
       syntheticImageManifests,
       taggingConfig: serializeTaggingConfig(project.taggingConfig),
+      workspaceSettings: project.workspaceSettings,
       lastModified: toIsoString(project.lastModified, exportedAt),
       createdAt: toIsoString(project.createdAt, exportedAt),
     },
@@ -298,7 +321,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   }
 
   const manifest = JSON.parse(await manifestFile.async('string')) as ProjectFileManifest;
-  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3].includes(manifest.version)) {
+  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3, 4].includes(manifest.version)) {
     throw new Error('Unsupported project file');
   }
 
@@ -409,6 +432,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     currentTool,
     currentStage,
     taggingConfig,
+    workspaceSettings,
     ...projectMetadata
   } = manifest.project;
   const loadedStageState = stageState as Partial<Record<string, unknown>>;
@@ -432,6 +456,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
       export: loadedStageState?.export ?? {},
     },
     taggingConfig: deserializeTaggingConfig(taggingConfig),
+    workspaceSettings: deserializeWorkspaceSettings(workspaceSettings),
     lastModified: new Date(lastModified),
     createdAt: new Date(createdAt),
   };

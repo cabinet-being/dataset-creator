@@ -1,3 +1,4 @@
+import * as Dialog from '@radix-ui/react-dialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ComponentType } from 'react';
 import {
@@ -43,7 +44,7 @@ import {
   readProjectFile,
   writeProjectFileToHandle,
 } from './services/project/projectFileService';
-import { type StageName } from './types';
+import { type BrickColumnCount, type StageName } from './types';
 import { ToolHub } from './components/ToolHub';
 import { ImportStage } from './components/stages/ImportStage';
 import { SimilarityReviewStage } from './components/stages/SimilarityReviewStage';
@@ -58,6 +59,10 @@ import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
+const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
+
+const parseBrickColumnCount = (value: string): BrickColumnCount =>
+  value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
 
 const isStageName = (value: string | null): value is StageName =>
   Boolean(value && (STAGES as readonly string[]).includes(value));
@@ -142,6 +147,8 @@ function App() {
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const hydrateSourceImages = useProjectStore((state) => state.hydrateSourceImages);
   const hydrateDatasetItems = useProjectStore((state) => state.hydrateDatasetItems);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -167,6 +174,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
@@ -614,6 +622,17 @@ function App() {
               </div>
             )}
           </div>
+          <button
+            type="button"
+            className="rounded px-3 py-1.5 font-medium transition-colors hover:bg-secondary"
+            onClick={() => {
+              setFileMenuOpen(false);
+              setViewMenuOpen(false);
+              setIsWorkspaceSettingsOpen(true);
+            }}
+          >
+            Settings
+          </button>
           <input
             ref={projectInputRef}
             type="file"
@@ -622,6 +641,52 @@ function App() {
             className="hidden"
           />
         </div>
+
+        <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-2xl">
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <Dialog.Title className="text-lg font-semibold">Settings</Dialog.Title>
+                  <Dialog.Description className="text-sm text-muted-foreground">
+                    Configure shared workspace display options.
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button
+                    type="button"
+                    className="rounded-md p-2 transition-colors hover:bg-secondary"
+                    aria-label="Close Settings"
+                  >
+                    <X size={16} />
+                  </button>
+                </Dialog.Close>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-2 block text-xs text-muted-foreground">Brick columns</label>
+                  <select
+                    value={workspaceSettings?.brickColumnCount ?? 'auto'}
+                    onChange={(event) =>
+                      updateWorkspaceSettings({
+                        brickColumnCount: parseBrickColumnCount(event.target.value),
+                      })
+                    }
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  >
+                    {BRICK_COLUMN_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option === 'auto' ? 'Auto' : `${option} columns`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
 
         <header className="border-b border-border bg-card px-4 py-4 md:px-6">
           <div className="flex items-center justify-between gap-4">

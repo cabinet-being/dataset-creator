@@ -112,6 +112,14 @@ export interface TaggingConfig {
   blacklist: string[];
 }
 
+// ============ WORKSPACE SETTINGS ============
+
+export type BrickColumnCount = 'auto' | 1 | 2 | 3 | 4 | 5;
+
+export interface WorkspaceSettings {
+  brickColumnCount: BrickColumnCount;
+}
+
 // ============ SIMILARITY ============
 
 export interface SimilarityResult {
@@ -138,6 +146,7 @@ export interface ProjectState {
   currentStage: StageName;
   stageState: Record<StageName, unknown>;
   taggingConfig: TaggingConfig;
+  workspaceSettings: WorkspaceSettings;
   lastModified: Date;
   createdAt: Date;
 }
@@ -260,6 +269,9 @@ export const createProject = (name: string): ProjectState => ({
     maxTags: 15,
     insertMode: 'append',
     blacklist: [],
+  },
+  workspaceSettings: {
+    brickColumnCount: 'auto',
   },
   lastModified: new Date(),
   createdAt: new Date(),

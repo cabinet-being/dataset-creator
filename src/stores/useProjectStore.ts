@@ -6,6 +6,7 @@ import {
   SyntheticImage,
   StageName,
   TaggingConfig,
+  WorkspaceSettings,
   createProject,
   CleanupOverlay,
 } from '../types';
@@ -46,6 +47,9 @@ interface ProjectStore extends ProjectState {
   
   // Tagging
   updateTaggingConfig: (updates: Partial<TaggingConfig>) => void;
+
+  // Workspace settings
+  updateWorkspaceSettings: (updates: Partial<WorkspaceSettings>) => void;
 }
 
 export const useProjectStore = create<ProjectStore>()(
@@ -104,8 +108,15 @@ export const useProjectStore = create<ProjectStore>()(
               ])
             );
 
+            const defaults = createProject(project.name);
+
             return {
+              ...defaults,
               ...project,
+              workspaceSettings: {
+                ...defaults.workspaceSettings,
+                ...project.workspaceSettings,
+              },
               lastModified: new Date(),
             };
           }),
@@ -342,6 +353,13 @@ export const useProjectStore = create<ProjectStore>()(
             taggingConfig: { ...state.taggingConfig, ...updates },
             lastModified: new Date(),
           })),
+
+        updateWorkspaceSettings: (updates: Partial<WorkspaceSettings>) =>
+          set((state) => ({
+            ...state,
+            workspaceSettings: { ...state.workspaceSettings, ...updates },
+            lastModified: new Date(),
+          })),
       }),
       {
         name: 'dataset-creator-project',
@@ -359,13 +377,24 @@ export const useProjectStore = create<ProjectStore>()(
           };
         },
         migrate: (persistedState: any, version) => {
+          const defaults = createProject((persistedState as any)?.name ?? 'Untitled Project');
           if (version === 0) {
             return {
               ...(persistedState as any),
               sourceImages: {},
+              workspaceSettings: {
+                ...defaults.workspaceSettings,
+                ...(persistedState as any)?.workspaceSettings,
+              },
             };
           }
-          return persistedState;
+          return {
+            ...(persistedState as any),
+            workspaceSettings: {
+              ...defaults.workspaceSettings,
+              ...(persistedState as any)?.workspaceSettings,
+            },
+          };
         },
       }
     )
