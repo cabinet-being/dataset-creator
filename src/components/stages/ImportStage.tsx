@@ -17,6 +17,7 @@ import { Upload, Trash2 } from 'lucide-react';
 
 const SUPPORTED_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const SUPPORTED_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
+const SUPPORTED_FILE_FORMATS = [...SUPPORTED_FORMATS, ...SUPPORTED_ARCHIVE_FORMATS, '.zip'];
 const IMAGE_EXTENSION_TYPES = new Map([
   ['.gif', 'image/gif'],
   ['.jpeg', 'image/jpeg'],
@@ -56,7 +57,6 @@ export const ImportStage = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
-  const archiveInputRef = useRef<HTMLInputElement>(null);
 
   const logDev = useCallback((scope: string, message: string, value: number) => {
     if (import.meta.env.DEV) {
@@ -228,24 +228,6 @@ export const ImportStage = () => {
     }
   };
 
-  const handleArchiveSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget;
-    const files = input.files ? Array.from(input.files) : [];
-    logDev('archive', 'selected files', files.length);
-
-    try {
-      const processedCount = await importImages(files);
-      logDev('archive', 'processed images', processedCount);
-      logDev(
-        'archive',
-        'store image count',
-        Object.keys(useProjectStore.getState().sourceImages).length
-      );
-    } finally {
-      input.value = '';
-    }
-  };
-
   const handleDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
@@ -302,7 +284,7 @@ export const ImportStage = () => {
           <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
           <h3 className="text-lg font-semibold mb-2">Import</h3>
           <p className="text-sm text-muted-foreground mb-4">
-            Select individual files, a folder, or a ZIP archive to begin
+            Select individual files or an entire folder to begin
           </p>
           
           <div className="flex gap-4 justify-center mb-4">
@@ -311,7 +293,7 @@ export const ImportStage = () => {
               disabled={isLoading}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
-              {isLoading ? 'Processing...' : 'Select Files'}
+              {isLoading ? 'Processing...' : 'Select File'}
             </button>
             
             <button
@@ -322,13 +304,6 @@ export const ImportStage = () => {
               {isLoading ? 'Processing...' : 'Select Folder'}
             </button>
 
-            <button
-              onClick={() => archiveInputRef.current?.click()}
-              disabled={isLoading}
-              className="px-4 py-2 bg-secondary text-foreground rounded-md hover:bg-muted disabled:opacity-50 transition-colors"
-            >
-              {isLoading ? 'Processing...' : 'Select ZIP'}
-            </button>
           </div>
 
           {isDragOver && (
@@ -341,7 +316,7 @@ export const ImportStage = () => {
             ref={fileInputRef}
             type="file"
             multiple
-            accept={SUPPORTED_FORMATS.join(',')}
+            accept={SUPPORTED_FILE_FORMATS.join(',')}
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -356,14 +331,6 @@ export const ImportStage = () => {
             className="hidden"
           />
 
-          <input
-            ref={archiveInputRef}
-            type="file"
-            multiple
-            accept=".zip,application/zip,application/x-zip-compressed"
-            onChange={handleArchiveSelect}
-            className="hidden"
-          />
         </div>
       </div>
 
