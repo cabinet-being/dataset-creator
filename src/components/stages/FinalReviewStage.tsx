@@ -946,7 +946,7 @@ export const FinalReviewStage = () => {
         | undefined) ?? {}
   );
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
-  const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const { addNotification } = useUIStore();
   const items = useMemo(
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
@@ -1556,13 +1556,13 @@ export const FinalReviewStage = () => {
   const handleDeleteItem = useCallback(
     (id: string) => {
       if (id.startsWith('source:')) {
-        removeSourceImage(id.replace(/^source:/, ''));
+        updateSourceImage(id.replace(/^source:/, ''), { hidden: true });
       } else {
         softDeleteDatasetItem(id.replace(/^synthetic:/, ''));
       }
       addNotification('info', 'Image removed from review');
     },
-    [addNotification, removeSourceImage, softDeleteDatasetItem]
+    [addNotification, softDeleteDatasetItem, updateSourceImage]
   );
 
   const showPairs = useCallback(() => {

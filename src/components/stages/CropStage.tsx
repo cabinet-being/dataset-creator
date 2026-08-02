@@ -13,6 +13,7 @@ import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
   getWorkspaceKindFrameStyle,
+  toWorkspaceImages,
 } from '../../lib/workspaceImages';
 import { AlertCircle, ArrowLeft, Check, Move, Plus, Trash2 } from 'lucide-react';
 
@@ -35,6 +36,7 @@ type CleanupStageState = {
 };
 
 type CropStageState = {
+  sourceImageIds?: string[];
   workingFrames?: Record<string, CropState>;
 };
 
@@ -136,8 +138,13 @@ const getFrameOverlayStyle = (
 
 export const CropStage = () => {
   const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const syntheticImages = useProjectStore((state) =>
+    Object.values(state.datasetItems).filter((item) => !item.deleted)
+  );
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const removeDatasetItem = useProjectStore((state) => state.removeDatasetItem);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const datasetItems = useProjectStore((state) => Object.values(state.datasetItems));
   const setStageState = useProjectStore((state) => state.setStageState);
   const cleanupStageState = useProjectStore(
@@ -152,7 +159,9 @@ export const CropStage = () => {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const isSpacePressedRef = useRef(false);
   const cropSessionsRef = useRef<Record<string, CropState>>({});
+  const openedCropSnapshotRef = useRef<Record<string, CropState | null>>({});
   const baseImageRef = useRef<HTMLImageElement | null>(null);
+  const syntheticPreviewCacheRef = useRef<Record<string, { blob: Blob; url: string }>>({});
 
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedAspectRatio, setSelectedAspectRatio] = useState<AspectRatio>('1:1');
@@ -175,52 +184,108 @@ export const CropStage = () => {
   const [sessionVersion, setSessionVersion] = useState(0);
   const [finalizedImageIds, setFinalizedImageIds] = useState<Set<string>>(new Set());
   const [isFrameDropdownOpen, setIsFrameDropdownOpen] = useState(false);
+  const [syntheticPreviewRecords, setSyntheticPreviewRecords] = useState<Record<string, CleanupWorkingEdit>>({});
 
-  const effectiveSourceImages = useMemo(
-    () =>
-      sourceImages.map((image) => {
-        const workingEdit = cleanupStageState.workingEdits?.[image.id];
-        return {
-          ...image,
-          originalFile: workingEdit?.blob ?? image.originalFile,
-          previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
-          width: workingEdit?.width ?? image.width,
-          height: workingEdit?.height ?? image.height,
+  useEffect(() => {
+    setSyntheticPreviewRecords((previous) => {
+      const next: Record<string, CleanupWorkingEdit> = {};
+      const activeIds = new Set(syntheticImages.map((image) => image.id));
+
+      for (const image of syntheticImages) {
+        const workspaceId = `synthetic:${image.id}`;
+        const cached = syntheticPreviewCacheRef.current[image.id];
+        if (cached && cached.blob === image.imageData) {
+          next[workspaceId] = {
+            blob: image.imageData,
+            previewUrl: cached.url,
+            width: image.width,
+            height: image.height,
+          };
+          continue;
+        }
+
+        if (cached) {
+          URL.revokeObjectURL(cached.url);
+        }
+
+        const url = URL.createObjectURL(image.imageData);
+        syntheticPreviewCacheRef.current[image.id] = { blob: image.imageData, url };
+        next[workspaceId] = {
+          blob: image.imageData,
+          previewUrl: url,
+          width: image.width,
+          height: image.height,
         };
-      }),
-    [cleanupStageState.workingEdits, sourceImages]
+      }
+
+      for (const [id, cached] of Object.entries(syntheticPreviewCacheRef.current)) {
+        if (activeIds.has(id)) {
+          continue;
+        }
+        URL.revokeObjectURL(cached.url);
+        delete syntheticPreviewCacheRef.current[id];
+      }
+
+      const previousKeys = Object.keys(previous);
+      const nextKeys = Object.keys(next);
+      const changed =
+        previousKeys.length !== nextKeys.length ||
+        nextKeys.some((id) => previous[id]?.previewUrl !== next[id]?.previewUrl);
+
+      return changed ? next : previous;
+    });
+  }, [syntheticImages]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(syntheticPreviewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
+      syntheticPreviewCacheRef.current = {};
+    };
+  }, []);
+
+  const workspaceWorkingEdits = useMemo(
+    () => ({
+      ...syntheticPreviewRecords,
+      ...(cleanupStageState.workingEdits ?? {}),
+    }),
+    [cleanupStageState.workingEdits, syntheticPreviewRecords]
+  );
+
+  const workspaceImages = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages, workspaceWorkingEdits),
+    [sourceImages, syntheticImages, workspaceWorkingEdits]
   );
 
   const selectedIndex = useMemo(
-    () => (selectedImageId ? effectiveSourceImages.findIndex((image) => image.id === selectedImageId) : -1),
-    [effectiveSourceImages, selectedImageId]
+    () => (selectedImageId ? workspaceImages.findIndex((image) => image.id === selectedImageId) : -1),
+    [workspaceImages, selectedImageId]
   );
-  const selectedImage = selectedIndex >= 0 ? effectiveSourceImages[selectedIndex] : null;
+  const selectedImage = selectedIndex >= 0 ? workspaceImages[selectedIndex] : null;
   const isEditorMode = Boolean(selectedImage);
 
   const imageFrameCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const image of effectiveSourceImages) {
+    for (const image of workspaceImages) {
       counts[image.id] =
         cropStageState.workingFrames?.[image.id]?.frames.length ??
         cropSessionsRef.current[image.id]?.frames.length ??
         0;
     }
     return counts;
-  }, [cropStageState.workingFrames, effectiveSourceImages, sessionVersion]);
+  }, [cropStageState.workingFrames, workspaceImages, sessionVersion]);
 
   const nearbyImages = useMemo(() => {
     if (!selectedImageId) {
       return [];
     }
 
-    const index = effectiveSourceImages.findIndex((image) => image.id === selectedImageId);
+    const index = workspaceImages.findIndex((image) => image.id === selectedImageId);
     if (index === -1) {
       return [];
     }
 
-    return effectiveSourceImages.filter((_, imageIndex) => Math.abs(imageIndex - index) <= 2);
-  }, [effectiveSourceImages, selectedImageId]);
+    return workspaceImages.filter((_, imageIndex) => Math.abs(imageIndex - index) <= 2);
+  }, [workspaceImages, selectedImageId]);
 
   const frameEntries = useMemo(
     () =>
@@ -327,7 +392,7 @@ export const CropStage = () => {
         return;
       }
 
-      const url = URL.createObjectURL(image.originalFile);
+      const url = URL.createObjectURL(image.imageData);
       const img = new Image();
       img.onload = () => {
         baseImageRef.current = img;
@@ -372,7 +437,7 @@ export const CropStage = () => {
 
   const openImageInEditor = useCallback(
     (imageId: string) => {
-      const image = effectiveSourceImages.find((candidate) => candidate.id === imageId);
+      const image = workspaceImages.find((candidate) => candidate.id === imageId);
       if (!image) {
         return;
       }
@@ -383,6 +448,7 @@ export const CropStage = () => {
         resizingHandle: null,
       };
 
+      openedCropSnapshotRef.current[image.id] = cropStageState.workingFrames?.[image.id] ?? null;
       cropSessionsRef.current[image.id] = nextState;
       baseImageRef.current = null;
       setSelectedImageId(image.id);
@@ -406,18 +472,8 @@ export const CropStage = () => {
         );
       }
     },
-    [cropStageState.workingFrames, effectiveSourceImages, fitImageToWorkspace]
+    [cropStageState.workingFrames, workspaceImages, fitImageToWorkspace]
   );
-
-  const closeEditor = useCallback(() => {
-    setSelectedImageId(null);
-    baseImageRef.current = null;
-    setIsFrameDropdownOpen(false);
-
-    if (import.meta.env.DEV) {
-      console.log('[crop] mode: gallery');
-    }
-  }, []);
 
   const getCanvasCoordinates = useCallback(
     (clientX: number, clientY: number): [number, number] => {
@@ -736,52 +792,52 @@ export const CropStage = () => {
     }
   };
 
-  const finalizeCrops = useCallback(async () => {
+  const createCropsForImage = useCallback(async (imageId: string) => {
     let createdCount = 0;
-    const finalizedImages = new Set<string>();
     const cleanupEdits = cleanupStageState.workingEdits ?? {};
     const workingFrames = cropStageState.workingFrames ?? {};
+    const image = workspaceImages.find((candidate) => candidate.id === imageId);
+
+    if (!image) {
+      return 0;
+    }
+
+    const session = workingFrames[image.id] ?? cropSessionsRef.current[image.id];
+    if (!session || session.frames.length === 0) {
+      return 0;
+    }
 
     for (const item of datasetItems) {
-      if (item.type === 'crop') {
+      if (item.type === 'crop' && item.sourceImageId === imageId) {
         removeDatasetItem(item.id);
       }
     }
 
-    for (const image of effectiveSourceImages) {
-      const session = workingFrames[image.id] ?? cropSessionsRef.current[image.id];
-      if (!session || session.frames.length === 0) {
-        continue;
-      }
+    const cropSource = cleanupEdits[image.id]?.blob ?? image.imageData;
 
-      const cropSource = cleanupEdits[image.id]?.blob ?? image.originalFile;
+    for (const frame of session.frames) {
+      const croppedBlob = await cropImage(
+        cropSource,
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height
+      );
 
-      for (const frame of session.frames) {
-        const croppedBlob = await cropImage(
-          cropSource,
-          frame.x,
-          frame.y,
-          frame.width,
-          frame.height
-        );
-
-        const syntheticImage = createSyntheticImage(
-          image.id,
-          croppedBlob,
-          frame.width,
-          frame.height,
-          'crop',
-          frame.aspectRatio
-        );
-        syntheticImage.cropFrame = frame;
-        addDatasetItem(syntheticImage);
-        createdCount += 1;
-      }
-
-      finalizedImages.add(image.id);
+      const syntheticImage = createSyntheticImage(
+        image.sourceImageId,
+        croppedBlob,
+        frame.width,
+        frame.height,
+        'crop',
+        frame.aspectRatio
+      );
+      syntheticImage.cropFrame = frame;
+      addDatasetItem(syntheticImage);
+      createdCount += 1;
     }
 
-    setFinalizedImageIds(finalizedImages);
+    setFinalizedImageIds((previous) => new Set([...previous, image.id]));
     if (import.meta.env.DEV) {
       console.log(`[augment-transition] cleanup-edited images materialized: ${Object.keys(cleanupEdits).length}`);
       console.log(`[augment-transition] crop-defined outputs materialized: ${createdCount}`);
@@ -792,29 +848,92 @@ export const CropStage = () => {
       );
     }
     return createdCount;
-  }, [addDatasetItem, cleanupStageState.workingEdits, cropStageState.workingFrames, datasetItems, effectiveSourceImages, removeDatasetItem]);
+  }, [addDatasetItem, cleanupStageState.workingEdits, cropStageState.workingFrames, datasetItems, removeDatasetItem, workspaceImages]);
 
-  const handleFinishCrop = async () => {
+  const clearCropWorkingFrames = useCallback(
+    (imageId: string) => {
+      const latestCropState =
+        (useProjectStore.getState().stageState.crop as CropStageState | undefined) ?? {};
+      const nextWorkingFrames = { ...(latestCropState.workingFrames ?? {}) };
+      delete nextWorkingFrames[imageId];
+
+      setStageState('crop', {
+        ...latestCropState,
+        sourceImageIds: latestCropState.sourceImageIds ?? sourceImages.map((image) => image.id),
+        workingFrames: nextWorkingFrames,
+      });
+    },
+    [setStageState, sourceImages]
+  );
+
+  const restoreCropSnapshot = useCallback(
+    (imageId: string) => {
+      const latestCropState =
+        (useProjectStore.getState().stageState.crop as CropStageState | undefined) ?? {};
+      const snapshot = openedCropSnapshotRef.current[imageId] ?? null;
+      const nextWorkingFrames = { ...(latestCropState.workingFrames ?? {}) };
+
+      if (snapshot) {
+        nextWorkingFrames[imageId] = snapshot;
+        cropSessionsRef.current[imageId] = snapshot;
+      } else {
+        delete nextWorkingFrames[imageId];
+        delete cropSessionsRef.current[imageId];
+      }
+
+      setStageState('crop', {
+        ...latestCropState,
+        sourceImageIds: latestCropState.sourceImageIds ?? sourceImages.map((image) => image.id),
+        workingFrames: nextWorkingFrames,
+      });
+      delete openedCropSnapshotRef.current[imageId];
+      setSelectedImageId(null);
+      baseImageRef.current = null;
+      setCropState({
+        frames: [],
+        selectedFrameId: null,
+        resizingHandle: null,
+      });
+      setIsDragging(false);
+    },
+    [setStageState, sourceImages]
+  );
+
+  const handleSaveCrop = async (saveCopy: boolean) => {
+    if (!selectedImage) {
+      return;
+    }
+
     try {
-      const createdCount = await finalizeCrops();
-      const totalFrameCount = Object.values(cropStageState.workingFrames ?? {}).reduce(
-        (sum, state) => sum + state.frames.length,
-        0
-      );
+      const createdCount = await createCropsForImage(selectedImage.id);
 
       if (import.meta.env.DEV) {
-        console.log(`[crop] current crop frame count at transition time: ${totalFrameCount}`);
-        console.log(`[crop] whether crop materialization was allowed with zero frames: ${totalFrameCount === 0}`);
+        console.log(`[crop] saved ${saveCopy ? 'copy' : 'synthetic'} image: ${selectedImage.id}`);
       }
+
+      if (!saveCopy) {
+        if (selectedImage.kind === 'source') {
+          updateSourceImage(selectedImage.sourceImageId, { hidden: true });
+        } else if (selectedImage.syntheticImageId) {
+          softDeleteDatasetItem(selectedImage.syntheticImageId);
+        }
+        clearCropWorkingFrames(selectedImage.id);
+      }
+
+      delete openedCropSnapshotRef.current[selectedImage.id];
+      setSelectedImageId(null);
+      baseImageRef.current = null;
+      setIsDragging(false);
+
       addNotification(
         'success',
         createdCount > 0
           ? `Created ${createdCount} crop${createdCount !== 1 ? 's' : ''}`
-          : 'No crop frames created. Current images are available to dataset tools.'
+          : 'No crop frames created'
       );
     } catch (error) {
-      console.error('Failed to finalize crop stage:', error);
-      addNotification('error', 'Failed to finalize crop stage');
+      console.error('Failed to save crop:', error);
+      addNotification('error', 'Failed to save crop');
     }
   };
 
@@ -827,27 +946,30 @@ export const CropStage = () => {
     );
   }
 
+  if (workspaceImages.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+        <p className="text-muted-foreground">No visible Source or Synthetic images to crop.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden min-h-[calc(100vh-13rem)] flex flex-col">
       {!selectedImage ? (
         <>
-          <div className="border-b border-border p-4 flex items-center justify-between gap-4">
+          <div className="border-b border-border p-4">
             <div>
               <h3 className="text-lg font-semibold">Crop Gallery</h3>
               <p className="text-sm text-muted-foreground">
                 Choose a Source image to crop. Apply crops to create Synthetic images.
               </p>
             </div>
-            <button
-              onClick={() => void handleFinishCrop()}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
-            >
-              Apply Crops
-            </button>
           </div>
 
           <div className="p-6 gallery-masonry overflow-y-auto">
-            {effectiveSourceImages.map((image, index) => {
+            {workspaceImages.map((image, index) => {
               const frameState =
                 cropStageState.workingFrames?.[image.id] ?? cropSessionsRef.current[image.id] ?? null;
               const frameCount = frameState?.frames.length ?? 0;
@@ -861,14 +983,14 @@ export const CropStage = () => {
                 <button
                   key={image.id}
                   onClick={() => openImageInEditor(image.id)}
-                  className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass('source')} hover:border-primary transition-colors text-left`}
-                  style={getWorkspaceKindFrameStyle('source')}
+                  className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(image.kind)} hover:border-primary transition-colors text-left`}
+                  style={getWorkspaceKindFrameStyle(image.kind)}
                 >
                   <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
                     {(cleanupStageState.workingEdits?.[image.id]?.previewUrl ?? image.previewUrl) ? (
                       <img
                         src={cleanupStageState.workingEdits?.[image.id]?.previewUrl ?? image.previewUrl}
-                        alt={image.fileName}
+                        alt={`${image.label} #${image.displayIdentity}`}
                         className="w-full h-auto object-contain"
                       />
                     ) : (
@@ -901,7 +1023,9 @@ export const CropStage = () => {
                           {finalizedImageIds.has(image.id) && (
                             <Check size={16} className="text-green-400 shrink-0" />
                           )}
-                          <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                          <span className={getWorkspaceKindBadgeClass(image.kind)}>
+                            {image.label}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -916,24 +1040,39 @@ export const CropStage = () => {
           <div className="border-b border-border p-4 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <button
-                onClick={closeEditor}
+                onClick={() => restoreCropSnapshot(selectedImage.id)}
                 className="p-2 rounded-md bg-secondary hover:bg-muted transition-colors"
-                title="Back to gallery"
+                title="Cancel"
               >
                 <ArrowLeft size={18} />
               </button>
               <div>
                 <h3 className="font-semibold">Crop Image</h3>
                 <p className="text-xs text-muted-foreground">
-                  {selectedImage.fileName} - {selectedIndex + 1} / {sourceImages.length}
+                  {selectedImage.label} #{selectedImage.displayIdentity} - {selectedIndex + 1} / {workspaceImages.length}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>Wheel: zoom</span>
-              <span>-</span>
-              <span>MMB / Space+Drag: pan</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void handleSaveCrop(false)}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => void handleSaveCrop(true)}
+                className="px-4 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
+              >
+                Save Copy
+              </button>
+              <button
+                onClick={() => restoreCropSnapshot(selectedImage.id)}
+                className="px-4 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
+              >
+                Cancel
+              </button>
             </div>
           </div>
 
@@ -1088,14 +1227,16 @@ export const CropStage = () => {
                   >
                     <div className="aspect-square rounded-md overflow-hidden bg-black mb-2 flex items-center justify-center">
                       {image.previewUrl ? (
-                        <img src={image.previewUrl} alt={image.fileName} className="w-full h-full object-cover" />
+                        <img src={image.previewUrl} alt={`${image.label} #${image.displayIdentity}`} className="w-full h-full object-cover" />
                       ) : (
                         <span className="text-[10px] text-muted-foreground text-center px-2">
                           {image.width} x {image.height}
                         </span>
                       )}
                     </div>
-                    <p className="text-xs font-medium truncate">{image.fileName}</p>
+                    <p className="text-xs font-medium truncate">
+                      {image.label} #{image.displayIdentity}
+                    </p>
                     <p className="text-[11px] text-muted-foreground">
                       {imageFrameCounts[image.id] ?? 0} frame(s)
                     </p>

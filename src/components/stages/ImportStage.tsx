@@ -18,6 +18,7 @@ export const ImportStage = () => {
   const {
     addSourceImages,
     removeSourceImage,
+    updateSourceImage,
   } = useProjectStore();
 
   const sourceImages = useProjectStore((state) => state.sourceImages);
@@ -180,7 +181,12 @@ export const ImportStage = () => {
 
   const handleRemoveImage = (id: string) => {
     removeSourceImage(id);
-    addNotification('info', 'Image removed');
+    addNotification('info', 'Source and related Synthetic images removed');
+  };
+
+  const handleRestoreImage = (id: string) => {
+    updateSourceImage(id, { hidden: false });
+    addNotification('success', 'Source restored to tools');
   };
 
   return (
@@ -264,7 +270,9 @@ export const ImportStage = () => {
             {images.map((image) => (
               <div
                 key={image.id}
-                className={`gallery-masonry-item rounded-lg overflow-hidden ${getWorkspaceKindFrameClass('source')}`}
+                className={`gallery-masonry-item rounded-lg overflow-hidden ${getWorkspaceKindFrameClass('source')} ${
+                  image.hidden ? 'opacity-60' : ''
+                }`}
                 style={getWorkspaceKindFrameStyle('source')}
               >
                 <div className="group relative bg-secondary transition-colors">
@@ -285,6 +293,14 @@ export const ImportStage = () => {
                 </div>
 
                 <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
+                  {image.hidden && (
+                    <button
+                      onClick={() => handleRestoreImage(image.id)}
+                      className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
+                    >
+                      Restore
+                    </button>
+                  )}
                   <button
                     onClick={() => handleRemoveImage(image.id)}
                     className="p-2 bg-destructive text-destructive-foreground rounded-md hover:opacity-90 transition-opacity"
@@ -304,6 +320,9 @@ export const ImportStage = () => {
                     </div>
                     <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
                   </div>
+                  {image.hidden && (
+                    <p className="mt-1 text-[11px] font-medium text-yellow-300">Hidden from tools</p>
+                  )}
                   </div>
                 </div>
               </div>

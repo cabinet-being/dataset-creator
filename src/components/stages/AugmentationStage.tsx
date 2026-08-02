@@ -12,6 +12,7 @@ import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
   getWorkspaceKindFrameStyle,
+  toWorkspaceImages,
 } from '../../lib/workspaceImages';
 import { AlertCircle, Check } from 'lucide-react';
 
@@ -58,19 +59,6 @@ const TYPE_LABELS: Record<AugmentationConfig['type'], string> = {
   rotate: 'Rotate',
 };
 
-const inferAspectRatio = (width: number, height: number): AspectRatio => {
-  const ratio = width / height;
-  const targets: Array<{ value: AspectRatio; ratio: number }> = [
-    { value: '2:3', ratio: 2 / 3 },
-    { value: '3:2', ratio: 3 / 2 },
-    { value: '1:1', ratio: 1 },
-  ];
-
-  return targets.reduce((best, current) =>
-    Math.abs(current.ratio - ratio) < Math.abs(best.ratio - ratio) ? current : best
-  ).value;
-};
-
 const getDefaultConfig = (type: AugmentationConfig['type']): AugmentationConfig => {
   switch (type) {
     case 'flip_h':
@@ -108,22 +96,17 @@ export const AugmentationStage = () => {
   const [syntheticPreviewUrls, setSyntheticPreviewUrls] = useState<Record<string, string>>({});
   const syntheticPreviewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
 
-  const cropItems = useMemo(
-    () => datasetItems.filter((item) => item.type === 'crop' || item.type === 'augmented'),
-    [datasetItems]
-  );
-
-  const sourceOrder = useMemo(
-    () => Object.fromEntries(sourceImages.map((image, index) => [image.id, index + 1])),
-    [sourceImages]
+  const workspaceImages = useMemo(
+    () => toWorkspaceImages(sourceImages, datasetItems, cleanupStageState.workingEdits),
+    [cleanupStageState.workingEdits, datasetItems, sourceImages]
   );
 
   useEffect(() => {
     setSyntheticPreviewUrls((previous) => {
       const next: Record<string, string> = {};
-      const activeIds = new Set(cropItems.map((item) => item.id));
+      const activeIds = new Set(datasetItems.map((item) => item.id));
 
-      for (const item of cropItems) {
+      for (const item of datasetItems) {
         const cached = syntheticPreviewCacheRef.current[item.id];
         if (cached && cached.blob === item.imageData) {
           next[item.id] = cached.url;
@@ -155,7 +138,7 @@ export const AugmentationStage = () => {
 
       return changed ? next : previous;
     });
-  }, [cropItems]);
+  }, [datasetItems]);
 
   useEffect(() => {
     return () => {
@@ -165,47 +148,27 @@ export const AugmentationStage = () => {
   }, []);
 
   const candidates = useMemo<AugmentCandidate[]>(() => {
-    const originals: AugmentCandidate[] = sourceImages.map((image) => {
-      const workingEdit = cleanupStageState.workingEdits?.[image.id];
+    const candidates = workspaceImages.map((item) => {
       return {
-        key: `source:${image.id}`,
-        displayIdentity: `${sourceOrder[image.id]}`,
-        kind: 'source',
-        blob: workingEdit?.blob ?? image.originalFile,
-        previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
-        width: workingEdit?.width ?? image.width,
-        height: workingEdit?.height ?? image.height,
-        aspectRatio: inferAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
-        sourceImageId: image.id,
-      };
-    });
-
-    const cropIndicesByParent: Record<string, number> = {};
-    const crops: AugmentCandidate[] = cropItems.map((item) => {
-      cropIndicesByParent[item.sourceImageId] = (cropIndicesByParent[item.sourceImageId] ?? 0) + 1;
-      const cropIndex = cropIndicesByParent[item.sourceImageId];
-      return {
-        key: `synthetic:${item.id}`,
-        displayIdentity: `${sourceOrder[item.sourceImageId]}.${cropIndex}`,
-        kind: 'synthetic',
+        key: item.id,
+        displayIdentity: item.displayIdentity,
+        kind: item.kind,
         blob: item.imageData,
-        previewUrl: syntheticPreviewUrls[item.id],
+        previewUrl: item.previewUrl ?? (item.syntheticImageId ? syntheticPreviewUrls[item.syntheticImageId] : undefined),
         width: item.width,
         height: item.height,
         aspectRatio: item.aspectRatio,
         sourceImageId: item.sourceImageId,
-        syntheticImageId: item.id,
+        syntheticImageId: item.syntheticImageId,
       };
     });
 
     if (import.meta.env.DEV) {
-      console.log(`[augment] originals included: ${originals.length}`);
-      console.log(`[augment] crop-derived included: ${crops.length}`);
-      console.log(`[augment] final candidate count: ${originals.length + crops.length}`);
+      console.log(`[augment] workspace candidates included: ${candidates.length}`);
     }
 
-    return [...originals, ...crops];
-  }, [cleanupStageState.workingEdits, cropItems, syntheticPreviewUrls, sourceImages, sourceOrder]);
+    return candidates;
+  }, [syntheticPreviewUrls, workspaceImages]);
 
   const selectedType = augmentStageState.selectedType ?? 'flip_h';
 

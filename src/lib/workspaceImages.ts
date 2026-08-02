@@ -10,6 +10,7 @@ type CleanupWorkingEdit = {
 export type WorkspaceImage = {
   id: string;
   sourceImageId: string;
+  syntheticImageId?: string;
   kind: WorkspaceImageKind;
   label: 'Source' | 'Synthetic';
   displayIdentity: string;
@@ -22,6 +23,7 @@ export type WorkspaceImage = {
   syntheticType?: SyntheticImage['type'];
   exportOrder?: number;
   deleted?: boolean;
+  hidden?: boolean;
 };
 
 export const WORKSPACE_KIND_STYLES: Record<
@@ -86,11 +88,13 @@ export const toWorkspaceImages = (
   workingEdits: Record<string, CleanupWorkingEdit> = {}
 ): WorkspaceImage[] => {
   const sourceOrder = new Map(sourceImages.map((image, index) => [image.id, index + 1]));
+  const sourceIds = new Set(sourceImages.map((image) => image.id));
 
-  const sources: WorkspaceImage[] = sourceImages.map((image, index) => {
-    const workingEdit = workingEdits[image.id];
+  const sources: WorkspaceImage[] = sourceImages.filter((image) => !image.hidden).map((image, index) => {
+    const workspaceId = `source:${image.id}`;
+    const workingEdit = workingEdits[workspaceId] ?? workingEdits[image.id];
     return {
-      id: `source:${image.id}`,
+      id: workspaceId,
       sourceImageId: image.id,
       kind: 'source',
       label: 'Source',
@@ -100,27 +104,32 @@ export const toWorkspaceImages = (
       width: workingEdit?.width ?? image.width,
       height: workingEdit?.height ?? image.height,
       tags: image.tags,
+      hidden: image.hidden,
       aspectRatio: inferAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
     };
   });
 
   const syntheticCountsBySource = new Map<string, number>();
   const synthetic: WorkspaceImage[] = syntheticImages
-    .filter((image) => !image.deleted)
+    .filter((image) => !image.deleted && sourceIds.has(image.sourceImageId))
     .map((image) => {
+      const workspaceId = `synthetic:${image.id}`;
       const parentIndex = sourceOrder.get(image.sourceImageId) ?? 0;
       const nextSyntheticIndex = (syntheticCountsBySource.get(image.sourceImageId) ?? 0) + 1;
       syntheticCountsBySource.set(image.sourceImageId, nextSyntheticIndex);
+      const workingEdit = workingEdits[workspaceId];
 
       return {
-        id: `synthetic:${image.id}`,
+        id: workspaceId,
         sourceImageId: image.sourceImageId,
+        syntheticImageId: image.id,
         kind: 'synthetic',
         label: 'Synthetic',
         displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
-        imageData: image.imageData,
-        width: image.width,
-        height: image.height,
+        imageData: workingEdit?.blob ?? image.imageData,
+        previewUrl: workingEdit?.previewUrl,
+        width: workingEdit?.width ?? image.width,
+        height: workingEdit?.height ?? image.height,
         tags: image.tags,
         aspectRatio: image.aspectRatio,
         syntheticType: image.type,

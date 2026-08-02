@@ -14,11 +14,13 @@ import {
   type BrushSettings,
   type CanvasState,
 } from '../../services/cleanup/canvasEditor';
-import { type SourceImage } from '../../types';
+import { createSyntheticImage } from '../../types';
 import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
   getWorkspaceKindFrameStyle,
+  toWorkspaceImages,
+  type WorkspaceImage,
 } from '../../lib/workspaceImages';
 import { AlertCircle, ArrowLeft, Check, Droplet, Eraser, Pencil, Redo2, Undo2 } from 'lucide-react';
 
@@ -36,11 +38,14 @@ type CleanupStageState = {
 
 type CleanupImage = {
   id: string;
+  kind: WorkspaceImage['kind'];
   blob: Blob;
   width: number;
   height: number;
   label: string;
+  displayIdentity: string;
   sourceImageId: string;
+  syntheticImageId?: string;
   previewUrl?: string;
   hasWorkingEdit: boolean;
 };
@@ -57,11 +62,17 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 
 export const CleanupStage = () => {
-  const sourceImages = useProjectStore((state) => state.sourceImages);
+  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const syntheticImages = useProjectStore((state) =>
+    Object.values(state.datasetItems).filter((item) => !item.deleted)
+  );
   const cleanupStageState = useProjectStore(
     (state) => (state.stageState.clean as CleanupStageState | undefined) ?? {}
   );
   const setStageState = useProjectStore((state) => state.setStageState);
+  const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -71,6 +82,8 @@ export const CleanupStage = () => {
   const strokeDraftRef = useRef<ImageData | null>(null);
   const canvasSizeRef = useRef({ width: 0, height: 0 });
   const openingImageIdRef = useRef<string | null>(null);
+  const openedWorkingEditSnapshotRef = useRef<Record<string, CleanupWorkingEdit | null>>({});
+  const syntheticPreviewCacheRef = useRef<Record<string, { blob: Blob; url: string }>>({});
 
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [tool, setTool] = useState<'brush' | 'eraser' | 'eyedropper'>('brush');
@@ -92,26 +105,88 @@ export const CleanupStage = () => {
     originY: 0,
   });
   const [sessionVersion, setSessionVersion] = useState(0);
+  const [syntheticPreviewRecords, setSyntheticPreviewRecords] = useState<Record<string, CleanupWorkingEdit>>({});
+
+  useEffect(() => {
+    setSyntheticPreviewRecords((previous) => {
+      const next: Record<string, CleanupWorkingEdit> = {};
+      const activeIds = new Set(syntheticImages.map((image) => image.id));
+
+      for (const image of syntheticImages) {
+        const workspaceId = `synthetic:${image.id}`;
+        const cached = syntheticPreviewCacheRef.current[image.id];
+        if (cached && cached.blob === image.imageData) {
+          next[workspaceId] = {
+            blob: image.imageData,
+            previewUrl: cached.url,
+            width: image.width,
+            height: image.height,
+          };
+          continue;
+        }
+
+        if (cached) {
+          URL.revokeObjectURL(cached.url);
+        }
+
+        const url = URL.createObjectURL(image.imageData);
+        syntheticPreviewCacheRef.current[image.id] = { blob: image.imageData, url };
+        next[workspaceId] = {
+          blob: image.imageData,
+          previewUrl: url,
+          width: image.width,
+          height: image.height,
+        };
+      }
+
+      for (const [id, cached] of Object.entries(syntheticPreviewCacheRef.current)) {
+        if (activeIds.has(id)) {
+          continue;
+        }
+        URL.revokeObjectURL(cached.url);
+        delete syntheticPreviewCacheRef.current[id];
+      }
+
+      const previousKeys = Object.keys(previous);
+      const nextKeys = Object.keys(next);
+      const changed =
+        previousKeys.length !== nextKeys.length ||
+        nextKeys.some((id) => previous[id]?.previewUrl !== next[id]?.previewUrl);
+
+      return changed ? next : previous;
+    });
+  }, [syntheticImages]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(syntheticPreviewCacheRef.current).forEach((entry) => URL.revokeObjectURL(entry.url));
+      syntheticPreviewCacheRef.current = {};
+    };
+  }, []);
+
+  const workspaceWorkingEdits = useMemo(
+    () => ({
+      ...syntheticPreviewRecords,
+      ...(cleanupStageState.workingEdits ?? {}),
+    }),
+    [cleanupStageState.workingEdits, syntheticPreviewRecords]
+  );
 
   const items = useMemo<CleanupImage[]>(() => {
-    const preferredIds = cleanupStageState?.sourceImageIds ?? Object.keys(sourceImages);
-    return preferredIds
-      .map((id) => sourceImages[id])
-      .filter((image): image is SourceImage => Boolean(image))
-      .map((image) => {
-        const workingEdit = cleanupStageState.workingEdits?.[image.id];
-        return {
-        id: image.id,
-        sourceImageId: image.id,
-        blob: workingEdit?.blob ?? image.originalFile,
-        width: workingEdit?.width ?? image.width,
-        height: workingEdit?.height ?? image.height,
-        label: image.fileName,
-        previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
-        hasWorkingEdit: Boolean(workingEdit),
-      };
-      });
-  }, [cleanupStageState, sourceImages]);
+    return toWorkspaceImages(sourceImages, syntheticImages, workspaceWorkingEdits).map((image) => ({
+      id: image.id,
+      kind: image.kind,
+      sourceImageId: image.sourceImageId,
+      syntheticImageId: image.syntheticImageId,
+      blob: image.imageData,
+      width: image.width,
+      height: image.height,
+      label: `${image.label} #${image.displayIdentity}`,
+      displayIdentity: image.displayIdentity,
+      previewUrl: image.previewUrl,
+      hasWorkingEdit: Boolean(cleanupStageState.workingEdits?.[image.id]),
+    }));
+  }, [cleanupStageState.workingEdits, sourceImages, syntheticImages, workspaceWorkingEdits]);
 
   const selectedItem = items.find((item) => item.id === selectedImageId) ?? null;
   const currentSession = selectedImageId ? sessionsRef.current[selectedImageId] ?? null : null;
@@ -223,7 +298,7 @@ export const CleanupStage = () => {
 
       setStageState('clean', {
         ...latestCleanState,
-        sourceImageIds: latestCleanState.sourceImageIds ?? Object.keys(sourceImages),
+        sourceImageIds: latestCleanState.sourceImageIds,
         workingEdits: nextWorkingEdits,
       });
 
@@ -233,7 +308,69 @@ export const CleanupStage = () => {
         console.log(`[cleanup] gallery preview regenerated from cleanup working state: ${imageId}`);
       }
     },
-    [setStageState, sourceImages]
+    [setStageState]
+  );
+
+  const restoreCleanupSnapshot = useCallback(
+    (imageId: string) => {
+      const latestCleanState =
+        (useProjectStore.getState().stageState.clean as CleanupStageState | undefined) ?? {};
+      const currentEdit = latestCleanState.workingEdits?.[imageId];
+      const snapshot = openedWorkingEditSnapshotRef.current[imageId] ?? null;
+
+      if (currentEdit?.previewUrl && currentEdit.previewUrl !== snapshot?.previewUrl) {
+        try {
+          URL.revokeObjectURL(currentEdit.previewUrl);
+        } catch (error) {
+          console.warn('Failed to revoke canceled cleanup preview URL', error);
+        }
+      }
+
+      const nextWorkingEdits = { ...(latestCleanState.workingEdits ?? {}) };
+      if (snapshot) {
+        nextWorkingEdits[imageId] = snapshot;
+      } else {
+        delete nextWorkingEdits[imageId];
+      }
+
+      setStageState('clean', {
+        ...latestCleanState,
+        sourceImageIds: latestCleanState.sourceImageIds,
+        workingEdits: nextWorkingEdits,
+      });
+
+      delete sessionsRef.current[imageId];
+      delete openedWorkingEditSnapshotRef.current[imageId];
+      setSelectedImageId(null);
+      strokeDraftRef.current = null;
+      setIsDrawing(false);
+    },
+    [setStageState]
+  );
+
+  const removeWorkingCleanupEdit = useCallback(
+    (imageId: string) => {
+      const latestCleanState =
+        (useProjectStore.getState().stageState.clean as CleanupStageState | undefined) ?? {};
+      const currentEdit = latestCleanState.workingEdits?.[imageId];
+      const nextWorkingEdits = { ...(latestCleanState.workingEdits ?? {}) };
+      delete nextWorkingEdits[imageId];
+
+      if (currentEdit?.previewUrl) {
+        try {
+          URL.revokeObjectURL(currentEdit.previewUrl);
+        } catch (error) {
+          console.warn('Failed to revoke saved cleanup preview URL', error);
+        }
+      }
+
+      setStageState('clean', {
+        ...latestCleanState,
+        sourceImageIds: latestCleanState.sourceImageIds,
+        workingEdits: nextWorkingEdits,
+      });
+    },
+    [setStageState]
   );
 
   const openImageInEditor = useCallback(
@@ -253,6 +390,8 @@ export const CleanupStage = () => {
         let session = sessionsRef.current[imageId];
 
         if (!session) {
+          openedWorkingEditSnapshotRef.current[imageId] =
+            cleanupStageState.workingEdits?.[imageId] ?? null;
           if (import.meta.env.DEV) {
             console.log(
               `[cleanup] editor open uses ${cleanupStageState.workingEdits?.[imageId] ? 'remembered cleanup blob' : 'original blob'}: ${imageId}`
@@ -531,17 +670,48 @@ export const CleanupStage = () => {
     setZoom(nextZoom);
   };
 
-  const handleFinishCleanup = async () => {
+  const handleSaveCleanup = async (saveCopy: boolean) => {
+    if (!selectedImageId || !currentSession || !selectedItem) {
+      return;
+    }
+
     try {
+      const imageData = getCurrentImageData(currentSession);
+      const blob = await imageDataToBlob(imageData);
+      const syntheticImage = createSyntheticImage(
+        selectedItem.sourceImageId,
+        blob,
+        imageData.width,
+        imageData.height,
+        'cleaned'
+      );
+      addDatasetItem(syntheticImage);
+
+      if (!saveCopy) {
+        if (selectedItem.kind === 'source') {
+          updateSourceImage(selectedItem.sourceImageId, { hidden: true });
+        } else if (selectedItem.syntheticImageId) {
+          softDeleteDatasetItem(selectedItem.syntheticImageId);
+        }
+        removeWorkingCleanupEdit(selectedImageId);
+        delete sessionsRef.current[selectedImageId];
+        delete openedWorkingEditSnapshotRef.current[selectedImageId];
+        setSelectedImageId(null);
+        strokeDraftRef.current = null;
+        setIsDrawing(false);
+      } else {
+        restoreCleanupSnapshot(selectedImageId);
+      }
+
       if (import.meta.env.DEV) {
         console.log(
-          `[cleanup] current cleanup working state count: ${Object.keys(cleanupStageState.workingEdits ?? {}).length}`
+          `[cleanup] saved ${saveCopy ? 'copy' : 'synthetic'} image: ${selectedImageId}`
         );
       }
-      addNotification('success', 'Cleanup working edits saved');
+      addNotification('success', saveCopy ? 'Saved cleanup copy' : 'Saved cleanup as Synthetic');
     } catch (error) {
-      console.error('Failed to finish cleanup:', error);
-      addNotification('error', 'Failed to save cleanup working edits');
+      console.error('Failed to save cleanup:', error);
+      addNotification('error', 'Failed to save cleanup');
     }
   };
 
@@ -558,19 +728,13 @@ export const CleanupStage = () => {
     <div className="rounded-lg border border-border bg-card overflow-hidden min-h-[calc(100vh-13rem)] flex flex-col">
       {!selectedItem || !currentSession ? (
         <>
-          <div className="border-b border-border p-4 flex items-center justify-between gap-4">
+          <div className="border-b border-border p-4">
             <div>
               <h3 className="text-lg font-semibold">Cleanup Gallery</h3>
               <p className="text-sm text-muted-foreground">
                 Choose an image to edit. All edits are carried forward automatically.
               </p>
             </div>
-            <button
-              onClick={handleFinishCleanup}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
-            >
-              Save Cleanup
-            </button>
           </div>
 
           <div className="p-6 gallery-masonry overflow-y-auto">
@@ -578,8 +742,8 @@ export const CleanupStage = () => {
               <button
                 key={item.id}
                 onClick={() => void openImageInEditor(item.id)}
-                className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass('source')} hover:border-primary transition-colors text-left`}
-                style={getWorkspaceKindFrameStyle('source')}
+                className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(item.kind)} hover:border-primary transition-colors text-left`}
+                style={getWorkspaceKindFrameStyle(item.kind)}
               >
                 <div className="relative min-h-[12rem] bg-black flex items-center justify-center overflow-hidden">
                   {item.previewUrl ? (
@@ -602,7 +766,7 @@ export const CleanupStage = () => {
                         {item.hasWorkingEdit && (
                           <Check size={16} className="text-green-400 shrink-0" />
                         )}
-                        <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                        <span className={getWorkspaceKindBadgeClass(item.kind)}>{item.kind === 'source' ? 'Source' : 'Synthetic'}</span>
                       </div>
                     </div>
                   </div>
@@ -616,20 +780,7 @@ export const CleanupStage = () => {
           <div className="border-b border-border p-4 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <button
-                onClick={() => {
-                  if (import.meta.env.DEV) {
-                    console.log(
-                      `[cleanup] cleanup working state count on stage exit: ${Object.keys(
-                        ((useProjectStore.getState().stageState.clean as CleanupStageState | undefined)?.workingEdits ?? {})
-                      ).length}`
-                    );
-                  }
-                  setSelectedImageId(null);
-                  strokeDraftRef.current = null;
-                  if (import.meta.env.DEV) {
-                    console.log('[cleanup] editor close');
-                  }
-                }}
+                onClick={() => restoreCleanupSnapshot(selectedItem.id)}
                 className="p-2 rounded-md bg-secondary hover:bg-muted transition-colors"
                 title="Back to gallery"
               >
@@ -641,12 +792,25 @@ export const CleanupStage = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>Wheel: zoom</span>
-              <span>-</span>
-              <span>MMB / Space+Drag: pan</span>
-              <span>-</span>
-              <span>Alt+Click: eyedropper</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void handleSaveCleanup(false)}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => void handleSaveCleanup(true)}
+                className="px-4 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
+              >
+                Save Copy
+              </button>
+              <button
+                onClick={() => restoreCleanupSnapshot(selectedItem.id)}
+                className="px-4 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
+              >
+                Cancel
+              </button>
             </div>
           </div>
 
@@ -806,10 +970,10 @@ export const CleanupStage = () => {
                     onClick={() => void openImageInEditor(item.id)}
                     className={`w-full text-left rounded-lg border p-2 transition-colors ${
                       item.id === selectedItem.id
-                        ? `${getWorkspaceKindFrameClass('source', true)} bg-primary/10`
-                        : `${getWorkspaceKindFrameClass('source')} hover:border-primary/40 bg-background`
+                        ? `${getWorkspaceKindFrameClass(item.kind, true)} bg-primary/10`
+                        : `${getWorkspaceKindFrameClass(item.kind)} hover:border-primary/40 bg-background`
                     }`}
-                    style={getWorkspaceKindFrameStyle('source')}
+                    style={getWorkspaceKindFrameStyle(item.kind)}
                   >
                     <div className="aspect-square rounded-md overflow-hidden bg-black mb-2 flex items-center justify-center">
                       {item.previewUrl ? (
@@ -822,7 +986,9 @@ export const CleanupStage = () => {
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <p className="min-w-0 truncate text-xs font-medium">{item.label}</p>
-                      <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                      <span className={getWorkspaceKindBadgeClass(item.kind)}>
+                        {item.kind === 'source' ? 'Source' : 'Synthetic'}
+                      </span>
                     </div>
                   </button>
                 ))}
