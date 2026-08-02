@@ -48,8 +48,8 @@ const createPhotopeaUrl = () => {
 };
 
 export const CleanupStage = () => {
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const syntheticImages = useProjectStore((state) => state.getDatasetItems(false));
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
@@ -73,6 +73,11 @@ export const CleanupStage = () => {
   const [syntheticPreviewUrls, setSyntheticPreviewUrls] = useState<Record<string, string>>({});
 
   const photopeaUrl = useMemo(createPhotopeaUrl, []);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const syntheticImages = useMemo(
+    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
+    [syntheticImagesById]
+  );
 
   useEffect(() => {
     setSyntheticPreviewUrls((previous) => {
