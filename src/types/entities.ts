@@ -118,6 +118,8 @@ export type BrickColumnCount = 'auto' | 1 | 2 | 3 | 4 | 5;
 
 export interface WorkspaceSettings {
   brickColumnCount: BrickColumnCount;
+  localTaggerModelPath?: string;
+  localTaggerTagsPath?: string;
 }
 
 // ============ SIMILARITY ============
@@ -272,6 +274,8 @@ export const createProject = (name: string): ProjectState => ({
   },
   workspaceSettings: {
     brickColumnCount: 'auto',
+    localTaggerModelPath: undefined,
+    localTaggerTagsPath: undefined,
   },
   lastModified: new Date(),
   createdAt: new Date(),

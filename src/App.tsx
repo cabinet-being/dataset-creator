@@ -44,6 +44,11 @@ import {
   readProjectFile,
   writeProjectFileToHandle,
 } from './services/project/projectFileService';
+import {
+  deleteLocalTaggerFileHandle,
+  saveLocalTaggerFileHandle,
+  type LocalTaggerFileKey,
+} from './services/tagging/localTaggerFileSettings';
 import { type BrickColumnCount, type StageName } from './types';
 import { Badge } from './components/ui/badge';
 import { Separator } from './components/ui/separator';
@@ -52,6 +57,18 @@ import './App.css';
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
+
+type FilePickerWindow = Window &
+  typeof globalThis & {
+    showOpenFilePicker?: (options?: {
+      multiple?: boolean;
+      excludeAcceptAllOption?: boolean;
+      types?: Array<{
+        description?: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<FileSystemFileHandle[]>;
+  };
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
@@ -195,6 +212,8 @@ function App() {
   const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
+  const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
+  const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -280,6 +299,100 @@ function App() {
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
     setViewMenuOpen(false);
+  };
+
+  const updateLocalTaggerFileSetting = async (
+    key: LocalTaggerFileKey,
+    handle: FileSystemFileHandle
+  ) => {
+    const expectedFileName = key === 'model' ? 'model.onnx' : 'selected_tags.csv';
+    if (handle.name !== expectedFileName) {
+      addNotification('error', `Select ${expectedFileName}.`);
+      return;
+    }
+
+    await saveLocalTaggerFileHandle(key, handle);
+    updateWorkspaceSettings(
+      key === 'model'
+        ? { localTaggerModelPath: handle.name }
+        : { localTaggerTagsPath: handle.name }
+    );
+    addNotification(
+      'success',
+      `${key === 'model' ? 'model.onnx' : 'selected_tags.csv'} saved in Settings`
+    );
+  };
+
+  const handlePickLocalTaggerFile = async (key: LocalTaggerFileKey) => {
+    const pickerWindow = window as FilePickerWindow;
+    const isModel = key === 'model';
+
+    if (!pickerWindow.showOpenFilePicker) {
+      (isModel ? taggerModelInputRef : taggerTagsInputRef).current?.click();
+      return;
+    }
+
+    try {
+      const [handle] = await pickerWindow.showOpenFilePicker({
+        multiple: false,
+        excludeAcceptAllOption: false,
+        types: [
+          isModel
+            ? {
+                description: 'ONNX model',
+                accept: { 'application/octet-stream': ['.onnx'] },
+              }
+            : {
+                description: 'Selected tags CSV',
+                accept: { 'text/csv': ['.csv'] },
+              },
+        ],
+      });
+
+      if (!handle) {
+        return;
+      }
+
+      await updateLocalTaggerFileSetting(key, handle);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+
+      addNotification(
+        'error',
+        error instanceof Error ? error.message : 'Could not save local tagger file setting.'
+      );
+    }
+  };
+
+  const handleFallbackLocalTaggerFileSelected = async (
+    key: LocalTaggerFileKey,
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    const expectedFileName = key === 'model' ? 'model.onnx' : 'selected_tags.csv';
+    if (file.name !== expectedFileName) {
+      addNotification('error', `Select ${expectedFileName}.`);
+      return;
+    }
+
+    await deleteLocalTaggerFileHandle(key);
+    updateWorkspaceSettings(
+      key === 'model'
+        ? { localTaggerModelPath: file.name }
+        : { localTaggerTagsPath: file.name }
+    );
+    addNotification(
+      'info',
+      `${file.name} selected. Persistent auto-load requires a browser with file handle support.`
+    );
   };
 
   const handleProjectFileError = (error: unknown, message: string) => {
@@ -662,7 +775,7 @@ function App() {
         <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
           <Dialog.Portal>
             <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-2xl">
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-2xl">
               <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
                   <Dialog.Title className="text-lg font-semibold">Settings</Dialog.Title>
@@ -700,10 +813,65 @@ function App() {
                     ))}
                   </select>
                 </div>
+
+                <div className="rounded-lg border border-border bg-secondary/20 p-4">
+                  <h3 className="mb-3 text-sm font-semibold">Local Tagger Files</h3>
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">model.onnx</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {workspaceSettings.localTaggerModelPath ?? 'No model selected'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handlePickLocalTaggerFile('model')}
+                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                      >
+                        <Upload size={16} />
+                        Select file
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">selected_tags.csv</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {workspaceSettings.localTaggerTagsPath ?? 'No tags CSV selected'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handlePickLocalTaggerFile('tags')}
+                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                      >
+                        <Upload size={16} />
+                        Select file
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root>
+        <input
+          ref={taggerModelInputRef}
+          type="file"
+          accept=".onnx"
+          className="hidden"
+          onChange={(event) => void handleFallbackLocalTaggerFileSelected('model', event)}
+          aria-hidden="true"
+        />
+        <input
+          ref={taggerTagsInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(event) => void handleFallbackLocalTaggerFileSelected('tags', event)}
+          aria-hidden="true"
+        />
 
         <header className="border-b border-border bg-card px-4 py-4 md:px-6">
           <div className="flex items-center justify-between gap-4">

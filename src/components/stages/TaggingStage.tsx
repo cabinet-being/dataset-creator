@@ -11,6 +11,10 @@ import {
   predictLocalTags,
 } from '../../services/tagging/localTaggerService';
 import {
+  ensureLocalTaggerFileReadPermission,
+  getLocalTaggerFileHandle,
+} from '../../services/tagging/localTaggerFileSettings';
+import {
   toWorkspaceImages,
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
@@ -464,6 +468,7 @@ export const TaggingStage = () => {
         | undefined) ?? {}
   );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const { addNotification } = useUIStore();
   const localTagger = useLocalTaggerStore((state) => state.bundle);
   const localTaggerStatus = useLocalTaggerStore((state) => state.status);
@@ -485,6 +490,7 @@ export const TaggingStage = () => {
   const [suggestionFileName, setSuggestionFileName] = useState('');
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
+  const autoConnectSettingsKeyRef = useRef<string | null>(null);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () =>
@@ -718,7 +724,83 @@ export const TaggingStage = () => {
     [addNotification]
   );
 
+  const connectSavedTaggerFiles = useCallback(
+    async (silent = false) => {
+      if (!workspaceSettings.localTaggerModelPath || !workspaceSettings.localTaggerTagsPath) {
+        if (!silent) {
+          setLocalTaggerMessage('Select model.onnx and selected_tags.csv in Settings first.');
+        }
+        return false;
+      }
+
+      const [modelHandle, tagsHandle] = await Promise.all([
+        getLocalTaggerFileHandle('model'),
+        getLocalTaggerFileHandle('tags'),
+      ]);
+
+      if (!modelHandle || !tagsHandle) {
+        if (!silent) {
+          setLocalTaggerMessage('Saved tagger file names exist, but file access handles are unavailable.');
+        }
+        return false;
+      }
+
+      const [canReadModel, canReadTags] = await Promise.all([
+        ensureLocalTaggerFileReadPermission(modelHandle),
+        ensureLocalTaggerFileReadPermission(tagsHandle),
+      ]);
+
+      if (!canReadModel || !canReadTags) {
+        setLocalTaggerStatus('not-ready');
+        setLocalTaggerMessage('Browser permission is required to read saved local tagger files.');
+        return false;
+      }
+
+      await connectBundleSource({
+        kind: 'explicit-files',
+        name: workspaceSettings.localTaggerModelPath,
+        modelFile: await modelHandle.getFile(),
+        tagsFile: await tagsHandle.getFile(),
+      });
+      return true;
+    },
+    [
+      connectBundleSource,
+      setLocalTaggerMessage,
+      setLocalTaggerStatus,
+      workspaceSettings.localTaggerModelPath,
+      workspaceSettings.localTaggerTagsPath,
+    ]
+  );
+
+  useEffect(() => {
+    const settingsKey = `${workspaceSettings.localTaggerModelPath ?? ''}|${workspaceSettings.localTaggerTagsPath ?? ''}`;
+    if (
+      !workspaceSettings.localTaggerModelPath ||
+      !workspaceSettings.localTaggerTagsPath ||
+      localTagger ||
+      localTaggerStatus === 'loading' ||
+      localTaggerStatus === 'running' ||
+      autoConnectSettingsKeyRef.current === settingsKey
+    ) {
+      return;
+    }
+
+    autoConnectSettingsKeyRef.current = settingsKey;
+    void connectSavedTaggerFiles(true);
+  }, [
+    connectSavedTaggerFiles,
+    localTagger,
+    localTaggerStatus,
+    workspaceSettings.localTaggerModelPath,
+    workspaceSettings.localTaggerTagsPath,
+  ]);
+
   const handleConnectModel = useCallback(async () => {
+    if (await connectSavedTaggerFiles()) {
+      return;
+    }
+
     if (!window.isSecureContext) {
       setLocalTaggerStatus('not-ready');
       setLocalTaggerMessage(
@@ -748,7 +830,7 @@ export const TaggingStage = () => {
     }
 
     fallbackDirectoryInputRef.current?.click();
-  }, [canUseDirectoryPicker, connectBundleSource]);
+  }, [canUseDirectoryPicker, connectBundleSource, connectSavedTaggerFiles]);
 
   const handleFallbackFolderSelected = useCallback(
     async (files: FileList | null) => {
@@ -1175,6 +1257,20 @@ export const TaggingStage = () => {
             <div className="space-y-5">
               <section className="rounded-lg border border-border bg-secondary/20 p-4">
                 <h3 className="mb-3 text-sm font-semibold">Auto Tagger</h3>
+                <div className="mb-4 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-md border border-border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Settings model</p>
+                    <p className="mt-1 truncate text-sm font-medium">
+                      {workspaceSettings.localTaggerModelPath ?? 'No model.onnx selected'}
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Settings tags</p>
+                    <p className="mt-1 truncate text-sm font-medium">
+                      {workspaceSettings.localTaggerTagsPath ?? 'No selected_tags.csv selected'}
+                    </p>
+                  </div>
+                </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
                     <label className="mb-2 block text-xs text-muted-foreground">Threshold</label>

@@ -33,7 +33,14 @@ type FileBundleSource = {
   files: File[];
 };
 
-export type LocalTaggerBundleSource = DirectoryBundleSource | FileBundleSource;
+type ExplicitFileBundleSource = {
+  kind: 'explicit-files';
+  name: string;
+  modelFile: File;
+  tagsFile: File;
+};
+
+export type LocalTaggerBundleSource = DirectoryBundleSource | FileBundleSource | ExplicitFileBundleSource;
 
 type OrtModule = typeof import('onnxruntime-web/all');
 
@@ -132,6 +139,10 @@ const getFileFromSelection = (files: File[], fileName: string): File | undefined
 const readBundleFiles = async (
   source: LocalTaggerBundleSource
 ): Promise<{ modelFile: File; tagsFile: File }> => {
+  if (source.kind === 'explicit-files') {
+    return { modelFile: source.modelFile, tagsFile: source.tagsFile };
+  }
+
   const modelFile =
     source.kind === 'directory'
       ? await getFileFromDirectory(source.handle, REQUIRED_MODEL_FILE)

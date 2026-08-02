@@ -163,6 +163,14 @@ const deserializeWorkspaceSettings = (
   brickColumnCount: isBrickColumnCount(workspaceSettings?.brickColumnCount)
     ? workspaceSettings.brickColumnCount
     : 'auto',
+  localTaggerModelPath:
+    typeof workspaceSettings?.localTaggerModelPath === 'string'
+      ? workspaceSettings.localTaggerModelPath
+      : undefined,
+  localTaggerTagsPath:
+    typeof workspaceSettings?.localTaggerTagsPath === 'string'
+      ? workspaceSettings.localTaggerTagsPath
+      : undefined,
 });
 
 const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {

@@ -86,7 +86,7 @@ export const ASPECT_RATIO_LABELS: Record<string, string> = {
 
 // Storage keys
 export const DB_NAME = 'DatasetCreator';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const OBJECT_STORES = {
   PROJECTS: 'projects',
@@ -95,6 +95,7 @@ export const OBJECT_STORES = {
   CLEANUP_OVERLAYS: 'cleanupOverlays',
   EMBEDDINGS: 'embeddings',
   SIMILARITY_CACHE: 'similarityCache',
+  TAGGER_FILE_HANDLES: 'taggerFileHandles',
 };
 
 // UI defaults
