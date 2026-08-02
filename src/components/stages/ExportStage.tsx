@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
@@ -12,8 +12,8 @@ import { AlertCircle, Download, FolderOpen } from 'lucide-react';
 
 export const ExportStage = () => {
   const { taggingConfig } = useProjectStore();
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const syntheticImages = useProjectStore((state) => state.getDatasetItems(false));
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const cleanupStageState = useProjectStore(
     (state) =>
       (state.stageState.clean as
@@ -26,8 +26,19 @@ export const ExportStage = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportMethod, setExportMethod] = useState<'zip' | 'directory'>('zip');
 
-  const items = toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits);
-  const totalSize = items.reduce((sum, item) => sum + item.imageData.size, 0);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const syntheticImages = useMemo(
+    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
+    [syntheticImagesById]
+  );
+  const items = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
+    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
+  );
+  const totalSize = useMemo(
+    () => items.reduce((sum, item) => sum + item.imageData.size, 0),
+    [items]
+  );
 
   useEffect(() => {
     if (import.meta.env.DEV) {

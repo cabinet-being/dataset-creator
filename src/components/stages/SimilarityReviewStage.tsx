@@ -19,14 +19,17 @@ type WorkspacePreviewRecord = {
 };
 
 export const SimilarityReviewStage = () => {
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const syntheticImages = useProjectStore((state) =>
-    Object.values(state.datasetItems).filter((item) => !item.deleted)
-  );
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
   const syntheticPreviewCacheRef = useRef<Record<string, { blob: Blob; url: string }>>({});
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const syntheticImages = useMemo(
+    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
+    [syntheticImagesById]
+  );
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [uiThreshold, setUiThreshold] = useState(0.7);

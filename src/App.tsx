@@ -1,16 +1,20 @@
-import { useEffect, useState } from 'react';
-import type { ComponentType } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent, ComponentType } from 'react';
 import {
   Archive,
   ArrowLeft,
   Brush,
   Download,
   ExternalLink,
-  Image,
+  FilePlus,
+  FolderOpen,
   Layers3,
   Menu,
+  Pencil,
   ScanSearch,
+  Save,
   Tags,
+  Upload,
   X,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
@@ -23,6 +27,15 @@ import {
   TOOL_DESCRIPTIONS,
 } from './lib/constants';
 import { toWorkspaceImages } from './lib/workspaceImages';
+import {
+  downloadProjectFile,
+  pickProjectFileForOpen,
+  pickProjectFileForSave,
+  PROJECT_FILE_EXTENSION,
+  type ProjectFileHandle,
+  readProjectFile,
+  writeProjectFileToHandle,
+} from './services/project/projectFileService';
 import { type StageName } from './types';
 import { ToolHub } from './components/ToolHub';
 import { ImportStage } from './components/stages/ImportStage';
@@ -38,7 +51,7 @@ import './App.css';
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
-  import: Image,
+  import: Upload,
   select: ScanSearch,
   clean: Brush,
   review: Layers3,
@@ -68,15 +81,38 @@ const renderTool = (currentStage: StageName) => {
 };
 
 function App() {
+  const projectName = useProjectStore((state) => state.name);
   const currentStage = useProjectStore((state) => state.currentStage);
+  const initializeProject = useProjectStore((state) => state.initializeProject);
+  const loadProject = useProjectStore((state) => state.loadProject);
+  const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const hydrateSourceImages = useProjectStore((state) => state.hydrateSourceImages);
   const hydrateDatasetItems = useProjectStore((state) => state.hydrateDatasetItems);
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const datasetItems = useProjectStore((state) => state.getDatasetItems(false));
-  const workspaceImages = toWorkspaceImages(sourceImages, datasetItems);
-  const { darkMode, setDarkMode, editToolbar } = useUIStore();
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const datasetItemsById = useProjectStore((state) => state.datasetItems);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const datasetItems = useMemo(
+    () => Object.values(datasetItemsById).filter((item) => !item.deleted),
+    [datasetItemsById]
+  );
+  const workspaceImages = useMemo(
+    () => toWorkspaceImages(sourceImages, datasetItems),
+    [datasetItems, sourceImages]
+  );
+  const {
+    darkMode,
+    setDarkMode,
+    editToolbar,
+    addNotification,
+    projectFileHandle,
+    projectFileName,
+    setProjectFile,
+  } = useUIStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
+  const projectInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -98,19 +134,20 @@ function App() {
   }, [currentStage, setCurrentStage]);
 
   useEffect(() => {
-    if (!sidebarOpen) {
+    if (!sidebarOpen && !fileMenuOpen) {
       return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setSidebarOpen(false);
+        setFileMenuOpen(false);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [sidebarOpen]);
+  }, [fileMenuOpen, sidebarOpen]);
 
   const activeLabel = STAGE_LABELS[currentStage] ?? 'Image Workspace';
   const activeDescription =
@@ -124,6 +161,118 @@ function App() {
   const navigateToStage = (stage: StageName) => {
     setCurrentStage(stage);
     setSidebarOpen(false);
+    setFileMenuOpen(false);
+  };
+
+  const handleProjectFileError = (error: unknown, message: string) => {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+    console.error(message, error);
+    addNotification('error', message);
+  };
+
+  const handleNewProject = () => {
+    setFileMenuOpen(false);
+    if (workspaceImages.length > 0 && !window.confirm('Create a new project and clear the current workspace?')) {
+      return;
+    }
+
+    const nextName = window.prompt('Project name', 'Untitled Project')?.trim() || 'Untitled Project';
+    initializeProject(nextName);
+    setProjectFile(undefined);
+    addNotification('success', 'New project created');
+  };
+
+  const openProjectFile = async (file: File, handle?: ProjectFileHandle) => {
+    const project = await readProjectFile(file);
+    loadProject(project);
+    setProjectFile({ handle, name: file.name });
+    addNotification('success', 'Project file opened');
+  };
+
+  const handleOpenProjectInput = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) {
+      return;
+    }
+
+    setIsProjectFileBusy(true);
+    try {
+      await openProjectFile(file);
+    } catch (error) {
+      handleProjectFileError(error, 'Failed to open project file');
+    } finally {
+      setIsProjectFileBusy(false);
+    }
+  };
+
+  const handleOpenProject = async () => {
+    setFileMenuOpen(false);
+    setIsProjectFileBusy(true);
+    try {
+      const picked = await pickProjectFileForOpen();
+      if (picked) {
+        await openProjectFile(picked.file, picked.handle);
+      } else {
+        projectInputRef.current?.click();
+      }
+    } catch (error) {
+      handleProjectFileError(error, 'Failed to open project file');
+    } finally {
+      setIsProjectFileBusy(false);
+    }
+  };
+
+  const handleSaveProjectAs = async () => {
+    setFileMenuOpen(false);
+    setIsProjectFileBusy(true);
+    try {
+      const project = useProjectStore.getState();
+      const handle = await pickProjectFileForSave(project.name);
+      if (handle) {
+        await writeProjectFileToHandle(project, handle);
+        setProjectFile({ handle, name: handle.name ?? `${project.name}.${PROJECT_FILE_EXTENSION}` });
+      } else {
+        await downloadProjectFile(project);
+        setProjectFile({ name: `${project.name}.${PROJECT_FILE_EXTENSION}` });
+      }
+      addNotification('success', 'Project file saved');
+    } catch (error) {
+      handleProjectFileError(error, 'Failed to save project file');
+    } finally {
+      setIsProjectFileBusy(false);
+    }
+  };
+
+  const handleSaveProject = async () => {
+    setFileMenuOpen(false);
+    if (!projectFileHandle) {
+      await handleSaveProjectAs();
+      return;
+    }
+
+    setIsProjectFileBusy(true);
+    try {
+      await writeProjectFileToHandle(useProjectStore.getState(), projectFileHandle);
+      addNotification('success', 'Project file saved');
+    } catch (error) {
+      handleProjectFileError(error, 'Failed to save project file');
+    } finally {
+      setIsProjectFileBusy(false);
+    }
+  };
+
+  const handleRenameProject = () => {
+    setFileMenuOpen(false);
+    const nextName = window.prompt('Project name', projectName)?.trim();
+    if (!nextName || nextName === projectName) {
+      return;
+    }
+
+    renameProject(nextName);
+    addNotification('success', 'Project renamed');
   };
 
   const renderNavigationButton = (tool: string, compact = false) => {
@@ -239,6 +388,102 @@ function App() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
+          {fileMenuOpen && (
+            <button
+              type="button"
+              aria-label="Close file menu"
+              className="fixed inset-0 z-30 cursor-default"
+              onClick={() => setFileMenuOpen(false)}
+            />
+          )}
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                fileMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => setFileMenuOpen((open) => !open)}
+            >
+              File
+            </button>
+            {fileMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
+                <button
+                  type="button"
+                  disabled={isProjectFileBusy}
+                  onClick={handleNewProject}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <FilePlus className="h-4 w-4" />
+                  <span className="flex-1">New</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isProjectFileBusy}
+                  onClick={() => void handleOpenProject()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  <span className="flex-1">Open</span>
+                </button>
+                <div className="my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  disabled={isProjectFileBusy}
+                  onClick={() => void handleSaveProject()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <Save className="h-4 w-4" />
+                  <span className="flex-1">Save</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isProjectFileBusy}
+                  onClick={() => void handleSaveProjectAs()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <Download className="h-4 w-4" />
+                  <span className="flex-1">Save As</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isProjectFileBusy}
+                  onClick={handleRenameProject}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <Pencil className="h-4 w-4" />
+                  <span className="flex-1">Rename</span>
+                </button>
+                <div className="my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  onClick={() => navigateToStage('import')}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Upload className="h-4 w-4" />
+                  <span className="flex-1">Import Images</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigateToStage('export')}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Download className="h-4 w-4" />
+                  <span className="flex-1">Export Dataset</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <input
+            ref={projectInputRef}
+            type="file"
+            accept={`.${PROJECT_FILE_EXTENSION}`}
+            onChange={(event) => void handleOpenProjectInput(event)}
+            className="hidden"
+          />
+        </div>
+
         <header className="border-b border-border bg-card px-4 py-4 md:px-6">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 flex-1">
@@ -251,6 +496,10 @@ function App() {
                 {currentStage === 'review' || currentStage === 'clean'
                   ? `${workspaceImages.length} images in scope.`
                   : ''}
+              </p>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                Project: <span className="font-medium text-foreground">{projectName}</span>
+                {projectFileName ? ` - ${projectFileName}` : ''}
               </p>
             </div>
 

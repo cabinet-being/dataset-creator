@@ -125,12 +125,8 @@ const TaggingCard = memo(
 TaggingCard.displayName = 'TaggingCard';
 
 export const TaggingStage = () => {
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const syntheticImages = useProjectStore((state) =>
-    Object.values(state.datasetItems)
-      .filter((item) => !item.deleted)
-      .sort((left, right) => (left.exportOrder ?? 0) - (right.exportOrder ?? 0))
-  );
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
@@ -162,6 +158,14 @@ export const TaggingStage = () => {
   const [previewUrls, setPreviewUrls] = useState<PreviewMap>({});
   const previewCacheRef = useRef<Record<string, PreviewCacheEntry>>({});
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const syntheticImages = useMemo(
+    () =>
+      Object.values(syntheticImagesById)
+        .filter((item) => !item.deleted)
+        .sort((left, right) => (left.exportOrder ?? 0) - (right.exportOrder ?? 0)),
+    [syntheticImagesById]
+  );
   const items = useMemo(
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]

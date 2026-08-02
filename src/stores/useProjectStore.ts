@@ -16,6 +16,7 @@ interface ProjectStore extends ProjectState {
   // Project management
   initializeProject: (name: string) => void;
   loadProject: (project: ProjectState) => void;
+  renameProject: (name: string) => void;
   setCurrentStage: (stage: StageName) => void;
   
   // Source images
@@ -54,7 +55,25 @@ export const useProjectStore = create<ProjectStore>()(
         ...createProject('Untitled Project'),
         
         initializeProject: (name: string) =>
-          set(() => createProject(name)),
+          set((state) => {
+            for (const image of Object.values(state.sourceImages)) {
+              if (image.previewUrl) {
+                try {
+                  URL.revokeObjectURL(image.previewUrl);
+                } catch (error) {
+                  console.warn('Failed to revoke preview URL', error);
+                }
+              }
+            }
+
+            void Promise.all([
+              dbClear(OBJECT_STORES.SOURCE_IMAGES),
+              dbClear(OBJECT_STORES.DATASET_ITEMS),
+              dbClear(OBJECT_STORES.CLEANUP_OVERLAYS),
+            ]);
+
+            return createProject(name);
+          }),
 
         loadProject: (project: ProjectState) =>
           set((state) => {
@@ -90,6 +109,13 @@ export const useProjectStore = create<ProjectStore>()(
               lastModified: new Date(),
             };
           }),
+
+        renameProject: (name: string) =>
+          set((state) => ({
+            ...state,
+            name,
+            lastModified: new Date(),
+          })),
         
         setCurrentStage: (stage: StageName) =>
           set((state) => ({

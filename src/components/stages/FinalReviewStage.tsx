@@ -935,10 +935,8 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
 ReviewCard.displayName = 'ReviewCard';
 
 export const FinalReviewStage = () => {
-  const syntheticImages = useProjectStore((state) =>
-    Object.values(state.datasetItems).filter((item) => !item.deleted)
-  );
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const cleanupStageState = useProjectStore(
     (state) =>
       (state.stageState.clean as
@@ -948,6 +946,11 @@ export const FinalReviewStage = () => {
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const { addNotification } = useUIStore();
+  const syntheticImages = useMemo(
+    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
+    [syntheticImagesById]
+  );
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const items = useMemo(
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]

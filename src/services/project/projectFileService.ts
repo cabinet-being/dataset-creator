@@ -3,6 +3,18 @@ import type { ProjectState, SourceImage, SyntheticImage } from '../../types';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
+export const PROJECT_FILE_DESCRIPTION = 'Dataset Creator Project';
+
+type ProjectFileWritable = {
+  write: (data: Blob) => Promise<void> | void;
+  close: () => Promise<void> | void;
+};
+
+export type ProjectFileHandle = {
+  name?: string;
+  getFile?: () => Promise<File>;
+  createWritable: () => Promise<ProjectFileWritable>;
+};
 
 type SourceImageManifest = Omit<
   SourceImage,
@@ -126,6 +138,66 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
 export const downloadProjectFile = async (project: ProjectState) => {
   const blob = await createProjectFileBlob(project);
   downloadBlob(blob, `${sanitizeFilename(project.name)}.${PROJECT_FILE_EXTENSION}`);
+};
+
+export const writeProjectFileToHandle = async (
+  project: ProjectState,
+  handle: ProjectFileHandle
+): Promise<void> => {
+  const blob = await createProjectFileBlob(project);
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+};
+
+export const pickProjectFileForOpen = async (): Promise<{
+  file: File;
+  handle?: ProjectFileHandle;
+} | null> => {
+  if (!('showOpenFilePicker' in window)) {
+    return null;
+  }
+
+  const [handle] = await (window as any).showOpenFilePicker({
+    multiple: false,
+    types: [
+      {
+        description: PROJECT_FILE_DESCRIPTION,
+        accept: {
+          [PROJECT_FILE_MIME_TYPE]: [`.${PROJECT_FILE_EXTENSION}`],
+        },
+      },
+    ],
+  });
+
+  if (!handle) {
+    return null;
+  }
+
+  return {
+    file: await handle.getFile(),
+    handle: handle as ProjectFileHandle,
+  };
+};
+
+export const pickProjectFileForSave = async (
+  projectName: string
+): Promise<ProjectFileHandle | null> => {
+  if (!('showSaveFilePicker' in window)) {
+    return null;
+  }
+
+  return (window as any).showSaveFilePicker({
+    suggestedName: `${sanitizeFilename(projectName)}.${PROJECT_FILE_EXTENSION}`,
+    types: [
+      {
+        description: PROJECT_FILE_DESCRIPTION,
+        accept: {
+          [PROJECT_FILE_MIME_TYPE]: [`.${PROJECT_FILE_EXTENSION}`],
+        },
+      },
+    ],
+  }) as Promise<ProjectFileHandle>;
 };
 
 export const readProjectFile = async (file: File): Promise<ProjectState> => {

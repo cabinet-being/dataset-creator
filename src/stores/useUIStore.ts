@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { ProjectFileHandle } from '../services/project/projectFileService';
 
 interface UIState {
   // Current selections
@@ -13,6 +14,10 @@ interface UIState {
   // UI flags
   showSettings: boolean;
   showHelp: boolean;
+
+  // Project file session
+  projectFileHandle?: ProjectFileHandle;
+  projectFileName?: string;
 
   // Edit tool header actions
   editToolbar: {
@@ -48,6 +53,9 @@ interface UIActions {
   setShowSettings: (show: boolean) => void;
   setShowHelp: (show: boolean) => void;
 
+  // Project file session
+  setProjectFile: (file?: { handle?: ProjectFileHandle; name?: string }) => void;
+
   // Edit tool header actions
   setEditToolbar: (toolbar: Partial<UIState['editToolbar']>) => void;
   
@@ -64,6 +72,8 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   viewMode: 'grid',
   showSettings: false,
   showHelp: false,
+  projectFileHandle: undefined,
+  projectFileName: undefined,
   editToolbar: {
     visible: false,
     canSave: false,
@@ -116,6 +126,12 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   
   setShowHelp: (show: boolean) =>
     set({ showHelp: show }),
+
+  setProjectFile: (file) =>
+    set({
+      projectFileHandle: file?.handle,
+      projectFileName: file?.name,
+    }),
 
   setEditToolbar: (toolbar) =>
     set((state) => {

@@ -2,31 +2,23 @@ import {
   Archive,
   Brush,
   Download,
-  Image,
   Layers3,
   ScanSearch,
-  Save,
   Tags,
   Upload,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { useRef, useState } from 'react';
+import { useMemo } from 'react';
 import { HUB_TOOL_CARDS, STAGE_LABELS, TOOL_DESCRIPTIONS, TOOL_REQUIREMENTS } from '../lib/constants';
 import { toWorkspaceImages } from '../lib/workspaceImages';
-import {
-  downloadProjectFile,
-  PROJECT_FILE_EXTENSION,
-  readProjectFile,
-} from '../services/project/projectFileService';
 import { useProjectStore } from '../stores/useProjectStore';
-import { useUIStore } from '../stores/useUIStore';
 import { type StageName } from '../types';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
-  import: Image,
+  import: Upload,
   select: ScanSearch,
   clean: Brush,
   review: Layers3,
@@ -52,54 +44,26 @@ const getRequirementLabel = (
 
 export const ToolHub = () => {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
-  const loadProject = useProjectStore((state) => state.loadProject);
-  const sourceImages = useProjectStore((state) => Object.values(state.sourceImages));
-  const syntheticImages = useProjectStore((state) => state.getDatasetItems(false));
+  const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
-  const addNotification = useUIStore((state) => state.addNotification);
-  const projectInputRef = useRef<HTMLInputElement | null>(null);
-  const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const syntheticImages = useMemo(
+    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
+    [syntheticImagesById]
+  );
 
   const sourceCount = sourceImages.length;
   const syntheticCount = syntheticImages.length;
-  const workspaceImages = toWorkspaceImages(sourceImages, syntheticImages);
+  const workspaceImages = useMemo(
+    () => toWorkspaceImages(sourceImages, syntheticImages),
+    [sourceImages, syntheticImages]
+  );
   const workspaceCount = workspaceImages.length;
   const taggedCount = workspaceImages.filter((item) => item.tags && item.tags.length > 0).length;
   const totalSourceSize = sourceImages.reduce((sum, image) => {
     return sum + (image.originalFile instanceof Blob ? image.originalFile.size : 0);
   }, 0);
-  const handleSaveProject = async () => {
-    setIsProjectFileBusy(true);
-    try {
-      await downloadProjectFile(useProjectStore.getState());
-      addNotification('success', 'Project file saved');
-    } catch (error) {
-      console.error('Failed to save project file:', error);
-      addNotification('error', 'Failed to save project file');
-    } finally {
-      setIsProjectFileBusy(false);
-    }
-  };
-
-  const handleOpenProject = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = '';
-    if (!file) {
-      return;
-    }
-
-    setIsProjectFileBusy(true);
-    try {
-      const project = await readProjectFile(file);
-      loadProject(project);
-      addNotification('success', 'Project file opened');
-    } catch (error) {
-      console.error('Failed to open project file:', error);
-      addNotification('error', 'Failed to open project file');
-    } finally {
-      setIsProjectFileBusy(false);
-    }
-  };
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
@@ -115,49 +79,6 @@ export const ToolHub = () => {
                 Import images once, keep them in the browser workspace, and move between tools
                 without restarting the preparation flow.
               </p>
-            </div>
-
-            <div className="flex w-full flex-wrap justify-start gap-3 lg:w-auto lg:shrink-0 lg:justify-end">
-              <Button
-                size="lg"
-                variant="outline"
-                className="whitespace-nowrap"
-                disabled={isProjectFileBusy}
-                onClick={() => projectInputRef.current?.click()}
-              >
-                <Upload size={18} />
-                Open Project
-              </Button>
-              <Button
-                size="lg"
-                variant="outline"
-                className="whitespace-nowrap"
-                disabled={isProjectFileBusy}
-                onClick={() => void handleSaveProject()}
-              >
-                <Save size={18} />
-                Save Project
-              </Button>
-              <Button size="lg" className="whitespace-nowrap" onClick={() => setCurrentStage('import')}>
-                <Image size={18} />
-                Import
-              </Button>
-              <Button
-                size="lg"
-                variant="outline"
-                className="whitespace-nowrap"
-                onClick={() => setCurrentStage('export')}
-              >
-                <Download size={18} />
-                Export
-              </Button>
-              <input
-                ref={projectInputRef}
-                type="file"
-                accept={`.${PROJECT_FILE_EXTENSION}`}
-                onChange={(event) => void handleOpenProject(event)}
-                className="hidden"
-              />
             </div>
           </div>
 
