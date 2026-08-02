@@ -8,11 +8,11 @@ export const WORKFLOW_TOOLS = [
   'export',
 ] as const;
 
-export const HUB_TOOL_CARDS = ['select', 'clean', 'tagging'] as const;
+export const HUB_TOOL_CARDS = ['select', 'clean', 'review', 'tagging'] as const;
 
-export const SIDEBAR_PRIMARY_TOOLS = ['import', 'export', 'review'] as const;
+export const SIDEBAR_PRIMARY_TOOLS = [] as const;
 
-export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'tagging'] as const;
+export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'review', 'tagging'] as const;
 
 export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
 

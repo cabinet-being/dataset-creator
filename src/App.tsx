@@ -317,7 +317,9 @@ function App() {
 
         <nav className="flex flex-1 flex-col items-center gap-2 overflow-y-auto">
           {SIDEBAR_PRIMARY_TOOLS.map((tool) => renderNavigationButton(tool, true))}
-          <Separator className="my-2 w-8 bg-border/70" />
+          {SIDEBAR_PRIMARY_TOOLS.length > 0 && SIDEBAR_SECONDARY_TOOLS.length > 0 && (
+            <Separator className="my-2 w-8 bg-border/70" />
+          )}
           {SIDEBAR_SECONDARY_TOOLS.map((tool) => renderNavigationButton(tool, true))}
         </nav>
       </aside>
@@ -379,7 +381,9 @@ function App() {
             {SIDEBAR_PRIMARY_TOOLS.map((tool) => renderNavigationButton(tool))}
           </div>
 
-          <Separator className="my-3 bg-border/70" />
+          {SIDEBAR_PRIMARY_TOOLS.length > 0 && SIDEBAR_SECONDARY_TOOLS.length > 0 && (
+            <Separator className="my-3 bg-border/70" />
+          )}
 
           <div className="space-y-1">
             {SIDEBAR_SECONDARY_TOOLS.map((tool) => renderNavigationButton(tool))}
