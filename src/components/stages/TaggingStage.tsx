@@ -8,9 +8,11 @@ import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import {
   connectLocalTaggerBundle,
   LocalTaggerBundleSource,
+  parseSelectedTagsCsv,
   predictLocalTags,
 } from '../../services/tagging/localTaggerService';
 import {
+  deleteLocalTaggerFileHandle,
   ensureLocalTaggerFileReadPermission,
   getLocalTaggerFileHandle,
 } from '../../services/tagging/localTaggerFileSettings';
@@ -461,6 +463,7 @@ export const TaggingStage = () => {
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
+  const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const cleanupStageState = useProjectStore(
     (state) =>
       (state.stageState.clean as
@@ -491,6 +494,7 @@ export const TaggingStage = () => {
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const autoConnectSettingsKeyRef = useRef<string | null>(null);
+  const savedSuggestionLoadKeyRef = useRef<string | null>(null);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () =>
@@ -796,6 +800,42 @@ export const TaggingStage = () => {
     workspaceSettings.localTaggerTagsPath,
   ]);
 
+  useEffect(() => {
+    const tagsPath = workspaceSettings.localTaggerTagsPath;
+    if (!tagsPath || savedSuggestionLoadKeyRef.current === tagsPath) {
+      return;
+    }
+
+    savedSuggestionLoadKeyRef.current = tagsPath;
+    void (async () => {
+      try {
+        const tagsHandle = await getLocalTaggerFileHandle('tags');
+        if (!tagsHandle) {
+          return;
+        }
+
+        const canReadTags = await ensureLocalTaggerFileReadPermission(tagsHandle);
+        if (!canReadTags) {
+          return;
+        }
+
+        const csv = await (await tagsHandle.getFile()).text();
+        let tags: string[];
+
+        try {
+          tags = parseSelectedTagsCsv(csv);
+        } catch {
+          tags = parseSuggestionCsv(csv);
+        }
+
+        setSuggestionTags(tags);
+        setSuggestionFileName(tagsHandle.name);
+      } catch (error) {
+        console.warn('Failed to load saved tags CSV from Settings', error);
+      }
+    })();
+  }, [workspaceSettings.localTaggerTagsPath]);
+
   const handleConnectModel = useCallback(async () => {
     if (await connectSavedTaggerFiles()) {
       return;
@@ -870,13 +910,21 @@ export const TaggingStage = () => {
         const tags = parseSuggestionCsv(await file.text());
         setSuggestionTags(tags);
         setSuggestionFileName(file.name);
+        updateWorkspaceSettings({ localTaggerTagsPath: file.name });
+
+        try {
+          await deleteLocalTaggerFileHandle('tags');
+        } catch (error) {
+          console.warn('Failed to clear saved tagger tags handle', error);
+        }
+
         addNotification('success', `Loaded ${tags.length} tag suggestion(s)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Could not read tag suggestions CSV.';
         addNotification('error', message);
       }
     },
-    [addNotification]
+    [addNotification, updateWorkspaceSettings]
   );
 
   const removeTagsFromAllImages = useCallback(
@@ -1421,7 +1469,9 @@ export const TaggingStage = () => {
                   <span className="text-sm text-muted-foreground">
                     {suggestionFileName
                       ? `${suggestionFileName} - ${suggestionTags.length} suggestions`
-                      : 'No CSV loaded'}
+                      : workspaceSettings.localTaggerTagsPath
+                        ? `${workspaceSettings.localTaggerTagsPath} - saved in Settings`
+                        : 'No CSV loaded'}
                   </span>
                 </div>
               </section>

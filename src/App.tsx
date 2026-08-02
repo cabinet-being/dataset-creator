@@ -305,21 +305,33 @@ function App() {
     key: LocalTaggerFileKey,
     handle: FileSystemFileHandle
   ) => {
-    const expectedFileName = key === 'model' ? 'model.onnx' : 'selected_tags.csv';
-    if (handle.name !== expectedFileName) {
-      addNotification('error', `Select ${expectedFileName}.`);
+    const fileName = handle.name.toLowerCase();
+    const isValidFile = key === 'model' ? fileName.endsWith('.onnx') : fileName.endsWith('.csv');
+    if (!isValidFile) {
+      addNotification('error', `Select ${key === 'model' ? 'an ONNX model file' : 'a CSV tags file'}.`);
       return;
     }
 
-    await saveLocalTaggerFileHandle(key, handle);
     updateWorkspaceSettings(
       key === 'model'
         ? { localTaggerModelPath: handle.name }
         : { localTaggerTagsPath: handle.name }
     );
+
+    try {
+      await saveLocalTaggerFileHandle(key, handle);
+    } catch (error) {
+      console.warn('Failed to persist local tagger file handle', error);
+      addNotification(
+        'warning',
+        `${handle.name} is saved by name, but browser file access could not be persisted.`
+      );
+      return;
+    }
+
     addNotification(
       'success',
-      `${key === 'model' ? 'model.onnx' : 'selected_tags.csv'} saved in Settings`
+      `${key === 'model' ? 'Model file' : 'Tags CSV'} saved in Settings`
     );
   };
 
@@ -377,18 +389,25 @@ function App() {
       return;
     }
 
-    const expectedFileName = key === 'model' ? 'model.onnx' : 'selected_tags.csv';
-    if (file.name !== expectedFileName) {
-      addNotification('error', `Select ${expectedFileName}.`);
+    const fileName = file.name.toLowerCase();
+    const isValidFile = key === 'model' ? fileName.endsWith('.onnx') : fileName.endsWith('.csv');
+    if (!isValidFile) {
+      addNotification('error', `Select ${key === 'model' ? 'an ONNX model file' : 'a CSV tags file'}.`);
       return;
     }
 
-    await deleteLocalTaggerFileHandle(key);
     updateWorkspaceSettings(
       key === 'model'
         ? { localTaggerModelPath: file.name }
         : { localTaggerTagsPath: file.name }
     );
+
+    try {
+      await deleteLocalTaggerFileHandle(key);
+    } catch (error) {
+      console.warn('Failed to clear local tagger file handle', error);
+    }
+
     addNotification(
       'info',
       `${file.name} selected. Persistent auto-load requires a browser with file handle support.`
