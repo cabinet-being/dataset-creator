@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
-import type { ProjectState, SourceImage, SyntheticImage } from '../../types';
+import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
+import type { ProjectState, SourceImage, StageName, SyntheticImage, TaggingConfig } from '../../types';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -16,7 +17,7 @@ export type ProjectFileHandle = {
   createWritable: () => Promise<ProjectFileWritable>;
 };
 
-type SourceImageManifest = Omit<
+type LegacySourceImageManifest = Omit<
   SourceImage,
   'originalFile' | 'previewUrl' | 'thumbnail' | 'embedding' | 'createdAt'
 > & {
@@ -26,22 +27,59 @@ type SourceImageManifest = Omit<
   createdAt: string;
 };
 
-type SyntheticImageManifest = Omit<SyntheticImage, 'imageData' | 'psdData' | 'createdAt' | 'deletedAt'> & {
+type SourceImageManifest = {
+  id: string;
+  fileName: string;
+  originalFileName?: string;
+  width: number;
+  height: number;
+  mimeType: string;
+  originalFilePath: string;
+  tags?: string[];
+  removedFromWorkspace?: boolean;
+  excludedFromDataset?: boolean;
+  createdAt: string;
+};
+
+type LegacySyntheticImageManifest = Omit<SyntheticImage, 'imageData' | 'psdData' | 'createdAt' | 'deletedAt'> & {
   imageDataPath: string;
   psdDataPath?: string;
   createdAt: string;
   deletedAt?: string;
 };
 
+type SyntheticImageManifest = {
+  id: string;
+  sourceImageId: string;
+  fileName: string;
+  imageDataPath: string;
+  psdDataPath?: string;
+  width: number;
+  height: number;
+  tags?: string[];
+  aspectRatio: SyntheticImage['aspectRatio'];
+  excludedFromDataset?: boolean;
+  createdAt: string;
+};
+
+type ProjectFileTaggingConfig = Omit<TaggingConfig, 'autoTaggingEndpoint'>;
+
 type ProjectFileManifest = {
   format: 'dataset-creator-project';
-  version: 1 | 2;
-  project: Omit<ProjectState, 'sourceImages' | 'datasetItems' | 'cleanupOverlays' | 'lastModified' | 'createdAt'> & {
-    sourceImages?: Record<string, SourceImageManifest>;
-    datasetItems?: Record<string, SyntheticImageManifest>;
+  version: 1 | 2 | 3;
+  project: {
+    id: string;
+    name: string;
+    currentTool?: string;
+    currentStage?: StageName;
+    taggingConfig: ProjectFileTaggingConfig;
+    sourceImages?: Record<string, LegacySourceImageManifest>;
+    datasetItems?: Record<string, LegacySyntheticImageManifest>;
     sourceImageManifests?: Record<string, string>;
+    syntheticImageManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
-    cleanupOverlays: {};
+    cleanupOverlays?: {};
+    stageState?: Record<string, unknown>;
     lastModified: string;
     createdAt: string;
   };
@@ -74,6 +112,37 @@ const toIsoString = (value: Date | string | number | undefined, fallback = new D
   return fallback.toISOString();
 };
 
+const createEmptyStageState = (): ProjectState['stageState'] => ({
+  hub: {},
+  import: {},
+  select: {},
+  clean: {},
+  analysis: {},
+  review: {},
+  tagging: {},
+  export: {},
+});
+
+const getToolSlug = (stage: StageName): string => STAGE_URL_SLUGS[stage] ?? stage;
+
+const getStageFromToolSlug = (tool?: string, fallback: StageName = 'hub'): StageName =>
+  ((tool ? URL_STAGE_ALIASES[tool] : undefined) ?? fallback) as StageName;
+
+const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggingConfig => {
+  const { autoTaggingEndpoint: _autoTaggingEndpoint, ...serializableConfig } = taggingConfig;
+  return serializableConfig;
+};
+
+const deserializeTaggingConfig = (
+  taggingConfig: ProjectFileManifest['project']['taggingConfig']
+): TaggingConfig => ({
+  datasetKeyword: taggingConfig.datasetKeyword,
+  threshold: taggingConfig.threshold,
+  maxTags: taggingConfig.maxTags,
+  insertMode: taggingConfig.insertMode,
+  blacklist: taggingConfig.blacklist,
+});
+
 const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {
   const file = zip.file(path);
   if (!file) {
@@ -86,31 +155,32 @@ const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {
 export const createProjectFileBlob = async (project: ProjectState): Promise<Blob> => {
   const zip = new JSZip();
   const sourceImageManifests: Record<string, string> = {};
-  const datasetItemManifests: Record<string, string> = {};
+  const syntheticImageManifests: Record<string, string> = {};
   const exportedAt = new Date();
 
   for (const source of Object.values(project.sourceImages)) {
     const originalFilePath = `sources/${source.id}/original`;
-    const thumbnailPath = source.thumbnail ? `sources/${source.id}/thumbnail` : undefined;
     const manifestPath = `sources/${source.id}/manifest.json`;
     zip.file(originalFilePath, source.originalFile);
-    if (source.thumbnail && thumbnailPath) {
-      zip.file(thumbnailPath, source.thumbnail);
-    }
 
-    const { originalFile: _originalFile, previewUrl: _previewUrl, thumbnail: _thumbnail, embedding, ...metadata } = source;
     const sourceManifest: SourceImageManifest = {
-      ...metadata,
+      id: source.id,
+      fileName: source.fileName,
+      originalFileName: source.originalFileName,
+      width: source.width,
+      height: source.height,
+      mimeType: source.mimeType,
       originalFilePath,
-      thumbnailPath,
-      embedding: embedding ? Array.from(embedding) : undefined,
+      tags: source.tags,
+      removedFromWorkspace: source.hidden,
+      excludedFromDataset: source.excludedFromDataset,
       createdAt: toIsoString(source.createdAt, exportedAt),
     };
     sourceImageManifests[source.id] = manifestPath;
     zip.file(manifestPath, JSON.stringify(sourceManifest, null, 2));
   }
 
-  for (const item of Object.values(project.datasetItems)) {
+  for (const item of Object.values(project.datasetItems).filter((entry) => !entry.deleted)) {
     const imageDataPath = `synthetic/${item.id}/image.png`;
     const psdDataPath = item.psdData ? `synthetic/${item.id}/image.psd` : undefined;
     const manifestPath = `synthetic/${item.id}/manifest.json`;
@@ -119,30 +189,33 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       zip.file(psdDataPath, item.psdData);
     }
 
-    const { imageData: _imageData, psdData: _psdData, createdAt, deletedAt, ...metadata } = item;
     const itemManifest: SyntheticImageManifest = {
-      ...metadata,
+      id: item.id,
+      sourceImageId: item.sourceImageId,
+      fileName: `${item.id}.png`,
       imageDataPath,
       psdDataPath,
-      createdAt: toIsoString(createdAt, exportedAt),
-      deletedAt: deletedAt ? toIsoString(deletedAt, exportedAt) : undefined,
+      width: item.width,
+      height: item.height,
+      tags: item.tags,
+      aspectRatio: item.aspectRatio,
+      excludedFromDataset: item.excludedFromDataset,
+      createdAt: toIsoString(item.createdAt, exportedAt),
     };
-    datasetItemManifests[item.id] = manifestPath;
+    syntheticImageManifests[item.id] = manifestPath;
     zip.file(manifestPath, JSON.stringify(itemManifest, null, 2));
   }
 
   const manifest: ProjectFileManifest = {
     format: 'dataset-creator-project',
-    version: 2,
+    version: 3,
     project: {
       id: project.id,
       name: project.name,
+      currentTool: getToolSlug(project.currentStage),
       sourceImageManifests,
-      datasetItemManifests,
-      cleanupOverlays: {},
-      currentStage: project.currentStage,
-      stageState: project.stageState,
-      taggingConfig: project.taggingConfig,
+      syntheticImageManifests,
+      taggingConfig: serializeTaggingConfig(project.taggingConfig),
       lastModified: toIsoString(project.lastModified, exportedAt),
       createdAt: toIsoString(project.createdAt, exportedAt),
     },
@@ -225,21 +298,22 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   }
 
   const manifest = JSON.parse(await manifestFile.async('string')) as ProjectFileManifest;
-  if (manifest.format !== 'dataset-creator-project' || ![1, 2].includes(manifest.version)) {
+  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3].includes(manifest.version)) {
     throw new Error('Unsupported project file');
   }
 
   const sourceManifests = manifest.project.sourceImageManifests
     ? await Promise.all(
         Object.values(manifest.project.sourceImageManifests).map((path) =>
-          readJsonFile<SourceImageManifest>(zip, path)
+          readJsonFile<SourceImageManifest | LegacySourceImageManifest>(zip, path)
         )
       )
     : Object.values(manifest.project.sourceImages ?? {});
-  const syntheticManifests = manifest.project.datasetItemManifests
+  const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
+  const syntheticManifests = syntheticManifestPaths
     ? await Promise.all(
-        Object.values(manifest.project.datasetItemManifests).map((path) =>
-          readJsonFile<SyntheticImageManifest>(zip, path)
+        Object.values(syntheticManifestPaths).map((path) =>
+          readJsonFile<SyntheticImageManifest | LegacySyntheticImageManifest>(zip, path)
         )
       )
     : Object.values(manifest.project.datasetItems ?? {});
@@ -252,30 +326,43 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     }
 
     const originalFile = new Blob([originalFileBuffer], { type: source.mimeType });
-    const thumbnailBuffer = source.thumbnailPath
-      ? await zip.file(source.thumbnailPath)?.async('arraybuffer')
+    const thumbnailPath = 'thumbnailPath' in source ? source.thumbnailPath : undefined;
+    const sourceEmbedding = 'embedding' in source ? source.embedding : undefined;
+    const sourceHidden =
+      'removedFromWorkspace' in source
+        ? source.removedFromWorkspace
+        : 'hidden' in source
+          ? source.hidden
+          : undefined;
+    const thumbnailBuffer = thumbnailPath
+      ? await zip.file(thumbnailPath)?.async('arraybuffer')
       : undefined;
     const thumbnail = thumbnailBuffer ? new Blob([thumbnailBuffer], { type: 'image/jpeg' }) : undefined;
-    const {
-      originalFilePath: _originalFilePath,
-      thumbnailPath: _thumbnailPath,
-      embedding,
-      createdAt,
-      ...metadata
-    } = source;
 
     sourceImages[source.id] = {
-      ...metadata,
+      id: source.id,
+      fileName: source.fileName,
+      originalFileName: source.originalFileName,
+      width: source.width,
+      height: source.height,
+      mimeType: source.mimeType,
+      tags: source.tags,
+      hidden: sourceHidden,
+      excludedFromDataset: source.excludedFromDataset,
       originalFile,
       thumbnail,
-      embedding: embedding ? new Float32Array(embedding) : undefined,
+      embedding: sourceEmbedding ? new Float32Array(sourceEmbedding) : undefined,
       previewUrl: URL.createObjectURL(originalFile),
-      createdAt: new Date(createdAt),
+      createdAt: new Date(source.createdAt),
     };
   }
 
   const datasetItems: Record<string, SyntheticImage> = {};
   for (const item of syntheticManifests) {
+    if ('deleted' in item && item.deleted) {
+      continue;
+    }
+
     const imageDataBuffer = await zip.file(item.imageDataPath)?.async('arraybuffer');
     if (!imageDataBuffer) {
       throw new Error(`Project file is missing Synthetic data for ${item.id}`);
@@ -286,19 +373,25 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     const psdData = psdDataBuffer
       ? new Blob([psdDataBuffer], { type: 'image/vnd.adobe.photoshop' })
       : undefined;
-    const {
-      imageDataPath: _imageDataPath,
-      psdDataPath: _psdDataPath,
-      createdAt,
-      deletedAt,
-      ...metadata
-    } = item;
+    const deletedAt = 'deletedAt' in item ? item.deletedAt : undefined;
 
     datasetItems[item.id] = {
-      ...metadata,
+      id: item.id,
+      sourceImageId: item.sourceImageId,
+      width: item.width,
+      height: item.height,
+      type: 'type' in item ? item.type : 'cleaned',
+      cropFrame: 'cropFrame' in item ? item.cropFrame : undefined,
+      augmentationConfig: 'augmentationConfig' in item ? item.augmentationConfig : undefined,
+      cleanupOverlayId: 'cleanupOverlayId' in item ? item.cleanupOverlayId : undefined,
+      tags: item.tags,
+      aspectRatio: item.aspectRatio,
+      deleted: false,
+      excludedFromDataset: item.excludedFromDataset,
+      exportOrder: 'exportOrder' in item ? item.exportOrder : undefined,
       imageData,
       psdData,
-      createdAt: new Date(createdAt),
+      createdAt: new Date(item.createdAt),
       deletedAt: deletedAt ? new Date(deletedAt) : undefined,
     };
   }
@@ -307,30 +400,38 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     sourceImages: _sourceImageManifests,
     datasetItems: _datasetItemManifests,
     sourceImageManifests: _sourceImageManifestPaths,
+    syntheticImageManifests: _syntheticImageManifestPaths,
     datasetItemManifests: _datasetItemManifestPaths,
     cleanupOverlays: _cleanupOverlays,
     lastModified,
     createdAt,
     stageState,
+    currentTool,
+    currentStage,
+    taggingConfig,
     ...projectMetadata
   } = manifest.project;
   const loadedStageState = stageState as Partial<Record<string, unknown>>;
+  const restoredCurrentStage = getStageFromToolSlug(currentTool, currentStage ?? 'hub');
 
   return {
     ...projectMetadata,
     sourceImages,
     datasetItems,
     cleanupOverlays: {},
+    currentStage: restoredCurrentStage,
     stageState: {
-      hub: loadedStageState.hub ?? {},
-      import: loadedStageState.import ?? {},
-      select: loadedStageState.select ?? {},
-      clean: loadedStageState.clean ?? {},
-      analysis: loadedStageState.analysis ?? {},
-      review: loadedStageState.review ?? {},
-      tagging: loadedStageState.tagging ?? {},
-      export: loadedStageState.export ?? {},
+      ...createEmptyStageState(),
+      hub: loadedStageState?.hub ?? {},
+      import: loadedStageState?.import ?? {},
+      select: loadedStageState?.select ?? {},
+      clean: loadedStageState?.clean ?? {},
+      analysis: loadedStageState?.analysis ?? {},
+      review: loadedStageState?.review ?? {},
+      tagging: loadedStageState?.tagging ?? {},
+      export: loadedStageState?.export ?? {},
     },
+    taggingConfig: deserializeTaggingConfig(taggingConfig),
     lastModified: new Date(lastModified),
     createdAt: new Date(createdAt),
   };
