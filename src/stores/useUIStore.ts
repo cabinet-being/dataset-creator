@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ProjectFileHandle } from '../services/project/projectFileService';
+import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
 
 interface UIState {
   // Current selections
@@ -15,9 +15,9 @@ interface UIState {
   showSettings: boolean;
   showHelp: boolean;
 
-  // Project file session
-  projectFileHandle?: ProjectFileHandle;
-  projectFileName?: string;
+  // Project directory session
+  projectDirectoryHandle?: ProjectDirectoryHandle;
+  projectDirectoryName?: string;
 
   // Edit tool header actions
   editToolbar: {
@@ -63,8 +63,8 @@ interface UIActions {
   setShowSettings: (show: boolean) => void;
   setShowHelp: (show: boolean) => void;
 
-  // Project file session
-  setProjectFile: (file?: { handle?: ProjectFileHandle; name?: string }) => void;
+  // Project directory session
+  setProjectDirectory: (directory?: { handle?: ProjectDirectoryHandle; name?: string }) => void;
 
   // Edit tool header actions
   setEditToolbar: (toolbar: Partial<UIState['editToolbar']>) => void;
@@ -76,7 +76,7 @@ interface UIActions {
   removeNotification: (id: string) => void;
 }
 
-export const useUIStore = create<UIState & UIActions>((set) => ({
+export const useUIStore = create<UIState & UIActions>((set, get) => ({
   selectedSourceImageIds: new Set(),
   selectedDatasetItemIds: new Set(),
   hoveredImageId: undefined,
@@ -84,8 +84,8 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   viewMode: 'grid',
   showSettings: false,
   showHelp: false,
-  projectFileHandle: undefined,
-  projectFileName: undefined,
+  projectDirectoryHandle: undefined,
+  projectDirectoryName: undefined,
   editToolbar: {
     visible: false,
     canSave: false,
@@ -146,10 +146,10 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   setShowHelp: (show: boolean) =>
     set({ showHelp: show }),
 
-  setProjectFile: (file) =>
+  setProjectDirectory: (directory) =>
     set({
-      projectFileHandle: file?.handle,
-      projectFileName: file?.name,
+      projectDirectoryHandle: directory?.handle,
+      projectDirectoryName: directory?.name,
     }),
 
   setEditToolbar: (toolbar) =>
@@ -202,18 +202,18 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
       return { taggingModals: nextModals };
     }),
   
-  addNotification: (type, message) =>
+  addNotification: (type, message) => {
+    const id = `${Date.now()}-${Math.random()}`;
     set((state) => ({
       notifications: [
         ...state.notifications,
-        {
-          id: `${Date.now()}-${Math.random()}`,
-          type,
-          message,
-          timestamp: new Date(),
-        },
+        { id, type, message, timestamp: new Date() },
       ],
-    })),
+    }));
+
+    const duration = type === 'error' || type === 'warning' ? 8000 : 4000;
+    window.setTimeout(() => get().removeNotification(id), duration);
+  },
   
   removeNotification: (id: string) =>
     set((state) => ({

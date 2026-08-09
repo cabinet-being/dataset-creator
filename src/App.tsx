@@ -2,6 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ComponentType } from 'react';
 import {
+  AlertCircle,
   Archive,
   ArrowLeft,
   BarChart3,
@@ -16,7 +17,6 @@ import {
   Moon,
   Pencil,
   ScanSearch,
-  Save,
   Settings2,
   Sun,
   Tags,
@@ -36,14 +36,14 @@ import {
 } from './lib/constants';
 import { toWorkspaceImages } from './lib/workspaceImages';
 import {
-  downloadProjectFile,
-  pickProjectFileForOpen,
-  pickProjectFileForSave,
-  PROJECT_FILE_EXTENSION,
-  type ProjectFileHandle,
-  readProjectFile,
-  writeProjectFileToHandle,
-} from './services/project/projectFileService';
+  createProjectDirectory,
+  clearProjectDirectory,
+  pickProjectDirectory,
+  projectDirectoryHasManifest,
+  readProjectDirectory,
+  writeProjectDirectoryChanges,
+  type ProjectDirectoryHandle,
+} from './services/project/projectDirectoryService';
 import {
   deleteLocalTaggerFileHandle,
   saveLocalTaggerFileHandle,
@@ -183,8 +183,6 @@ function App() {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
-  const hydrateSourceImages = useProjectStore((state) => state.hydrateSourceImages);
-  const hydrateDatasetItems = useProjectStore((state) => state.hydrateDatasetItems);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
@@ -203,28 +201,28 @@ function App() {
     taggingToolbar,
     setTaggingModal,
     addNotification,
-    projectFileHandle,
-    projectFileName,
-    setProjectFile,
+    notifications,
+    removeNotification,
+    projectDirectoryHandle,
+    projectDirectoryName,
+    setProjectDirectory,
   } = useUIStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
-  const [isProjectFileBusy, setIsProjectFileBusy] = useState(false);
+  const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
-  const projectInputRef = useRef<HTMLInputElement | null>(null);
   const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
   const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
+  const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const projectSessionRef = useRef(0);
+  const projectOperationBusyRef = useRef(false);
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     setDarkMode(prefersDark);
-
-    Promise.all([hydrateSourceImages(), hydrateDatasetItems()]).catch((error) => {
-      console.warn('Failed to hydrate image workspace', error);
-    });
-  }, [hydrateDatasetItems, hydrateSourceImages, setDarkMode]);
+  }, [setDarkMode]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -253,6 +251,59 @@ function App() {
       writeStageToUrl(currentStage);
     }
   }, [currentStage, isUrlStageReady]);
+
+  useEffect(() => {
+    if (!projectDirectoryHandle) {
+      return;
+    }
+
+    const sessionId = projectSessionRef.current;
+    const directoryHandle = projectDirectoryHandle;
+    let previousProject = useProjectStore.getState();
+    let saveTimer: number | undefined;
+
+    const unsubscribe = useProjectStore.subscribe((nextProject) => {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(() => {
+        if (
+          projectSessionRef.current !== sessionId ||
+          useUIStore.getState().projectDirectoryHandle !== directoryHandle
+        ) {
+          return;
+        }
+
+        const projectBeforeChanges = previousProject;
+        previousProject = nextProject;
+        autoSaveQueueRef.current = autoSaveQueueRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            if (
+              projectSessionRef.current !== sessionId ||
+              useUIStore.getState().projectDirectoryHandle !== directoryHandle
+            ) {
+              return;
+            }
+            await writeProjectDirectoryChanges(nextProject, projectBeforeChanges, directoryHandle);
+          })
+          .catch((error) => {
+            if (
+              projectSessionRef.current === sessionId &&
+              useUIStore.getState().projectDirectoryHandle === directoryHandle
+            ) {
+              addNotification(
+                'error',
+                error instanceof Error ? error.message : 'Failed to auto-save project directory'
+              );
+            }
+          });
+      }, 250);
+    });
+
+    return () => {
+      window.clearTimeout(saveTimer);
+      unsubscribe();
+    };
+  }, [addNotification, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!(STAGES as readonly string[]).includes(currentStage)) {
@@ -419,99 +470,76 @@ function App() {
     if (error instanceof DOMException && error.name === 'AbortError') {
       return;
     }
-    console.error(message, error);
-    addNotification('error', message);
+    addNotification('error', error instanceof Error ? error.message : message);
   };
 
-  const handleNewProject = () => {
+  const handleNewProject = async () => {
+    if (projectOperationBusyRef.current) {
+      return;
+    }
     setFileMenuOpen(false);
     if (workspaceImages.length > 0 && !window.confirm('Create a new project and clear the current workspace?')) {
       return;
     }
 
-    const nextName = window.prompt('Project name', 'Untitled Project')?.trim() || 'Untitled Project';
-    initializeProject(nextName);
-    setProjectFile(undefined);
-    addNotification('success', 'New project created');
-  };
-
-  const openProjectFile = async (file: File, handle?: ProjectFileHandle) => {
-    const project = await readProjectFile(file);
-    loadProject(project);
-    setProjectFile({ handle, name: file.name });
-    addNotification('success', 'Project file opened');
-  };
-
-  const handleOpenProjectInput = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = '';
-    if (!file) {
-      return;
-    }
-
-    setIsProjectFileBusy(true);
+    projectOperationBusyRef.current = true;
+    setIsProjectDirectoryBusy(true);
     try {
-      await openProjectFile(file);
+      const parentDirectory = await pickProjectDirectory();
+      const nextName = window.prompt('Project name', 'Untitled Project')?.trim();
+      if (!nextName) {
+        return;
+      }
+
+      const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
+      if (
+        (await projectDirectoryHasManifest(directory)) &&
+        !window.confirm(`Overwrite the Dataset Creator project in "${nextName}"?`)
+      ) {
+        return;
+      }
+      projectSessionRef.current += 1;
+      autoSaveQueueRef.current = Promise.resolve();
+      setProjectDirectory(undefined);
+      initializeProject(nextName);
+      const project = useProjectStore.getState();
+      await clearProjectDirectory(directory);
+      await createProjectDirectory(directory, project);
+      setProjectDirectory({ handle: directory, name: directory.name });
+      addNotification('success', 'New project directory created');
     } catch (error) {
-      handleProjectFileError(error, 'Failed to open project file');
+      handleProjectFileError(error, 'Failed to create project directory');
     } finally {
-      setIsProjectFileBusy(false);
+      projectOperationBusyRef.current = false;
+      setIsProjectDirectoryBusy(false);
     }
+  };
+
+  const openProjectDirectory = async (directory: ProjectDirectoryHandle) => {
+    const project = await readProjectDirectory(directory);
+    projectSessionRef.current += 1;
+    autoSaveQueueRef.current = Promise.resolve();
+    setProjectDirectory(undefined);
+    loadProject(project);
+    setProjectDirectory({ handle: directory, name: directory.name });
+    addNotification('success', 'Project directory opened');
   };
 
   const handleOpenProject = async () => {
-    setFileMenuOpen(false);
-    setIsProjectFileBusy(true);
-    try {
-      const picked = await pickProjectFileForOpen();
-      if (picked) {
-        await openProjectFile(picked.file, picked.handle);
-      } else {
-        projectInputRef.current?.click();
-      }
-    } catch (error) {
-      handleProjectFileError(error, 'Failed to open project file');
-    } finally {
-      setIsProjectFileBusy(false);
-    }
-  };
-
-  const handleSaveProjectAs = async () => {
-    setFileMenuOpen(false);
-    setIsProjectFileBusy(true);
-    try {
-      const project = useProjectStore.getState();
-      const handle = await pickProjectFileForSave(project.name);
-      if (handle) {
-        await writeProjectFileToHandle(project, handle);
-        setProjectFile({ handle, name: handle.name ?? `${project.name}.${PROJECT_FILE_EXTENSION}` });
-      } else {
-        await downloadProjectFile(project);
-        setProjectFile({ name: `${project.name}.${PROJECT_FILE_EXTENSION}` });
-      }
-      addNotification('success', 'Project file saved');
-    } catch (error) {
-      handleProjectFileError(error, 'Failed to save project file');
-    } finally {
-      setIsProjectFileBusy(false);
-    }
-  };
-
-  const handleSaveProject = async () => {
-    setFileMenuOpen(false);
-    if (!projectFileHandle) {
-      await handleSaveProjectAs();
+    if (projectOperationBusyRef.current) {
       return;
     }
-
-    setIsProjectFileBusy(true);
+    projectOperationBusyRef.current = true;
+    setFileMenuOpen(false);
+    setIsProjectDirectoryBusy(true);
     try {
-      await writeProjectFileToHandle(useProjectStore.getState(), projectFileHandle);
-      addNotification('success', 'Project file saved');
+      const directory = await pickProjectDirectory();
+      await openProjectDirectory(directory);
     } catch (error) {
-      handleProjectFileError(error, 'Failed to save project file');
+      handleProjectFileError(error, 'Failed to open project directory');
     } finally {
-      setIsProjectFileBusy(false);
+      projectOperationBusyRef.current = false;
+      setIsProjectDirectoryBusy(false);
     }
   };
 
@@ -672,44 +700,25 @@ function App() {
               <div className="absolute left-0 top-full mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
                 <button
                   type="button"
-                  disabled={isProjectFileBusy}
-                  onClick={handleNewProject}
+                  disabled={isProjectDirectoryBusy}
+                  onClick={() => void handleNewProject()}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
                 >
                   <FilePlus className="h-4 w-4" />
-                  <span className="flex-1">New</span>
+                  <span className="flex-1">New Project Directory</span>
                 </button>
                 <button
                   type="button"
-                  disabled={isProjectFileBusy}
+                  disabled={isProjectDirectoryBusy}
                   onClick={() => void handleOpenProject()}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
                 >
                   <FolderOpen className="h-4 w-4" />
-                  <span className="flex-1">Open</span>
-                </button>
-                <div className="my-1 h-px bg-border" />
-                <button
-                  type="button"
-                  disabled={isProjectFileBusy}
-                  onClick={() => void handleSaveProject()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <Save className="h-4 w-4" />
-                  <span className="flex-1">Save</span>
+                  <span className="flex-1">Open Project Directory</span>
                 </button>
                 <button
                   type="button"
-                  disabled={isProjectFileBusy}
-                  onClick={() => void handleSaveProjectAs()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <Download className="h-4 w-4" />
-                  <span className="flex-1">Save As</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isProjectFileBusy}
+                  disabled={isProjectDirectoryBusy}
                   onClick={handleRenameProject}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
                 >
@@ -783,13 +792,6 @@ function App() {
           >
             Settings
           </button>
-          <input
-            ref={projectInputRef}
-            type="file"
-            accept={`.${PROJECT_FILE_EXTENSION}`}
-            onChange={(event) => void handleOpenProjectInput(event)}
-            className="hidden"
-          />
         </div>
 
         <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
@@ -908,7 +910,7 @@ function App() {
               </p>
               <p className="mt-1 truncate text-xs text-muted-foreground">
                 Project: <span className="font-medium text-foreground">{projectName}</span>
-                {projectFileName ? ` - ${projectFileName}` : ''}
+                {projectDirectoryName ? ` - ${projectDirectoryName}` : ''}
               </p>
             </div>
 
@@ -1009,6 +1011,39 @@ function App() {
             </Suspense>
           </div>
         </div>
+
+        {notifications.length > 0 && (
+          <div className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-2">
+            {notifications.map((notification) => {
+              const isError = notification.type === 'error';
+              const isSuccess = notification.type === 'success';
+              return (
+                <div
+                  key={notification.id}
+                  role="alert"
+                  className={`pointer-events-auto flex items-start gap-3 rounded-md border px-3 py-3 text-sm shadow-xl ${
+                    isError
+                      ? 'border-destructive/60 bg-destructive text-destructive-foreground'
+                      : isSuccess
+                        ? 'border-emerald-500/60 bg-emerald-950 text-emerald-100'
+                        : 'border-border bg-card text-foreground'
+                  }`}
+                >
+                  {isError ? <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> : <Check className="mt-0.5 h-4 w-4 shrink-0" />}
+                  <p className="min-w-0 flex-1 break-words">{notification.message}</p>
+                  <button
+                    type="button"
+                    onClick={() => removeNotification(notification.id)}
+                    className="shrink-0 rounded p-0.5 opacity-80 transition-opacity hover:opacity-100"
+                    aria-label="Dismiss notification"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </main>
     </div>
   );

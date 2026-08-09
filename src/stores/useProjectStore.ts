@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { devtools, persist } from 'zustand/middleware';
+import { devtools } from 'zustand/middleware';
 import {
   ProjectState,
   SourceImage,
@@ -11,7 +11,7 @@ import {
   CleanupOverlay,
 } from '../types';
 import { OBJECT_STORES } from '../lib/constants';
-import { dbBatchPut, dbClear, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
+import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
 
 interface ProjectStore extends ProjectState {
   // Project management
@@ -54,7 +54,6 @@ interface ProjectStore extends ProjectState {
 
 export const useProjectStore = create<ProjectStore>()(
   devtools(
-    persist(
       (set, get) => ({
         ...createProject('Untitled Project'),
         
@@ -70,12 +69,6 @@ export const useProjectStore = create<ProjectStore>()(
               }
             }
 
-            void Promise.all([
-              dbClear(OBJECT_STORES.SOURCE_IMAGES),
-              dbClear(OBJECT_STORES.DATASET_ITEMS),
-              dbClear(OBJECT_STORES.CLEANUP_OVERLAYS),
-            ]);
-
             return createProject(name);
           }),
 
@@ -90,23 +83,6 @@ export const useProjectStore = create<ProjectStore>()(
                 }
               }
             }
-
-            void Promise.all([
-              dbClear(OBJECT_STORES.SOURCE_IMAGES),
-              dbClear(OBJECT_STORES.DATASET_ITEMS),
-              dbClear(OBJECT_STORES.CLEANUP_OVERLAYS),
-            ]).then(() =>
-              Promise.all([
-                dbBatchPut(
-                  OBJECT_STORES.SOURCE_IMAGES,
-                  Object.values(project.sourceImages).map((image) => ({
-                    ...image,
-                    previewUrl: undefined,
-                  }))
-                ),
-                dbBatchPut(OBJECT_STORES.DATASET_ITEMS, Object.values(project.datasetItems)),
-              ])
-            );
 
             const defaults = createProject(project.name);
 
@@ -360,43 +336,6 @@ export const useProjectStore = create<ProjectStore>()(
             workspaceSettings: { ...state.workspaceSettings, ...updates },
             lastModified: new Date(),
           })),
-      }),
-      {
-        name: 'dataset-creator-project',
-        version: 1,
-        partialize: (state) => {
-          const { sourceImages, datasetItems, cleanupOverlays, ...persistedState } = state;
-          return {
-            ...persistedState,
-            datasetItems: {},
-            cleanupOverlays: {},
-            stageState: {
-              ...persistedState.stageState,
-              clean: {},
-            },
-          };
-        },
-        migrate: (persistedState: any, version) => {
-          const defaults = createProject((persistedState as any)?.name ?? 'Untitled Project');
-          if (version === 0) {
-            return {
-              ...(persistedState as any),
-              sourceImages: {},
-              workspaceSettings: {
-                ...defaults.workspaceSettings,
-                ...(persistedState as any)?.workspaceSettings,
-              },
-            };
-          }
-          return {
-            ...(persistedState as any),
-            workspaceSettings: {
-              ...defaults.workspaceSettings,
-              ...(persistedState as any)?.workspaceSettings,
-            },
-          };
-        },
-      }
-    )
+      })
   )
 );
