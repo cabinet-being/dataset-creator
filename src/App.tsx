@@ -200,6 +200,8 @@ function App() {
     darkMode,
     setDarkMode,
     editToolbar,
+    taggingToolbar,
+    setTaggingModal,
     addNotification,
     projectFileHandle,
     projectFileName,
@@ -282,11 +284,10 @@ function App() {
       : TOOL_DESCRIPTIONS[currentStage] ?? '';
   const showEditToolbar = currentStage === 'clean' && editToolbar.visible;
   const showTaggingToolbar = currentStage === 'tagging';
+  const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
+  const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
-  };
-  const runTaggingCommand = (command: 'datasetTags' | 'settings') => {
-    window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: command }));
   };
   const navigateToStage = (stage: StageName) => {
     writeStageToUrl(stage, 'push');
@@ -956,9 +957,19 @@ function App() {
 
             {showTaggingToolbar && (
               <div className="flex shrink-0 items-center gap-2">
+                {showTaggingBackButton && (
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: 'back' }))}
+                    className="rounded-md bg-secondary p-2 transition-colors hover:bg-muted"
+                    title="Back"
+                  >
+                    <ArrowLeft size={18} />
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => runTaggingCommand('datasetTags')}
+                  onClick={() => setTaggingModal({ datasetTags: true })}
                   className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
                 >
                   <Tags size={16} />
@@ -966,7 +977,7 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => runTaggingCommand('settings')}
+                  onClick={() => setTaggingModal({ settings: true })}
                   className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
                 >
                   <Settings2 size={16} />
@@ -977,8 +988,16 @@ function App() {
           </div>
         </header>
 
-        <div className={showEditToolbar ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}>
-          <div className={showEditToolbar ? 'h-full min-h-0' : 'p-4 md:p-6'}>
+        <div
+          className={showEditToolbar || showFullscreenTagging ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
+        >
+          <div
+            className={
+              showEditToolbar || showFullscreenTagging
+                ? 'h-full min-h-0'
+                : 'p-4 md:p-6'
+            }
+          >
             <Suspense
               fallback={
                 <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">

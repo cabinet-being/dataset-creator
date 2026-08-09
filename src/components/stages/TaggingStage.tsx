@@ -1,7 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, Plug, Sparkles, Upload, X } from 'lucide-react';
+import { AlertCircle, Plus, Plug, Sparkles, Upload, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
@@ -28,6 +28,8 @@ import {
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
+
+const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 
 type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
@@ -119,11 +121,11 @@ const INSERT_MODE_LABELS: Record<InsertMode, string> = {
   overwrite: 'Overwrite',
 };
 
-const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 
 type TaggingCardProps = {
   item: WorkspaceImage;
   previewUrl?: string;
+  onOpen: (itemId: string) => void;
   onSubmit: (itemId: string, value: string) => boolean;
   onRemoveTag: (itemId: string, tag: string) => void;
   suggestions: string[];
@@ -133,6 +135,7 @@ const TaggingCard = memo(
   ({
     item,
     previewUrl,
+    onOpen,
     onSubmit,
     onRemoveTag,
     suggestions,
@@ -275,27 +278,34 @@ const TaggingCard = memo(
         className={`gallery-masonry-item rounded-lg overflow-hidden bg-card ${getWorkspaceKindFrameClass(item.kind)}`}
         style={getWorkspaceKindFrameStyle(item.kind)}
       >
-        <MasonryImageFrame
-          src={previewUrl}
-          alt={item.fileName}
-          width={item.width}
-          height={item.height}
-          placeholder="Preview unavailable"
+        <button
+          type="button"
+          onClick={() => onOpen(item.id)}
+          className="block w-full text-left"
+          aria-label={`Open ${item.fileName} caption editor`}
         >
-          <div
-            className={getWorkspaceKindFrameOverlayClass()}
-            style={getWorkspaceKindFrameOverlayStyle(item.kind)}
-          />
+          <MasonryImageFrame
+            src={previewUrl}
+            alt={item.fileName}
+            width={item.width}
+            height={item.height}
+            placeholder="Preview unavailable"
+          >
+            <div
+              className={getWorkspaceKindFrameOverlayClass()}
+              style={getWorkspaceKindFrameOverlayStyle(item.kind)}
+            />
 
-          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-            <div className="flex items-end justify-between gap-2">
-              <p className="min-w-0 truncate text-sm font-medium text-white">{item.fileName}</p>
-              <span className={getWorkspaceKindBadgeClass(item.kind)}>
-                {item.label}
-              </span>
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+              <div className="flex items-end justify-between gap-2">
+                <p className="min-w-0 truncate text-sm font-medium text-white">{item.fileName}</p>
+                <span className={getWorkspaceKindBadgeClass(item.kind)}>
+                  {item.label}
+                </span>
+              </div>
             </div>
-          </div>
-        </MasonryImageFrame>
+          </MasonryImageFrame>
+        </button>
 
         <div className="p-3 space-y-3">
           <div className="rounded-md border border-border bg-secondary/40 p-2 h-20 overflow-y-auto">
@@ -465,7 +475,8 @@ export const TaggingStage = () => {
   );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
-  const { addNotification } = useUIStore();
+  const { addNotification, taggingModals, setTaggingModal } = useUIStore();
+  const setTaggingToolbar = useUIStore((state) => state.setTaggingToolbar);
   const localTagger = useLocalTaggerStore((state) => state.bundle);
   const localTaggerStatus = useLocalTaggerStore((state) => state.status);
   const localTaggerMessage = useLocalTaggerStore((state) => state.message);
@@ -480,10 +491,11 @@ export const TaggingStage = () => {
 
   const [newBlacklistTag, setNewBlacklistTag] = useState('');
   const [globalTagsToAdd, setGlobalTagsToAdd] = useState('');
-  const [isDatasetTagsOpen, setIsDatasetTagsOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [suggestionTags, setSuggestionTags] = useState<string[]>([]);
   const [suggestionFileName, setSuggestionFileName] = useState('');
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [selectedTagInput, setSelectedTagInput] = useState('');
+  const [isSelectedAutoTagging, setIsSelectedAutoTagging] = useState(false);
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const autoConnectSettingsKeyRef = useRef<string | null>(null);
@@ -501,6 +513,10 @@ export const TaggingStage = () => {
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]
   );
   const previewUrls = useWorkspacePreviewUrls(items);
+  const selectedItem = useMemo(
+    () => items.find((item) => item.id === selectedItemId) ?? null,
+    [items, selectedItemId]
+  );
   const normalizedDatasetKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
   const bulkTags = useMemo(
     () => Array.from(new Set(parseTagInput(globalTagsToAdd).filter((tag) => tag !== normalizedDatasetKeyword))),
@@ -512,19 +528,29 @@ export const TaggingStage = () => {
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
 
   useEffect(() => {
+    return () => {
+      setTaggingModal({ datasetTags: false, settings: false });
+    };
+  }, [setTaggingModal]);
+
+  useEffect(() => {
     const handleTaggingCommand = (event: Event) => {
-      const command = (event as CustomEvent<'datasetTags' | 'settings'>).detail;
-      if (command === 'datasetTags') {
-        setIsDatasetTagsOpen(true);
+      if ((event as CustomEvent<'back'>).detail !== 'back') {
+        return;
       }
-      if (command === 'settings') {
-        setIsSettingsOpen(true);
-      }
+
+      setSelectedItemId(null);
+      setSelectedTagInput('');
     };
 
     window.addEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
     return () => window.removeEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
   }, []);
+
+  useEffect(() => {
+    setTaggingToolbar({ visible: Boolean(selectedItem) });
+    return () => setTaggingToolbar({ visible: false });
+  }, [selectedItem, setTaggingToolbar]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -539,30 +565,6 @@ export const TaggingStage = () => {
       }
     };
   }, []);
-
-  const summary = useMemo(() => {
-    const taggedCount = items.filter((item) => (item.tags?.length ?? 0) > 0).length;
-    const untaggedCount = items.length - taggedCount;
-    const frequencies = new Map<string, number>();
-
-    for (const item of items) {
-      for (const tag of item.tags ?? []) {
-        frequencies.set(tag, (frequencies.get(tag) ?? 0) + 1);
-      }
-    }
-
-    const topTags = Array.from(frequencies.entries())
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .slice(0, 12);
-
-    if (import.meta.env.DEV) {
-      console.log(`[tagging] tagged image count: ${taggedCount}`);
-      console.log(`[tagging] untagged image count: ${untaggedCount}`);
-      console.log(`[tagging] tag frequency map size: ${frequencies.size}`);
-    }
-
-    return { taggedCount, untaggedCount, topTags, uniqueTagCount: frequencies.size };
-  }, [items]);
 
   const manualTagSuggestions = useMemo(() => {
     const blacklist = new Set(taggingConfig.blacklist);
@@ -581,6 +583,13 @@ export const TaggingStage = () => {
       console.log(`[tagging] dataset keyword excluded from Stage 7 tag state: ${!keywordInEditableTags}`);
     }
   }, [items, taggingConfig.datasetKeyword]);
+
+  useEffect(() => {
+    if (selectedItemId && !selectedItem) {
+      setSelectedItemId(null);
+      setSelectedTagInput('');
+    }
+  }, [selectedItem, selectedItemId]);
 
   const updateWorkspaceImageTags = useCallback(
     (item: WorkspaceImage, tags: string[]) => {
@@ -1149,36 +1158,178 @@ export const TaggingStage = () => {
     [items, updateWorkspaceImageTags]
   );
 
-  if (items.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No images to tag.</p>
+  const handleSubmitSelectedTags = useCallback(() => {
+    if (!selectedItem || !selectedTagInput.trim()) {
+      return;
+    }
+
+    if (applyTagsToItem(selectedItem.id, selectedTagInput)) {
+      setSelectedTagInput('');
+    }
+  }, [applyTagsToItem, selectedItem, selectedTagInput]);
+
+  const handleRunSelectedAutoTagging = useCallback(async () => {
+    if (!selectedItem) {
+      return;
+    }
+
+    if (!localTagger || localTaggerStatus !== 'ready') {
+      setLocalTaggerStatus('not-ready');
+      setLocalTaggerMessage('Connect and validate a supported model folder before running auto-tagging.');
+      return;
+    }
+
+    setIsSelectedAutoTagging(true);
+    try {
+      const predictions = await predictLocalTags(
+        localTagger,
+        selectedItem.imageData,
+        taggingConfig.threshold,
+        taggingConfig.maxTags
+      );
+      const nextTags = mergeAutoTags(
+        selectedItem.tags ?? [],
+        predictions.map((prediction) => prediction.tag)
+      );
+      updateWorkspaceImageTags(selectedItem, nextTags);
+      addNotification('success', `Auto-tagged ${selectedItem.fileName}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Runtime inference failed.';
+      setLocalTaggerStatus('not-ready');
+      setLocalTaggerMessage(message);
+      addNotification('error', message);
+    } finally {
+      setIsSelectedAutoTagging(false);
+    }
+  }, [
+    addNotification,
+    localTagger,
+    localTaggerStatus,
+    mergeAutoTags,
+    selectedItem,
+    setLocalTaggerMessage,
+    setLocalTaggerStatus,
+    taggingConfig.maxTags,
+    taggingConfig.threshold,
+    updateWorkspaceImageTags,
+  ]);
+
+  const selectedTags = normalizeUniqueTags(selectedItem?.tags ?? []);
+  const selectedPreviewUrl = selectedItem ? previewUrls[selectedItem.id] : undefined;
+  const selectedView = selectedItem ? (
+
+    (
+      <div className="flex h-full min-h-0 flex-col gap-4">
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="h-full min-h-0 overflow-hidden rounded-lg bg-black">
+            {selectedPreviewUrl ? (
+              <img
+                src={selectedPreviewUrl}
+                alt={selectedItem.fileName}
+                className="h-full w-full object-contain"
+                draggable={false}
+              />
+            ) : (
+              <div className="flex h-full min-h-0 items-center justify-center text-sm text-muted-foreground">
+                Preview unavailable
+              </div>
+            )}
+          </div>
+
+          <aside className="flex min-h-0 flex-col rounded-lg border border-border bg-card p-4">
+            <div className="mb-4">
+              <label className="mb-2 block text-xs text-muted-foreground">Add tags</label>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  handleSubmitSelectedTags();
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={selectedTagInput}
+                  onChange={(event) => setSelectedTagInput(event.target.value)}
+                  placeholder="tag1, tag2"
+                  list="selected-tag-suggestions"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={!selectedTagInput.trim()}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Add tags"
+                  aria-label="Add tags"
+                >
+                  <Plus size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRunSelectedAutoTagging()}
+                  disabled={!localTagger || localTaggerStatus !== 'ready' || isSelectedAutoTagging}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  title={isSelectedAutoTagging ? 'Auto-tagging...' : 'Auto-tag image'}
+                  aria-label={isSelectedAutoTagging ? 'Auto-tagging' : 'Auto-tag image'}
+                  aria-busy={isSelectedAutoTagging}
+                >
+                  <Sparkles size={16} />
+                </button>
+              </form>
+              <datalist id="selected-tag-suggestions">
+                {manualTagSuggestions.slice(0, 200).map((tag) => (
+                  <option key={tag} value={tag} />
+                ))}
+              </datalist>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Auto-tag uses current threshold {taggingConfig.threshold.toFixed(2)} and max {taggingConfig.maxTags}.
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold">Tags</h4>
+                <span className="text-xs text-muted-foreground">{selectedTags.length}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {selectedTags.length > 0 ? (
+                  selectedTags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground"
+                    >
+                      {tag}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTag(selectedItem.id, tag)}
+                        className="hover:opacity-70"
+                        aria-label={`Remove tag ${tag}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-sm text-muted-foreground">No tags yet</span>
+                )}
+              </div>
+            </div>
+          </aside>
+        </div>
       </div>
-    );
-  }
+    )
+  ) : null;
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Tagged Images</p>
-          <p className="text-2xl font-bold">{summary.taggedCount}</p>
-        </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Untagged Images</p>
-          <p className="text-2xl font-bold">{summary.untaggedCount}</p>
-        </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Unique Tags</p>
-          <p className="text-2xl font-bold">{summary.uniqueTagCount}</p>
-        </div>
-      </div>
+    <div className="h-full min-h-0">
+      {selectedView}
 
-      <Dialog.Root open={isDatasetTagsOpen} onOpenChange={setIsDatasetTagsOpen}>
+      <Dialog.Root
+        open={taggingModals.datasetTags}
+        onOpenChange={(open) => setTaggingModal({ datasetTags: open })}
+      >
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(760px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
+          <Dialog.Overlay className="fixed inset-0 z-[100] bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[101] w-[min(760px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>
                 <Dialog.Title className="text-lg font-semibold">Dataset Tags</Dialog.Title>
@@ -1273,10 +1424,13 @@ export const TaggingStage = () => {
         </Dialog.Portal>
       </Dialog.Root>
 
-      <Dialog.Root open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+      <Dialog.Root
+        open={taggingModals.settings}
+        onOpenChange={(open) => setTaggingModal({ settings: open })}
+      >
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(840px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
+          <Dialog.Overlay className="fixed inset-0 z-[100] bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[101] w-[min(840px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>
                 <Dialog.Title className="text-lg font-semibold">Tagging Settings</Dialog.Title>
@@ -1494,48 +1648,29 @@ export const TaggingStage = () => {
         aria-hidden="true"
       />
 
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <div>
-            <h3 className="text-lg font-semibold">Tag Frequency Overview</h3>
-            <p className="text-sm text-muted-foreground">
-              Most repeated tags across Source and Synthetic images.
-            </p>
+      <div className={selectedItem ? 'hidden' : undefined}>
+        {items.length === 0 ? (
+          <div className="py-12 text-center">
+            <AlertCircle className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
+            <p className="text-muted-foreground">No images to tag.</p>
           </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {summary.topTags.length > 0 ? (
-            summary.topTags.map(([tag, count]) => (
-              <span
-                key={tag}
-                className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary text-foreground text-sm"
-              >
-                <span>{tag}</span>
-                <span className="text-xs text-muted-foreground">{count}</span>
-              </span>
-            ))
-          ) : (
-            <span className="text-sm text-muted-foreground">No tags assigned yet</span>
-          )}
-        </div>
-      </div>
-
-      <div>
-        <BrickMasonry
-          items={items}
-          getKey={(item) => item.id}
-          getEstimate={(item) => item.height / Math.max(1, item.width) + 0.85}
-          renderItem={(item) => (
-            <TaggingCard
-              item={item}
-              previewUrl={previewUrls[item.id]}
-              onSubmit={applyTagsToItem}
-              onRemoveTag={handleRemoveTag}
-              suggestions={manualTagSuggestions}
-            />
-          )}
-        />
+        ) : (
+          <BrickMasonry
+            items={items}
+            getKey={(item) => item.id}
+            getEstimate={(item) => item.height / Math.max(1, item.width) + 0.85}
+            renderItem={(item) => (
+              <TaggingCard
+                item={item}
+                previewUrl={previewUrls[item.id]}
+                onOpen={setSelectedItemId}
+                onSubmit={applyTagsToItem}
+                onRemoveTag={handleRemoveTag}
+                suggestions={manualTagSuggestions}
+              />
+            )}
+          />
+        )}
       </div>
 
     </div>

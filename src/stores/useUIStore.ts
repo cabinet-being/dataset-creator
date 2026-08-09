@@ -26,6 +26,16 @@ interface UIState {
     isProcessing: boolean;
     status?: string;
   };
+
+  // Caption tool header actions
+  taggingToolbar: {
+    visible: boolean;
+  };
+
+  taggingModals: {
+    datasetTags: boolean;
+    settings: boolean;
+  };
   
   // Notifications
   notifications: Array<{
@@ -58,6 +68,8 @@ interface UIActions {
 
   // Edit tool header actions
   setEditToolbar: (toolbar: Partial<UIState['editToolbar']>) => void;
+  setTaggingToolbar: (toolbar: Partial<UIState['taggingToolbar']>) => void;
+  setTaggingModal: (modal: Partial<UIState['taggingModals']>) => void;
   
   // Notifications
   addNotification: (type: UIState['notifications'][0]['type'], message: string) => void;
@@ -78,6 +90,13 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
     visible: false,
     canSave: false,
     isProcessing: false,
+  },
+  taggingToolbar: {
+    visible: false,
+  },
+  taggingModals: {
+    datasetTags: false,
+    settings: false,
   },
   notifications: [],
   
@@ -150,6 +169,37 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
       }
 
       return { editToolbar: nextToolbar };
+    }),
+
+  setTaggingToolbar: (toolbar) =>
+    set((state) => {
+      const nextToolbar = {
+        ...state.taggingToolbar,
+        ...toolbar,
+      };
+
+      if (state.taggingToolbar.visible === nextToolbar.visible) {
+        return state;
+      }
+
+      return { taggingToolbar: nextToolbar };
+    }),
+
+  setTaggingModal: (modal) =>
+    set((state) => {
+      const nextModals = {
+        ...state.taggingModals,
+        ...modal,
+      };
+
+      if (
+        state.taggingModals.datasetTags === nextModals.datasetTags &&
+        state.taggingModals.settings === nextModals.settings
+      ) {
+        return state;
+      }
+
+      return { taggingModals: nextModals };
     }),
   
   addNotification: (type, message) =>
