@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, ComponentType } from 'react';
+import type { ChangeEvent, ComponentType, ReactNode } from 'react';
 import {
   AlertCircle,
   Archive,
@@ -11,10 +11,15 @@ import {
   ExternalLink,
   FilePlus,
   FolderOpen,
+  Grip,
   Check,
   Layers3,
+  Maximize2,
   Menu,
+  Minimize2,
   Moon,
+  PanelBottom,
+  PanelRight,
   Pencil,
   ScanSearch,
   Settings2,
@@ -174,6 +179,141 @@ const renderTool = (currentStage: StageName) => {
   }
 };
 
+type FloatingPanelState = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  minimized: boolean;
+};
+
+type FloatingWorkspacePanelProps = {
+  title: string;
+  icon: ComponentType<{ className?: string }>;
+  panel: FloatingPanelState;
+  onChange: (next: FloatingPanelState) => void;
+  onClose: () => void;
+  children: ReactNode;
+};
+
+const FloatingWorkspacePanel = ({
+  title,
+  icon: Icon,
+  panel,
+  onChange,
+  onClose,
+  children,
+}: FloatingWorkspacePanelProps) => {
+  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const resizeRef = useRef<{
+    startX: number;
+    startY: number;
+    originWidth: number;
+    originHeight: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      if (dragRef.current) {
+        const drag = dragRef.current;
+        onChange({
+          ...panel,
+          x: Math.max(8, Math.min(window.innerWidth - 160, drag.originX + event.clientX - drag.startX)),
+          y: Math.max(8, Math.min(window.innerHeight - 90, drag.originY + event.clientY - drag.startY)),
+        });
+      }
+
+      if (resizeRef.current) {
+        const resize = resizeRef.current;
+        onChange({
+          ...panel,
+          width: Math.max(240, Math.min(window.innerWidth - panel.x - 12, resize.originWidth + event.clientX - resize.startX)),
+          height: Math.max(150, Math.min(window.innerHeight - panel.y - 12, resize.originHeight + event.clientY - resize.startY)),
+        });
+      }
+    };
+
+    const stopPointerAction = () => {
+      dragRef.current = null;
+      resizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopPointerAction);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopPointerAction);
+    };
+  }, [onChange, panel]);
+
+  return (
+    <section
+      className="workspace-floating-panel fixed z-[1200] flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-2xl"
+      style={{ left: panel.x, top: panel.y, width: panel.width, height: panel.minimized ? 38 : panel.height }}
+    >
+      <header
+        className="flex h-9 shrink-0 cursor-move items-center gap-2 border-b border-border bg-secondary/80 px-2"
+        onPointerDown={(event) => {
+          if ((event.target as HTMLElement).closest('button')) {
+            return;
+          }
+          dragRef.current = {
+            startX: event.clientX,
+            startY: event.clientY,
+            originX: panel.x,
+            originY: panel.y,
+          };
+          document.body.style.cursor = 'move';
+          document.body.style.userSelect = 'none';
+        }}
+      >
+        <Icon className="h-4 w-4 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold">{title}</span>
+        <button
+          type="button"
+          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={() => onChange({ ...panel, minimized: !panel.minimized })}
+          title={panel.minimized ? 'Restore panel' : 'Minimize panel'}
+        >
+          {panel.minimized ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
+        </button>
+        <button
+          type="button"
+          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={onClose}
+          title="Close panel"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </header>
+      {!panel.minimized && <div className="min-h-0 flex-1 overflow-auto p-3">{children}</div>}
+      {!panel.minimized && (
+        <button
+          type="button"
+          aria-label="Resize panel"
+          className="absolute bottom-0 right-0 h-4 w-4 cursor-se-resize text-muted-foreground"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            resizeRef.current = {
+              startX: event.clientX,
+              startY: event.clientY,
+              originWidth: panel.width,
+              originHeight: panel.height,
+            };
+            document.body.style.cursor = 'se-resize';
+            document.body.style.userSelect = 'none';
+          }}
+        >
+          <Grip className="h-4 w-4" />
+        </button>
+      )}
+    </section>
+  );
+};
+
 function App() {
   const projectName = useProjectStore((state) => state.name);
   const currentStage = useProjectStore((state) => state.currentStage);
@@ -213,11 +353,38 @@ function App() {
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
+  const [openTabs, setOpenTabs] = useState<StageName[]>(['hub']);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
+  const [rightPanelWidth, setRightPanelWidth] = useState(280);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
+  const [projectWindow, setProjectWindow] = useState<FloatingPanelState>({
+    x: 92,
+    y: 112,
+    width: 300,
+    height: 360,
+    minimized: false,
+  });
+  const [inspectorWindow, setInspectorWindow] = useState<FloatingPanelState>({
+    x: 420,
+    y: 144,
+    width: 300,
+    height: 330,
+    minimized: false,
+  });
+  const [projectWindowOpen, setProjectWindowOpen] = useState(false);
+  const [inspectorWindowOpen, setInspectorWindowOpen] = useState(false);
   const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
   const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
   const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
+  const dockResizeRef = useRef<{
+    kind: 'right' | 'bottom';
+    startX: number;
+    startY: number;
+    origin: number;
+  } | null>(null);
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -306,10 +473,46 @@ function App() {
   }, [addNotification, projectDirectoryHandle]);
 
   useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const resize = dockResizeRef.current;
+      if (!resize) {
+        return;
+      }
+
+      if (resize.kind === 'right') {
+        setRightPanelWidth(
+          Math.max(220, Math.min(460, resize.origin - (event.clientX - resize.startX)))
+        );
+      } else {
+        setBottomPanelHeight(
+          Math.max(130, Math.min(360, resize.origin - (event.clientY - resize.startY)))
+        );
+      }
+    };
+
+    const stopResize = () => {
+      dockResizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!(STAGES as readonly string[]).includes(currentStage)) {
       setCurrentStage('hub');
     }
   }, [currentStage, setCurrentStage]);
+
+  useEffect(() => {
+    setOpenTabs((tabs) => (tabs.includes(currentStage) ? tabs : [...tabs, currentStage]));
+  }, [currentStage]);
 
   useEffect(() => {
     if (!sidebarOpen && !fileMenuOpen && !viewMenuOpen) {
@@ -341,11 +544,27 @@ function App() {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
   };
   const navigateToStage = (stage: StageName) => {
+    setOpenTabs((tabs) => (tabs.includes(stage) ? tabs : [...tabs, stage]));
     writeStageToUrl(stage, 'push');
     setCurrentStage(stage);
     setSidebarOpen(false);
     setFileMenuOpen(false);
     setViewMenuOpen(false);
+  };
+
+  const closeTab = (stage: StageName) => {
+    if (stage === 'hub' && openTabs.length === 1) {
+      return;
+    }
+
+    const tabIndex = openTabs.indexOf(stage);
+    const nextTabs = openTabs.filter((tab) => tab !== stage);
+    const nextStage = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? 'hub';
+    setOpenTabs(nextTabs.length > 0 ? nextTabs : ['hub']);
+
+    if (currentStage === stage) {
+      navigateToStage(nextStage);
+    }
   };
 
   const handleThemeChange = (nextDarkMode: boolean) => {
@@ -778,6 +997,41 @@ function App() {
                   <span className="flex-1">Dark</span>
                   {darkMode && <Check className="h-4 w-4" />}
                 </button>
+                <div className="my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  onClick={() => setRightPanelOpen((open) => !open)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <PanelRight className="h-4 w-4" />
+                  <span className="flex-1">Inspector</span>
+                  {rightPanelOpen && <Check className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBottomPanelOpen((open) => !open)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <PanelBottom className="h-4 w-4" />
+                  <span className="flex-1">Output</span>
+                  {bottomPanelOpen && <Check className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProjectWindowOpen(true)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  <span className="flex-1">Project window</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInspectorWindowOpen(true)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <PanelRight className="h-4 w-4" />
+                  <span className="flex-1">Floating inspector</span>
+                </button>
               </div>
             )}
           </div>
@@ -792,6 +1046,43 @@ function App() {
           >
             Settings
           </button>
+        </div>
+
+        <div className="workspace-tab-strip flex h-9 shrink-0 items-stretch border-b border-border bg-background px-1">
+          {openTabs.map((tab) => {
+            const Icon = tab === 'hub' ? Archive : toolIcons[tab];
+            const active = currentStage === tab;
+            return (
+              <div
+                key={tab}
+                className={`group flex min-w-0 max-w-52 items-center border-r border-border ${
+                  active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => navigateToStage(tab)}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-3 text-left text-xs"
+                  title={`Open ${STAGE_LABELS[tab]}`}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{STAGE_LABELS[tab]}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => closeTab(tab)}
+                  className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+                  title="Close tab"
+                  aria-label={`Close ${STAGE_LABELS[tab]} tab`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+          <div className="flex min-w-0 flex-1 items-center justify-end px-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+            {projectDirectoryName ?? 'Unsaved workspace'}
+          </div>
         </div>
 
         <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
@@ -895,6 +1186,8 @@ function App() {
           aria-hidden="true"
         />
 
+        <div className="flex min-h-0 flex-1">
+          <section className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-border bg-card px-4 py-4 md:px-6">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 flex-1">
@@ -990,26 +1283,133 @@ function App() {
           </div>
         </header>
 
-        <div
-          className={showEditToolbar || showFullscreenTagging ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
-        >
+        <div className="flex min-h-0 flex-1 flex-col">
           <div
-            className={
-              showEditToolbar || showFullscreenTagging
-                ? 'h-full min-h-0'
-                : 'p-4 md:p-6'
-            }
+            className={showEditToolbar || showFullscreenTagging ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
           >
-            <Suspense
-              fallback={
-                <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
-                  Loading tool...
-                </div>
+            <div
+              className={
+                showEditToolbar || showFullscreenTagging
+                  ? 'h-full min-h-0'
+                  : 'p-4 md:p-6'
               }
             >
-              {renderTool(currentStage)}
-            </Suspense>
+              <Suspense
+                fallback={
+                  <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
+                    Loading tool...
+                  </div>
+                }
+              >
+                {renderTool(currentStage)}
+              </Suspense>
+            </div>
           </div>
+          {bottomPanelOpen && (
+            <section className="workspace-dock-bottom shrink-0 border-t border-border bg-card" style={{ height: bottomPanelHeight }}>
+              <button
+                type="button"
+                aria-label="Resize output panel"
+                className="workspace-dock-resize-horizontal h-1 w-full cursor-ns-resize bg-transparent hover:bg-primary/60"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  dockResizeRef.current = {
+                    kind: 'bottom',
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    origin: bottomPanelHeight,
+                  };
+                  document.body.style.cursor = 'ns-resize';
+                  document.body.style.userSelect = 'none';
+                }}
+              />
+              <div className="flex h-[calc(100%-0.25rem)] flex-col px-4 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-semibold">
+                    <PanelBottom className="h-3.5 w-3.5 text-muted-foreground" />
+                    Output
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanelOpen(false)}
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    title="Close output"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="mt-2 min-h-0 flex-1 overflow-auto font-mono text-[11px] text-muted-foreground">
+                  <p className="text-emerald-400">workspace ready</p>
+                  <p>active tool: {STAGE_LABELS[currentStage]}</p>
+                  <p>scope: {workspaceImages.length} images</p>
+                  <p>source: {sourceImages.length} / synthetic: {datasetItems.length}</p>
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
+          </section>
+          {rightPanelOpen && (
+            <aside className="workspace-dock-right relative flex min-h-0 shrink-0 flex-col border-l border-border bg-card" style={{ width: rightPanelWidth }}>
+              <button
+                type="button"
+                aria-label="Resize inspector panel"
+                className="workspace-dock-resize-vertical absolute inset-y-0 -left-1 z-10 w-2 cursor-ew-resize bg-transparent hover:bg-primary/60"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  dockResizeRef.current = {
+                    kind: 'right',
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    origin: rightPanelWidth,
+                  };
+                  document.body.style.cursor = 'ew-resize';
+                  document.body.style.userSelect = 'none';
+                }}
+              />
+              <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <PanelRight className="h-3.5 w-3.5 text-muted-foreground" />
+                  Inspector
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRightPanelOpen(false)}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="Close inspector"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto p-3">
+                <div className="space-y-4 text-xs">
+                  <div>
+                    <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Active tool</p>
+                    <p className="font-medium">{STAGE_LABELS[currentStage]}</p>
+                    <p className="mt-1 text-muted-foreground">{TOOL_DESCRIPTIONS[currentStage]}</p>
+                  </div>
+                  <div className="border-t border-border pt-3">
+                    <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Workspace</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded border border-border bg-background p-2">
+                        <p className="text-muted-foreground">Source</p>
+                        <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
+                      </div>
+                      <div className="rounded border border-border bg-background p-2">
+                        <p className="text-muted-foreground">Synthetic</p>
+                        <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="border-t border-border pt-3">
+                    <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Project</p>
+                    <p className="truncate font-medium">{projectName}</p>
+                    <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          )}
         </div>
 
         {notifications.length > 0 && (
@@ -1043,6 +1443,92 @@ function App() {
               );
             })}
           </div>
+        )}
+
+        {projectWindowOpen && (
+          <FloatingWorkspacePanel
+            title="Project"
+            icon={FolderOpen}
+            panel={projectWindow}
+            onChange={setProjectWindow}
+            onClose={() => setProjectWindowOpen(false)}
+          >
+            <div className="space-y-3 text-xs">
+              <div className="rounded border border-border bg-background p-3">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Current project</p>
+                <p className="mt-1 truncate font-semibold">{projectName}</p>
+                <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
+              </div>
+              <div>
+                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Open editors</p>
+                <div className="space-y-1">
+                  {openTabs.map((tab) => {
+                    const Icon = tab === 'hub' ? Archive : toolIcons[tab];
+                    return (
+                      <button
+                        type="button"
+                        key={tab}
+                        onClick={() => navigateToStage(tab)}
+                        className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
+                          currentStage === tab ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
+                        }`}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        <span className="truncate">{STAGE_LABELS[tab]}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 border-t border-border pt-3">
+                <div className="rounded border border-border p-2">
+                  <p className="text-muted-foreground">Source</p>
+                  <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
+                </div>
+                <div className="rounded border border-border p-2">
+                  <p className="text-muted-foreground">Synthetic</p>
+                  <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
+                </div>
+              </div>
+            </div>
+          </FloatingWorkspacePanel>
+        )}
+
+        {inspectorWindowOpen && (
+          <FloatingWorkspacePanel
+            title="Inspector"
+            icon={PanelRight}
+            panel={inspectorWindow}
+            onChange={setInspectorWindow}
+            onClose={() => setInspectorWindowOpen(false)}
+          >
+            <div className="space-y-4 text-xs">
+              <div>
+                <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Selection</p>
+                <p className="font-medium">{STAGE_LABELS[currentStage]}</p>
+                <p className="mt-1 text-muted-foreground">{workspaceImages.length} images in scope</p>
+              </div>
+              <div className="border-t border-border pt-3">
+                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dock layout</p>
+                <button
+                  type="button"
+                  onClick={() => setRightPanelOpen((open) => !open)}
+                  className="mb-2 flex w-full items-center justify-between rounded border border-border px-2 py-2 text-left hover:bg-secondary"
+                >
+                  <span>Docked inspector</span>
+                  <span className="text-muted-foreground">{rightPanelOpen ? 'On' : 'Off'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBottomPanelOpen((open) => !open)}
+                  className="flex w-full items-center justify-between rounded border border-border px-2 py-2 text-left hover:bg-secondary"
+                >
+                  <span>Output panel</span>
+                  <span className="text-muted-foreground">{bottomPanelOpen ? 'On' : 'Off'}</span>
+                </button>
+              </div>
+            </div>
+          </FloatingWorkspacePanel>
         )}
       </main>
     </div>
