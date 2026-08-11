@@ -3741,7 +3741,7 @@ function App() {
         </div>
 
         <div className="workspace-tab-strip relative flex h-9 shrink-0 items-stretch border-b border-border bg-background">
-          <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
+          <div className="workspace-tab-scroll flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
             {openTabs.map((tab) => {
               const Icon =
                 tab.kind === 'tool'

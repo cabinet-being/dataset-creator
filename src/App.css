@@ -4,6 +4,11 @@
   overflow: visible;
 }
 
+.workspace-tab-scroll {
+  scrollbar-gutter: stable;
+  overflow-y: hidden;
+}
+
 .workspace-tab-strip > * {
   flex-shrink: 0;
 }
