@@ -1,4 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ComponentType, ReactNode } from 'react';
 import {
@@ -15,12 +16,12 @@ import {
   Check,
   Layers3,
   Maximize2,
-  Menu,
   Minimize2,
   Moon,
   PanelBottom,
   PanelRight,
   Pencil,
+  Plus,
   ScanSearch,
   Settings2,
   Sun,
@@ -31,8 +32,6 @@ import {
 import { useProjectStore } from './stores/useProjectStore';
 import { useUIStore } from './stores/useUIStore';
 import {
-  SIDEBAR_PRIMARY_TOOLS,
-  SIDEBAR_SECONDARY_TOOLS,
   STAGES,
   STAGE_LABELS,
   STAGE_URL_SLUGS,
@@ -55,8 +54,6 @@ import {
   type LocalTaggerFileKey,
 } from './services/tagging/localTaggerFileSettings';
 import { type BrickColumnCount, type StageName } from './types';
-import { Badge } from './components/ui/badge';
-import { Separator } from './components/ui/separator';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
@@ -77,6 +74,80 @@ type FilePickerWindow = Window &
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
+
+const WORKSPACE_LAYOUT_STORAGE_KEY = 'dataset-creator-workspace-layout';
+
+type WorkspaceLayout = {
+  openTabs: StageName[];
+  rightPanelOpen: boolean;
+  bottomPanelOpen: boolean;
+  rightPanelWidth: number;
+  bottomPanelHeight: number;
+  projectWindow: FloatingPanelState;
+  inspectorWindow: FloatingPanelState;
+  projectWindowOpen: boolean;
+  inspectorWindowOpen: boolean;
+};
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(WORKSPACE_LAYOUT_STORAGE_KEY) ?? 'null');
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    const value = parsed as Record<string, unknown>;
+    const openTabs = Array.isArray(value.openTabs)
+      ? value.openTabs.filter((tab): tab is StageName => typeof tab === 'string' && isStageName(tab))
+      : undefined;
+    const readPanel = (panel: unknown, fallback: FloatingPanelState): FloatingPanelState => {
+      if (!panel || typeof panel !== 'object') {
+        return fallback;
+      }
+      const value = panel as Record<string, unknown>;
+      return {
+        x: isFiniteNumber(value.x) ? value.x : fallback.x,
+        y: isFiniteNumber(value.y) ? value.y : fallback.y,
+        width: isFiniteNumber(value.width) ? value.width : fallback.width,
+        height: isFiniteNumber(value.height) ? value.height : fallback.height,
+        minimized: typeof value.minimized === 'boolean' ? value.minimized : fallback.minimized,
+      };
+    };
+
+    return {
+      openTabs: openTabs?.length ? Array.from(new Set(openTabs)) : undefined,
+      rightPanelOpen: typeof value.rightPanelOpen === 'boolean' ? value.rightPanelOpen : undefined,
+      bottomPanelOpen: typeof value.bottomPanelOpen === 'boolean' ? value.bottomPanelOpen : undefined,
+      rightPanelWidth: isFiniteNumber(value.rightPanelWidth) ? value.rightPanelWidth : undefined,
+      bottomPanelHeight: isFiniteNumber(value.bottomPanelHeight) ? value.bottomPanelHeight : undefined,
+      projectWindow: readPanel(value.projectWindow, {
+        x: 92,
+        y: 112,
+        width: 300,
+        height: 360,
+        minimized: false,
+      }),
+      inspectorWindow: readPanel(value.inspectorWindow, {
+        x: 420,
+        y: 144,
+        width: 300,
+        height: 330,
+        minimized: false,
+      }),
+      projectWindowOpen: typeof value.projectWindowOpen === 'boolean' ? value.projectWindowOpen : undefined,
+      inspectorWindowOpen: typeof value.inspectorWindowOpen === 'boolean' ? value.inspectorWindowOpen : undefined,
+    };
+  } catch {
+    return {};
+  }
+};
 
 const ToolHub = lazy(() => import('./components/ToolHub').then((module) => ({ default: module.ToolHub })));
 const ImportStage = lazy(() =>
@@ -191,7 +262,9 @@ type FloatingWorkspacePanelProps = {
   title: string;
   icon: ComponentType<{ className?: string }>;
   panel: FloatingPanelState;
+  zIndex: number;
   onChange: (next: FloatingPanelState) => void;
+  onFocus: () => void;
   onClose: () => void;
   children: ReactNode;
 };
@@ -200,7 +273,9 @@ const FloatingWorkspacePanel = ({
   title,
   icon: Icon,
   panel,
+  zIndex,
   onChange,
+  onFocus,
   onClose,
   children,
 }: FloatingWorkspacePanelProps) => {
@@ -218,8 +293,20 @@ const FloatingWorkspacePanel = ({
         const drag = dragRef.current;
         onChange({
           ...panel,
-          x: Math.max(8, Math.min(window.innerWidth - 160, drag.originX + event.clientX - drag.startX)),
-          y: Math.max(8, Math.min(window.innerHeight - 90, drag.originY + event.clientY - drag.startY)),
+          x: Math.max(
+            8,
+            Math.min(
+              Math.max(8, window.innerWidth - panel.width - 8),
+              drag.originX + event.clientX - drag.startX
+            )
+          ),
+          y: Math.max(
+            8,
+            Math.min(
+              Math.max(8, window.innerHeight - (panel.minimized ? 38 : panel.height) - 8),
+              drag.originY + event.clientY - drag.startY
+            )
+          ),
         });
       }
 
@@ -227,8 +314,20 @@ const FloatingWorkspacePanel = ({
         const resize = resizeRef.current;
         onChange({
           ...panel,
-          width: Math.max(240, Math.min(window.innerWidth - panel.x - 12, resize.originWidth + event.clientX - resize.startX)),
-          height: Math.max(150, Math.min(window.innerHeight - panel.y - 12, resize.originHeight + event.clientY - resize.startY)),
+          width: Math.max(
+            240,
+            Math.min(
+              Math.max(240, window.innerWidth - panel.x - 8),
+              resize.originWidth + event.clientX - resize.startX
+            )
+          ),
+          height: Math.max(
+            150,
+            Math.min(
+              Math.max(150, window.innerHeight - panel.y - 8),
+              resize.originHeight + event.clientY - resize.startY
+            )
+          ),
         });
       }
     };
@@ -251,7 +350,14 @@ const FloatingWorkspacePanel = ({
   return (
     <section
       className="workspace-floating-panel fixed z-[1200] flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-2xl"
-      style={{ left: panel.x, top: panel.y, width: panel.width, height: panel.minimized ? 38 : panel.height }}
+      style={{
+        left: panel.x,
+        top: panel.y,
+        width: panel.width,
+        height: panel.minimized ? 38 : panel.height,
+        zIndex,
+      }}
+      onPointerDown={onFocus}
     >
       <header
         className="flex h-9 shrink-0 cursor-move items-center gap-2 border-b border-border bg-secondary/80 px-2"
@@ -347,33 +453,45 @@ function App() {
     projectDirectoryName,
     setProjectDirectory,
   } = useUIStore();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [windowsMenuOpen, setWindowsMenuOpen] = useState(false);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
-  const [openTabs, setOpenTabs] = useState<StageName[]>(['hub']);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
-  const [rightPanelWidth, setRightPanelWidth] = useState(280);
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
+  const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
+  const [openTabs, setOpenTabs] = useState<StageName[]>(storedWorkspaceLayout.openTabs ?? ['hub']);
+  const [rightPanelOpen, setRightPanelOpen] = useState(storedWorkspaceLayout.rightPanelOpen ?? true);
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(storedWorkspaceLayout.bottomPanelOpen ?? false);
+  const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
   const [projectWindow, setProjectWindow] = useState<FloatingPanelState>({
-    x: 92,
-    y: 112,
-    width: 300,
-    height: 360,
-    minimized: false,
+    ...storedWorkspaceLayout.projectWindow,
+    x: storedWorkspaceLayout.projectWindow?.x ?? 92,
+    y: storedWorkspaceLayout.projectWindow?.y ?? 112,
+    width: storedWorkspaceLayout.projectWindow?.width ?? 300,
+    height: storedWorkspaceLayout.projectWindow?.height ?? 360,
+    minimized: storedWorkspaceLayout.projectWindow?.minimized ?? false,
   });
   const [inspectorWindow, setInspectorWindow] = useState<FloatingPanelState>({
-    x: 420,
-    y: 144,
-    width: 300,
-    height: 330,
-    minimized: false,
+    ...storedWorkspaceLayout.inspectorWindow,
+    x: storedWorkspaceLayout.inspectorWindow?.x ?? 420,
+    y: storedWorkspaceLayout.inspectorWindow?.y ?? 144,
+    width: storedWorkspaceLayout.inspectorWindow?.width ?? 300,
+    height: storedWorkspaceLayout.inspectorWindow?.height ?? 330,
+    minimized: storedWorkspaceLayout.inspectorWindow?.minimized ?? false,
   });
-  const [projectWindowOpen, setProjectWindowOpen] = useState(false);
-  const [inspectorWindowOpen, setInspectorWindowOpen] = useState(false);
+  const [projectWindowOpen, setProjectWindowOpen] = useState(storedWorkspaceLayout.projectWindowOpen ?? false);
+  const [inspectorWindowOpen, setInspectorWindowOpen] = useState(
+    storedWorkspaceLayout.inspectorWindowOpen ?? false
+  );
+  const [tabMenuOpen, setTabMenuOpen] = useState(false);
+  const [dragOverTab, setDragOverTab] = useState<StageName | null>(null);
+  const [floatingPanelOrder, setFloatingPanelOrder] = useState<Array<'project' | 'inspector'>>([
+    'project',
+    'inspector',
+  ]);
   const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
   const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
   const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -385,6 +503,11 @@ function App() {
     startY: number;
     origin: number;
   } | null>(null);
+  const draggedTabRef = useRef<StageName | null>(null);
+
+  const focusFloatingPanel = (panel: 'project' | 'inspector') => {
+    setFloatingPanelOrder((order) => [...order.filter((item) => item !== panel), panel]);
+  };
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -515,27 +638,24 @@ function App() {
   }, [currentStage]);
 
   useEffect(() => {
-    if (!sidebarOpen && !fileMenuOpen && !viewMenuOpen) {
+    if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen) {
       return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setSidebarOpen(false);
         setFileMenuOpen(false);
         setViewMenuOpen(false);
+        setToolsMenuOpen(false);
+        setWindowsMenuOpen(false);
+        setTabMenuOpen(false);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fileMenuOpen, sidebarOpen, viewMenuOpen]);
+  }, [fileMenuOpen, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
 
-  const activeLabel = STAGE_LABELS[currentStage] ?? 'Image Workspace';
-  const activeDescription =
-    currentStage === 'hub'
-      ? 'Choose a tool and keep working from the shared image workspace.'
-      : TOOL_DESCRIPTIONS[currentStage] ?? '';
   const showEditToolbar = currentStage === 'clean' && editToolbar.visible;
   const showTaggingToolbar = currentStage === 'tagging';
   const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
@@ -547,9 +667,11 @@ function App() {
     setOpenTabs((tabs) => (tabs.includes(stage) ? tabs : [...tabs, stage]));
     writeStageToUrl(stage, 'push');
     setCurrentStage(stage);
-    setSidebarOpen(false);
     setFileMenuOpen(false);
     setViewMenuOpen(false);
+    setToolsMenuOpen(false);
+    setWindowsMenuOpen(false);
+    setTabMenuOpen(false);
   };
 
   const closeTab = (stage: StageName) => {
@@ -566,6 +688,84 @@ function App() {
       navigateToStage(nextStage);
     }
   };
+
+  const reorderTabs = (source: StageName, target: StageName) => {
+    if (source === target) {
+      return;
+    }
+
+    setOpenTabs((tabs) => {
+      const sourceIndex = tabs.indexOf(source);
+      const targetIndex = tabs.indexOf(target);
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return tabs;
+      }
+
+      const nextTabs = [...tabs];
+      nextTabs.splice(sourceIndex, 1);
+      nextTabs.splice(targetIndex, 0, source);
+      return nextTabs;
+    });
+  };
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        WORKSPACE_LAYOUT_STORAGE_KEY,
+        JSON.stringify({
+          openTabs,
+          rightPanelOpen,
+          bottomPanelOpen,
+          rightPanelWidth,
+          bottomPanelHeight,
+          projectWindow,
+          inspectorWindow,
+          projectWindowOpen,
+          inspectorWindowOpen,
+        } satisfies WorkspaceLayout)
+      );
+    } catch {
+      // Workspace layout is a convenience; private browsing can disable localStorage.
+    }
+  }, [
+    bottomPanelHeight,
+    bottomPanelOpen,
+    inspectorWindow,
+    inspectorWindowOpen,
+    openTabs,
+    projectWindow,
+    projectWindowOpen,
+    rightPanelOpen,
+    rightPanelWidth,
+  ]);
+
+  useEffect(() => {
+    const handleWorkspaceShortcut = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'w') {
+        event.preventDefault();
+        closeTab(currentStage);
+        return;
+      }
+
+      if (event.key === 'Tab' || event.key === 'PageDown' || event.key === 'PageUp') {
+        if (openTabs.length < 2) {
+          return;
+        }
+        event.preventDefault();
+        const currentIndex = Math.max(0, openTabs.indexOf(currentStage));
+        const direction = event.key === 'PageUp' ? -1 : 1;
+        const nextIndex = (currentIndex + direction + openTabs.length) % openTabs.length;
+        navigateToStage(openTabs[nextIndex]);
+      }
+    };
+
+    window.addEventListener('keydown', handleWorkspaceShortcut);
+    return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
+  }, [currentStage, openTabs]);
 
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
@@ -773,133 +973,23 @@ function App() {
     addNotification('success', 'Project renamed');
   };
 
-  const renderNavigationButton = (tool: string, compact = false) => {
-    const Icon = toolIcons[tool];
-    const active = tool === currentStage;
-
-    return (
-      <button
-        key={tool}
-        onClick={() => navigateToStage(tool as StageName)}
-        className={
-          compact
-            ? `flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
-                active
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-foreground hover:bg-secondary hover:text-secondary-foreground'
-              }`
-            : `flex h-10 w-full items-center gap-3 rounded-md px-4 text-left text-sm font-medium transition-colors ${
-                active
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-foreground hover:bg-secondary hover:text-secondary-foreground'
-              }`
-        }
-        title={STAGE_LABELS[tool]}
-      >
-        <Icon className="h-4 w-4 shrink-0" />
-        {!compact && <span className="block min-w-0 truncate">{STAGE_LABELS[tool]}</span>}
-      </button>
-    );
+  const closeTopMenus = () => {
+    setFileMenuOpen(false);
+    setViewMenuOpen(false);
+    setToolsMenuOpen(false);
+    setWindowsMenuOpen(false);
   };
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      <aside className="flex w-16 shrink-0 flex-col items-center border-r border-border bg-card py-4">
-        <button
-          onClick={() => setSidebarOpen(true)}
-          className="mb-4 flex h-10 w-10 items-center justify-center rounded-md bg-primary text-primary-foreground transition-opacity hover:opacity-90"
-          title="Open menu"
-        >
-          <Menu size={18} />
-        </button>
-
-        <nav className="flex flex-1 flex-col items-center gap-2 overflow-y-auto">
-          {SIDEBAR_PRIMARY_TOOLS.map((tool) => renderNavigationButton(tool, true))}
-          {SIDEBAR_PRIMARY_TOOLS.length > 0 && SIDEBAR_SECONDARY_TOOLS.length > 0 && (
-            <Separator className="my-2 w-8 bg-border/70" />
-          )}
-          {SIDEBAR_SECONDARY_TOOLS.map((tool) => renderNavigationButton(tool, true))}
-        </nav>
-      </aside>
-
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-black/65" onClick={() => setSidebarOpen(false)} />
-      )}
-
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-border bg-card shadow-2xl transition-transform duration-200 ${
-          sidebarOpen ? 'translate-x-0' : 'pointer-events-none -translate-x-full'
-        }`}
-        aria-hidden={!sidebarOpen}
-      >
-        <div className="p-5">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => navigateToStage('hub')}
-              className="block min-w-0 flex-1 rounded-lg text-left transition-colors hover:bg-secondary/70"
-            >
-              <div className="p-3">
-                <div className="flex items-center gap-2">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
-                    <Archive size={18} />
-                  </div>
-                  <div>
-                    <h1 className="font-semibold leading-tight">Image Workspace</h1>
-                  </div>
-                </div>
-              </div>
-            </button>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary hover:bg-muted transition-colors"
-              title="Close menu"
-            >
-              <X size={18} />
-            </button>
-          </div>
-        </div>
-
-        <div className="px-5">
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-md border border-border bg-background p-3">
-              <p className="text-xs text-muted-foreground">Source</p>
-              <p className="text-xl font-semibold">{sourceImages.length}</p>
-            </div>
-            <div className="rounded-md border border-border bg-background p-3">
-              <p className="text-xs text-muted-foreground">Synthetic</p>
-              <p className="text-xl font-semibold">{datasetItems.length}</p>
-            </div>
-          </div>
-        </div>
-
-        <Separator className="mt-4 mb-3" />
-
-        <nav className="flex-1 overflow-y-auto px-3 pb-5">
-          <div className="space-y-1">
-            {SIDEBAR_PRIMARY_TOOLS.map((tool) => renderNavigationButton(tool))}
-          </div>
-
-          {SIDEBAR_PRIMARY_TOOLS.length > 0 && SIDEBAR_SECONDARY_TOOLS.length > 0 && (
-            <Separator className="my-3 bg-border/70" />
-          )}
-
-          <div className="space-y-1">
-            {SIDEBAR_SECONDARY_TOOLS.map((tool) => renderNavigationButton(tool))}
-          </div>
-        </nav>
-      </aside>
-
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
-          {(fileMenuOpen || viewMenuOpen) && (
+          {(fileMenuOpen || viewMenuOpen || toolsMenuOpen || windowsMenuOpen) && (
             <button
               type="button"
               aria-label="Close menu"
               className="fixed inset-0 z-30 cursor-default"
-              onClick={() => {
-                setFileMenuOpen(false);
-                setViewMenuOpen(false);
-              }}
+              onClick={closeTopMenus}
             />
           )}
           <div className="relative z-40">
@@ -910,6 +1000,8 @@ function App() {
               }`}
               onClick={() => {
                 setViewMenuOpen(false);
+                setToolsMenuOpen(false);
+                setWindowsMenuOpen(false);
                 setFileMenuOpen((open) => !open);
               }}
             >
@@ -972,6 +1064,8 @@ function App() {
               }`}
               onClick={() => {
                 setFileMenuOpen(false);
+                setToolsMenuOpen(false);
+                setWindowsMenuOpen(false);
                 setViewMenuOpen((open) => !open);
               }}
             >
@@ -997,10 +1091,70 @@ function App() {
                   <span className="flex-1">Dark</span>
                   {darkMode && <Check className="h-4 w-4" />}
                 </button>
-                <div className="my-1 h-px bg-border" />
+              </div>
+            )}
+          </div>
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                toolsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setViewMenuOpen(false);
+                setWindowsMenuOpen(false);
+                setToolsMenuOpen((open) => !open);
+              }}
+            >
+              Tools
+            </button>
+            {toolsMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+                {STAGES.map((stage) => {
+                  const Icon = stage === 'hub' ? Archive : toolIcons[stage];
+                  const active = currentStage === stage;
+                  return (
+                    <button
+                      type="button"
+                      key={stage}
+                      onClick={() => navigateToStage(stage)}
+                      className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary ${
+                        active ? 'bg-secondary/70' : ''
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span className="flex-1">{STAGE_LABELS[stage]}</span>
+                      {active && <Check className="h-4 w-4" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                windowsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setViewMenuOpen(false);
+                setToolsMenuOpen(false);
+                setWindowsMenuOpen((open) => !open);
+              }}
+            >
+              Windows
+            </button>
+            {windowsMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
                 <button
                   type="button"
-                  onClick={() => setRightPanelOpen((open) => !open)}
+                  onClick={() => {
+                    setRightPanelOpen((open) => !open);
+                    setWindowsMenuOpen(false);
+                  }}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
                 >
                   <PanelRight className="h-4 w-4" />
@@ -1009,7 +1163,10 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setBottomPanelOpen((open) => !open)}
+                  onClick={() => {
+                    setBottomPanelOpen((open) => !open);
+                    setWindowsMenuOpen(false);
+                  }}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
                 >
                   <PanelBottom className="h-4 w-4" />
@@ -1018,7 +1175,10 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setProjectWindowOpen(true)}
+                  onClick={() => {
+                    setProjectWindowOpen(true);
+                    setWindowsMenuOpen(false);
+                  }}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
                 >
                   <FolderOpen className="h-4 w-4" />
@@ -1026,7 +1186,10 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setInspectorWindowOpen(true)}
+                  onClick={() => {
+                    setInspectorWindowOpen(true);
+                    setWindowsMenuOpen(false);
+                  }}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
                 >
                   <PanelRight className="h-4 w-4" />
@@ -1039,8 +1202,7 @@ function App() {
             type="button"
             className="rounded px-3 py-1.5 font-medium transition-colors hover:bg-secondary"
             onClick={() => {
-              setFileMenuOpen(false);
-              setViewMenuOpen(false);
+              closeTopMenus();
               setIsWorkspaceSettingsOpen(true);
             }}
           >
@@ -1048,39 +1210,207 @@ function App() {
           </button>
         </div>
 
-        <div className="workspace-tab-strip flex h-9 shrink-0 items-stretch border-b border-border bg-background px-1">
-          {openTabs.map((tab) => {
-            const Icon = tab === 'hub' ? Archive : toolIcons[tab];
-            const active = currentStage === tab;
-            return (
-              <div
-                key={tab}
-                className={`group flex min-w-0 max-w-52 items-center border-r border-border ${
-                  active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => navigateToStage(tab)}
-                  className="flex min-w-0 flex-1 items-center gap-2 px-3 text-left text-xs"
+        <div className="workspace-tab-strip relative flex h-9 shrink-0 items-stretch border-b border-border bg-background">
+          <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
+            {openTabs.map((tab) => {
+              const Icon = tab === 'hub' ? Archive : toolIcons[tab];
+              const active = currentStage === tab;
+              return (
+                <div
+                  key={tab}
+                  role="tab"
+                  tabIndex={0}
+                  aria-selected={active}
+                  draggable
+                  onClick={(event) => {
+                    if ((event.target as HTMLElement).closest('[data-tab-close]')) {
+                      return;
+                    }
+                    navigateToStage(tab);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      navigateToStage(tab);
+                    }
+                  }}
+                  onDragStart={(event) => {
+                    draggedTabRef.current = tab;
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', tab);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    if (draggedTabRef.current !== tab) {
+                      setDragOverTab(tab);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const source = draggedTabRef.current ?? (event.dataTransfer.getData('text/plain') as StageName);
+                    if (source) {
+                      reorderTabs(source, tab);
+                    }
+                    draggedTabRef.current = null;
+                    setDragOverTab(null);
+                  }}
+                  onDragEnd={() => {
+                    draggedTabRef.current = null;
+                    setDragOverTab(null);
+                  }}
+                  onMouseDown={(event) => {
+                    if (event.button === 1 && !(event.target as HTMLElement).closest('[data-tab-close]')) {
+                      event.preventDefault();
+                      closeTab(tab);
+                    }
+                  }}
+                  className={`group flex min-w-[7rem] max-w-52 shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+                    active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
+                  } ${dragOverTab === tab ? 'border-l-2 border-l-primary' : ''}`}
                   title={`Open ${STAGE_LABELS[tab]}`}
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{STAGE_LABELS[tab]}</span>
-                </button>
+                  <span className="min-w-0 flex-1 truncate">{STAGE_LABELS[tab]}</span>
+                  <button
+                    type="button"
+                    data-tab-close
+                    draggable={false}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeTab(tab);
+                    }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onDragStart={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+                    title="Close tab"
+                    aria-label={`Close ${STAGE_LABELS[tab]} tab`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
+            <DropdownMenu.Root open={tabMenuOpen} onOpenChange={setTabMenuOpen}>
+              <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
-                  onClick={() => closeTab(tab)}
-                  className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 focus:opacity-100"
-                  title="Close tab"
-                  aria-label={`Close ${STAGE_LABELS[tab]} tab`}
+                  className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                  title="Open editor"
+                  aria-label="Open editor"
                 >
-                  <X className="h-3 w-3" />
+                  <Plus className="h-4 w-4" />
                 </button>
-              </div>
-            );
-          })}
-          <div className="flex min-w-0 flex-1 items-center justify-end px-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="start"
+                  sideOffset={4}
+                  className="z-[100] w-52 rounded-md border border-border bg-popover p-1 shadow-xl"
+                >
+                  <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                    Open editor
+                  </p>
+                  {STAGES.map((stage) => {
+                    const Icon = stage === 'hub' ? Archive : toolIcons[stage];
+                    const isOpen = openTabs.includes(stage);
+                    return (
+                      <DropdownMenu.Item
+                        key={stage}
+                        onSelect={() => navigateToStage(stage)}
+                        className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-xs outline-none hover:bg-secondary"
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        <span className="min-w-0 flex-1 truncate">{STAGE_LABELS[stage]}</span>
+                        {isOpen && <Check className="h-3.5 w-3.5 text-muted-foreground" />}
+                      </DropdownMenu.Item>
+                    );
+                  })}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          </div>
+          {showEditToolbar && (
+            <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
+              <button
+                type="button"
+                onClick={() => runEditCommand('back')}
+                disabled={editToolbar.isProcessing}
+                className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
+                title="Back"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+              </button>
+              <a
+                href="https://www.photopea.com"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors hover:bg-secondary"
+                title="Open Photopea"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Photopea
+              </a>
+              <button
+                type="button"
+                onClick={() => runEditCommand('save')}
+                disabled={!editToolbar.canSave || editToolbar.isProcessing}
+                className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => runEditCommand('saveCopy')}
+                disabled={!editToolbar.canSave || editToolbar.isProcessing}
+                className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
+              >
+                Save Copy
+              </button>
+              <button
+                type="button"
+                onClick={() => runEditCommand('cancel')}
+                disabled={editToolbar.isProcessing}
+                className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          {showTaggingToolbar && (
+            <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
+              {showTaggingBackButton && (
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: 'back' }))}
+                  className="rounded p-1.5 transition-colors hover:bg-secondary"
+                  title="Back"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setTaggingModal({ datasetTags: true })}
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors hover:bg-secondary"
+              >
+                <Tags className="h-3.5 w-3.5" />
+                Dataset Tags
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaggingModal({ settings: true })}
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors hover:bg-secondary"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                Settings
+              </button>
+            </div>
+          )}
+          <div className="flex min-w-0 shrink-0 items-center justify-end px-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
             {projectDirectoryName ?? 'Unsaved workspace'}
           </div>
         </div>
@@ -1188,101 +1518,6 @@ function App() {
 
         <div className="flex min-h-0 flex-1">
           <section className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-border bg-card px-4 py-4 md:px-6">
-          <div className="flex items-center justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <div className="mb-1 flex items-center gap-2">
-                <h2 className="truncate text-xl font-semibold">{activeLabel}</h2>
-                {currentStage !== 'hub' && <Badge variant="outline">Tool</Badge>}
-              </div>
-              <p className="truncate text-sm text-muted-foreground">
-                {activeDescription}{' '}
-                {currentStage === 'analysis' || currentStage === 'review' || currentStage === 'clean'
-                  ? `${workspaceImages.length} images in scope.`
-                  : ''}
-              </p>
-              <p className="mt-1 truncate text-xs text-muted-foreground">
-                Project: <span className="font-medium text-foreground">{projectName}</span>
-                {projectDirectoryName ? ` - ${projectDirectoryName}` : ''}
-              </p>
-            </div>
-
-            {showEditToolbar && (
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  onClick={() => runEditCommand('back')}
-                  disabled={editToolbar.isProcessing}
-                  className="p-2 rounded-md bg-secondary hover:bg-muted disabled:opacity-50 transition-colors"
-                  title="Back"
-                >
-                  <ArrowLeft size={18} />
-                </button>
-                <a
-                  href="https://www.photopea.com"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 px-3 py-2 bg-secondary hover:bg-muted rounded-md transition-colors text-sm font-medium"
-                >
-                  <ExternalLink size={15} />
-                  Photopea
-                </a>
-                <button
-                  onClick={() => runEditCommand('save')}
-                  disabled={!editToolbar.canSave || editToolbar.isProcessing}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity text-sm font-medium"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={() => runEditCommand('saveCopy')}
-                  disabled={!editToolbar.canSave || editToolbar.isProcessing}
-                  className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
-                >
-                  Save Copy
-                </button>
-                <button
-                  onClick={() => runEditCommand('cancel')}
-                  disabled={editToolbar.isProcessing}
-                  className="px-4 py-2 bg-secondary hover:bg-muted disabled:opacity-50 rounded-md transition-colors text-sm font-medium"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-
-            {showTaggingToolbar && (
-              <div className="flex shrink-0 items-center gap-2">
-                {showTaggingBackButton && (
-                  <button
-                    type="button"
-                    onClick={() => window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: 'back' }))}
-                    className="rounded-md bg-secondary p-2 transition-colors hover:bg-muted"
-                    title="Back"
-                  >
-                    <ArrowLeft size={18} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setTaggingModal({ datasetTags: true })}
-                  className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                >
-                  <Tags size={16} />
-                  Dataset Tags
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTaggingModal({ settings: true })}
-                  className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                >
-                  <Settings2 size={16} />
-                  Settings
-                </button>
-              </div>
-            )}
-          </div>
-        </header>
-
         <div className="flex min-h-0 flex-1 flex-col">
           <div
             className={showEditToolbar || showFullscreenTagging ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
@@ -1306,11 +1541,14 @@ function App() {
             </div>
           </div>
           {bottomPanelOpen && (
-            <section className="workspace-dock-bottom shrink-0 border-t border-border bg-card" style={{ height: bottomPanelHeight }}>
+            <section
+              className="workspace-dock-bottom relative shrink-0 border-t border-border bg-card"
+              style={{ height: bottomPanelHeight }}
+            >
               <button
                 type="button"
                 aria-label="Resize output panel"
-                className="workspace-dock-resize-horizontal h-1 w-full cursor-ns-resize bg-transparent hover:bg-primary/60"
+                className="workspace-dock-resize-horizontal absolute -top-1 left-0 z-20 h-2 w-full cursor-ns-resize bg-transparent hover:bg-primary/60"
                 onPointerDown={(event) => {
                   event.preventDefault();
                   dockResizeRef.current = {
@@ -1323,7 +1561,7 @@ function App() {
                   document.body.style.userSelect = 'none';
                 }}
               />
-              <div className="flex h-[calc(100%-0.25rem)] flex-col px-4 py-2">
+              <div className="flex h-full flex-col px-4 py-2">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-xs font-semibold">
                     <PanelBottom className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1450,7 +1688,9 @@ function App() {
             title="Project"
             icon={FolderOpen}
             panel={projectWindow}
+            zIndex={1200 + floatingPanelOrder.indexOf('project') + 1}
             onChange={setProjectWindow}
+            onFocus={() => focusFloatingPanel('project')}
             onClose={() => setProjectWindowOpen(false)}
           >
             <div className="space-y-3 text-xs">
@@ -1499,7 +1739,9 @@ function App() {
             title="Inspector"
             icon={PanelRight}
             panel={inspectorWindow}
+            zIndex={1200 + floatingPanelOrder.indexOf('inspector') + 1}
             onChange={setInspectorWindow}
+            onFocus={() => focusFloatingPanel('inspector')}
             onClose={() => setInspectorWindowOpen(false)}
           >
             <div className="space-y-4 text-xs">
