@@ -3701,34 +3701,6 @@ function App() {
                   handleExplorerDrop(event, 'Project');
                 }}
               >
-                {inlineExplorerEdit?.mode === 'create' && inlineExplorerEdit.parentPath === 'Project' && (
-                  <div className="flex h-7 items-center gap-1">
-                    <span className="w-3.5 shrink-0" />
-                    {inlineExplorerEdit.kind === 'dataset' ? (
-                      <Layers3 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <input
-                      value={inlineExplorerEdit.value}
-                      autoFocus
-                      onFocus={(event) => event.currentTarget.select()}
-                      onChange={(event) => setInlineExplorerEdit((edit) => edit ? { ...edit, value: event.target.value } : edit)}
-                      onBlur={() => void commitInlineExplorerEdit()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          void commitInlineExplorerEdit();
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault();
-                          cancelInlineExplorerEdit();
-                        }
-                      }}
-                      className="min-w-0 flex-1 rounded border border-primary bg-background px-1 py-0.5 text-xs"
-                    />
-                  </div>
-                )}
                 {explorerError && (
                   <p className="mb-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-600">
                     Showing workspace state. {explorerError}
