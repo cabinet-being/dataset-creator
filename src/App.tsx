@@ -833,6 +833,8 @@ function App() {
   const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
   const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
   const explorerPanelRef = useRef<HTMLDivElement | null>(null);
+  const outputLogRef = useRef<HTMLDivElement | null>(null);
+  const outputAutoFollowRef = useRef(true);
   const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
@@ -875,6 +877,15 @@ function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  useEffect(() => {
+    const outputLog = outputLogRef.current;
+    if (!outputLog || !outputAutoFollowRef.current) {
+      return;
+    }
+
+    outputLog.scrollTop = outputLog.scrollHeight;
+  }, [operationLogs.length, bottomPanelOpen]);
 
   useEffect(() => {
     const stageFromUrl = readStageFromUrl();
@@ -3195,7 +3206,15 @@ function App() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div className="mt-2 min-h-0 flex-1 overflow-auto font-mono text-[11px]">
+                <div
+                  ref={outputLogRef}
+                  onScroll={(event) => {
+                    const element = event.currentTarget;
+                    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+                    outputAutoFollowRef.current = distanceFromBottom < 24;
+                  }}
+                  className="mt-2 min-h-0 flex-1 overflow-auto font-mono text-[11px]"
+                >
                   {operationLogs.map((entry) => {
                     const time = entry.timestamp.toLocaleTimeString([], {
                       hour: '2-digit',
