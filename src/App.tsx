@@ -1216,15 +1216,30 @@ function App() {
     return nodes;
   };
 
+  const getTopLevelExplorerEntries = (entries: ExplorerClipboardEntry[]): ExplorerClipboardEntry[] =>
+    entries.filter(
+      (entry) =>
+        !entries.some(
+          (candidate) =>
+            candidate.kind === 'folder' &&
+            candidate.path !== entry.path &&
+            entry.path.startsWith(`${candidate.path}/`)
+        )
+    );
+
   const getSelectedExplorerEntries = (): ExplorerClipboardEntry[] =>
-    getVisibleExplorerNodes()
-      .filter((node) => selectedExplorerPaths.has(node.path))
-      .map((node) => ({ path: node.path, name: node.name, kind: node.kind }));
+    getTopLevelExplorerEntries(
+      getVisibleExplorerNodes()
+        .filter((node) => selectedExplorerPaths.has(node.path))
+        .map((node) => ({ path: node.path, name: node.name, kind: node.kind }))
+    );
 
   const getExplorerEntriesForPaths = (paths: Set<string>): ExplorerClipboardEntry[] =>
-    getVisibleExplorerNodes()
-      .filter((node) => paths.has(node.path))
-      .map((node) => ({ path: node.path, name: node.name, kind: node.kind }));
+    getTopLevelExplorerEntries(
+      getVisibleExplorerNodes()
+        .filter((node) => paths.has(node.path))
+        .map((node) => ({ path: node.path, name: node.name, kind: node.kind }))
+    );
 
   const getContextEntries = (node: ExplorerTreeNode): ExplorerClipboardEntry[] => {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
