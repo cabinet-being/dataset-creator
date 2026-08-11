@@ -128,6 +128,15 @@ type FileInspectorMetadata = {
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
 
+const selectFileNameStem = (input: HTMLInputElement) => {
+  const extensionStart = input.value.lastIndexOf('.');
+  if (extensionStart > 0) {
+    input.setSelectionRange(0, extensionStart);
+    return;
+  }
+  input.select();
+};
+
 const WORKSPACE_LAYOUT_STORAGE_KEY = 'dataset-creator-workspace-layout';
 
 type ToolWorkspaceTab = {
@@ -762,7 +771,13 @@ const ExplorerTree = ({
           <input
             value={inlineEdit.value}
             autoFocus
-            onFocus={(event) => event.currentTarget.select()}
+            onFocus={(event) => {
+              if (inlineEdit.kind === 'folder') {
+                event.currentTarget.select();
+                return;
+              }
+              selectFileNameStem(event.currentTarget);
+            }}
             onChange={(event) => onInlineChange(event.target.value)}
             onBlur={onInlineCommit}
             onClick={(event) => event.stopPropagation()}
@@ -1297,21 +1312,15 @@ function App() {
     try {
       if (activeTab.kind === 'dataset') {
         const dataset = datasetsById[activeTab.datasetId];
-        if (dataset) {
-          await updateDatasetFileBackedState(dataset, { name: nextName });
+        if (dataset?.filePath) {
+          await renameExplorerItem(dataset.filePath, 'dataset', nextName);
         }
       } else if (isFileBackedTab(activeTab)) {
-        const directory = requireProjectDirectory();
-        if (!directory || nextName === activeTab.name) {
+        if (nextName === activeTab.name) {
           setInspectorRenaming(false);
           return;
         }
-        const nextPath = await renameExplorerEntry(directory, activeTab.path, 'file', nextName);
-        const moves = [{ from: activeTab.path, to: nextPath }];
-        updateFileTabsForPathMoves(moves);
-        updateWorkspacePathsForPathMoves(moves);
-        updateExplorerClipboardForPathMoves(moves);
-        refreshExplorer();
+        await renameExplorerItem(activeTab.path, 'file', nextName);
       }
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to rename item');
@@ -1765,7 +1774,7 @@ function App() {
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'name' | 'triggerWord' | 'assetIds'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds'>>
   ) => {
     const nextDataset = {
       ...dataset,
@@ -1900,14 +1909,6 @@ function App() {
       >
         <div className="mx-auto max-w-3xl space-y-5">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
-            <input
-              value={dataset.name}
-              onChange={(event) => void updateDatasetFileBackedState(dataset, { name: event.target.value })}
-              className="w-full rounded border border-border bg-background px-3 py-2 text-lg font-semibold"
-            />
-          </div>
-          <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Trigger Word</label>
             <input
               value={dataset.triggerWord}
@@ -1973,7 +1974,7 @@ function App() {
               <input
                 value={inspectorRenameValue}
                 autoFocus
-                onFocus={(event) => event.currentTarget.select()}
+                onFocus={(event) => selectFileNameStem(event.currentTarget)}
                 onChange={(event) => setInspectorRenameValue(event.target.value)}
                 onBlur={() => void commitInspectorRename()}
                 onKeyDown={(event) => {
@@ -2059,14 +2060,6 @@ function App() {
           <div className="border-t border-border pt-3">
             <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dataset</p>
             <div className="space-y-3">
-              <div>
-                <label className="mb-1 block text-muted-foreground">Name</label>
-                <input
-                  value={activeDataset.name}
-                  onChange={(event) => void updateDatasetFileBackedState(activeDataset, { name: event.target.value })}
-                  className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
-                />
-              </div>
               <div>
                 <label className="mb-1 block text-muted-foreground">Trigger Word</label>
                 <input
@@ -2235,7 +2228,14 @@ function App() {
       const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
       const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves);
       if (originalFilePath !== source.originalFilePath || manifestPath !== source.manifestPath) {
-        updateSourceImage(source.id, { originalFilePath, manifestPath });
+        const fileNameChanged = originalFilePath && originalFilePath !== source.originalFilePath;
+        const fileName = fileNameChanged ? originalFilePath.split('/').pop() ?? source.fileName : source.fileName;
+        updateSourceImage(source.id, {
+          originalFilePath,
+          manifestPath,
+          fileName,
+          originalFileName: fileNameChanged ? fileName : source.originalFileName,
+        });
       }
     }
 
@@ -2254,10 +2254,57 @@ function App() {
 
     for (const dataset of Object.values(datasetsById)) {
       const parentPath = applyExplorerPathMoves(dataset.parentPath || 'Project', moves);
-      if (parentPath !== (dataset.parentPath || 'Project')) {
-        updateProjectDataset(dataset.id, { parentPath });
+      const filePath = dataset.filePath ? applyExplorerPathMoves(dataset.filePath, moves) : dataset.filePath;
+      if (parentPath !== (dataset.parentPath || 'Project') || filePath !== dataset.filePath) {
+        updateProjectDataset(dataset.id, { parentPath, filePath });
       }
     }
+  };
+
+  const renameExplorerItem = async (
+    path: string,
+    kind: ExplorerTreeNode['kind'],
+    requestedName: string
+  ): Promise<string | null> => {
+    const directory = requireProjectDirectory();
+    const trimmedName = requestedName.trim();
+    if (!directory || !trimmedName || path === 'Project') {
+      return null;
+    }
+
+    const previousProject = useProjectStore.getState();
+    const nextFileName = kind === 'dataset' ? getDatasetFileName(trimmedName) : trimmedName;
+    const entryKind = kind === 'folder' ? 'folder' : 'file';
+    const nextPath = await renameExplorerEntry(directory, path, entryKind, nextFileName);
+    const moves = [{ from: path, to: nextPath }];
+
+    updateFileTabsForPathMoves(moves);
+    updateWorkspacePathsForPathMoves(moves);
+    updateExplorerClipboardForPathMoves(moves);
+
+    if (kind === 'dataset') {
+      const dataset = await readDatasetFile(directory, nextPath);
+      const updatedDataset = {
+        ...dataset,
+        name: getDatasetDisplayName(nextPath.split('/').pop() ?? trimmedName),
+        parentPath: nextPath.split('/').slice(0, -1).join('/') || 'Project',
+        filePath: nextPath,
+        updatedAt: new Date(),
+      };
+      await writeDatasetFile(directory, updatedDataset);
+      upsertProjectDataset(updatedDataset);
+      setOpenTabs((tabs) =>
+        tabs.map((tab) =>
+          tab.kind === 'dataset' && tab.datasetId === updatedDataset.id
+            ? { ...tab, id: createDatasetTabId(updatedDataset.id) }
+            : tab
+        )
+      );
+    }
+
+    await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
+    refreshExplorer();
+    return nextPath;
   };
 
   const removeWorkspaceSourcesForDeletedEntries = (entries: ExplorerClipboardEntry[]) => {
@@ -2481,28 +2528,14 @@ function App() {
       }
 
       if (edit.kind === 'dataset' && edit.mode === 'rename' && edit.path) {
-        const directory = requireProjectDirectory();
-        if (!directory) {
-          return;
-        }
-        const previousDataset = await readDatasetFile(directory, edit.path);
         const nextName = edit.value.trim() || 'Dataset';
-        const nextPath = await renameExplorerEntry(directory, edit.path, 'file', getDatasetFileName(nextName));
-        const dataset = {
-          ...previousDataset,
-          name: nextName,
-          parentPath: nextPath.split('/').slice(0, -1).join('/') || 'Project',
-          filePath: nextPath,
-          updatedAt: new Date(),
-        };
-        await writeDatasetFile(directory, dataset);
-        upsertProjectDataset(dataset);
-        updateExplorerClipboardForPathMoves([{ from: edit.path, to: nextPath }]);
-        setSelectedExplorerPaths(new Set([nextPath]));
-        setSelectionAnchorPath(nextPath);
-        setFocusedExplorerPath(nextPath);
+        const nextPath = await renameExplorerItem(edit.path, 'dataset', nextName);
+        if (nextPath) {
+          setSelectedExplorerPaths(new Set([nextPath]));
+          setSelectionAnchorPath(nextPath);
+          setFocusedExplorerPath(nextPath);
+        }
         setInlineExplorerEdit(null);
-        refreshExplorer();
         return;
       }
 
@@ -2522,17 +2555,12 @@ function App() {
           setInlineExplorerEdit(null);
           return;
         }
-        if (edit.kind !== 'folder' && edit.kind !== 'file') {
-          return;
+        const nextPath = await renameExplorerItem(edit.path, edit.kind, nextName);
+        if (nextPath) {
+          setSelectedExplorerPaths(new Set([nextPath]));
+          setSelectionAnchorPath(nextPath);
+          setFocusedExplorerPath(nextPath);
         }
-        const nextPath = await renameExplorerEntry(directory, edit.path, edit.kind, nextName);
-        const moves = [{ from: edit.path, to: nextPath }];
-        updateFileTabsForPathMoves(moves);
-        updateWorkspacePathsForPathMoves(moves);
-        updateExplorerClipboardForPathMoves(moves);
-        setSelectedExplorerPaths(new Set([nextPath]));
-        setSelectionAnchorPath(nextPath);
-        setFocusedExplorerPath(nextPath);
       }
       setInlineExplorerEdit(null);
       refreshExplorer();

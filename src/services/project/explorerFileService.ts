@@ -138,7 +138,7 @@ const rewriteAssetManifest = (
 ): string => {
   try {
     const manifest = JSON.parse(value) as Record<string, unknown>;
-    for (const key of ['fileName', 'originalFileNameOnDisk', 'imageFileName', 'psdFileName']) {
+    for (const key of ['fileName', 'originalFileName', 'originalFileNameOnDisk', 'imageFileName', 'psdFileName']) {
       if (manifest[key] === previousName) {
         manifest[key] = nextName;
       }

@@ -76,7 +76,7 @@ export const readDatasetFile = async (
 
   return {
     id: manifest.id,
-    name: manifest.name || getDatasetDisplayName(file.name),
+    name: getDatasetDisplayName(file.name),
     parentPath: getParentPath(path),
     filePath: path,
     triggerWord: manifest.triggerWord ?? '',
