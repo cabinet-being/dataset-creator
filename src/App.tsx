@@ -752,7 +752,7 @@ function App() {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
-  const addSourceImages = useProjectStore((state) => state.addSourceImages);
+  const addSourceImage = useProjectStore((state) => state.addSourceImage);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -1782,22 +1782,34 @@ function App() {
     }
 
     try {
+      let importedImageCount = 0;
+      let importedAssetCount = 0;
       const result = await importImageFiles(files, {
         logger: createOperationLogger('Import'),
         destination: {
           projectDirectory: directory,
           explorerPath: destinationPath,
         },
+        onImageImported: async (image) => {
+          const previousProject = useProjectStore.getState();
+          addSourceImage(image);
+          importedImageCount += 1;
+          await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
+          setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
+          refreshExplorer();
+        },
+        onAssetImported: () => {
+          importedAssetCount += 1;
+          setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
+          refreshExplorer();
+        },
         onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
       });
 
-      if (result.importedImages.length > 0) {
-        const previousProject = useProjectStore.getState();
-        addSourceImages(result.importedImages);
-        await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
+      if (result.importedImages.length > 0 || result.importedAssets.length > 0) {
         addNotification(
           'success',
-          `Imported ${result.importedImages.length} image${result.importedImages.length !== 1 ? 's' : ''}`
+          `Imported ${importedAssetCount || importedImageCount} asset${(importedAssetCount || importedImageCount) !== 1 ? 's' : ''}`
         );
         setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
         refreshExplorer();

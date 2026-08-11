@@ -4,24 +4,82 @@ import { createThumbnail, getImageDimensions } from '../image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../image/embeddingService';
 import { createOperationLogger, shouldLogProgress, type OperationLogger } from '../logging/applicationLog';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
-import { getAssetManifestName, getAssetManifestPath } from '../project/assetManifestService';
-import { getDirectoryAtExplorerPath, getUniqueExplorerName } from '../project/explorerFileService';
+import {
+  getAssetManifestName,
+  getAssetManifestPath,
+  isAssetManifestName,
+  isProjectManifestName,
+} from '../project/assetManifestService';
+import { getDirectoryAtExplorerPath, getExplorerFileKind, getUniqueExplorerName } from '../project/explorerFileService';
 
-export const SUPPORTED_IMPORT_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+export const SUPPORTED_IMPORT_IMAGE_FORMATS = [
+  'image/bmp',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+];
+export const SUPPORTED_IMPORT_TEXT_FORMATS = ['text/plain', 'application/json'];
+export const SUPPORTED_IMPORT_PHOTOSHOP_FORMATS = ['image/vnd.adobe.photoshop', 'application/octet-stream'];
+export const SUPPORTED_IMPORT_VIDEO_FORMATS = ['video/mp4', 'video/webm'];
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
 export const SUPPORTED_IMPORT_FILE_FORMATS = [
   ...SUPPORTED_IMPORT_IMAGE_FORMATS,
+  ...SUPPORTED_IMPORT_TEXT_FORMATS,
+  ...SUPPORTED_IMPORT_PHOTOSHOP_FORMATS,
+  ...SUPPORTED_IMPORT_VIDEO_FORMATS,
   ...SUPPORTED_IMPORT_ARCHIVE_FORMATS,
+  '.bmp',
+  '.gif',
+  '.jpeg',
+  '.jpg',
+  '.json',
+  '.mp4',
+  '.png',
+  '.psd',
+  '.txt',
+  '.webm',
+  '.webp',
   '.zip',
 ];
 
 const IMAGE_EXTENSION_TYPES = new Map([
+  ['.bmp', 'image/bmp'],
   ['.gif', 'image/gif'],
   ['.jpeg', 'image/jpeg'],
   ['.jpg', 'image/jpeg'],
   ['.png', 'image/png'],
   ['.webp', 'image/webp'],
 ]);
+
+const SUPPORTED_ASSET_EXTENSIONS = new Set([
+  '.bmp',
+  '.gif',
+  '.jpeg',
+  '.jpg',
+  '.json',
+  '.mp4',
+  '.png',
+  '.psd',
+  '.txt',
+  '.webm',
+  '.webp',
+]);
+
+export type ImportInputFile = File | {
+  file: File;
+  relativePath?: string;
+};
+
+export type ImportedProjectAsset = {
+  id: string;
+  kind: ReturnType<typeof getExplorerFileKind>;
+  fileName: string;
+  assetPath: string;
+  manifestPath: string;
+  mimeType: string;
+  size: number;
+};
 
 export type ImportDestination = {
   projectDirectory?: ProjectDirectoryHandle;
@@ -33,10 +91,13 @@ export type ImportImagesOptions = {
   destination?: ImportDestination;
   onProgress?: (current: number, total: number) => void;
   onError?: (fileName: string, error: unknown) => void;
+  onImageImported?: (image: SourceImage, asset?: ImportedProjectAsset) => void | Promise<void>;
+  onAssetImported?: (asset: ImportedProjectAsset) => void | Promise<void>;
 };
 
 export type ImportImagesResult = {
   importedImages: SourceImage[];
+  importedAssets: ImportedProjectAsset[];
   skippedCount: number;
 };
 
@@ -44,9 +105,21 @@ const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '
 const getArchiveFileName = (path: string): string => path.split('/').pop() ?? path;
 const getArchiveFileStem = (path: string): string => getArchiveFileName(path).replace(/\.[^.]+$/, '');
 const getArchiveExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
+const getFileExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
 
 export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
+
+export const isInternalImportFileName = (fileName: string): boolean =>
+  isProjectManifestName(fileName) || isAssetManifestName(fileName);
+
+export const isSupportedImportAssetFile = (file: File): boolean =>
+  !isInternalImportFileName(file.name) &&
+  (SUPPORTED_IMPORT_IMAGE_FORMATS.includes(file.type) ||
+    SUPPORTED_IMPORT_TEXT_FORMATS.includes(file.type) ||
+    SUPPORTED_IMPORT_VIDEO_FORMATS.includes(file.type) ||
+    file.name.toLowerCase().endsWith('.psd') ||
+    SUPPORTED_ASSET_EXTENSIONS.has(getFileExtension(file.name)));
 
 const parseCaptionTags = (caption: string): string[] =>
   caption
@@ -58,6 +131,19 @@ const toProjectRelativePath = (explorerPath: string): string =>
   explorerPath === 'Project' ? '' : explorerPath.replace(/^Project\//, '');
 
 const joinPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
+const getParentPath = (path: string): string => path.split('/').filter(Boolean).slice(0, -1).join('/');
+
+const normalizeImportInput = (input: ImportInputFile): { file: File; relativePath?: string } => {
+  if ('file' in input) {
+    return input;
+  }
+
+  const relativePath = (input as File & { webkitRelativePath?: string }).webkitRelativePath;
+  return {
+    file: input,
+    relativePath: relativePath || undefined,
+  };
+};
 
 const splitExtension = (name: string): { stem: string; extension: string } => {
   const index = name.lastIndexOf('.');
@@ -83,10 +169,11 @@ const getUniqueReservedName = (name: string, reservedNames: Set<string>): string
 const resolveImportFileName = async (
   fileName: string,
   destination: ImportDestination | undefined,
-  reservedNames: Set<string>
+  reservedNames: Set<string>,
+  explorerDirectoryPath?: string
 ): Promise<string> => {
-  if (destination?.projectDirectory && destination.explorerPath) {
-    const directory = await getDirectoryAtExplorerPath(destination.projectDirectory, destination.explorerPath);
+  if (destination?.projectDirectory && explorerDirectoryPath) {
+    const directory = await getDirectoryAtExplorerPath(destination.projectDirectory, explorerDirectoryPath);
     const filesystemName = await getUniqueExplorerName(directory, fileName);
     const targetName = getUniqueReservedName(filesystemName, reservedNames);
     reservedNames.add(targetName);
@@ -99,30 +186,137 @@ const resolveImportFileName = async (
   return targetName;
 };
 
-const applyImportDestination = (sourceImage: SourceImage, fileName: string, destination?: ImportDestination) => {
-  if (!destination?.explorerPath) {
+const getImportTarget = async (
+  fileName: string,
+  relativePath: string | undefined,
+  destination: ImportDestination | undefined,
+  reservedNamesByDirectory: Map<string, Set<string>>
+): Promise<{ explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string }> => {
+  const relativeDirectory = relativePath ? getParentPath(relativePath) : '';
+  const explorerDirectoryPath = destination?.explorerPath
+    ? joinPath(destination.explorerPath, relativeDirectory)
+    : undefined;
+  const reservedKey = explorerDirectoryPath ?? '';
+  const reservedNames = reservedNamesByDirectory.get(reservedKey) ?? new Set<string>();
+  reservedNamesByDirectory.set(reservedKey, reservedNames);
+  const targetFileName = await resolveImportFileName(fileName, destination, reservedNames, explorerDirectoryPath);
+
+  if (!explorerDirectoryPath) {
+    return { fileName: targetFileName };
+  }
+
+  const directoryPath = toProjectRelativePath(explorerDirectoryPath);
+  const assetPath = joinPath(directoryPath, targetFileName);
+  return {
+    explorerDirectoryPath,
+    fileName: targetFileName,
+    assetPath,
+    manifestPath: getAssetManifestPath(assetPath),
+  };
+};
+
+const applyImportDestination = (
+  sourceImage: SourceImage,
+  target: { fileName: string; assetPath?: string; manifestPath?: string }
+) => {
+  if (!target.assetPath || !target.manifestPath) {
     return;
   }
-  const directoryPath = toProjectRelativePath(destination.explorerPath);
-  const originalFilePath = joinPath(directoryPath, fileName);
-  sourceImage.fileName = fileName;
-  sourceImage.originalFilePath = originalFilePath;
-  sourceImage.manifestPath = getAssetManifestPath(originalFilePath);
+
+  sourceImage.fileName = target.fileName;
+  sourceImage.originalFilePath = target.assetPath;
+  sourceImage.manifestPath = target.manifestPath;
+};
+
+const getOrCreateDirectoryAtExplorerPath = async (
+  root: ProjectDirectoryHandle,
+  explorerPath: string
+): Promise<ProjectDirectoryHandle> => {
+  let directory = root;
+  for (const part of explorerPath.replace(/^Project\/?/, '').split('/').filter(Boolean)) {
+    directory = await directory.getDirectoryHandle(part, { create: true });
+  }
+  return directory;
+};
+
+const writeBlobFile = async (directory: ProjectDirectoryHandle, name: string, value: Blob) => {
+  const handle = await directory.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(value);
+  await writable.close();
+};
+
+const writeProjectAsset = async (
+  file: File,
+  target: { explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string },
+  destination: ImportDestination | undefined
+): Promise<ImportedProjectAsset | null> => {
+  if (!destination?.projectDirectory || !target.explorerDirectoryPath || !target.assetPath || !target.manifestPath) {
+    return null;
+  }
+
+  const directory = await getOrCreateDirectoryAtExplorerPath(destination.projectDirectory, target.explorerDirectoryPath);
+  await writeBlobFile(directory, target.fileName, file);
+
+  const asset: ImportedProjectAsset = {
+    id: crypto.randomUUID(),
+    kind: getExplorerFileKind(target.fileName, file.type),
+    fileName: target.fileName,
+    assetPath: target.assetPath,
+    manifestPath: target.manifestPath,
+    mimeType: file.type,
+    size: file.size,
+  };
+
+  await writeBlobFile(
+    directory,
+    getAssetManifestName(target.fileName),
+    new Blob([
+      JSON.stringify(
+        {
+          id: asset.id,
+          kind: asset.kind,
+          fileName: asset.fileName,
+          originalFileName: file.name,
+          assetPath: asset.assetPath,
+          mimeType: asset.mimeType,
+          size: asset.size,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2
+      ),
+    ], { type: 'application/json' })
+  );
+
+  return asset;
 };
 
 const processImportedFile = async (
   file: File,
+  relativePath: string | undefined,
   tags: string[],
   destination: ImportDestination | undefined,
   logger: OperationLogger,
-  reservedNames: Set<string>
-): Promise<SourceImage | null> => {
-  if (!SUPPORTED_IMPORT_IMAGE_FORMATS.includes(file.type)) {
-    logger.warning(`skipped unsupported file ${file.name}`);
-    return null;
+  reservedNamesByDirectory: Map<string, Set<string>>
+): Promise<{ sourceImage: SourceImage | null; asset: ImportedProjectAsset | null }> => {
+  if (isInternalImportFileName(file.name)) {
+    logger.warning(`skipped internal project metadata file ${file.name}`);
+    return { sourceImage: null, asset: null };
   }
 
-  const targetFileName = await resolveImportFileName(file.name, destination, reservedNames);
+  if (!isSupportedImportAssetFile(file)) {
+    logger.warning(`skipped unsupported file ${file.name}`);
+    return { sourceImage: null, asset: null };
+  }
+
+  const target = await getImportTarget(file.name, relativePath, destination, reservedNamesByDirectory);
+  const asset = await writeProjectAsset(file, target, destination);
+
+  if (!SUPPORTED_IMPORT_IMAGE_FORMATS.includes(file.type) && !IMAGE_EXTENSION_TYPES.has(getFileExtension(file.name))) {
+    return { sourceImage: null, asset };
+  }
+
   const { width, height } = await getImageDimensions(file);
   const thumbnail = await createThumbnail(file);
   const embedding = await generateEmbedding(file);
@@ -134,19 +328,21 @@ const processImportedFile = async (
   sourceImage.embedding = embedding;
   sourceImage.hash = hash;
   sourceImage.tags = tags;
-  applyImportDestination(sourceImage, targetFileName, destination);
+  applyImportDestination(sourceImage, target);
 
-  return sourceImage;
+  return { sourceImage, asset };
 };
 
 const processArchiveFile = async (
   file: File,
   destination: ImportDestination | undefined,
   logger: OperationLogger,
-  reservedNames: Set<string>
-): Promise<SourceImage[]> => {
+  reservedNamesByDirectory: Map<string, Set<string>>,
+  onImageImported?: ImportImagesOptions['onImageImported'],
+  onAssetImported?: ImportImagesOptions['onAssetImported']
+): Promise<{ importedImages: SourceImage[]; importedAssets: ImportedProjectAsset[] }> => {
   const zip = await JSZip.loadAsync(file);
-  const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+  const entries = Object.values(zip.files).filter((entry) => !entry.dir && !isInternalImportFileName(getArchiveFileName(entry.name)));
   const captionsByPathStem = new Map<string, JSZip.JSZipObject>();
   const captionsByFileStem = new Map<string, JSZip.JSZipObject>();
 
@@ -159,6 +355,7 @@ const processArchiveFile = async (
   }
 
   const importedImages: SourceImage[] = [];
+  const importedAssets: ImportedProjectAsset[] = [];
   const imageEntries = entries.filter((entry) => IMAGE_EXTENSION_TYPES.has(getArchiveExtension(entry.name)));
   logger.info(`archive ${file.name} contains ${imageEntries.length} image files`);
 
@@ -176,9 +373,21 @@ const processArchiveFile = async (
       captionsByPathStem.get(getArchivePathStem(entry.name)) ??
       captionsByFileStem.get(getArchiveFileStem(entry.name));
     const tags = captionEntry ? parseCaptionTags(await captionEntry.async('string')) : [];
-    const sourceImage = await processImportedFile(imageFile, tags, destination, logger, reservedNames);
+    const { sourceImage, asset } = await processImportedFile(
+      imageFile,
+      entry.name,
+      tags,
+      destination,
+      logger,
+      reservedNamesByDirectory
+    );
+    if (asset) {
+      importedAssets.push(asset);
+      await onAssetImported?.(asset);
+    }
     if (sourceImage) {
       importedImages.push(sourceImage);
+      await onImageImported?.(sourceImage, asset ?? undefined);
     }
 
     const current = i + 1;
@@ -187,37 +396,60 @@ const processArchiveFile = async (
     }
   }
 
-  return importedImages;
+  return { importedImages, importedAssets };
 };
 
 export const importImageFiles = async (
-  files: File[],
+  files: ImportInputFile[],
   options: ImportImagesOptions = {}
 ): Promise<ImportImagesResult> => {
   const logger = options.logger ?? createOperationLogger('Import');
   const importedImages: SourceImage[] = [];
-  const reservedNames = new Set<string>();
+  const importedAssets: ImportedProjectAsset[] = [];
+  const reservedNamesByDirectory = new Map<string, Set<string>>();
   let skippedCount = 0;
 
   if (files.length === 0) {
-    return { importedImages, skippedCount };
+    return { importedImages, importedAssets, skippedCount };
   }
 
   const destinationLabel = options.destination?.explorerPath
     ? ` into /${toProjectRelativePath(options.destination.explorerPath) || ''}`
     : '';
-  logger.info(`starting image import from ${files.length} selected file${files.length !== 1 ? 's' : ''}${destinationLabel}`);
+  logger.info(`starting asset import from ${files.length} selected file${files.length !== 1 ? 's' : ''}${destinationLabel}`);
 
   for (let i = 0; i < files.length; i++) {
-    const file = files[i];
+    const input = normalizeImportInput(files[i]);
+    const file = input.file;
     try {
       if (isImportArchiveFile(file)) {
-        importedImages.push(...await processArchiveFile(file, options.destination, logger, reservedNames));
+        const archiveResult = await processArchiveFile(
+          file,
+          options.destination,
+          logger,
+          reservedNamesByDirectory,
+          options.onImageImported,
+          options.onAssetImported
+        );
+        importedImages.push(...archiveResult.importedImages);
+        importedAssets.push(...archiveResult.importedAssets);
       } else {
-        const sourceImage = await processImportedFile(file, [], options.destination, logger, reservedNames);
+        const { sourceImage, asset } = await processImportedFile(
+          file,
+          input.relativePath,
+          [],
+          options.destination,
+          logger,
+          reservedNamesByDirectory
+        );
+        if (asset) {
+          importedAssets.push(asset);
+          await options.onAssetImported?.(asset);
+        }
         if (sourceImage) {
           importedImages.push(sourceImage);
-        } else {
+          await options.onImageImported?.(sourceImage, asset ?? undefined);
+        } else if (!asset) {
           skippedCount += 1;
         }
       }
@@ -238,10 +470,10 @@ export const importImageFiles = async (
   }
 
   if (importedImages.length > 0) {
-    logger.success(`completed: imported ${importedImages.length} image${importedImages.length !== 1 ? 's' : ''}`);
+    logger.success(`completed: imported ${importedAssets.length || importedImages.length} asset${(importedAssets.length || importedImages.length) !== 1 ? 's' : ''}`);
   } else {
-    logger.warning('completed with no images imported');
+    logger.warning('completed with no assets imported');
   }
 
-  return { importedImages, skippedCount };
+  return { importedImages, importedAssets, skippedCount };
 };

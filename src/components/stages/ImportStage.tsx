@@ -15,14 +15,13 @@ import { createOperationLogger } from '../../services/logging/applicationLog';
 import {
   importImageFiles,
   SUPPORTED_IMPORT_FILE_FORMATS,
-  SUPPORTED_IMPORT_IMAGE_FORMATS,
 } from '../../services/import/importService';
 
 import { Upload, Trash2 } from 'lucide-react';
 
 export const ImportStage = () => {
   const {
-    addSourceImages,
+    addSourceImage,
     removeSourceImage,
     updateSourceImage,
   } = useProjectStore();
@@ -56,18 +55,20 @@ export const ImportStage = () => {
       try {
         const result = await importImageFiles(files, {
           logger: importLogger.current,
+          onImageImported: (image) => {
+            addSourceImage(image);
+            logDev(
+              'import',
+              'store image count',
+              Object.keys(useProjectStore.getState().sourceImages).length
+            );
+          },
           onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
         });
         const newImages = result.importedImages;
 
         if (newImages.length > 0) {
-          addSourceImages(newImages);
           logDev('import', 'processed images', newImages.length);
-          logDev(
-            'import',
-            'store image count',
-            Object.keys(useProjectStore.getState().sourceImages).length
-          );
           addNotification(
             'success',
             `Imported ${newImages.length} image${newImages.length !== 1 ? 's' : ''}`
@@ -82,7 +83,7 @@ export const ImportStage = () => {
         setIsLoading(false);
       }
     },
-    [addNotification, addSourceImages, logDev]
+    [addNotification, addSourceImage, logDev]
   );
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -219,7 +220,7 @@ export const ImportStage = () => {
             ref={folderInputRef}
             type="file"
             multiple
-            accept={SUPPORTED_IMPORT_IMAGE_FORMATS.join(',')}
+            accept={SUPPORTED_IMPORT_FILE_FORMATS.join(',')}
             {...{ webkitdirectory: 'true', mozdirectory: 'true' } as any}
             onChange={handleFolderSelect}
             className="hidden"
