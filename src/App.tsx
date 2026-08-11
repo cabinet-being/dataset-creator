@@ -558,6 +558,8 @@ type ExplorerTreeProps = {
   onInlineChange: (value: string) => void;
   onInlineCommit: () => void;
   onInlineCancel: () => void;
+  onDragStartItem: (node: ExplorerTreeNode) => void;
+  onDragEndItems: () => void;
   onDropItems: (node: ExplorerTreeNode) => void;
   depth?: number;
 };
@@ -592,6 +594,8 @@ const ExplorerTree = ({
   onInlineChange,
   onInlineCommit,
   onInlineCancel,
+  onDragStartItem,
+  onDragEndItems,
   onDropItems,
   depth = 0,
 }: ExplorerTreeProps) => {
@@ -620,7 +624,9 @@ const ExplorerTree = ({
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', node.path);
+          onDragStartItem(node);
         }}
+        onDragEnd={onDragEndItems}
         onDragOver={(event) => {
           if (isFolder) {
             event.preventDefault();
@@ -710,6 +716,8 @@ const ExplorerTree = ({
             onInlineChange={onInlineChange}
             onInlineCommit={onInlineCommit}
             onInlineCancel={onInlineCancel}
+            onDragStartItem={onDragStartItem}
+            onDragEndItems={onDragEndItems}
             onDropItems={onDropItems}
             depth={depth + 1}
           />
@@ -816,6 +824,7 @@ function App() {
   ]);
   const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
   const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
+  const explorerPanelRef = useRef<HTMLDivElement | null>(null);
   const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
@@ -834,6 +843,7 @@ function App() {
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
+  const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerClipboardEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
   const [inlineExplorerEdit, setInlineExplorerEdit] = useState<{
     mode: 'create' | 'rename';
@@ -1211,6 +1221,11 @@ function App() {
       .filter((node) => selectedExplorerPaths.has(node.path))
       .map((node) => ({ path: node.path, name: node.name, kind: node.kind }));
 
+  const getExplorerEntriesForPaths = (paths: Set<string>): ExplorerClipboardEntry[] =>
+    getVisibleExplorerNodes()
+      .filter((node) => paths.has(node.path))
+      .map((node) => ({ path: node.path, name: node.name, kind: node.kind }));
+
   const getContextEntries = (node: ExplorerTreeNode): ExplorerClipboardEntry[] => {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
       return getSelectedExplorerEntries();
@@ -1248,6 +1263,18 @@ function App() {
 
     setSelectedExplorerPaths(new Set([node.path]));
     setSelectionAnchorPath(node.path);
+  };
+
+  const startExplorerDrag = (node: ExplorerTreeNode) => {
+    if (selectedExplorerPaths.has(node.path)) {
+      setDraggedExplorerEntries(getSelectedExplorerEntries());
+      return;
+    }
+
+    const nextSelection = new Set([node.path]);
+    setSelectedExplorerPaths(nextSelection);
+    setSelectionAnchorPath(node.path);
+    setDraggedExplorerEntries(getExplorerEntriesForPaths(nextSelection));
   };
 
   const toProjectRelativePath = (path: string): string =>
@@ -1537,9 +1564,12 @@ function App() {
 
   const cancelInlineExplorerEdit = () => setInlineExplorerEdit(null);
 
-  const moveSelectedExplorerEntries = async (destinationPath: string) => {
+  const moveSelectedExplorerEntries = async (
+    destinationPath: string,
+    entriesOverride?: ExplorerClipboardEntry[] | null
+  ) => {
     const directory = requireProjectDirectory();
-    const entries = getSelectedExplorerEntries();
+    const entries = entriesOverride ?? getSelectedExplorerEntries();
     if (!directory || entries.length === 0) {
       return;
     }
@@ -1548,6 +1578,7 @@ function App() {
       updateFileTabsForPathMoves(moves);
       updateWorkspacePathsForPathMoves(moves);
       setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
+      setDraggedExplorerEntries(null);
       refreshExplorer();
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to move Explorer entries');
@@ -1592,6 +1623,12 @@ function App() {
 
     const handleExplorerShortcut = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) {
+        return;
+      }
+      const explorerHasFocus =
+        document.activeElement instanceof HTMLElement &&
+        Boolean(explorerPanelRef.current?.contains(document.activeElement));
+      if (!explorerHasFocus && !explorerContextMenu) {
         return;
       }
 
@@ -1643,7 +1680,7 @@ function App() {
 
     window.addEventListener('keydown', handleExplorerShortcut);
     return () => window.removeEventListener('keydown', handleExplorerShortcut);
-  }, [activeExplorerDirectoryPath, explorerClipboard, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
+  }, [activeExplorerDirectoryPath, explorerClipboard, explorerContextMenu, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
 
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
@@ -2665,6 +2702,7 @@ function App() {
                 </button>
               </div>
               <div
+                ref={explorerPanelRef}
                 className="min-h-0 flex-1 overflow-auto p-2"
                 tabIndex={0}
                 onContextMenu={(event) => {
@@ -2681,7 +2719,7 @@ function App() {
                 }}
                 onDrop={(event) => {
                   event.preventDefault();
-                  void moveSelectedExplorerEntries('Project');
+                  void moveSelectedExplorerEntries('Project', draggedExplorerEntries);
                 }}
               >
                 {explorerStatus === 'loading' && (
@@ -2716,12 +2754,12 @@ function App() {
                   </p>
                 )}
                 {explorerTree ? (
-	                  <ExplorerTree
-	                    node={explorerTree}
-	                    expandedPaths={expandedExplorerPaths}
+                  <ExplorerTree
+                    node={explorerTree}
+                    expandedPaths={expandedExplorerPaths}
                     selectedPaths={selectedExplorerPaths}
                     inlineEdit={inlineExplorerEdit}
-	                    onToggle={toggleExplorerPath}
+                    onToggle={toggleExplorerPath}
                     onSelect={selectExplorerNode}
                     onContextMenu={(node, x, y) => {
                       if (!selectedExplorerPaths.has(node.path)) {
@@ -2733,8 +2771,10 @@ function App() {
                     onInlineChange={(value) => setInlineExplorerEdit((edit) => edit ? { ...edit, value } : edit)}
                     onInlineCommit={() => void commitInlineExplorerEdit()}
                     onInlineCancel={cancelInlineExplorerEdit}
-                    onDropItems={(node) => void moveSelectedExplorerEntries(node.path)}
-	                  />
+                    onDragStartItem={startExplorerDrag}
+                    onDragEndItems={() => setDraggedExplorerEntries(null)}
+                    onDropItems={(node) => void moveSelectedExplorerEntries(node.path, draggedExplorerEntries)}
+                  />
                 ) : (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
                 )}
