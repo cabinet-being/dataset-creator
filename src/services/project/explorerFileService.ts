@@ -228,11 +228,33 @@ export const copyExplorerEntry = async (
   return `${destinationPath}/${targetName}`;
 };
 
+const assertCanPlaceExplorerEntries = (
+  sources: ExplorerClipboardEntry[],
+  destinationPath: string,
+  operation: 'copy' | 'move'
+) => {
+  const invalidFolder = sources.find(
+    (source) =>
+      source.kind === 'folder' &&
+      (destinationPath === source.path || destinationPath.startsWith(`${source.path}/`))
+  );
+  if (!invalidFolder) {
+    return;
+  }
+
+  throw new Error(
+    operation === 'copy'
+      ? 'Cannot paste a folder into itself.'
+      : 'Cannot move a folder into itself.'
+  );
+};
+
 export const copyExplorerEntries = async (
   root: ProjectDirectoryHandle,
   sources: ExplorerClipboardEntry[],
   destinationPath: string
 ): Promise<Array<{ from: string; to: string }>> => {
+  assertCanPlaceExplorerEntries(sources, destinationPath, 'copy');
   const results: Array<{ from: string; to: string }> = [];
   for (const source of sources) {
     results.push({ from: source.path, to: await copyExplorerEntry(root, source, destinationPath) });
@@ -318,6 +340,7 @@ export const moveExplorerEntries = async (
   sources: ExplorerClipboardEntry[],
   destinationPath: string
 ): Promise<Array<{ from: string; to: string }>> => {
+  assertCanPlaceExplorerEntries(sources, destinationPath, 'move');
   const results: Array<{ from: string; to: string }> = [];
   for (const source of sources) {
     results.push({ from: source.path, to: await moveExplorerEntry(root, source, destinationPath) });
