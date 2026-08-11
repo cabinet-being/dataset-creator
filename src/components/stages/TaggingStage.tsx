@@ -1344,97 +1344,86 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
     )
   ) : null;
 
+  const datasetTagsControls = (
+    <div className="space-y-4">
+      <div>
+        <label className="mb-2 block text-xs text-muted-foreground">Bulk Tags</label>
+        <textarea
+          value={globalTagsToAdd}
+          onChange={(event) => setGlobalTagsToAdd(event.target.value)}
+          placeholder="tag1, tag2, tag3"
+          className="min-h-24 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="mb-2 block text-xs text-muted-foreground">Insert Mode</label>
+        <select
+          value={taggingConfig.insertMode}
+          onChange={(event) =>
+            updateTaggingConfig({
+              insertMode: event.target.value as InsertMode,
+            })
+          }
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+        >
+          {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
+            <option key={mode} value={mode}>
+              {INSERT_MODE_LABELS[mode]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="grid gap-2">
+        <button
+          type="button"
+          onClick={handleAddGlobalTags}
+          disabled={!hasBulkTags || items.length === 0}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Apply to All {items.length} Images
+        </button>
+        <button
+          type="button"
+          onClick={handleRemoveGlobalTags}
+          disabled={!hasBulkTags || items.length === 0}
+          className="rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive hover:text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-destructive"
+        >
+          Remove from All {items.length} Images
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleRunLocalAutoTagging()}
+          disabled={!localTagger || localTaggerStatus !== 'ready'}
+          className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Sparkles size={16} />
+          Run auto-tagging
+        </button>
+        <button
+          type="button"
+          onClick={() => setTaggingModal({ settings: true })}
+          className="rounded-md border border-border px-3 py-2 text-sm font-medium transition-colors hover:bg-secondary"
+        >
+          Settings
+        </button>
+      </div>
+    </div>
+  );
+
+  const datasetTagsInspectorRoot =
+    active && typeof document !== 'undefined'
+      ? document.getElementById('dataset-tags-inspector-root')
+      : null;
+  const datasetTagsInspector = datasetTagsInspectorRoot
+    ? createPortal(datasetTagsControls, datasetTagsInspectorRoot)
+    : null;
+
   return (
     <div className="h-full min-h-0">
       {selectedView}
-
-      <Dialog.Root
-        open={taggingModals.datasetTags}
-        onOpenChange={(open) => setTaggingModal({ datasetTags: open })}
-      >
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-[100] bg-black/60" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-[101] w-[min(760px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <Dialog.Title className="text-lg font-semibold">Dataset Tags</Dialog.Title>
-                <Dialog.Description className="text-sm text-muted-foreground">
-                  Manage shared tag actions for the current workspace.
-                </Dialog.Description>
-              </div>
-              <Dialog.Close asChild>
-                <button
-                  type="button"
-                  className="rounded-md p-2 transition-colors hover:bg-secondary"
-                  aria-label="Close Dataset Tags"
-                >
-                  <X size={16} />
-                </button>
-              </Dialog.Close>
-            </div>
-
-            <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-[1fr_12rem]">
-                <div>
-                  <label className="mb-2 block text-xs text-muted-foreground">Bulk tags</label>
-                  <textarea
-                    value={globalTagsToAdd}
-                    onChange={(event) => setGlobalTagsToAdd(event.target.value)}
-                    placeholder="tag1, tag2, tag3"
-                    className="min-h-28 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-xs text-muted-foreground">Insert mode</label>
-                  <select
-                    value={taggingConfig.insertMode}
-                    onChange={(event) =>
-                      updateTaggingConfig({
-                        insertMode: event.target.value as InsertMode,
-                      })
-                    }
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                  >
-                    {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
-                      <option key={mode} value={mode}>
-                        {INSERT_MODE_LABELS[mode]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleAddGlobalTags}
-                  disabled={!hasBulkTags || items.length === 0}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Apply to All {items.length} Images
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRemoveGlobalTags}
-                  disabled={!hasBulkTags || items.length === 0}
-                  className="rounded-md border border-destructive/60 px-4 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive hover:text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-destructive"
-                >
-                  Remove from All {items.length} Images
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRunLocalAutoTagging()}
-                  disabled={!localTagger || localTaggerStatus !== 'ready'}
-                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Sparkles size={16} />
-                  Run auto-tagging
-                </button>
-              </div>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+      {datasetTagsInspector}
 
       <Dialog.Root
         open={taggingModals.settings}

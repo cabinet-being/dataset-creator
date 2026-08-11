@@ -30,7 +30,6 @@ import {
   Pencil,
   Plus,
   ScanSearch,
-  Settings2,
   Sun,
   Tags,
   Trash2,
@@ -117,6 +116,13 @@ type FilePickerWindow = Window &
 
 type ImportDirectoryHandle = FileSystemDirectoryHandle & {
   entries: () => AsyncIterableIterator<[string, FileSystemDirectoryHandle | FileSystemFileHandle]>;
+};
+
+type FileInspectorMetadata = {
+  dimensions?: { width: number; height: number };
+  format: string;
+  size: string;
+  tags?: string[];
 };
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
@@ -326,6 +332,22 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
 };
 
 const TOOLS_MENU_STAGES = STAGES.filter((stage) => stage !== 'import' && stage !== 'export');
+
+const formatFileSize = (size: number): string => {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+};
+
+const getAspectRatioLabel = (width: number, height: number): string => {
+  const divisor = (left: number, right: number): number => (right === 0 ? left : divisor(right, left % right));
+  const value = divisor(width, height);
+  return `${Math.round(width / value)}:${Math.round(height / value)}`;
+};
 
 const renderTool = (currentStage: StageName) => {
   switch (currentStage) {
@@ -856,7 +878,6 @@ function App() {
     setDarkMode,
     editToolbar,
     taggingToolbar,
-    setTaggingModal,
     addNotification,
     notifications,
     operationLogs,
@@ -934,6 +955,9 @@ function App() {
     x: number;
     y: number;
   } | null>(null);
+  const [inspectorRenameValue, setInspectorRenameValue] = useState('');
+  const [inspectorRenaming, setInspectorRenaming] = useState(false);
+  const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
@@ -1144,6 +1168,66 @@ function App() {
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeStage = activeTab?.kind === 'tool' ? activeTab.stage : null;
+  const activeDataset = activeTab?.kind === 'dataset' ? datasetsById[activeTab.datasetId] : null;
+  const activeFileSource = activeTab && isFileBackedTab(activeTab) && activeTab.workspaceImageId
+    ? sourceImagesById[activeTab.workspaceImageId]
+    : null;
+
+  useEffect(() => {
+    setInspectorRenaming(false);
+    if (activeTab?.kind === 'dataset') {
+      setInspectorRenameValue(activeDataset?.name ?? 'Dataset');
+      return;
+    }
+    if (activeTab && isFileBackedTab(activeTab)) {
+      setInspectorRenameValue(activeTab.name);
+      return;
+    }
+    setInspectorRenameValue(activeStage ? STAGE_LABELS[activeStage] : '');
+  }, [activeDataset?.name, activeStage, activeTab]);
+
+  useEffect(() => {
+    if (!activeTab || !isFileBackedTab(activeTab)) {
+      setFileInspectorMetadata(null);
+      return;
+    }
+
+    const format = activeTab.name.split('.').pop()?.toUpperCase() || activeTab.fileKind.toUpperCase();
+    const tags = activeFileSource?.tags;
+    const metadata: FileInspectorMetadata = {
+      format,
+      size: 'size' in activeTab.file ? formatFileSize(activeTab.file.size) : 'Unknown',
+      tags,
+    };
+    setFileInspectorMetadata(metadata);
+
+    if (activeTab.fileKind !== 'image') {
+      return;
+    }
+
+    const url = URL.createObjectURL(activeTab.file);
+    const image = new Image();
+    let canceled = false;
+    image.onload = () => {
+      if (!canceled) {
+        setFileInspectorMetadata({
+          ...metadata,
+          dimensions: {
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          },
+        });
+      }
+      URL.revokeObjectURL(url);
+    };
+    image.onerror = () => URL.revokeObjectURL(url);
+    image.src = url;
+
+    return () => {
+      canceled = true;
+      URL.revokeObjectURL(url);
+    };
+  }, [activeFileSource?.tags, activeTab]);
 
   useEffect(() => {
     if (activeTabId && openTabs.some((tab) => tab.id === activeTabId)) {
@@ -1152,6 +1236,7 @@ function App() {
     setActiveTabId(openTabs[0]?.id ?? null);
   }, [activeTabId, openTabs]);
   const showEditToolbar = (activeStage === 'clean' || activeTab?.kind === 'file-edit') && editToolbar.visible;
+  const showHeaderEditToolbar = activeStage === 'clean' && editToolbar.visible;
   const showTaggingToolbar = activeStage === 'tagging' || activeTab?.kind === 'file-caption';
   const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
@@ -1196,6 +1281,42 @@ function App() {
       } else {
         setActiveTabId(null);
       }
+    }
+  };
+
+  const commitInspectorRename = async () => {
+    if (!activeTab || !inspectorRenaming) {
+      return;
+    }
+    const nextName = inspectorRenameValue.trim();
+    if (!nextName) {
+      setInspectorRenaming(false);
+      return;
+    }
+
+    try {
+      if (activeTab.kind === 'dataset') {
+        const dataset = datasetsById[activeTab.datasetId];
+        if (dataset) {
+          await updateDatasetFileBackedState(dataset, { name: nextName });
+        }
+      } else if (isFileBackedTab(activeTab)) {
+        const directory = requireProjectDirectory();
+        if (!directory || nextName === activeTab.name) {
+          setInspectorRenaming(false);
+          return;
+        }
+        const nextPath = await renameExplorerEntry(directory, activeTab.path, 'file', nextName);
+        const moves = [{ from: activeTab.path, to: nextPath }];
+        updateFileTabsForPathMoves(moves);
+        updateWorkspacePathsForPathMoves(moves);
+        updateExplorerClipboardForPathMoves(moves);
+        refreshExplorer();
+      }
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to rename item');
+    } finally {
+      setInspectorRenaming(false);
     }
   };
 
@@ -1811,6 +1932,205 @@ function App() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderInspectorContent = () => {
+    const Icon =
+      activeTab?.kind === 'dataset'
+        ? Layers3
+        : activeTab && isFileBackedTab(activeTab)
+          ? activeTab.fileKind === 'video'
+            ? Video
+            : activeTab.fileKind === 'json'
+              ? FileJson
+              : File
+          : activeStage
+            ? activeStage === 'hub'
+              ? Archive
+              : toolIcons[activeStage]
+            : PanelRight;
+    const title =
+      activeTab?.kind === 'dataset'
+        ? activeDataset?.name ?? 'Dataset'
+        : activeTab && isFileBackedTab(activeTab)
+          ? activeTab.name
+          : activeStage
+            ? STAGE_LABELS[activeStage]
+            : 'No tab active';
+    const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
+
+    return (
+      <div className="space-y-4 text-xs">
+        <div className="flex items-start gap-2">
+          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            {inspectorRenaming && canRename ? (
+              <input
+                value={inspectorRenameValue}
+                autoFocus
+                onFocus={(event) => event.currentTarget.select()}
+                onChange={(event) => setInspectorRenameValue(event.target.value)}
+                onBlur={() => void commitInspectorRename()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void commitInspectorRename();
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setInspectorRenaming(false);
+                  }
+                }}
+                className="w-full rounded border border-primary bg-background px-2 py-1 text-sm font-semibold"
+              />
+            ) : (
+              <button
+                type="button"
+                disabled={!canRename}
+                onDoubleClick={() => canRename && setInspectorRenaming(true)}
+                className="block w-full truncate text-left text-sm font-semibold disabled:cursor-default"
+                title={canRename ? 'Double-click to rename' : undefined}
+              >
+                {title}
+              </button>
+            )}
+            <p className="mt-1 truncate text-muted-foreground">
+              {activeTab && isFileBackedTab(activeTab)
+                ? activeTab.path
+                : activeTab?.kind === 'dataset'
+                  ? activeDataset?.filePath ?? 'Dataset'
+                  : activeStage
+                    ? TOOL_DESCRIPTIONS[activeStage]
+                    : 'Open a file, Dataset, or tool'}
+            </p>
+          </div>
+        </div>
+
+        {activeTab && isFileBackedTab(activeTab) && fileInspectorMetadata ? (
+          <div className="border-t border-border pt-3">
+            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">File</p>
+            <div className="space-y-2">
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Format</span>
+                <span className="font-medium">{fileInspectorMetadata.format}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Size</span>
+                <span className="font-medium">{fileInspectorMetadata.size}</span>
+              </div>
+              {fileInspectorMetadata.dimensions ? (
+                <>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">Dimensions</span>
+                    <span className="font-medium">
+                      {fileInspectorMetadata.dimensions.width} x {fileInspectorMetadata.dimensions.height}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">Aspect ratio</span>
+                    <span className="font-medium">
+                      {getAspectRatioLabel(fileInspectorMetadata.dimensions.width, fileInspectorMetadata.dimensions.height)}
+                    </span>
+                  </div>
+                </>
+              ) : null}
+              {fileInspectorMetadata.tags?.length ? (
+                <div>
+                  <p className="mb-1 text-muted-foreground">Tags</p>
+                  <div className="flex flex-wrap gap-1">
+                    {fileInspectorMetadata.tags.map((tag) => (
+                      <span key={tag} className="rounded bg-secondary px-2 py-1">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab?.kind === 'dataset' && activeDataset ? (
+          <div className="border-t border-border pt-3">
+            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dataset</p>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-muted-foreground">Name</label>
+                <input
+                  value={activeDataset.name}
+                  onChange={(event) => void updateDatasetFileBackedState(activeDataset, { name: event.target.value })}
+                  className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-muted-foreground">Trigger Word</label>
+                <input
+                  value={activeDataset.triggerWord}
+                  onChange={(event) => void updateDatasetFileBackedState(activeDataset, { triggerWord: event.target.value })}
+                  className="w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-sm"
+                />
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Assets</span>
+                <span className="font-medium">{activeDataset.assetIds.length}</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab?.kind === 'file-edit' ? (
+          <div className="border-t border-border pt-3">
+            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Edit</p>
+            <div className="grid gap-2">
+              <button type="button" onClick={() => runEditCommand('back')} disabled={editToolbar.isProcessing} className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Back
+              </button>
+              <a href="https://www.photopea.com" target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary">
+                <ExternalLink className="h-3.5 w-3.5" />
+                Photopea
+              </a>
+              <button type="button" onClick={() => runEditCommand('save')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
+                Save
+              </button>
+              <button type="button" onClick={() => runEditCommand('saveCopy')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
+                Save Copy
+              </button>
+              <button type="button" onClick={() => runEditCommand('cancel')} disabled={editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab?.kind === 'file-caption' || activeStage === 'tagging' ? (
+          <div className="border-t border-border pt-3">
+            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Caption</p>
+            {showTaggingBackButton ? (
+              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: 'back' }))} className="mb-3 flex w-full items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary">
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Back
+              </button>
+            ) : null}
+            <div id="dataset-tags-inspector-root" />
+          </div>
+        ) : null}
+
+        <div className="border-t border-border pt-3">
+          <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Workspace</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded border border-border bg-background p-2">
+              <p className="text-muted-foreground">Source</p>
+              <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
+            </div>
+            <div className="rounded border border-border bg-background p-2">
+              <p className="text-muted-foreground">Synthetic</p>
+              <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
             </div>
           </div>
         </div>
@@ -3594,7 +3914,7 @@ function App() {
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
-          {showEditToolbar && (
+          {showHeaderEditToolbar && (
             <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
               <button
                 type="button"
@@ -3638,36 +3958,6 @@ function App() {
                 className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
               >
                 Cancel
-              </button>
-            </div>
-          )}
-          {showTaggingToolbar && (
-            <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
-              {showTaggingBackButton && (
-                <button
-                  type="button"
-                  onClick={() => window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: 'back' }))}
-                  className="rounded p-1.5 transition-colors hover:bg-secondary"
-                  title="Back"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setTaggingModal({ datasetTags: true })}
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors hover:bg-secondary"
-              >
-                <Tags className="h-3.5 w-3.5" />
-                Dataset Tags
-              </button>
-              <button
-                type="button"
-                onClick={() => setTaggingModal({ settings: true })}
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors hover:bg-secondary"
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-                Settings
               </button>
             </div>
           )}
@@ -4056,43 +4346,7 @@ function App() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-3">
-                <div className="space-y-4 text-xs">
-                  <div>
-                    <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Active tool</p>
-                    <p className="font-medium">
-                      {activeTab && isFileBackedTab(activeTab)
-                        ? activeTab.name
-                        : activeStage
-                          ? STAGE_LABELS[activeStage]
-                          : 'No tool open'}
-                    </p>
-                    <p className="mt-1 text-muted-foreground">
-                      {activeTab && isFileBackedTab(activeTab)
-                        ? activeTab.path
-                        : activeStage
-                          ? TOOL_DESCRIPTIONS[activeStage]
-                          : 'Open one from the Tools menu'}
-                    </p>
-                  </div>
-                  <div className="border-t border-border pt-3">
-                    <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Workspace</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded border border-border bg-background p-2">
-                        <p className="text-muted-foreground">Source</p>
-                        <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
-                      </div>
-                      <div className="rounded border border-border bg-background p-2">
-                        <p className="text-muted-foreground">Synthetic</p>
-                        <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="border-t border-border pt-3">
-                    <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Project</p>
-                    <p className="truncate font-medium">{projectName}</p>
-                    <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
-                  </div>
-                </div>
+                {renderInspectorContent()}
               </div>
             </aside>
           )}
@@ -4226,17 +4480,7 @@ function App() {
             onClose={() => setInspectorWindowOpen(false)}
           >
             <div className="space-y-4 text-xs">
-              <div>
-                <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Selection</p>
-                <p className="font-medium">
-                  {activeTab && isFileBackedTab(activeTab)
-                    ? activeTab.name
-                    : activeStage
-                      ? STAGE_LABELS[activeStage]
-                      : 'No tool open'}
-                </p>
-                <p className="mt-1 text-muted-foreground">{workspaceImages.length} images in scope</p>
-              </div>
+              {renderInspectorContent()}
               <div className="border-t border-border pt-3">
                 <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dock layout</p>
                 <button
