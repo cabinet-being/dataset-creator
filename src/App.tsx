@@ -81,7 +81,6 @@ import {
   moveExplorerEntries,
   readExplorerFile,
   renameExplorerEntry,
-  type ExplorerClipboard,
   type ExplorerClipboardEntry,
   type ExplorerFileKind,
 } from './services/project/explorerFileService';
@@ -511,6 +510,21 @@ type ExplorerTreeNode = {
   children?: ExplorerTreeNode[];
 };
 
+type ExplorerItemEntry = {
+  path: string;
+  name: string;
+  kind: ExplorerTreeNode['kind'];
+  datasetId?: string;
+};
+
+type ExplorerClipboard = {
+  mode: 'copy' | 'cut';
+  entries: ExplorerItemEntry[];
+};
+
+const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is ExplorerClipboardEntry =>
+  entry.kind === 'folder' || entry.kind === 'file';
+
 const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
   [...nodes].sort((a, b) => {
     if (a.kind !== b.kind) {
@@ -640,7 +654,6 @@ const ExplorerTree = ({
   depth = 0,
 }: ExplorerTreeProps) => {
   const isFolder = node.kind === 'folder';
-  const isDataset = node.kind === 'dataset';
   const isExpanded = isFolder && expandedPaths.has(node.path);
   const isSelected = selectedPaths.has(node.path);
   const isFocused = focusedPath === node.path;
@@ -652,7 +665,7 @@ const ExplorerTree = ({
       <button
         type="button"
         data-explorer-row
-        draggable={!isRenaming && !isDataset}
+        draggable={!isRenaming}
         onClick={(event) => {
           onSelect(node, event);
           if (isFolder && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
@@ -664,10 +677,6 @@ const ExplorerTree = ({
           onContextMenu(node, event.clientX, event.clientY);
         }}
         onDragStart={(event) => {
-          if (isDataset) {
-            event.preventDefault();
-            return;
-          }
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', node.path);
           onDragStartItem(node);
@@ -804,6 +813,7 @@ function App() {
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const createProjectDataset = useProjectStore((state) => state.createDataset);
   const updateProjectDataset = useProjectStore((state) => state.updateDataset);
+  const removeProjectDataset = useProjectStore((state) => state.removeDataset);
   const addAssetsToDataset = useProjectStore((state) => state.addAssetsToDataset);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
@@ -852,7 +862,7 @@ function App() {
     () => explorerTree ? withDatasetExplorerNodes(explorerTree, datasetsById) : null,
     [datasetsById, explorerTree]
   );
-  const [explorerStatus, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
+  const [, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
     () => new Set(['Project'])
@@ -907,7 +917,7 @@ function App() {
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const [focusedExplorerPath, setFocusedExplorerPath] = useState<string | null>(null);
-  const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerClipboardEntry[] | null>(null);
+  const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerItemEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
   const [inlineExplorerEdit, setInlineExplorerEdit] = useState<{
     mode: 'create' | 'rename';
@@ -1346,7 +1356,7 @@ function App() {
     focusExplorerNode(visibleNodes[nextIndex], extendSelection);
   };
 
-  const getTopLevelExplorerEntries = (entries: ExplorerClipboardEntry[]): ExplorerClipboardEntry[] =>
+  const getTopLevelExplorerEntries = (entries: ExplorerItemEntry[]): ExplorerItemEntry[] =>
     entries.filter(
       (entry) =>
         !entries.some(
@@ -1357,34 +1367,31 @@ function App() {
         )
     );
 
-  const getSelectedExplorerEntries = (): ExplorerClipboardEntry[] =>
+  const getSelectedExplorerEntries = (): ExplorerItemEntry[] =>
     getTopLevelExplorerEntries(
       getVisibleExplorerNodes()
-        .flatMap((node): ExplorerClipboardEntry[] =>
-          selectedExplorerPaths.has(node.path) && (node.kind === 'folder' || node.kind === 'file')
-            ? [{ path: node.path, name: node.name, kind: node.kind }]
+        .flatMap((node): ExplorerItemEntry[] =>
+          selectedExplorerPaths.has(node.path)
+            ? [{ path: node.path, name: node.name, kind: node.kind, datasetId: node.datasetId }]
             : []
         )
     );
 
-  const getExplorerEntriesForPaths = (paths: Set<string>): ExplorerClipboardEntry[] =>
+  const getExplorerEntriesForPaths = (paths: Set<string>): ExplorerItemEntry[] =>
     getTopLevelExplorerEntries(
       getVisibleExplorerNodes()
-        .flatMap((node): ExplorerClipboardEntry[] =>
-          paths.has(node.path) && (node.kind === 'folder' || node.kind === 'file')
-            ? [{ path: node.path, name: node.name, kind: node.kind }]
+        .flatMap((node): ExplorerItemEntry[] =>
+          paths.has(node.path)
+            ? [{ path: node.path, name: node.name, kind: node.kind, datasetId: node.datasetId }]
             : []
         )
     );
 
-  const getContextEntries = (node: ExplorerTreeNode): ExplorerClipboardEntry[] => {
-    if (node.kind !== 'folder' && node.kind !== 'file') {
-      return [];
-    }
+  const getContextEntries = (node: ExplorerTreeNode): ExplorerItemEntry[] => {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
       return getSelectedExplorerEntries();
     }
-    return [{ path: node.path, name: node.name, kind: node.kind }];
+    return [{ path: node.path, name: node.name, kind: node.kind, datasetId: node.datasetId }];
   };
 
   const setActiveExplorerNode = (node: ExplorerTreeNode) => {
@@ -1410,8 +1417,13 @@ function App() {
 
   const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
     setActiveExplorerNode(node);
-    if (node.kind === 'dataset' && node.datasetId && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
-      openDatasetTab(node.datasetId);
+    if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      if (node.kind === 'dataset' && node.datasetId) {
+        openDatasetTab(node.datasetId);
+      }
+      if (node.kind === 'file') {
+        void openExplorerFile(node);
+      }
     }
 
     if (event.shiftKey && selectionAnchorPath) {
@@ -1497,7 +1509,7 @@ function App() {
     return source?.id ?? null;
   };
 
-  const collectDatasetAssetIdsFromExplorerEntries = (entries: ExplorerClipboardEntry[]): string[] => {
+  const collectDatasetAssetIdsFromExplorerEntries = (entries: ExplorerItemEntry[]): string[] => {
     const assetIds = new Set<string>();
     const nodes = getVisibleExplorerNodes();
     const logger = entries.some((entry) => entry.kind === 'folder') ? createOperationLogger('Dataset') : null;
@@ -1505,7 +1517,7 @@ function App() {
       logger.info(`Adding assets from Explorer selection to Dataset`);
     }
 
-    for (const entry of entries) {
+    for (const entry of entries.filter(isFilesystemExplorerEntry)) {
       const candidateNodes =
         entry.kind === 'folder'
           ? nodes.filter((node) => node.kind === 'file' && node.path.startsWith(`${entry.path}/`))
@@ -1537,6 +1549,23 @@ function App() {
       index += 1;
     }
     return `${baseName} ${index}`;
+  };
+
+  const getDatasetIdFromPath = (path: string): string | null =>
+    path.startsWith('dataset:') ? path.slice('dataset:'.length) : null;
+
+  const duplicateDatasetEntry = (entry: ExplorerItemEntry): string | null => {
+    const datasetId = entry.datasetId ?? getDatasetIdFromPath(entry.path);
+    const dataset = datasetId ? datasetsById[datasetId] : undefined;
+    if (!dataset) {
+      return null;
+    }
+    const copy = createProjectDataset(getUniqueDatasetName(`${dataset.name} Copy`));
+    updateProjectDataset(copy.id, {
+      triggerWord: dataset.triggerWord,
+      assetIds: dataset.assetIds,
+    });
+    return copy.id;
   };
 
   const openDatasetTab = (datasetId: string) => {
@@ -1782,7 +1811,7 @@ function App() {
     });
   };
 
-  const clearExplorerClipboardForDeletedPaths = (entries: ExplorerClipboardEntry[]) => {
+  const clearExplorerClipboardForDeletedPaths = (entries: ExplorerItemEntry[]) => {
     setExplorerClipboard((clipboard) => {
       if (
         !clipboard ||
@@ -1850,30 +1879,47 @@ function App() {
   };
 
   const handleExplorerDelete = async (node: ExplorerTreeNode) => {
-    const directory = requireProjectDirectory();
-    if (!directory || node.path === 'Project') {
+    if (node.path === 'Project') {
       return;
     }
     const entries = getContextEntries(node);
+    if (entries.length === 0) {
+      return;
+    }
     const activeFileTabDeleted =
       activeTab &&
       isFileBackedTab(activeTab) &&
-      entries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
+      entries.filter(isFilesystemExplorerEntry).some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
 
     if (!window.confirm(`Delete ${entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`}? This cannot be undone.`)) {
       return;
     }
 
     try {
-      for (const entry of entries) {
-        await deleteExplorerEntry(directory, entry.path, true);
+      const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
+      const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
+      const directory = filesystemEntries.length > 0 ? requireProjectDirectory() : null;
+      if (filesystemEntries.length > 0 && !directory) {
+        return;
       }
-      removeWorkspaceSourcesForDeletedEntries(entries);
+      for (const entry of filesystemEntries) {
+        await deleteExplorerEntry(directory!, entry.path, true);
+      }
+      for (const entry of datasetEntries) {
+        const datasetId = entry.datasetId ?? getDatasetIdFromPath(entry.path);
+        if (datasetId) {
+          removeProjectDataset(datasetId);
+        }
+      }
+      removeWorkspaceSourcesForDeletedEntries(filesystemEntries);
       setOpenTabs((tabs) =>
         tabs.filter(
           (tab) =>
-            !isFileBackedTab(tab) ||
-            !entries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))
+            (isFileBackedTab(tab) &&
+              !filesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
+            (tab.kind === 'dataset' &&
+              !datasetEntries.some((entry) => (entry.datasetId ?? getDatasetIdFromPath(entry.path)) === tab.datasetId)) ||
+            tab.kind === 'tool'
         )
       );
       if (activeFileTabDeleted) {
@@ -1920,20 +1966,34 @@ function App() {
   };
 
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
-    const directory = requireProjectDirectory();
-    if (!directory || node.kind !== 'folder' || !explorerClipboard) {
+    if (node.kind !== 'folder' || !explorerClipboard) {
       return;
     }
 
     try {
-      const moves =
-        explorerClipboard.mode === 'cut'
-          ? await moveExplorerEntries(directory, explorerClipboard.entries, node.path)
-          : await copyExplorerEntries(directory, explorerClipboard.entries, node.path);
+      const filesystemEntries = explorerClipboard.entries.filter(isFilesystemExplorerEntry);
+      const datasetEntries = explorerClipboard.entries.filter((entry) => entry.kind === 'dataset');
+      if (filesystemEntries.length > 0) {
+        const directory = requireProjectDirectory();
+        if (!directory) {
+          return;
+        }
+        const moves =
+          explorerClipboard.mode === 'cut'
+            ? await moveExplorerEntries(directory, filesystemEntries, node.path)
+            : await copyExplorerEntries(directory, filesystemEntries, node.path);
+        if (explorerClipboard.mode === 'cut') {
+          updateFileTabsForPathMoves(moves);
+          updateWorkspacePathsForPathMoves(moves);
+          updateExplorerClipboardForPathMoves(moves);
+        }
+      }
+      if (explorerClipboard.mode === 'copy') {
+        for (const entry of datasetEntries) {
+          duplicateDatasetEntry(entry);
+        }
+      }
       if (explorerClipboard.mode === 'cut') {
-        updateFileTabsForPathMoves(moves);
-        updateWorkspacePathsForPathMoves(moves);
-        updateExplorerClipboardForPathMoves(moves);
         setExplorerClipboard(null);
       }
       setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
@@ -1945,12 +2005,20 @@ function App() {
   };
 
   const handleExplorerDuplicate = async (node: ExplorerTreeNode) => {
-    const directory = requireProjectDirectory();
-    if (!directory) {
-      return;
-    }
     try {
-      await duplicateExplorerEntries(directory, getContextEntries(node));
+      const entries = getContextEntries(node);
+      const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
+      const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
+      if (filesystemEntries.length > 0) {
+        const directory = requireProjectDirectory();
+        if (!directory) {
+          return;
+        }
+        await duplicateExplorerEntries(directory, filesystemEntries);
+      }
+      for (const entry of datasetEntries) {
+        duplicateDatasetEntry(entry);
+      }
       refreshExplorer();
       addNotification('success', 'Explorer entry duplicated');
     } catch (error) {
@@ -1976,7 +2044,7 @@ function App() {
       }
 
       if (edit.kind === 'dataset' && edit.mode === 'rename' && edit.path) {
-        const datasetId = edit.path.split('/').pop();
+        const datasetId = getDatasetIdFromPath(edit.path);
         if (datasetId) {
           updateProjectDataset(datasetId, { name: edit.value.trim() || 'Dataset' });
         }
@@ -2023,11 +2091,12 @@ function App() {
 
   const moveSelectedExplorerEntries = async (
     destinationPath: string,
-    entriesOverride?: ExplorerClipboardEntry[] | null
+    entriesOverride?: ExplorerItemEntry[] | null
   ) => {
     const directory = requireProjectDirectory();
-    const entries = entriesOverride ?? getSelectedExplorerEntries();
+    const entries = (entriesOverride ?? getSelectedExplorerEntries()).filter(isFilesystemExplorerEntry);
     if (!directory || entries.length === 0) {
+      setDraggedExplorerEntries(null);
       return;
     }
     try {
@@ -2069,6 +2138,10 @@ function App() {
         },
         onAssetImported: () => {
           importedAssetCount += 1;
+          setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
+          refreshExplorer();
+        },
+        onDirectoryImported: () => {
           setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
           refreshExplorer();
         },
@@ -2227,6 +2300,15 @@ function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && explorerClipboard) {
         event.preventDefault();
         void handleExplorerPaste({ name: activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path: activeExplorerDirectoryPath, kind: 'folder' });
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && selectedEntries.length > 0) {
+        event.preventDefault();
+        const node = selectedNode ?? getVisibleExplorerNodes().find((entry) => entry.path === selectedEntries[0].path);
+        if (node) {
+          void handleExplorerDuplicate(node);
+        }
         return;
       }
 
@@ -2631,6 +2713,53 @@ function App() {
       <button
         type="button"
         onClick={() => {
+          setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Copy className="h-3.5 w-3.5" />
+        <span>Cut</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Copy className="h-3.5 w-3.5" />
+        <span>Copy</span>
+      </button>
+      {explorerClipboard && (
+        <button
+          type="button"
+          onClick={() => {
+            void handleExplorerPaste({ name: projectName || 'Project', path: 'Project', kind: 'folder' });
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          <span>Paste</span>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          void handleExplorerDuplicate(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Copy className="h-3.5 w-3.5" />
+        <span>Duplicate</span>
+      </button>
+      <div className="my-1 h-px bg-border" />
+      <button
+        type="button"
+        onClick={() => {
           void handleExplorerRename(node);
           setExplorerContextMenu(null);
         }}
@@ -2638,6 +2767,17 @@ function App() {
       >
         <Pencil className="h-3.5 w-3.5" />
         <span>Rename</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void handleExplorerDelete(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+        <span>Delete</span>
       </button>
     </>
   );
@@ -3389,13 +3529,14 @@ function App() {
                   handleExplorerDrop(event, 'Project');
                 }}
               >
-                {explorerStatus === 'loading' && (
-                  <p className="px-2 py-1 text-xs text-muted-foreground">Reading project files...</p>
-                )}
                 {inlineExplorerEdit?.mode === 'create' && inlineExplorerEdit.parentPath === 'Project' && (
                   <div className="flex h-7 items-center gap-1">
                     <span className="w-3.5 shrink-0" />
-                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    {inlineExplorerEdit.kind === 'dataset' ? (
+                      <Layers3 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
                     <input
                       value={inlineExplorerEdit.value}
                       autoFocus

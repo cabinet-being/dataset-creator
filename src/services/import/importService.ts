@@ -11,17 +11,12 @@ import {
 import { getExplorerFileKind, getUniqueExplorerName } from '../project/explorerFileService';
 import {
   SUPPORTED_PROJECT_ASSET_ACCEPT,
+  getProjectAssetMimeType,
   isInternalProjectFileName,
   isSupportedProjectAsset,
+  resolveProjectAssetKind,
 } from '../project/assetTypeService';
 
-const SUPPORTED_IMPORT_IMAGE_FORMATS = [
-  'image/bmp',
-  'image/gif',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-];
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
 export const SUPPORTED_IMPORT_FILE_FORMATS = [
   ...SUPPORTED_PROJECT_ASSET_ACCEPT,
@@ -29,18 +24,11 @@ export const SUPPORTED_IMPORT_FILE_FORMATS = [
   '.zip',
 ];
 
-const IMAGE_EXTENSION_TYPES = new Map([
-  ['.bmp', 'image/bmp'],
-  ['.gif', 'image/gif'],
-  ['.jpeg', 'image/jpeg'],
-  ['.jpg', 'image/jpeg'],
-  ['.png', 'image/png'],
-  ['.webp', 'image/webp'],
-]);
-
 export type ImportInputFile = File | {
   file: File;
   relativePath?: string;
+} | {
+  directoryPath: string;
 };
 
 type WebkitFileSystemFileEntry = {
@@ -92,6 +80,7 @@ export type ImportImagesOptions = {
   onError?: (fileName: string, error: unknown) => void;
   onImageImported?: (image: SourceImage, asset?: ImportedProjectAsset) => void | Promise<void>;
   onAssetImported?: (asset: ImportedProjectAsset) => void | Promise<void>;
+  onDirectoryImported?: (relativePath: string) => void | Promise<void>;
 };
 
 export type ImportImagesResult = {
@@ -104,7 +93,6 @@ const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '
 const getArchiveFileName = (path: string): string => path.split('/').pop() ?? path;
 const getArchiveFileStem = (path: string): string => getArchiveFileName(path).replace(/\.[^.]+$/, '');
 const getArchiveExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
-const getFileExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
 
 export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
@@ -153,7 +141,7 @@ const readEntryFiles = async (
 
   const childEntries = await readDirectoryEntries(entry.createReader());
   const nestedFiles = await Promise.all(childEntries.map((child) => readEntryFiles(child, relativePath)));
-  return nestedFiles.flat();
+  return [{ directoryPath: relativePath }, ...nestedFiles.flat()];
 };
 
 export const getImportFilesFromDataTransfer = async (
@@ -184,7 +172,10 @@ const joinPath = (...parts: string[]): string => parts.filter(Boolean).join('/')
 const getParentPath = (path: string): string => path.split('/').filter(Boolean).slice(0, -1).join('/');
 const yieldToUi = async () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
-const normalizeImportInput = (input: ImportInputFile): { file: File; relativePath?: string } => {
+const normalizeImportInput = (input: ImportInputFile): { file?: File; relativePath?: string; directoryPath?: string } => {
+  if ('directoryPath' in input) {
+    return input;
+  }
   if ('file' in input) {
     return input;
   }
@@ -290,6 +281,19 @@ const getOrCreateDirectoryAtExplorerPath = async (
   return directory;
 };
 
+const createImportDirectory = async (
+  destination: ImportDestination | undefined,
+  relativePath: string
+) => {
+  if (!destination?.projectDirectory || !destination.explorerPath) {
+    return;
+  }
+  await getOrCreateDirectoryAtExplorerPath(
+    destination.projectDirectory,
+    joinPath(destination.explorerPath, relativePath)
+  );
+};
+
 const writeBlobFile = async (directory: ProjectDirectoryHandle, name: string, value: Blob) => {
   const handle = await directory.getFileHandle(name, { create: true });
   const writable = await handle.createWritable();
@@ -364,7 +368,7 @@ const processImportedFile = async (
   const target = await getImportTarget(file.name, relativePath, destination, reservedNamesByDirectory);
   const asset = await writeProjectAsset(file, target, destination);
 
-  if (!SUPPORTED_IMPORT_IMAGE_FORMATS.includes(file.type) && !IMAGE_EXTENSION_TYPES.has(getFileExtension(file.name))) {
+  if (resolveProjectAssetKind(file.name, file.type) !== 'image') {
     return { sourceImage: null, asset };
   }
 
@@ -407,16 +411,12 @@ const processArchiveFile = async (
 
   const importedImages: SourceImage[] = [];
   const importedAssets: ImportedProjectAsset[] = [];
-  const imageEntries = entries.filter((entry) => IMAGE_EXTENSION_TYPES.has(getArchiveExtension(entry.name)));
+  const imageEntries = entries.filter((entry) => resolveProjectAssetKind(entry.name) === 'image');
   logger.info(`archive ${file.name} contains ${imageEntries.length} image files`);
 
   for (let i = 0; i < imageEntries.length; i++) {
     const entry = imageEntries[i];
-    const extension = getArchiveExtension(entry.name);
-    const mimeType = IMAGE_EXTENSION_TYPES.get(extension);
-    if (!mimeType) {
-      continue;
-    }
+    const mimeType = getProjectAssetMimeType(entry.name, 'image/png');
 
     const imageBlob = await entry.async('blob');
     const imageFile = new File([imageBlob], getArchiveFileName(entry.name), { type: mimeType });
@@ -471,6 +471,16 @@ export const importImageFiles = async (
 
   for (let i = 0; i < files.length; i++) {
     const input = normalizeImportInput(files[i]);
+    if (input.directoryPath) {
+      await createImportDirectory(options.destination, input.directoryPath);
+      await options.onDirectoryImported?.(input.directoryPath);
+      await options.onProgress?.(i + 1, files.length);
+      await yieldToUi();
+      continue;
+    }
+    if (!input.file) {
+      continue;
+    }
     const file = input.file;
     try {
       if (isImportArchiveFile(file)) {

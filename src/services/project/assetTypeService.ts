@@ -8,6 +8,15 @@ const JSON_EXTENSIONS = new Set(['json']);
 const PHOTOSHOP_EXTENSIONS = new Set(['psd']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm']);
 
+const IMAGE_MIME_TYPES_BY_EXTENSION = new Map([
+  ['bmp', 'image/bmp'],
+  ['gif', 'image/gif'],
+  ['jpeg', 'image/jpeg'],
+  ['jpg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['webp', 'image/webp'],
+]);
+
 export const SUPPORTED_PROJECT_ASSET_EXTENSIONS = new Set([
   ...IMAGE_EXTENSIONS,
   ...TEXT_EXTENSIONS,
@@ -42,6 +51,11 @@ export const SUPPORTED_PROJECT_ASSET_ACCEPT = [
 
 export const getProjectAssetExtension = (name: string): string =>
   name.split('.').pop()?.toLowerCase() ?? '';
+
+export const getProjectAssetMimeType = (name: string, fallback = ''): string => {
+  const extension = getProjectAssetExtension(name);
+  return IMAGE_MIME_TYPES_BY_EXTENSION.get(extension) ?? fallback;
+};
 
 export const isInternalProjectFileName = (fileName: string): boolean =>
   isProjectManifestName(fileName) || isAssetManifestName(fileName);
