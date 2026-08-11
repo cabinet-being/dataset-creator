@@ -122,6 +122,7 @@ export interface TaggingConfig {
 export interface Dataset {
   id: string;
   name: string;
+  parentPath: string;
   triggerWord: string;
   assetIds: string[];
   createdAt: Date;
@@ -268,6 +269,7 @@ export const createCleanupOverlay = (imageId: string): CleanupOverlay => ({
 export const createDataset = (name = 'New Dataset'): Dataset => ({
   id: uuidv4(),
   name,
+  parentPath: 'Project',
   triggerWord: '',
   assetIds: [],
   createdAt: new Date(),

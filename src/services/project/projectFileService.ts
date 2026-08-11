@@ -79,6 +79,7 @@ type ProjectFileWorkspaceSettings = WorkspaceSettings;
 type DatasetManifest = {
   id: string;
   name: string;
+  parentPath?: string;
   triggerWord: string;
   assetIds: string[];
   createdAt: string;
@@ -195,6 +196,7 @@ const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggin
 const serializeDatasetManifest = (dataset: Dataset): DatasetManifest => ({
   id: dataset.id,
   name: dataset.name,
+  parentPath: dataset.parentPath,
   triggerWord: dataset.triggerWord,
   assetIds: dataset.assetIds,
   createdAt: toIsoString(dataset.createdAt),
@@ -544,6 +546,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
         {
           id: dataset.id,
           name: dataset.name,
+          parentPath: dataset.parentPath ?? 'Project',
           triggerWord: dataset.triggerWord,
           assetIds: dataset.assetIds.filter((assetId) => sourceIds.has(assetId)),
           createdAt: new Date(dataset.createdAt),

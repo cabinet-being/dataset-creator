@@ -60,6 +60,7 @@ type DirectoryProjectManifest = {
 type DatasetManifest = {
   id: string;
   name: string;
+  parentPath?: string;
   triggerWord: string;
   assetIds: string[];
   createdAt: string;
@@ -324,6 +325,7 @@ const serializeSyntheticManifest = (
 const serializeDatasetManifest = (dataset: Dataset): DatasetManifest => ({
   id: dataset.id,
   name: dataset.name,
+  parentPath: dataset.parentPath,
   triggerWord: dataset.triggerWord,
   assetIds: dataset.assetIds,
   createdAt: toIsoString(dataset.createdAt),
@@ -858,6 +860,7 @@ export const readProjectDirectory = async (
         {
           id: dataset.id,
           name: dataset.name,
+          parentPath: dataset.parentPath ?? 'Project',
           triggerWord: dataset.triggerWord,
           assetIds: dataset.assetIds.filter((assetId) => sourceIds.has(assetId)),
           createdAt: toDate(dataset.createdAt, new Date()),

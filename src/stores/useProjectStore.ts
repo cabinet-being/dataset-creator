@@ -32,7 +32,7 @@ interface ProjectStore extends ProjectState {
 
   // Datasets
   createDataset: (name?: string) => Dataset;
-  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'triggerWord' | 'assetIds'>>) => void;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'triggerWord' | 'assetIds'>>) => void;
   removeDataset: (id: string) => void;
   addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
