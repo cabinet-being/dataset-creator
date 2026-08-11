@@ -660,6 +660,7 @@ const ExplorerTree = ({
           <input
             value={inlineEdit.value}
             autoFocus
+            onFocus={(event) => event.currentTarget.select()}
             onChange={(event) => onInlineChange(event.target.value)}
             onBlur={onInlineCommit}
             onClick={(event) => event.stopPropagation()}
@@ -686,6 +687,7 @@ const ExplorerTree = ({
           <input
             value={inlineEdit.value}
             autoFocus
+            onFocus={(event) => event.currentTarget.select()}
             onChange={(event) => onInlineChange(event.target.value)}
             onBlur={onInlineCommit}
             onKeyDown={(event) => {
@@ -2785,6 +2787,7 @@ function App() {
                     <input
                       value={inlineExplorerEdit.value}
                       autoFocus
+                      onFocus={(event) => event.currentTarget.select()}
                       onChange={(event) => setInlineExplorerEdit((edit) => edit ? { ...edit, value: event.target.value } : edit)}
                       onBlur={() => void commitInlineExplorerEdit()}
                       onKeyDown={(event) => {
