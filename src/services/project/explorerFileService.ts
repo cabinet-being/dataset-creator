@@ -290,6 +290,9 @@ const moveExplorerEntry = async (
   if (source.kind === 'folder' && (destinationPath === source.path || destinationPath.startsWith(`${source.path}/`))) {
     throw new Error('Cannot move a folder into itself.');
   }
+  if (getParentPath(source.path) === destinationPath) {
+    return source.path;
+  }
 
   const destination = await getDirectoryAtExplorerPath(root, destinationPath);
   const targetName = await getUniqueExplorerName(destination, source.name);
