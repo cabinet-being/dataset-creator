@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { AlertCircle, Minus, Plus } from 'lucide-react';
 import type { ExplorerFileKind } from '../services/project/explorerFileService';
 import { PhotopeaBlobViewer } from './photopea/PhotopeaFrame';
@@ -7,6 +8,7 @@ type InternalFileViewerProps = {
   file: File | Blob;
   fileName: string;
   fileKind: ExplorerFileKind;
+  onContextMenu?: (event: MouseEvent) => void;
 };
 
 const useObjectUrl = (file: Blob | null) => {
@@ -26,7 +28,15 @@ const useObjectUrl = (file: Blob | null) => {
   return url;
 };
 
-const TextFileViewer = ({ file, json }: { file: Blob; json?: boolean }) => {
+const TextFileViewer = ({
+  file,
+  json,
+  onContextMenu,
+}: {
+  file: Blob;
+  json?: boolean;
+  onContextMenu?: (event: MouseEvent) => void;
+}) => {
   const [content, setContent] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -64,13 +74,24 @@ const TextFileViewer = ({ file, json }: { file: Blob; json?: boolean }) => {
   }
 
   return (
-    <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words bg-background p-4 font-mono text-xs leading-5 text-foreground">
+    <pre
+      onContextMenu={onContextMenu}
+      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words bg-background p-4 font-mono text-xs leading-5 text-foreground"
+    >
       {content}
     </pre>
   );
 };
 
-const ImageFileViewer = ({ file, fileName }: { file: Blob; fileName: string }) => {
+const ImageFileViewer = ({
+  file,
+  fileName,
+  onContextMenu,
+}: {
+  file: Blob;
+  fileName: string;
+  onContextMenu?: (event: MouseEvent) => void;
+}) => {
   const url = useObjectUrl(file);
   const [zoom, setZoom] = useState(1);
 
@@ -109,6 +130,7 @@ const ImageFileViewer = ({ file, fileName }: { file: Blob; fileName: string }) =
       <img
         src={url}
         alt={fileName}
+        onContextMenu={onContextMenu}
         className="block max-h-full max-w-full object-contain"
         style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
       />
@@ -116,7 +138,13 @@ const ImageFileViewer = ({ file, fileName }: { file: Blob; fileName: string }) =
   );
 };
 
-const VideoFileViewer = ({ file }: { file: Blob }) => {
+const VideoFileViewer = ({
+  file,
+  onContextMenu,
+}: {
+  file: Blob;
+  onContextMenu?: (event: MouseEvent) => void;
+}) => {
   const url = useObjectUrl(file);
 
   if (!url) {
@@ -124,7 +152,7 @@ const VideoFileViewer = ({ file }: { file: Blob }) => {
   }
 
   return (
-    <div className="flex h-full min-h-0 items-center justify-center bg-background">
+    <div onContextMenu={onContextMenu} className="flex h-full min-h-0 items-center justify-center bg-background">
       <video src={url} controls className="max-h-full max-w-full" />
     </div>
   );
@@ -140,16 +168,16 @@ const ViewerError = ({ message }: { message: string }) => (
   </div>
 );
 
-export const InternalFileViewer = ({ file, fileName, fileKind }: InternalFileViewerProps) => {
+export const InternalFileViewer = ({ file, fileName, fileKind, onContextMenu }: InternalFileViewerProps) => {
   switch (fileKind) {
     case 'image':
-      return <ImageFileViewer file={file} fileName={fileName} />;
+      return <ImageFileViewer file={file} fileName={fileName} onContextMenu={onContextMenu} />;
     case 'text':
-      return <TextFileViewer file={file} />;
+      return <TextFileViewer file={file} onContextMenu={onContextMenu} />;
     case 'json':
-      return <TextFileViewer file={file} json />;
+      return <TextFileViewer file={file} json onContextMenu={onContextMenu} />;
     case 'video':
-      return <VideoFileViewer file={file} />;
+      return <VideoFileViewer file={file} onContextMenu={onContextMenu} />;
     case 'psd':
       return <PhotopeaBlobViewer file={file} fileName={fileName} />;
     default:

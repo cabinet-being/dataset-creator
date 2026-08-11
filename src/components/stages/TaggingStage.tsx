@@ -460,7 +460,13 @@ const TaggingCard = memo(
 
 TaggingCard.displayName = 'TaggingCard';
 
-export const TaggingStage = () => {
+type TaggingStageProps = {
+  selectedItemId?: string;
+  singleFileMode?: boolean;
+  active?: boolean;
+};
+
+export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMode = false, active = true }: TaggingStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
@@ -537,11 +543,12 @@ export const TaggingStage = () => {
   }, [setTaggingModal]);
 
   useEffect(() => {
-    if (initialSelectedItemId && initialSelectedItemId !== selectedItemId) {
-      setSelectedItemId(initialSelectedItemId);
+    const nextSelectedItemId = selectedItemIdProp ?? initialSelectedItemId;
+    if (nextSelectedItemId && nextSelectedItemId !== selectedItemId) {
+      setSelectedItemId(nextSelectedItemId);
       setSelectedTagInput('');
     }
-  }, [initialSelectedItemId, selectedItemId]);
+  }, [initialSelectedItemId, selectedItemId, selectedItemIdProp]);
 
   useEffect(() => {
     const handleTaggingCommand = (event: Event) => {
@@ -558,9 +565,12 @@ export const TaggingStage = () => {
   }, []);
 
   useEffect(() => {
+    if (!active) {
+      return;
+    }
     setTaggingToolbar({ visible: Boolean(selectedItem) });
     return () => setTaggingToolbar({ visible: false });
-  }, [selectedItem, setTaggingToolbar]);
+  }, [active, selectedItem, setTaggingToolbar]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -1659,10 +1669,12 @@ export const TaggingStage = () => {
       />
 
       <div className={selectedItem ? 'hidden' : undefined}>
-        {items.length === 0 ? (
+        {items.length === 0 || (singleFileMode && !selectedItem) ? (
           <div className="py-12 text-center">
             <AlertCircle className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
-            <p className="text-muted-foreground">No images to tag.</p>
+            <p className="text-muted-foreground">
+              {singleFileMode ? 'Selected image is no longer available.' : 'No images to tag.'}
+            </p>
           </div>
         ) : (
           <BrickMasonry

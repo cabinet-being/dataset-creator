@@ -40,7 +40,13 @@ type PhotopeaSaveBuffers = {
   psd?: ArrayBuffer;
 };
 
-export const CleanupStage = () => {
+type CleanupStageProps = {
+  selectedImageId?: string;
+  singleFileMode?: boolean;
+  active?: boolean;
+};
+
+export const CleanupStage = ({ selectedImageId, singleFileMode = false, active = true }: CleanupStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
@@ -87,11 +93,12 @@ export const CleanupStage = () => {
   );
 
   useEffect(() => {
-    if (initialSelectedImageId && initialSelectedImageId !== selectedImageKey) {
-      setSelectedImageKey(initialSelectedImageId);
+    const nextSelectedImageId = selectedImageId ?? initialSelectedImageId;
+    if (nextSelectedImageId && nextSelectedImageId !== selectedImageKey) {
+      setSelectedImageKey(nextSelectedImageId);
       setHasPhotopeaMounted(true);
     }
-  }, [initialSelectedImageId, selectedImageKey]);
+  }, [initialSelectedImageId, selectedImageId, selectedImageKey]);
 
   const resetEditorState = useCallback((status = 'Loading Photopea...', resetPhotopea = true) => {
     phaseRef.current = 'waiting-ready';
@@ -126,13 +133,16 @@ export const CleanupStage = () => {
     [hasPhotopeaMounted, resetEditorState]
   );
   useEffect(() => {
+    if (!active) {
+      return;
+    }
     setEditToolbar({
       visible: Boolean(selectedImage),
       canSave: Boolean(selectedImage && documentReady),
       isProcessing,
       status: selectedImage ? editorStatus : undefined,
     });
-  }, [documentReady, editorStatus, isProcessing, selectedImageKey, setEditToolbar]);
+  }, [active, documentReady, editorStatus, isProcessing, selectedImageKey, setEditToolbar]);
 
   useEffect(() => {
     return () => {
@@ -456,18 +466,20 @@ export const CleanupStage = () => {
     return () => window.removeEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
   }, [closeEditor, isProcessing, requestPhotopeaSave]);
 
-  if (workspaceImages.length === 0) {
+  if (workspaceImages.length === 0 || (singleFileMode && !selectedImage)) {
     return (
       <div className="text-center py-12">
         <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No images to edit. Import images first.</p>
+        <p className="text-muted-foreground">
+          {singleFileMode ? 'Selected image is no longer available.' : 'No images to edit. Import images first.'}
+        </p>
       </div>
     );
   }
 
   return (
     <div className="h-full min-h-0">
-      <div className={selectedImage ? 'hidden' : 'h-full min-h-0 overflow-y-auto'}>
+      <div className={selectedImage || singleFileMode ? 'hidden' : 'h-full min-h-0 overflow-y-auto'}>
         <BrickMasonry
           items={workspaceImages}
           getKey={(image) => image.id}

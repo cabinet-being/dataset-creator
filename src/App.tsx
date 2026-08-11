@@ -65,6 +65,8 @@ import {
 } from './services/tagging/localTaggerFileSettings';
 import { createOperationLogger } from './services/logging/applicationLog';
 import { InternalFileViewer } from './components/InternalFileViewer';
+import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
+import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
 import {
   canOpenExplorerFile,
   copyExplorerEntry,
@@ -109,11 +111,12 @@ type ToolWorkspaceTab = {
 
 type FileWorkspaceTab = {
   id: string;
-  kind: 'file';
+  kind: 'file-view' | 'file-edit' | 'file-caption';
   path: string;
   name: string;
   fileKind: ExplorerFileKind;
   file: File | Blob;
+  workspaceImageId?: string;
 };
 
 type WorkspaceTab = ToolWorkspaceTab | FileWorkspaceTab;
@@ -125,8 +128,10 @@ const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
 });
 
 const createFileTabId = (path: string): string => `file:${path}`;
+const createFileModeTabId = (mode: 'edit' | 'caption', path: string): string => `file:${mode}:${path}`;
 
 const isToolTab = (tab: WorkspaceTab): tab is ToolWorkspaceTab => tab.kind === 'tool';
+const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab => tab.kind !== 'tool';
 
 type WorkspaceLayout = {
   openTabs: StageName[];
@@ -228,17 +233,11 @@ const SimilarityReviewStage = lazy(() =>
     default: module.SimilarityReviewStage,
   }))
 );
-const CleanupStage = lazy(() =>
-  import('./components/stages/CleanupStage').then((module) => ({ default: module.CleanupStage }))
-);
 const AnalysisStage = lazy(() =>
   import('./components/stages/AnalysisStage').then((module) => ({ default: module.AnalysisStage }))
 );
 const FinalReviewStage = lazy(() =>
   import('./components/stages/FinalReviewStage').then((module) => ({ default: module.FinalReviewStage }))
-);
-const TaggingStage = lazy(() =>
-  import('./components/stages/TaggingStage').then((module) => ({ default: module.TaggingStage }))
 );
 const ExportStage = lazy(() =>
   import('./components/stages/ExportStage').then((module) => ({ default: module.ExportStage }))
@@ -306,13 +305,13 @@ const renderTool = (currentStage: StageName) => {
     case 'select':
       return <SimilarityReviewStage />;
     case 'clean':
-      return <CleanupStage />;
+      return <CleanupStageComponent />;
     case 'analysis':
       return <AnalysisStage />;
     case 'review':
       return <FinalReviewStage />;
     case 'tagging':
-      return <TaggingStage />;
+      return <TaggingStageComponent />;
     case 'export':
       return <ExportStage />;
     default:
@@ -513,6 +512,9 @@ const readExplorerDirectory = async (
   const children: ExplorerTreeNode[] = [];
 
   for await (const [entryName, entry] of directory.entries()) {
+    if (entryName === PROJECT_DIRECTORY_MANIFEST) {
+      continue;
+    }
     const childPath = `${path}/${entryName}`;
     if ('entries' in entry) {
       children.push(await readExplorerDirectory(entry, entryName, childPath));
@@ -547,7 +549,6 @@ const buildWorkspaceExplorerTree = (
   path: 'Project',
   kind: 'folder',
   children: sortExplorerNodes([
-    { name: PROJECT_DIRECTORY_MANIFEST, path: `Project/${PROJECT_DIRECTORY_MANIFEST}`, kind: 'file' },
     {
       name: 'sources',
       path: 'Project/sources',
@@ -561,11 +562,6 @@ const buildWorkspaceExplorerTree = (
             {
               name: `original.${getFileExtension(source.fileName, source.mimeType)}`,
               path: `Project/sources/${source.id}/original.${getFileExtension(source.fileName, source.mimeType)}`,
-              kind: 'file',
-            },
-            {
-              name: 'manifest.json',
-              path: `Project/sources/${source.id}/manifest.json`,
               kind: 'file',
             },
           ]),
@@ -586,7 +582,6 @@ const buildWorkspaceExplorerTree = (
             ...(item.psdData
               ? [{ name: 'image.psd', path: `Project/synthetic/${item.id}/image.psd`, kind: 'file' as const }]
               : []),
-            { name: 'manifest.json', path: `Project/synthetic/${item.id}/manifest.json`, kind: 'file' },
           ]),
         }))
       ),
@@ -638,12 +633,7 @@ const ExplorerTree = ({
     <div>
       <button
         type="button"
-        onClick={() => isFolder && onToggle(node.path)}
-        onDoubleClick={() => {
-          if (!isFolder) {
-            onOpenFile(node);
-          }
-        }}
+        onClick={() => (isFolder ? onToggle(node.path) : onOpenFile(node))}
         onContextMenu={(event) => {
           event.preventDefault();
           onContextMenu(node, event.clientX, event.clientY);
@@ -697,7 +687,6 @@ function App() {
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
-  const setStageState = useProjectStore((state) => state.setStageState);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -988,8 +977,8 @@ function App() {
     }
     setActiveTabId(openTabs[0]?.id ?? null);
   }, [activeTabId, openTabs]);
-  const showEditToolbar = activeStage === 'clean' && editToolbar.visible;
-  const showTaggingToolbar = activeStage === 'tagging';
+  const showEditToolbar = (activeStage === 'clean' || activeTab?.kind === 'file-edit') && editToolbar.visible;
+  const showTaggingToolbar = activeStage === 'tagging' || activeTab?.kind === 'file-caption';
   const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
@@ -1257,7 +1246,7 @@ function App() {
 
       const tab: FileWorkspaceTab = {
         id: createFileTabId(node.path),
-        kind: 'file',
+        kind: 'file-view',
         path: node.path,
         name: node.name,
         fileKind,
@@ -1271,28 +1260,33 @@ function App() {
     }
   };
 
-  const openImageEditFromExplorer = (node: ExplorerTreeNode) => {
+  const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption') => {
     const imageId = findWorkspaceImageIdForPath(node.path);
     if (!imageId) {
-      addNotification('warning', 'Edit is available for project workspace images.');
+      addNotification('warning', `${mode === 'edit' ? 'Edit' : 'Caption'} is available for project workspace images.`);
       return;
     }
 
-    const cleanState = (useProjectStore.getState().stageState.clean as Record<string, unknown> | undefined) ?? {};
-    setStageState('clean', { ...cleanState, selectedImageId: imageId });
-    navigateToStage('clean');
-  };
-
-  const openImageCaptionFromExplorer = (node: ExplorerTreeNode) => {
-    const imageId = findWorkspaceImageIdForPath(node.path);
-    if (!imageId) {
-      addNotification('warning', 'Caption is available for project workspace images.');
+    const file = projectDirectoryHandle
+      ? await readExplorerFile(projectDirectoryHandle, node.path)
+      : findWorkspaceFile(node.path);
+    if (!file) {
+      addNotification('error', 'File is no longer available');
       return;
     }
 
-    const taggingState = (useProjectStore.getState().stageState.tagging as Record<string, unknown> | undefined) ?? {};
-    setStageState('tagging', { ...taggingState, selectedItemId: imageId });
-    navigateToStage('tagging');
+    const tab: FileWorkspaceTab = {
+      id: createFileModeTabId(mode, node.path),
+      kind: mode === 'edit' ? 'file-edit' : 'file-caption',
+      path: node.path,
+      name: node.name,
+      fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
+      file,
+      workspaceImageId: imageId,
+    };
+
+    setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
+    setActiveTabId(tab.id);
   };
 
   const requireProjectDirectory = (): ProjectDirectoryHandle | null => {
@@ -1318,13 +1312,13 @@ function App() {
     try {
       await deleteExplorerEntry(directory, node.path, true);
       if (node.kind === 'file') {
-        setOpenTabs((tabs) => tabs.filter((tab) => tab.kind !== 'file' || tab.path !== node.path));
-        if (activeTabId === createFileTabId(node.path)) {
+        setOpenTabs((tabs) => tabs.filter((tab) => !isFileBackedTab(tab) || tab.path !== node.path));
+        if (activeTab && isFileBackedTab(activeTab) && activeTab.path === node.path) {
           setActiveTabId(null);
         }
       } else {
         setOpenTabs((tabs) =>
-          tabs.filter((tab) => tab.kind !== 'file' || !tab.path.startsWith(`${node.path}/`))
+          tabs.filter((tab) => !isFileBackedTab(tab) || !tab.path.startsWith(`${node.path}/`))
         );
       }
       refreshExplorer();
@@ -1349,13 +1343,14 @@ function App() {
       const nextPath = await renameExplorerEntry(directory, node.path, node.kind, nextName);
       setOpenTabs((tabs) =>
         tabs.map((tab) => {
-          if (tab.kind !== 'file') {
+          if (!isFileBackedTab(tab)) {
             return tab;
           }
           if (tab.path === node.path) {
+            const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
             return {
               ...tab,
-              id: createFileTabId(nextPath),
+              id: mode ? createFileModeTabId(mode, nextPath) : createFileTabId(nextPath),
               path: nextPath,
               name: nextName,
               fileKind: getExplorerFileKind(nextName, 'type' in tab.file ? tab.file.type : undefined),
@@ -1363,19 +1358,24 @@ function App() {
           }
           if (node.kind === 'folder' && tab.path.startsWith(`${node.path}/`)) {
             const nextChildPath = `${nextPath}/${tab.path.slice(node.path.length + 1)}`;
-            return { ...tab, id: createFileTabId(nextChildPath), path: nextChildPath };
+            const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
+            return { ...tab, id: mode ? createFileModeTabId(mode, nextChildPath) : createFileTabId(nextChildPath), path: nextChildPath };
           }
           return tab;
         })
       );
-      if (activeTabId === createFileTabId(node.path)) {
-        setActiveTabId(createFileTabId(nextPath));
+      if (activeTab && isFileBackedTab(activeTab) && activeTab.path === node.path) {
+        const mode = activeTab.kind === 'file-edit' ? 'edit' : activeTab.kind === 'file-caption' ? 'caption' : null;
+        setActiveTabId(mode ? createFileModeTabId(mode, nextPath) : createFileTabId(nextPath));
       } else if (
         node.kind === 'folder' &&
-        activeTab?.kind === 'file' &&
+        activeTab &&
+        isFileBackedTab(activeTab) &&
         activeTab.path.startsWith(`${node.path}/`)
       ) {
-        setActiveTabId(createFileTabId(`${nextPath}/${activeTab.path.slice(node.path.length + 1)}`));
+        const mode = activeTab.kind === 'file-edit' ? 'edit' : activeTab.kind === 'file-caption' ? 'caption' : null;
+        const nextActivePath = `${nextPath}/${activeTab.path.slice(node.path.length + 1)}`;
+        setActiveTabId(mode ? createFileModeTabId(mode, nextActivePath) : createFileTabId(nextActivePath));
       }
       refreshExplorer();
       addNotification('success', 'Explorer entry renamed');
@@ -1686,6 +1686,152 @@ function App() {
     setWindowsMenuOpen(false);
   };
 
+  const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
+    <>
+      {canOpenExplorerFile(getExplorerFileKind(node.name)) && (
+        <button
+          type="button"
+          onClick={() => {
+            void openExplorerFile(node);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <File className="h-3.5 w-3.5" />
+          <span>Open</span>
+        </button>
+      )}
+      {isExplorerImageFileName(node.name) && Boolean(findWorkspaceImageIdForPath(node.path)) && (
+        <>
+          <div className="my-1 h-px bg-border" />
+          <button
+            type="button"
+            onClick={() => {
+              void openFileModeTab(node, 'edit');
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Edit3 className="h-3.5 w-3.5" />
+            <span>Edit</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void openFileModeTab(node, 'caption');
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Tags className="h-3.5 w-3.5" />
+            <span>Caption</span>
+          </button>
+        </>
+      )}
+      <div className="my-1 h-px bg-border" />
+      <button
+        type="button"
+        onClick={() => {
+          setExplorerClipboard({ path: node.path, name: node.name, kind: 'file' });
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Copy className="h-3.5 w-3.5" />
+        <span>Copy</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void handleExplorerRename(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+        <span>Rename</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void handleExplorerDelete(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+        <span>Delete</span>
+      </button>
+    </>
+  );
+
+  const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void handleExplorerNewFolder(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <FilePlus className="h-3.5 w-3.5" />
+        <span>New Folder</span>
+      </button>
+      {explorerClipboard && (
+        <button
+          type="button"
+          onClick={() => {
+            void handleExplorerPaste(node);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          <span>Paste</span>
+        </button>
+      )}
+      {node.path !== 'Project' && (
+        <>
+          <div className="my-1 h-px bg-border" />
+          <button
+            type="button"
+            onClick={() => {
+              setExplorerClipboard({ path: node.path, name: node.name, kind: 'folder' });
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            <span>Copy</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleExplorerRename(node);
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            <span>Rename</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleExplorerDelete(node);
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Delete</span>
+          </button>
+        </>
+      )}
+    </>
+  );
+
   return (
     <div className="flex h-screen bg-background text-foreground">
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1921,7 +2067,14 @@ function App() {
                     : toolIcons[tab.stage]
                   : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
               const active = activeTabId === tab.id;
-              const label = tab.kind === 'tool' ? STAGE_LABELS[tab.stage] : tab.name;
+              const label =
+                tab.kind === 'tool'
+                  ? STAGE_LABELS[tab.stage]
+                  : tab.kind === 'file-edit'
+                    ? `${tab.name} - Edit`
+                    : tab.kind === 'file-caption'
+                      ? `${tab.name} - Caption`
+                      : tab.name;
               return (
                 <div
                   key={tab.id}
@@ -1971,6 +2124,17 @@ function App() {
                       event.preventDefault();
                       closeTab(tab.id);
                     }
+                  }}
+                  onContextMenu={(event) => {
+                    if (!isFileBackedTab(tab)) {
+                      return;
+                    }
+                    event.preventDefault();
+                    setExplorerContextMenu({
+                      node: { name: tab.name, path: tab.path, kind: 'file' },
+                      x: event.clientX,
+                      y: event.clientY,
+                    });
                   }}
                   className={`group flex min-w-[7rem] max-w-52 shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
                     active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
@@ -2292,159 +2456,9 @@ function App() {
                     className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
                     style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
                   >
-                    {explorerContextMenu.node.kind === 'file' && (
-                      <>
-                        {canOpenExplorerFile(getExplorerFileKind(explorerContextMenu.node.name)) && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void openExplorerFile(explorerContextMenu.node);
-                              setExplorerContextMenu(null);
-                            }}
-                            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                          >
-                            <File className="h-3.5 w-3.5" />
-                            <span>Open</span>
-                          </button>
-                        )}
-                        {isExplorerImageFileName(explorerContextMenu.node.name) &&
-                          Boolean(findWorkspaceImageIdForPath(explorerContextMenu.node.path)) && (
-                            <>
-                              <div className="my-1 h-px bg-border" />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  openImageEditFromExplorer(explorerContextMenu.node);
-                                  setExplorerContextMenu(null);
-                                }}
-                                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                              >
-                                <Edit3 className="h-3.5 w-3.5" />
-                                <span>Edit</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  openImageCaptionFromExplorer(explorerContextMenu.node);
-                                  setExplorerContextMenu(null);
-                                }}
-                                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                              >
-                                <Tags className="h-3.5 w-3.5" />
-                                <span>Caption</span>
-                              </button>
-                            </>
-                          )}
-                        <div className="my-1 h-px bg-border" />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExplorerClipboard({
-                              path: explorerContextMenu.node.path,
-                              name: explorerContextMenu.node.name,
-                              kind: 'file',
-                            });
-                            setExplorerContextMenu(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                          <span>Copy</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void handleExplorerRename(explorerContextMenu.node);
-                            setExplorerContextMenu(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                          <span>Rename</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void handleExplorerDelete(explorerContextMenu.node);
-                            setExplorerContextMenu(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          <span>Delete</span>
-                        </button>
-                      </>
-                    )}
-                    {explorerContextMenu.node.kind === 'folder' && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void handleExplorerNewFolder(explorerContextMenu.node);
-                            setExplorerContextMenu(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                        >
-                          <FilePlus className="h-3.5 w-3.5" />
-                          <span>New Folder</span>
-                        </button>
-                        {explorerClipboard && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void handleExplorerPaste(explorerContextMenu.node);
-                              setExplorerContextMenu(null);
-                            }}
-                            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            <span>Paste</span>
-                          </button>
-                        )}
-                        {explorerContextMenu.node.path !== 'Project' && (
-                          <>
-                            <div className="my-1 h-px bg-border" />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setExplorerClipboard({
-                                  path: explorerContextMenu.node.path,
-                                  name: explorerContextMenu.node.name,
-                                  kind: 'folder',
-                                });
-                                setExplorerContextMenu(null);
-                              }}
-                              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                              <span>Copy</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void handleExplorerRename(explorerContextMenu.node);
-                                setExplorerContextMenu(null);
-                              }}
-                              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                              <span>Rename</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void handleExplorerDelete(explorerContextMenu.node);
-                                setExplorerContextMenu(null);
-                              }}
-                              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              <span>Delete</span>
-                            </button>
-                          </>
-                        )}
-                      </>
-                    )}
+                    {explorerContextMenu.node.kind === 'file'
+                      ? renderFileContextMenuItems(explorerContextMenu.node)
+                      : renderDirectoryContextMenuItems(explorerContextMenu.node)}
                   </div>
                 </>
               )}
@@ -2453,11 +2467,11 @@ function App() {
           <section className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col">
           <div
-            className={showEditToolbar || showFullscreenTagging || activeTab?.kind === 'file' ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
+            className={showEditToolbar || showFullscreenTagging || (activeTab && isFileBackedTab(activeTab)) ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
           >
             <div
               className={
-                showEditToolbar || showFullscreenTagging || activeTab?.kind === 'file'
+                showEditToolbar || showFullscreenTagging || (activeTab && isFileBackedTab(activeTab))
                   ? 'h-full min-h-0'
                   : 'p-4 md:p-6'
               }
@@ -2469,13 +2483,41 @@ function App() {
                   </div>
                 }
               >
-                {activeTab?.kind === 'file' ? (
-                  <InternalFileViewer
-                    file={activeTab.file}
-                    fileName={activeTab.name}
-                    fileKind={activeTab.fileKind}
-                  />
-                ) : activeStage ? (
+                {openTabs.filter(isFileBackedTab).map((tab) => {
+                  const isActiveFileTab = activeTabId === tab.id;
+                  return (
+                    <div key={tab.id} className={isActiveFileTab ? 'h-full min-h-0' : 'hidden'}>
+                      {tab.kind === 'file-view' ? (
+                        <InternalFileViewer
+                          file={tab.file}
+                          fileName={tab.name}
+                          fileKind={tab.fileKind}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setExplorerContextMenu({
+                              node: { name: tab.name, path: tab.path, kind: 'file' },
+                              x: event.clientX,
+                              y: event.clientY,
+                            });
+                          }}
+                        />
+                      ) : tab.kind === 'file-edit' ? (
+                        <CleanupStageComponent
+                          selectedImageId={tab.workspaceImageId}
+                          singleFileMode
+                          active={isActiveFileTab}
+                        />
+                      ) : (
+                        <TaggingStageComponent
+                          selectedItemId={tab.workspaceImageId}
+                          singleFileMode
+                          active={isActiveFileTab}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+                {activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
                   renderTool(activeStage)
                 ) : (
                   <EmptyWorkspacePlaceholder />
@@ -2583,14 +2625,14 @@ function App() {
                   <div>
                     <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Active tool</p>
                     <p className="font-medium">
-                      {activeTab?.kind === 'file'
+                      {activeTab && isFileBackedTab(activeTab)
                         ? activeTab.name
                         : activeStage
                           ? STAGE_LABELS[activeStage]
                           : 'No tool open'}
                     </p>
                     <p className="mt-1 text-muted-foreground">
-                      {activeTab?.kind === 'file'
+                      {activeTab && isFileBackedTab(activeTab)
                         ? activeTab.path
                         : activeStage
                           ? TOOL_DESCRIPTIONS[activeStage]
@@ -2620,6 +2662,23 @@ function App() {
             </aside>
           )}
         </div>
+
+        {!leftPanelOpen && explorerContextMenu?.node.kind === 'file' && (
+          <>
+            <button
+              type="button"
+              aria-label="Close file context menu"
+              className="fixed inset-0 z-[950] cursor-default"
+              onClick={() => setExplorerContextMenu(null)}
+            />
+            <div
+              className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
+              style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
+            >
+              {renderFileContextMenuItems(explorerContextMenu.node)}
+            </div>
+          </>
+        )}
 
         {notifications.length > 0 && (
           <div className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-2">
@@ -2728,7 +2787,7 @@ function App() {
               <div>
                 <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Selection</p>
                 <p className="font-medium">
-                  {activeTab?.kind === 'file'
+                  {activeTab && isFileBackedTab(activeTab)
                     ? activeTab.name
                     : activeStage
                       ? STAGE_LABELS[activeStage]
