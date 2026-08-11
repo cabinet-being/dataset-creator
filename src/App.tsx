@@ -58,7 +58,7 @@ import {
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
 import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
-import { importImageFiles } from './services/import/importService';
+import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile } from './services/import/importService';
 import {
   deleteLocalTaggerFileHandle,
   saveLocalTaggerFileHandle,
@@ -1775,7 +1775,7 @@ function App() {
     }
   };
 
-  const importExternalFilesIntoExplorer = async (files: File[], destinationPath: string) => {
+  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string) => {
     const directory = requireProjectDirectory();
     if (!directory || files.length === 0) {
       return;
@@ -1820,10 +1820,13 @@ function App() {
   };
 
   const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
-    const files = Array.from(event.dataTransfer.files ?? []);
-    if (files.length > 0) {
+    if (Array.from(event.dataTransfer.types).includes('Files')) {
       event.dataTransfer.dropEffect = 'copy';
-      void importExternalFilesIntoExplorer(files, destinationPath);
+      void getImportFilesFromDataTransfer(event.dataTransfer)
+        .then((files) => importExternalFilesIntoExplorer(files, destinationPath))
+        .catch((error) => {
+          addNotification('error', error instanceof Error ? error.message : 'Failed to read dropped files');
+        });
       return;
     }
 

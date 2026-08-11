@@ -71,6 +71,33 @@ export type ImportInputFile = File | {
   relativePath?: string;
 };
 
+type WebkitFileSystemFileEntry = {
+  isFile: true;
+  isDirectory: false;
+  name: string;
+  file: (success: (file: File) => void, error?: (error: DOMException) => void) => void;
+};
+
+type WebkitFileSystemDirectoryReader = {
+  readEntries: (
+    success: (entries: WebkitFileSystemEntry[]) => void,
+    error?: (error: DOMException) => void
+  ) => void;
+};
+
+type WebkitFileSystemDirectoryEntry = {
+  isFile: false;
+  isDirectory: true;
+  name: string;
+  createReader: () => WebkitFileSystemDirectoryReader;
+};
+
+type WebkitFileSystemEntry = WebkitFileSystemFileEntry | WebkitFileSystemDirectoryEntry;
+
+type DataTransferItemWithEntry = DataTransferItem & {
+  webkitGetAsEntry?: () => WebkitFileSystemEntry | null;
+};
+
 export type ImportedProjectAsset = {
   id: string;
   kind: ReturnType<typeof getExplorerFileKind>;
@@ -120,6 +147,62 @@ export const isSupportedImportAssetFile = (file: File): boolean =>
     SUPPORTED_IMPORT_VIDEO_FORMATS.includes(file.type) ||
     file.name.toLowerCase().endsWith('.psd') ||
     SUPPORTED_ASSET_EXTENSIONS.has(getFileExtension(file.name)));
+
+const readFileEntry = async (
+  entry: WebkitFileSystemFileEntry,
+  relativePath: string
+): Promise<ImportInputFile[]> =>
+  new Promise((resolve, reject) => {
+    entry.file(
+      (file) => resolve([{ file, relativePath }]),
+      (error) => reject(error)
+    );
+  });
+
+const readDirectoryEntries = async (
+  reader: WebkitFileSystemDirectoryReader
+): Promise<WebkitFileSystemEntry[]> => {
+  const entries: WebkitFileSystemEntry[] = [];
+
+  while (true) {
+    const batch = await new Promise<WebkitFileSystemEntry[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (batch.length === 0) {
+      return entries;
+    }
+    entries.push(...batch);
+  }
+};
+
+const readEntryFiles = async (
+  entry: WebkitFileSystemEntry,
+  parentPath = ''
+): Promise<ImportInputFile[]> => {
+  const relativePath = joinPath(parentPath, entry.name);
+  if (entry.isFile) {
+    return readFileEntry(entry, relativePath);
+  }
+
+  const childEntries = await readDirectoryEntries(entry.createReader());
+  const nestedFiles = await Promise.all(childEntries.map((child) => readEntryFiles(child, relativePath)));
+  return nestedFiles.flat();
+};
+
+export const getImportFilesFromDataTransfer = async (
+  dataTransfer: DataTransfer
+): Promise<ImportInputFile[]> => {
+  const entries = Array.from(dataTransfer.items ?? [])
+    .map((item) => (item as DataTransferItemWithEntry).webkitGetAsEntry?.() as WebkitFileSystemEntry | null | undefined)
+    .filter((entry): entry is WebkitFileSystemEntry => Boolean(entry));
+
+  if (entries.length === 0) {
+    return Array.from(dataTransfer.files ?? []);
+  }
+
+  const files = await Promise.all(entries.map((entry) => readEntryFiles(entry)));
+  return files.flat();
+};
 
 const parseCaptionTags = (caption: string): string[] =>
   caption

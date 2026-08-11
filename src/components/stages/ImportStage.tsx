@@ -13,8 +13,10 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { createOperationLogger } from '../../services/logging/applicationLog';
 import {
+  getImportFilesFromDataTransfer,
   importImageFiles,
   SUPPORTED_IMPORT_FILE_FORMATS,
+  type ImportInputFile,
 } from '../../services/import/importService';
 
 import { Upload, Trash2 } from 'lucide-react';
@@ -44,7 +46,7 @@ export const ImportStage = () => {
   }, []);
 
   const importImages = useCallback(
-    async (files: File[]): Promise<number> => {
+    async (files: ImportInputFile[]): Promise<number> => {
       if (files.length === 0) {
         return 0;
       }
@@ -140,7 +142,7 @@ export const ImportStage = () => {
     event.stopPropagation();
     setIsDragOver(false);
 
-    const files = Array.from(event.dataTransfer.files ?? []);
+    const files = await getImportFilesFromDataTransfer(event.dataTransfer);
     logDev('drop', 'selected files', files.length);
 
     const processedCount = await importImages(files);
