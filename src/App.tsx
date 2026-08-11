@@ -1295,14 +1295,31 @@ function App() {
   const toProjectRelativePath = (path: string): string =>
     path === 'Project' ? '' : path.replace(/^Project\//, '');
 
+  const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
+    const extension = fileName.split('.').pop()?.toLowerCase();
+    if (extension && extension !== fileName.toLowerCase()) {
+      return extension.replace(/[^a-z0-9]/g, '') || 'bin';
+    }
+
+    return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
+  };
+
   const findWorkspaceImageIdForPath = (path: string): string | null => {
     const projectRelativePath = toProjectRelativePath(path);
-    const source = Object.values(sourceImagesById).find((image) => image.originalFilePath === projectRelativePath);
+    const source = Object.values(sourceImagesById).find(
+      (image) =>
+        (image.originalFilePath ??
+          `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
+        projectRelativePath
+    );
     if (source) {
       return `source:${source.id}`;
     }
 
-    const synthetic = Object.values(datasetItemsById).find((item) => item.imageDataPath === projectRelativePath);
+    const synthetic = Object.values(datasetItemsById).find(
+      (item) =>
+        (item.imageDataPath ?? `.dataset-creator-data/generated-images/${item.id}/image.png`) === projectRelativePath
+    );
     if (synthetic) {
       return `synthetic:${synthetic.id}`;
     }

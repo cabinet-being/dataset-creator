@@ -116,6 +116,15 @@ const getParentPath = (path: string): string => getPathParts(path).slice(0, -1).
 
 const joinPath = (...parts: string[]): string => parts.flatMap(getPathParts).join('/');
 
+const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
+  const extension = fileName.split('.').pop()?.toLowerCase();
+  if (extension && extension !== fileName.toLowerCase()) {
+    return extension.replace(/[^a-z0-9]/g, '') || 'bin';
+  }
+
+  return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
+};
+
 const getDefaultSourceManifestPath = (source: SourceImage): string =>
   `.dataset-creator-data/source-images/${source.id}/manifest.json`;
 
@@ -202,7 +211,9 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
 
   for (const source of Object.values(project.sourceImages)) {
     const manifestPath = source.manifestPath ?? getDefaultSourceManifestPath(source);
-    const originalFilePath = source.originalFilePath ?? joinPath(getParentPath(manifestPath), 'original');
+    const originalFilePath =
+      source.originalFilePath ??
+      joinPath(getParentPath(manifestPath), `original.${getProjectDataFileExtension(source.fileName, source.mimeType)}`);
     zip.file(originalFilePath, source.originalFile);
 
     const sourceManifest: SourceImageManifest = {
