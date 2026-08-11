@@ -1781,7 +1781,9 @@ function App() {
       });
 
       if (result.importedImages.length > 0) {
+        const previousProject = useProjectStore.getState();
         addSourceImages(result.importedImages);
+        await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
         addNotification(
           'success',
           `Imported ${result.importedImages.length} image${result.importedImages.length !== 1 ? 's' : ''}`
