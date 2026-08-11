@@ -1,8 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
-import JSZip from 'jszip';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
-import { createSourceImage, createStandardImageFileName, type SourceImage } from '../../types';
+import { createStandardImageFileName } from '../../types';
 import {
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
@@ -12,37 +11,14 @@ import {
 } from '../../lib/workspaceImages';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
-import { getImageDimensions, createThumbnail } from '../../services/image/imageProcessor';
-import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
-import { createOperationLogger, shouldLogProgress } from '../../services/logging/applicationLog';
+import { createOperationLogger } from '../../services/logging/applicationLog';
+import {
+  importImageFiles,
+  SUPPORTED_IMPORT_FILE_FORMATS,
+  SUPPORTED_IMPORT_IMAGE_FORMATS,
+} from '../../services/import/importService';
 
 import { Upload, Trash2 } from 'lucide-react';
-
-const SUPPORTED_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-const SUPPORTED_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
-const SUPPORTED_FILE_FORMATS = [...SUPPORTED_FORMATS, ...SUPPORTED_ARCHIVE_FORMATS, '.zip'];
-const IMAGE_EXTENSION_TYPES = new Map([
-  ['.gif', 'image/gif'],
-  ['.jpeg', 'image/jpeg'],
-  ['.jpg', 'image/jpeg'],
-  ['.png', 'image/png'],
-  ['.webp', 'image/webp'],
-]);
-
-const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '');
-const getArchiveFileName = (path: string): string => path.split('/').pop() ?? path;
-const getArchiveFileStem = (path: string): string => getArchiveFileName(path).replace(/\.[^.]+$/, '');
-const getArchiveExtension = (path: string): string => {
-  const match = path.toLowerCase().match(/\.[^.]+$/);
-  return match?.[0] ?? '';
-};
-const isArchiveFile = (file: File): boolean =>
-  SUPPORTED_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
-const parseCaptionTags = (caption: string): string[] =>
-  caption
-    .split(',')
-    .map((tag) => tag.trim().toLowerCase())
-    .filter(Boolean);
 
 export const ImportStage = () => {
   const {
@@ -68,93 +44,6 @@ export const ImportStage = () => {
     }
   }, []);
 
-  const processImportedFile = useCallback(
-    async (file: File, tags: string[] = []): Promise<SourceImage | null> => {
-      if (!SUPPORTED_FORMATS.includes(file.type)) {
-        importLogger.current.warning(`skipped unsupported file ${file.name}`);
-        return null;
-      }
-
-      const { width, height } = await getImageDimensions(file);
-      const thumbnail = await createThumbnail(file);
-      const embedding = await generateEmbedding(file);
-      const hash = await generateImageHash(file);
-      const previewUrl = URL.createObjectURL(file);
-
-      const sourceImage = createSourceImage(
-        file,
-        file.name,
-        width,
-        height,
-        previewUrl
-      );
-
-      sourceImage.thumbnail = thumbnail;
-      sourceImage.embedding = embedding;
-      sourceImage.hash = hash;
-      sourceImage.tags = tags;
-
-      return sourceImage;
-    },
-    []
-  );
-
-  const processArchiveFile = useCallback(
-    async (file: File): Promise<SourceImage[]> => {
-      const zip = await JSZip.loadAsync(file);
-      const entries = Object.values(zip.files).filter((entry) => !entry.dir);
-      const captionsByPathStem = new Map<string, JSZip.JSZipObject>();
-      const captionsByFileStem = new Map<string, JSZip.JSZipObject>();
-
-      for (const entry of entries) {
-        if (getArchiveExtension(entry.name) !== '.txt') {
-          continue;
-        }
-
-        captionsByPathStem.set(getArchivePathStem(entry.name), entry);
-        captionsByFileStem.set(getArchiveFileStem(entry.name), entry);
-      }
-
-      const importedImages: SourceImage[] = [];
-      const imageEntries = entries.filter((entry) => IMAGE_EXTENSION_TYPES.has(getArchiveExtension(entry.name)));
-      importLogger.current.info(`archive ${file.name} contains ${imageEntries.length} image files`);
-
-      for (let i = 0; i < imageEntries.length; i++) {
-        const entry = imageEntries[i];
-        const extension = getArchiveExtension(entry.name);
-        const mimeType = IMAGE_EXTENSION_TYPES.get(extension);
-
-        if (!mimeType) {
-          continue;
-        }
-
-        const imageBlob = await entry.async('blob');
-        const imageFile = new File([imageBlob], getArchiveFileName(entry.name), { type: mimeType });
-        const captionEntry =
-          captionsByPathStem.get(getArchivePathStem(entry.name)) ??
-          captionsByFileStem.get(getArchiveFileStem(entry.name));
-        const tags = captionEntry ? parseCaptionTags(await captionEntry.async('string')) : [];
-        const sourceImage = await processImportedFile(imageFile, tags);
-
-        if (sourceImage) {
-          importedImages.push(sourceImage);
-        }
-
-        const current = i + 1;
-        if (shouldLogProgress(current, imageEntries.length)) {
-          importLogger.current.progress({
-            current,
-            total: imageEntries.length,
-            label: `processing ${file.name}`,
-          });
-        }
-      }
-
-      return importedImages;
-    },
-    [processImportedFile]
-  );
-
   const importImages = useCallback(
     async (files: File[]): Promise<number> => {
       if (files.length === 0) {
@@ -163,44 +52,13 @@ export const ImportStage = () => {
 
       setIsLoading(true);
       logDev('import', 'received files', files.length);
-      importLogger.current.info(`starting image import from ${files.length} selected file${files.length !== 1 ? 's' : ''}`);
-      const newImages: SourceImage[] = [];
-      let skippedCount = 0;
 
       try {
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          try {
-            if (isArchiveFile(file)) {
-              const archiveImages = await processArchiveFile(file);
-              newImages.push(...archiveImages);
-              continue;
-            }
-
-            const sourceImage = await processImportedFile(file);
-
-            if (sourceImage) {
-              newImages.push(sourceImage);
-            } else {
-              skippedCount += 1;
-            }
-          } catch (error) {
-            console.error(`Failed to process ${file.name}:`, error);
-            importLogger.current.error(
-              `failed to process ${file.name}: ${error instanceof Error ? error.message : 'unknown error'}`
-            );
-            addNotification('error', `Failed to process ${file.name}`);
-          }
-
-          const current = i + 1;
-          if (shouldLogProgress(current, files.length)) {
-            importLogger.current.progress({ current, total: files.length, label: 'processed selections' });
-          }
-        }
-
-        if (skippedCount > 0) {
-          importLogger.current.warning(`${skippedCount} unsupported file${skippedCount !== 1 ? 's' : ''} skipped`);
-        }
+        const result = await importImageFiles(files, {
+          logger: importLogger.current,
+          onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
+        });
+        const newImages = result.importedImages;
 
         if (newImages.length > 0) {
           addSourceImages(newImages);
@@ -214,9 +72,6 @@ export const ImportStage = () => {
             'success',
             `Imported ${newImages.length} image${newImages.length !== 1 ? 's' : ''}`
           );
-          importLogger.current.success(`completed: imported ${newImages.length} image${newImages.length !== 1 ? 's' : ''}`);
-        } else {
-          importLogger.current.warning('completed with no images imported');
         }
 
         return newImages.length;
@@ -227,7 +82,7 @@ export const ImportStage = () => {
         setIsLoading(false);
       }
     },
-    [addNotification, addSourceImages, logDev, processArchiveFile, processImportedFile]
+    [addNotification, addSourceImages, logDev]
   );
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -355,7 +210,7 @@ export const ImportStage = () => {
             ref={fileInputRef}
             type="file"
             multiple
-            accept={SUPPORTED_FILE_FORMATS.join(',')}
+            accept={SUPPORTED_IMPORT_FILE_FORMATS.join(',')}
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -364,7 +219,7 @@ export const ImportStage = () => {
             ref={folderInputRef}
             type="file"
             multiple
-            accept={SUPPORTED_FORMATS.join(',')}
+            accept={SUPPORTED_IMPORT_IMAGE_FORMATS.join(',')}
             {...{ webkitdirectory: 'true', mozdirectory: 'true' } as any}
             onChange={handleFolderSelect}
             className="hidden"
