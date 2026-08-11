@@ -483,6 +483,11 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
     (state) => (state.stageState.tagging as { selectedItemId?: string } | undefined)?.selectedItemId
   );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
+  const datasetsById = useProjectStore((state) => state.datasets);
+  const datasetTriggerWord = useMemo(
+    () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
+    [datasetsById]
+  );
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const { addNotification, taggingModals, setTaggingModal } = useUIStore();
   const setTaggingToolbar = useUIStore((state) => state.setTaggingToolbar);
@@ -526,7 +531,7 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
     () => items.find((item) => item.id === selectedItemId) ?? null,
     [items, selectedItemId]
   );
-  const normalizedDatasetKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+  const normalizedDatasetKeyword = datasetTriggerWord.trim().toLowerCase();
   const bulkTags = useMemo(
     () => Array.from(new Set(parseTagInput(globalTagsToAdd).filter((tag) => tag !== normalizedDatasetKeyword))),
     [globalTagsToAdd, normalizedDatasetKeyword]
@@ -588,21 +593,21 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
 
   const manualTagSuggestions = useMemo(() => {
     const blacklist = new Set(taggingConfig.blacklist);
-    const normalizedKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+    const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
 
     return normalizeUniqueTags(suggestionTags).filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
-  }, [suggestionTags, taggingConfig.blacklist, taggingConfig.datasetKeyword]);
+  }, [suggestionTags, taggingConfig.blacklist, datasetTriggerWord]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      const keyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+      const keyword = datasetTriggerWord.trim().toLowerCase();
       const keywordInEditableTags = Boolean(
         keyword &&
           items.some((item) => (item.tags ?? []).some((tag) => tag.trim().toLowerCase() === keyword))
       );
       console.log(`[tagging] dataset keyword excluded from Stage 7 tag state: ${!keywordInEditableTags}`);
     }
-  }, [items, taggingConfig.datasetKeyword]);
+  }, [items, datasetTriggerWord]);
 
   useEffect(() => {
     if (selectedItemId && !selectedItem) {
@@ -636,7 +641,7 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
       const existingTags = new Set(item.tags ?? []);
       const nextTags = [...(item.tags ?? [])];
       const skippedDuplicates: string[] = [];
-      const normalizedKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+      const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
 
       for (const tag of parsedTags) {
         if (tag === normalizedKeyword || taggingConfig.blacklist.includes(tag) || existingTags.has(tag)) {
@@ -668,13 +673,13 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
 
       return true;
     },
-    [items, taggingConfig.blacklist, taggingConfig.datasetKeyword, updateWorkspaceImageTags]
+    [items, taggingConfig.blacklist, datasetTriggerWord, updateWorkspaceImageTags]
   );
 
   const mergeAutoTags = useCallback(
     (existingTags: string[] = [], predictedTags: string[]) => {
       const blacklist = new Set(taggingConfig.blacklist.map((tag) => tag.toLowerCase()));
-      const normalizedKeyword = taggingConfig.datasetKeyword.trim().toLowerCase();
+      const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
       const normalizedPredictions = predictedTags
         .map((tag) => tag.trim().toLowerCase())
         .filter(Boolean)
@@ -717,7 +722,7 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
     },
     [
       taggingConfig.blacklist,
-      taggingConfig.datasetKeyword,
+      datasetTriggerWord,
       taggingConfig.insertMode,
     ]
   );
@@ -1369,19 +1374,6 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
             </div>
 
             <div className="space-y-4">
-              <div>
-                <label className="mb-2 block text-xs text-muted-foreground">Keyword</label>
-                <input
-                  type="text"
-                  value={taggingConfig.datasetKeyword}
-                  onChange={(event) =>
-                    updateTaggingConfig({ datasetKeyword: event.target.value })
-                  }
-                  placeholder="my_dataset"
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                />
-              </div>
-
               <div className="grid gap-3 md:grid-cols-[1fr_12rem]">
                 <div>
                   <label className="mb-2 block text-xs text-muted-foreground">Bulk tags</label>

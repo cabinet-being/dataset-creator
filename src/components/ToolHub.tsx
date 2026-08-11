@@ -48,7 +48,11 @@ export const ToolHub = () => {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
-  const taggingConfig = useProjectStore((state) => state.taggingConfig);
+  const datasetsById = useProjectStore((state) => state.datasets);
+  const datasetTriggerWord = useMemo(
+    () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
+    [datasetsById]
+  );
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
@@ -116,8 +120,8 @@ export const ToolHub = () => {
               <span className="font-medium">{(totalSourceSize / 1024 / 1024).toFixed(1)} MB</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Export keyword</span>
-              <span className="font-mono text-xs font-medium">{taggingConfig.datasetKeyword}</span>
+              <span className="text-muted-foreground">Trigger Word</span>
+              <span className="font-mono text-xs font-medium">{datasetTriggerWord || 'Not set'}</span>
             </div>
             <div className="rounded-md bg-secondary p-3 text-xs text-muted-foreground">
               Source and Synthetic images are backed by IndexedDB and stay

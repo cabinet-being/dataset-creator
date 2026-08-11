@@ -16,6 +16,11 @@ export const ExportStage = () => {
   const { taggingConfig } = useProjectStore();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const datasetsById = useProjectStore((state) => state.datasets);
+  const datasetTriggerWord = useMemo(
+    () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
+    [datasetsById]
+  );
   const cleanupStageState = useProjectStore(
     (state) =>
       (state.stageState.clean as
@@ -70,7 +75,7 @@ export const ExportStage = () => {
         logger.info('starting directory export');
         const success = await saveDirectoryViaFilesystemAPI(
           {
-            datasetKeyword: taggingConfig.datasetKeyword,
+            datasetKeyword: datasetTriggerWord,
             items: exportItems,
           },
           taggingConfig.blacklist,
@@ -92,7 +97,7 @@ export const ExportStage = () => {
       logger.info('starting ZIP export');
       const zipBlob = await exportAsZip(
         {
-          datasetKeyword: taggingConfig.datasetKeyword,
+          datasetKeyword: datasetTriggerWord,
           items: exportItems,
         },
         taggingConfig.blacklist,
@@ -142,8 +147,8 @@ export const ExportStage = () => {
           </p>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Export Keyword</p>
-          <p className="text-sm font-mono font-bold">{taggingConfig.datasetKeyword}</p>
+          <p className="text-xs text-muted-foreground mb-1">Trigger Word</p>
+          <p className="text-sm font-mono font-bold">{datasetTriggerWord}</p>
         </div>
       </div>
 
@@ -205,7 +210,7 @@ export const ExportStage = () => {
                 </span>
               </div>
               <div className="text-muted-foreground">
-                {taggingConfig.datasetKeyword}
+                {datasetTriggerWord}
                 {item.tags && item.tags.length > 0
                   ? ', ' + item.tags.join(', ')
                   : ' (no tags)'}
