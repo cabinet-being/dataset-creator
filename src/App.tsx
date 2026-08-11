@@ -553,6 +553,7 @@ type ExplorerTreeProps = {
     kind: 'folder' | 'file';
     value: string;
   } | null;
+  focusedPath: string | null;
   onToggle: (path: string) => void;
   onSelect: (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
   onContextMenu: (node: ExplorerTreeNode, x: number, y: number) => void;
@@ -589,6 +590,7 @@ const ExplorerTree = ({
   expandedPaths,
   selectedPaths,
   inlineEdit,
+  focusedPath,
   onToggle,
   onSelect,
   onContextMenu,
@@ -603,6 +605,7 @@ const ExplorerTree = ({
   const isFolder = node.kind === 'folder';
   const isExpanded = isFolder && expandedPaths.has(node.path);
   const isSelected = selectedPaths.has(node.path);
+  const isFocused = focusedPath === node.path;
   const isRenaming = inlineEdit?.mode === 'rename' && inlineEdit.path === node.path;
   const Icon = getExplorerIcon(node);
 
@@ -643,7 +646,7 @@ const ExplorerTree = ({
         }}
         className={`flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary ${
           isSelected ? 'bg-primary/15 text-foreground' : ''
-        }`}
+        } ${isFocused ? 'outline outline-1 outline-primary/60' : ''}`}
         style={{ paddingLeft: 4 + depth * 12 }}
         title={node.path}
       >
@@ -713,6 +716,7 @@ const ExplorerTree = ({
             expandedPaths={expandedPaths}
             selectedPaths={selectedPaths}
             inlineEdit={inlineEdit}
+            focusedPath={focusedPath}
             onToggle={onToggle}
             onSelect={onSelect}
             onContextMenu={onContextMenu}
@@ -847,6 +851,7 @@ function App() {
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
+  const [focusedExplorerPath, setFocusedExplorerPath] = useState<string | null>(null);
   const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerClipboardEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
   const [inlineExplorerEdit, setInlineExplorerEdit] = useState<{
@@ -1241,6 +1246,42 @@ function App() {
     return directory?.kind === 'folder' ? directory.children ?? [] : [];
   };
 
+  const getFocusedExplorerNode = (): ExplorerTreeNode | null => {
+    if (focusedExplorerPath) {
+      return findExplorerNodeByPath(focusedExplorerPath);
+    }
+    const firstSelectedPath = getVisibleExplorerNodes().find((node) => selectedExplorerPaths.has(node.path))?.path;
+    return firstSelectedPath ? findExplorerNodeByPath(firstSelectedPath) : null;
+  };
+
+  const getParentExplorerNode = (path: string): ExplorerTreeNode | null => {
+    const parentPath = path.split('/').slice(0, -1).join('/') || 'Project';
+    return parentPath === path ? null : findExplorerNodeByPath(parentPath);
+  };
+
+  const focusExplorerNode = (node: ExplorerTreeNode, extendSelection: boolean) => {
+    setActiveExplorerNode(node);
+    if (extendSelection) {
+      const anchor = selectionAnchorPath ?? focusedExplorerPath ?? node.path;
+      setSelectionAnchorPath(anchor);
+      selectExplorerRange(anchor, node.path);
+      return;
+    }
+    setSelectedExplorerPaths(new Set([node.path]));
+    setSelectionAnchorPath(node.path);
+  };
+
+  const moveExplorerKeyboardFocus = (direction: -1 | 1, extendSelection: boolean) => {
+    const visibleNodes = getVisibleExplorerNodes();
+    if (visibleNodes.length === 0) {
+      return;
+    }
+    const focusedPath = focusedExplorerPath ?? selectedExplorerPaths.values().next().value;
+    const currentIndex = Math.max(0, visibleNodes.findIndex((node) => node.path === focusedPath));
+    const nextIndex = Math.max(0, Math.min(visibleNodes.length - 1, currentIndex + direction));
+    focusExplorerNode(visibleNodes[nextIndex], extendSelection);
+  };
+
   const getTopLevelExplorerEntries = (entries: ExplorerClipboardEntry[]): ExplorerClipboardEntry[] =>
     entries.filter(
       (entry) =>
@@ -1273,16 +1314,28 @@ function App() {
     return [{ path: node.path, name: node.name, kind: node.kind }];
   };
 
-  const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+  const setActiveExplorerNode = (node: ExplorerTreeNode) => {
+    setFocusedExplorerPath(node.path);
     setActiveExplorerDirectoryPath(node.kind === 'folder' ? node.path : node.path.split('/').slice(0, -1).join('/') || 'Project');
+  };
+
+  const selectExplorerRange = (anchorPath: string, targetPath: string) => {
     const visibleNodes = getVisibleExplorerNodes();
+    const anchorIndex = visibleNodes.findIndex((entry) => entry.path === anchorPath);
+    const targetIndex = visibleNodes.findIndex((entry) => entry.path === targetPath);
+    if (anchorIndex < 0 || targetIndex < 0) {
+      return false;
+    }
+    const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+    setSelectedExplorerPaths(new Set(visibleNodes.slice(start, end + 1).map((entry) => entry.path)));
+    return true;
+  };
+
+  const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+    setActiveExplorerNode(node);
 
     if (event.shiftKey && selectionAnchorPath) {
-      const anchorIndex = visibleNodes.findIndex((entry) => entry.path === selectionAnchorPath);
-      const targetIndex = visibleNodes.findIndex((entry) => entry.path === node.path);
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-        setSelectedExplorerPaths(new Set(visibleNodes.slice(start, end + 1).map((entry) => entry.path)));
+      if (selectExplorerRange(selectionAnchorPath, node.path)) {
         return;
       }
     }
@@ -1312,6 +1365,7 @@ function App() {
     }
 
     const nextSelection = new Set([node.path]);
+    setActiveExplorerNode(node);
     setSelectedExplorerPaths(nextSelection);
     setSelectionAnchorPath(node.path);
     setDraggedExplorerEntries(getExplorerEntriesForPaths(nextSelection));
@@ -1582,6 +1636,7 @@ function App() {
       }
       clearExplorerClipboardForDeletedPaths(entries);
       setSelectedExplorerPaths(new Set());
+      setFocusedExplorerPath(null);
       refreshExplorer();
       addNotification('success', 'Explorer entry deleted');
     } catch (error) {
@@ -1661,6 +1716,7 @@ function App() {
         const nextPath = await createExplorerDirectory(directory, edit.parentPath, edit.value);
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
+        setFocusedExplorerPath(nextPath);
       } else if (edit.path) {
         const nextName = edit.value.trim();
         if (!nextName || nextName === edit.path.split('/').pop()) {
@@ -1674,6 +1730,7 @@ function App() {
         updateExplorerClipboardForPathMoves(moves);
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
+        setFocusedExplorerPath(nextPath);
       }
       setInlineExplorerEdit(null);
       refreshExplorer();
@@ -1699,6 +1756,7 @@ function App() {
       updateWorkspacePathsForPathMoves(moves);
       updateExplorerClipboardForPathMoves(moves);
       setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
+      setFocusedExplorerPath(moves[0]?.to ?? null);
       setDraggedExplorerEntries(null);
       refreshExplorer();
     } catch (error) {
@@ -1794,6 +1852,64 @@ function App() {
         return;
       }
 
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveExplorerKeyboardFocus(1, event.shiftKey);
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveExplorerKeyboardFocus(-1, event.shiftKey);
+        return;
+      }
+
+      if (event.key === 'ArrowRight') {
+        const focusedNode = getFocusedExplorerNode();
+        if (focusedNode?.kind === 'folder') {
+          event.preventDefault();
+          if (!expandedExplorerPaths.has(focusedNode.path)) {
+            setExpandedExplorerPaths((paths) => new Set([...paths, focusedNode.path]));
+          } else if (focusedNode.children?.[0]) {
+            focusExplorerNode(focusedNode.children[0], false);
+          }
+        }
+        return;
+      }
+
+      if (event.key === 'ArrowLeft') {
+        const focusedNode = getFocusedExplorerNode();
+        if (focusedNode) {
+          event.preventDefault();
+          if (focusedNode.kind === 'folder' && expandedExplorerPaths.has(focusedNode.path)) {
+            setExpandedExplorerPaths((paths) => {
+              const next = new Set(paths);
+              next.delete(focusedNode.path);
+              return next;
+            });
+          } else {
+            const parent = getParentExplorerNode(focusedNode.path);
+            if (parent && parent.path !== 'Project') {
+              focusExplorerNode(parent, false);
+            }
+          }
+        }
+        return;
+      }
+
+      if (event.key === 'Enter') {
+        const focusedNode = getFocusedExplorerNode();
+        if (focusedNode) {
+          event.preventDefault();
+          if (focusedNode.kind === 'folder') {
+            toggleExplorerPath(focusedNode.path);
+          } else {
+            void openExplorerFile(focusedNode);
+          }
+        }
+        return;
+      }
+
       const selectedEntries = getSelectedExplorerEntries();
       const selectedNode = selectedEntries.length === 1
         ? getVisibleExplorerNodes().find((node) => node.path === selectedEntries[0].path)
@@ -1842,7 +1958,7 @@ function App() {
 
     window.addEventListener('keydown', handleExplorerShortcut);
     return () => window.removeEventListener('keydown', handleExplorerShortcut);
-  }, [activeExplorerDirectoryPath, explorerClipboard, explorerContextMenu, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
+  }, [activeExplorerDirectoryPath, explorerClipboard, explorerContextMenu, focusedExplorerPath, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
 
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
@@ -2938,9 +3054,11 @@ function App() {
                     expandedPaths={expandedExplorerPaths}
                     selectedPaths={selectedExplorerPaths}
                     inlineEdit={inlineExplorerEdit}
+                    focusedPath={focusedExplorerPath}
                     onToggle={toggleExplorerPath}
                     onSelect={selectExplorerNode}
                     onContextMenu={(node, x, y) => {
+                      setActiveExplorerNode(node);
                       if (!selectedExplorerPaths.has(node.path)) {
                         setSelectedExplorerPaths(new Set([node.path]));
                         setSelectionAnchorPath(node.path);
