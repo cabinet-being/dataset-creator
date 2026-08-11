@@ -268,7 +268,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
     const itemManifest: SyntheticImageManifest = {
       id: item.id,
       sourceImageId: item.sourceImageId,
-      fileName: `${item.id}.png`,
+      fileName: imageDataPath.split('/').pop() ?? `${item.id}.png`,
       imageDataPath,
       psdDataPath,
       width: item.width,

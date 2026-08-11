@@ -361,15 +361,16 @@ const getNormalizedAssetManifestPath = (
 };
 
 const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): Promise<string> => {
-  const originalFileNameOnDisk = `original.${getFileExtension(source.fileName, source.mimeType)}`;
+  const defaultOriginalFileName = `original.${getFileExtension(source.fileName, source.mimeType)}`;
   const manifestPath = getNormalizedAssetManifestPath(
     source.manifestPath,
-    originalFileNameOnDisk,
+    defaultOriginalFileName,
     getDefaultSourceManifestPath(source)
   );
   const originalFilePath = source.originalFilePath
     ? toProjectRelativePath(source.originalFilePath)
-    : joinPath(getParentPath(manifestPath), originalFileNameOnDisk);
+    : joinPath(getParentPath(manifestPath), defaultOriginalFileName);
+  const originalFileNameOnDisk = getFileName(originalFilePath);
   await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
   await writeTextFileAtPath(
     root,
@@ -387,10 +388,10 @@ const writeSourceChanges = async (
   source: SourceImage,
   previousSource?: SourceImage
 ): Promise<string> => {
-  const originalFileNameOnDisk = `original.${getFileExtension(source.fileName, source.mimeType)}`;
+  const defaultOriginalFileName = `original.${getFileExtension(source.fileName, source.mimeType)}`;
   const manifestPath = getNormalizedAssetManifestPath(
     source.manifestPath ?? previousSource?.manifestPath,
-    originalFileNameOnDisk,
+    defaultOriginalFileName,
     getDefaultSourceManifestPath(source)
   );
   const originalFilePath =
@@ -398,7 +399,8 @@ const writeSourceChanges = async (
       ? toProjectRelativePath(source.originalFilePath)
       : previousSource?.originalFilePath
         ? toProjectRelativePath(previousSource.originalFilePath)
-        : joinPath(getParentPath(manifestPath), originalFileNameOnDisk);
+        : joinPath(getParentPath(manifestPath), defaultOriginalFileName);
+  const originalFileNameOnDisk = getFileName(originalFilePath);
   if (!previousSource || source.originalFile !== previousSource.originalFile) {
     await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
   }
@@ -415,17 +417,18 @@ const writeSourceChanges = async (
 };
 
 const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage): Promise<string> => {
-  const imageFileName = 'image.png';
-  const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, imageFileName, getDefaultSyntheticManifestPath(item));
+  const defaultImageFileName = 'image.png';
+  const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultSyntheticManifestPath(item));
   const imageDataPath = item.imageDataPath
     ? toProjectRelativePath(item.imageDataPath)
-    : joinPath(getParentPath(manifestPath), imageFileName);
-  const psdFileName = item.psdData ? 'image.psd' : undefined;
+    : joinPath(getParentPath(manifestPath), defaultImageFileName);
+  const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
     ? item.psdDataPath
       ? toProjectRelativePath(item.psdDataPath)
       : joinPath(getParentPath(manifestPath), 'image.psd')
     : undefined;
+  const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   await writeBlobFileAtPath(root, imageDataPath, item.imageData);
   if (item.psdData && psdFileName) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), psdFileName), item.psdData);
@@ -446,10 +449,10 @@ const writeSyntheticChanges = async (
   item: SyntheticImage,
   previousItem?: SyntheticImage
 ): Promise<string> => {
-  const imageFileName = 'image.png';
+  const defaultImageFileName = 'image.png';
   const manifestPath = getNormalizedAssetManifestPath(
     item.manifestPath ?? previousItem?.manifestPath,
-    imageFileName,
+    defaultImageFileName,
     getDefaultSyntheticManifestPath(item)
   );
   const imageDataPath =
@@ -457,8 +460,8 @@ const writeSyntheticChanges = async (
       ? toProjectRelativePath(item.imageDataPath)
       : previousItem?.imageDataPath
         ? toProjectRelativePath(previousItem.imageDataPath)
-        : joinPath(getParentPath(manifestPath), imageFileName);
-  const psdFileName = item.psdData ? 'image.psd' : undefined;
+        : joinPath(getParentPath(manifestPath), defaultImageFileName);
+  const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
     ? item.psdDataPath
       ? toProjectRelativePath(item.psdDataPath)
@@ -466,6 +469,7 @@ const writeSyntheticChanges = async (
         ? toProjectRelativePath(previousItem.psdDataPath)
         : joinPath(getParentPath(manifestPath), 'image.psd')
     : undefined;
+  const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   if (!previousItem || item.imageData !== previousItem.imageData) {
     await writeBlobFileAtPath(root, imageDataPath, item.imageData);
   }
