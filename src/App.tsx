@@ -8,8 +8,11 @@ import {
   ArrowLeft,
   BarChart3,
   Brush,
+  ChevronDown,
+  ChevronRight,
   Download,
   ExternalLink,
+  File,
   FilePlus,
   FolderOpen,
   Grip,
@@ -19,6 +22,7 @@ import {
   Minimize2,
   Moon,
   PanelBottom,
+  PanelLeft,
   PanelRight,
   Pencil,
   Plus,
@@ -44,6 +48,7 @@ import {
   clearProjectDirectory,
   pickProjectDirectory,
   projectDirectoryHasManifest,
+  PROJECT_DIRECTORY_MANIFEST,
   readProjectDirectory,
   writeProjectDirectoryChanges,
   type ProjectDirectoryHandle,
@@ -53,6 +58,7 @@ import {
   saveLocalTaggerFileHandle,
   type LocalTaggerFileKey,
 } from './services/tagging/localTaggerFileSettings';
+import { createOperationLogger } from './services/logging/applicationLog';
 import { type BrickColumnCount, type StageName } from './types';
 import './App.css';
 
@@ -79,8 +85,10 @@ const WORKSPACE_LAYOUT_STORAGE_KEY = 'dataset-creator-workspace-layout';
 
 type WorkspaceLayout = {
   openTabs: StageName[];
+  leftPanelOpen: boolean;
   rightPanelOpen: boolean;
   bottomPanelOpen: boolean;
+  leftPanelWidth: number;
   rightPanelWidth: number;
   bottomPanelHeight: number;
   projectWindow: FloatingPanelState;
@@ -122,9 +130,11 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
     };
 
     return {
-      openTabs: openTabs?.length ? Array.from(new Set(openTabs)) : undefined,
+      openTabs: openTabs ? Array.from(new Set(openTabs)) : undefined,
+      leftPanelOpen: typeof value.leftPanelOpen === 'boolean' ? value.leftPanelOpen : undefined,
       rightPanelOpen: typeof value.rightPanelOpen === 'boolean' ? value.rightPanelOpen : undefined,
       bottomPanelOpen: typeof value.bottomPanelOpen === 'boolean' ? value.bottomPanelOpen : undefined,
+      leftPanelWidth: isFiniteNumber(value.leftPanelWidth) ? value.leftPanelWidth : undefined,
       rightPanelWidth: isFiniteNumber(value.rightPanelWidth) ? value.rightPanelWidth : undefined,
       bottomPanelHeight: isFiniteNumber(value.bottomPanelHeight) ? value.bottomPanelHeight : undefined,
       projectWindow: readPanel(value.projectWindow, {
@@ -420,6 +430,171 @@ const FloatingWorkspacePanel = ({
   );
 };
 
+type ExplorerTreeNode = {
+  name: string;
+  path: string;
+  kind: 'folder' | 'file';
+  children?: ExplorerTreeNode[];
+};
+
+const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
+  [...nodes].sort((a, b) => {
+    if (a.kind !== b.kind) {
+      return a.kind === 'folder' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+const readExplorerDirectory = async (
+  directory: ProjectDirectoryHandle,
+  name = 'Project',
+  path = 'Project'
+): Promise<ExplorerTreeNode> => {
+  const children: ExplorerTreeNode[] = [];
+
+  for await (const [entryName, entry] of directory.entries()) {
+    const childPath = `${path}/${entryName}`;
+    if ('entries' in entry) {
+      children.push(await readExplorerDirectory(entry, entryName, childPath));
+    } else {
+      children.push({ name: entryName, path: childPath, kind: 'file' });
+    }
+  }
+
+  return {
+    name,
+    path,
+    kind: 'folder',
+    children: sortExplorerNodes(children),
+  };
+};
+
+const getFileExtension = (fileName: string, mimeType: string): string => {
+  const extension = fileName.split('.').pop()?.toLowerCase();
+  if (extension && extension !== fileName.toLowerCase()) {
+    return extension;
+  }
+
+  return mimeType.split('/')[1] || 'bin';
+};
+
+const buildWorkspaceExplorerTree = (
+  projectName: string,
+  sourceImages: ReturnType<typeof useProjectStore.getState>['sourceImages'],
+  datasetItems: ReturnType<typeof useProjectStore.getState>['datasetItems']
+): ExplorerTreeNode => ({
+  name: projectName || 'Project',
+  path: 'Project',
+  kind: 'folder',
+  children: sortExplorerNodes([
+    { name: PROJECT_DIRECTORY_MANIFEST, path: `Project/${PROJECT_DIRECTORY_MANIFEST}`, kind: 'file' },
+    {
+      name: 'sources',
+      path: 'Project/sources',
+      kind: 'folder',
+      children: sortExplorerNodes(
+        Object.values(sourceImages).map((source) => ({
+          name: source.id,
+          path: `Project/sources/${source.id}`,
+          kind: 'folder',
+          children: sortExplorerNodes([
+            {
+              name: `original.${getFileExtension(source.fileName, source.mimeType)}`,
+              path: `Project/sources/${source.id}/original.${getFileExtension(source.fileName, source.mimeType)}`,
+              kind: 'file',
+            },
+            {
+              name: 'manifest.json',
+              path: `Project/sources/${source.id}/manifest.json`,
+              kind: 'file',
+            },
+          ]),
+        }))
+      ),
+    },
+    {
+      name: 'synthetic',
+      path: 'Project/synthetic',
+      kind: 'folder',
+      children: sortExplorerNodes(
+        Object.values(datasetItems).map((item) => ({
+          name: item.id,
+          path: `Project/synthetic/${item.id}`,
+          kind: 'folder',
+          children: sortExplorerNodes([
+            { name: 'image.png', path: `Project/synthetic/${item.id}/image.png`, kind: 'file' },
+            ...(item.psdData
+              ? [{ name: 'image.psd', path: `Project/synthetic/${item.id}/image.psd`, kind: 'file' as const }]
+              : []),
+            { name: 'manifest.json', path: `Project/synthetic/${item.id}/manifest.json`, kind: 'file' },
+          ]),
+        }))
+      ),
+    },
+  ]),
+});
+
+type ExplorerTreeProps = {
+  node: ExplorerTreeNode;
+  expandedPaths: Set<string>;
+  onToggle: (path: string) => void;
+  depth?: number;
+};
+
+const ExplorerTree = ({ node, expandedPaths, onToggle, depth = 0 }: ExplorerTreeProps) => {
+  const isFolder = node.kind === 'folder';
+  const isExpanded = isFolder && expandedPaths.has(node.path);
+
+  return (
+    <div>
+      <button
+        type="button"
+        disabled={!isFolder}
+        onClick={() => isFolder && onToggle(node.path)}
+        className="flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary disabled:cursor-default disabled:hover:bg-transparent"
+        style={{ paddingLeft: 4 + depth * 12 }}
+        title={node.path}
+      >
+        {isFolder ? (
+          isExpanded ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          )
+        ) : (
+          <span className="w-3.5 shrink-0" />
+        )}
+        {isFolder ? (
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+      </button>
+      {isExpanded &&
+        node.children?.map((child) => (
+          <ExplorerTree
+            key={child.path}
+            node={child}
+            expandedPaths={expandedPaths}
+            onToggle={onToggle}
+            depth={depth + 1}
+          />
+        ))}
+    </div>
+  );
+};
+
+const EmptyWorkspacePlaceholder = () => (
+  <div className="flex h-full min-h-[20rem] items-center justify-center text-center">
+    <div className="text-muted-foreground">
+      <Archive className="mx-auto mb-3 h-8 w-8 opacity-60" />
+      <p className="text-sm font-medium text-foreground">No tool is open</p>
+      <p className="mt-1 text-xs">Open one from the Tools menu</p>
+    </div>
+  </div>
+);
+
 function App() {
   const projectName = useProjectStore((state) => state.name);
   const currentStage = useProjectStore((state) => state.currentStage);
@@ -448,6 +623,7 @@ function App() {
     setTaggingModal,
     addNotification,
     notifications,
+    operationLogs,
     removeNotification,
     projectDirectoryHandle,
     projectDirectoryName,
@@ -462,10 +638,18 @@ function App() {
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const [openTabs, setOpenTabs] = useState<StageName[]>(storedWorkspaceLayout.openTabs ?? ['hub']);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(storedWorkspaceLayout.leftPanelOpen ?? true);
   const [rightPanelOpen, setRightPanelOpen] = useState(storedWorkspaceLayout.rightPanelOpen ?? true);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(storedWorkspaceLayout.bottomPanelOpen ?? false);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(storedWorkspaceLayout.leftPanelWidth ?? 260);
   const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
+  const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
+  const [explorerStatus, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
+  const [explorerError, setExplorerError] = useState<string | null>(null);
+  const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
+    () => new Set(['Project', 'Project/sources', 'Project/synthetic'])
+  );
   const [projectWindow, setProjectWindow] = useState<FloatingPanelState>({
     ...storedWorkspaceLayout.projectWindow,
     x: storedWorkspaceLayout.projectWindow?.x ?? 92,
@@ -498,7 +682,7 @@ function App() {
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
   const dockResizeRef = useRef<{
-    kind: 'right' | 'bottom';
+    kind: 'left' | 'right' | 'bottom';
     startX: number;
     startY: number;
     origin: number;
@@ -522,6 +706,7 @@ function App() {
     const stageFromUrl = readStageFromUrl();
     if (stageFromUrl) {
       setCurrentStage(stageFromUrl);
+      setOpenTabs((tabs) => (tabs.includes(stageFromUrl) ? tabs : [...tabs, stageFromUrl]));
     }
     setIsUrlStageReady(true);
 
@@ -529,6 +714,7 @@ function App() {
       const nextStage = readStageFromUrl();
       if (nextStage) {
         setCurrentStage(nextStage);
+        setOpenTabs((tabs) => (tabs.includes(nextStage) ? tabs : [...tabs, nextStage]));
       }
     };
 
@@ -580,6 +766,9 @@ function App() {
               projectSessionRef.current === sessionId &&
               useUIStore.getState().projectDirectoryHandle === directoryHandle
             ) {
+              createOperationLogger('Project').error(
+                error instanceof Error ? error.message : 'failed to auto-save project directory'
+              );
               addNotification(
                 'error',
                 error instanceof Error ? error.message : 'Failed to auto-save project directory'
@@ -602,7 +791,11 @@ function App() {
         return;
       }
 
-      if (resize.kind === 'right') {
+      if (resize.kind === 'left') {
+        setLeftPanelWidth(
+          Math.max(200, Math.min(420, resize.origin + (event.clientX - resize.startX)))
+        );
+      } else if (resize.kind === 'right') {
         setRightPanelWidth(
           Math.max(220, Math.min(460, resize.origin - (event.clientX - resize.startX)))
         );
@@ -634,10 +827,6 @@ function App() {
   }, [currentStage, setCurrentStage]);
 
   useEffect(() => {
-    setOpenTabs((tabs) => (tabs.includes(currentStage) ? tabs : [...tabs, currentStage]));
-  }, [currentStage]);
-
-  useEffect(() => {
     if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen) {
       return;
     }
@@ -656,8 +845,9 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [fileMenuOpen, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
 
-  const showEditToolbar = currentStage === 'clean' && editToolbar.visible;
-  const showTaggingToolbar = currentStage === 'tagging';
+  const activeStage = openTabs.includes(currentStage) ? currentStage : null;
+  const showEditToolbar = activeStage === 'clean' && editToolbar.visible;
+  const showTaggingToolbar = activeStage === 'tagging';
   const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
@@ -675,16 +865,12 @@ function App() {
   };
 
   const closeTab = (stage: StageName) => {
-    if (stage === 'hub' && openTabs.length === 1) {
-      return;
-    }
-
     const tabIndex = openTabs.indexOf(stage);
     const nextTabs = openTabs.filter((tab) => tab !== stage);
-    const nextStage = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? 'hub';
-    setOpenTabs(nextTabs.length > 0 ? nextTabs : ['hub']);
+    const nextStage = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? null;
+    setOpenTabs(nextTabs);
 
-    if (currentStage === stage) {
+    if (currentStage === stage && nextStage) {
       navigateToStage(nextStage);
     }
   };
@@ -714,8 +900,10 @@ function App() {
         WORKSPACE_LAYOUT_STORAGE_KEY,
         JSON.stringify({
           openTabs,
+          leftPanelOpen,
           rightPanelOpen,
           bottomPanelOpen,
+          leftPanelWidth,
           rightPanelWidth,
           bottomPanelHeight,
           projectWindow,
@@ -732,6 +920,8 @@ function App() {
     bottomPanelOpen,
     inspectorWindow,
     inspectorWindowOpen,
+    leftPanelOpen,
+    leftPanelWidth,
     openTabs,
     projectWindow,
     projectWindowOpen,
@@ -740,14 +930,68 @@ function App() {
   ]);
 
   useEffect(() => {
+    let canceled = false;
+
+    const loadExplorerTree = async () => {
+      if (projectDirectoryHandle) {
+        setExplorerStatus('loading');
+        setExplorerError(null);
+        try {
+          const tree = await readExplorerDirectory(
+            projectDirectoryHandle,
+            projectDirectoryName ?? projectDirectoryHandle.name,
+            'Project'
+          );
+          if (!canceled) {
+            setExplorerTree(tree);
+            setExplorerStatus('ready');
+          }
+        } catch (error) {
+          if (!canceled) {
+            setExplorerTree(buildWorkspaceExplorerTree(projectName, sourceImagesById, datasetItemsById));
+            setExplorerStatus('error');
+            setExplorerError(error instanceof Error ? error.message : 'Unable to read project files');
+          }
+        }
+        return;
+      }
+
+      setExplorerTree(buildWorkspaceExplorerTree(projectName, sourceImagesById, datasetItemsById));
+      setExplorerStatus('ready');
+      setExplorerError(null);
+    };
+
+    void loadExplorerTree();
+
+    return () => {
+      canceled = true;
+    };
+  }, [datasetItemsById, projectDirectoryHandle, projectDirectoryName, projectName, sourceImagesById]);
+
+  const toggleExplorerPath = (path: string) => {
+    setExpandedExplorerPaths((paths) => {
+      const next = new Set(paths);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
     const handleWorkspaceShortcut = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) {
         return;
       }
 
       if (event.key.toLowerCase() === 'w') {
+        if (!activeStage) {
+          return;
+        }
         event.preventDefault();
-        closeTab(currentStage);
+        closeTab(activeStage);
         return;
       }
 
@@ -756,7 +1000,7 @@ function App() {
           return;
         }
         event.preventDefault();
-        const currentIndex = Math.max(0, openTabs.indexOf(currentStage));
+        const currentIndex = Math.max(0, activeStage ? openTabs.indexOf(activeStage) : 0);
         const direction = event.key === 'PageUp' ? -1 : 1;
         const nextIndex = (currentIndex + direction + openTabs.length) % openTabs.length;
         navigateToStage(openTabs[nextIndex]);
@@ -765,7 +1009,7 @@ function App() {
 
     window.addEventListener('keydown', handleWorkspaceShortcut);
     return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
-  }, [currentStage, openTabs]);
+  }, [activeStage, openTabs]);
 
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
@@ -892,10 +1136,14 @@ function App() {
     addNotification('error', error instanceof Error ? error.message : message);
   };
 
+  const isAbortError = (error: unknown): boolean =>
+    error instanceof DOMException && error.name === 'AbortError';
+
   const handleNewProject = async () => {
     if (projectOperationBusyRef.current) {
       return;
     }
+    const logger = createOperationLogger('Project');
     setFileMenuOpen(false);
     if (workspaceImages.length > 0 && !window.confirm('Create a new project and clear the current workspace?')) {
       return;
@@ -904,17 +1152,21 @@ function App() {
     projectOperationBusyRef.current = true;
     setIsProjectDirectoryBusy(true);
     try {
+      logger.info('selecting parent directory');
       const parentDirectory = await pickProjectDirectory();
       const nextName = window.prompt('Project name', 'Untitled Project')?.trim();
       if (!nextName) {
+        logger.warning('new project canceled');
         return;
       }
 
+      logger.info(`creating project directory ${nextName}`);
       const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
       if (
         (await projectDirectoryHasManifest(directory)) &&
         !window.confirm(`Overwrite the Dataset Creator project in "${nextName}"?`)
       ) {
+        logger.warning(`new project canceled before overwriting ${nextName}`);
         return;
       }
       projectSessionRef.current += 1;
@@ -922,11 +1174,16 @@ function App() {
       setProjectDirectory(undefined);
       initializeProject(nextName);
       const project = useProjectStore.getState();
+      logger.info('writing project manifest and folders');
       await clearProjectDirectory(directory);
       await createProjectDirectory(directory, project);
       setProjectDirectory({ handle: directory, name: directory.name });
+      logger.success(`created project directory ${directory.name}`);
       addNotification('success', 'New project directory created');
     } catch (error) {
+      if (!isAbortError(error)) {
+        logger.error(error instanceof Error ? error.message : 'failed to create project directory');
+      }
       handleProjectFileError(error, 'Failed to create project directory');
     } finally {
       projectOperationBusyRef.current = false;
@@ -935,12 +1192,15 @@ function App() {
   };
 
   const openProjectDirectory = async (directory: ProjectDirectoryHandle) => {
+    const logger = createOperationLogger('Project');
+    logger.info(`opening project directory ${directory.name}`);
     const project = await readProjectDirectory(directory);
     projectSessionRef.current += 1;
     autoSaveQueueRef.current = Promise.resolve();
     setProjectDirectory(undefined);
     loadProject(project);
     setProjectDirectory({ handle: directory, name: directory.name });
+    logger.success(`opened project directory ${directory.name}`);
     addNotification('success', 'Project directory opened');
   };
 
@@ -955,6 +1215,11 @@ function App() {
       const directory = await pickProjectDirectory();
       await openProjectDirectory(directory);
     } catch (error) {
+      if (!isAbortError(error)) {
+        createOperationLogger('Project').error(
+          error instanceof Error ? error.message : 'failed to open project directory'
+        );
+      }
       handleProjectFileError(error, 'Failed to open project directory');
     } finally {
       projectOperationBusyRef.current = false;
@@ -1036,23 +1301,6 @@ function App() {
                   <Pencil className="h-4 w-4" />
                   <span className="flex-1">Rename</span>
                 </button>
-                <div className="my-1 h-px bg-border" />
-                <button
-                  type="button"
-                  onClick={() => navigateToStage('import')}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Upload className="h-4 w-4" />
-                  <span className="flex-1">Import Images</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigateToStage('export')}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Download className="h-4 w-4" />
-                  <span className="flex-1">Export Dataset</span>
-                </button>
               </div>
             )}
           </div>
@@ -1113,7 +1361,7 @@ function App() {
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
                 {STAGES.map((stage) => {
                   const Icon = stage === 'hub' ? Archive : toolIcons[stage];
-                  const active = currentStage === stage;
+                  const active = activeStage === stage;
                   return (
                     <button
                       type="button"
@@ -1149,6 +1397,18 @@ function App() {
             </button>
             {windowsMenuOpen && (
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLeftPanelOpen((open) => !open);
+                    setWindowsMenuOpen(false);
+                  }}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <PanelLeft className="h-4 w-4" />
+                  <span className="flex-1">Explorer</span>
+                  {leftPanelOpen && <Check className="h-4 w-4" />}
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1214,7 +1474,7 @@ function App() {
           <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
             {openTabs.map((tab) => {
               const Icon = tab === 'hub' ? Archive : toolIcons[tab];
-              const active = currentStage === tab;
+              const active = activeStage === tab;
               return (
                 <div
                   key={tab}
@@ -1517,6 +1777,62 @@ function App() {
         />
 
         <div className="flex min-h-0 flex-1">
+          {leftPanelOpen && (
+            <aside
+              className="workspace-dock-left relative flex min-h-0 shrink-0 flex-col border-r border-border bg-card"
+              style={{ width: leftPanelWidth }}
+            >
+              <button
+                type="button"
+                aria-label="Resize explorer panel"
+                className="workspace-dock-resize-vertical absolute inset-y-0 -right-1 z-10 w-2 cursor-ew-resize bg-transparent hover:bg-primary/60"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  dockResizeRef.current = {
+                    kind: 'left',
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    origin: leftPanelWidth,
+                  };
+                  document.body.style.cursor = 'ew-resize';
+                  document.body.style.userSelect = 'none';
+                }}
+              />
+              <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
+                <div className="flex min-w-0 items-center gap-2 text-xs font-semibold">
+                  <PanelLeft className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">Explorer</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLeftPanelOpen(false)}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="Close explorer"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto p-2">
+                {explorerStatus === 'loading' && (
+                  <p className="px-2 py-1 text-xs text-muted-foreground">Reading project files...</p>
+                )}
+                {explorerError && (
+                  <p className="mb-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-600">
+                    Showing workspace state. {explorerError}
+                  </p>
+                )}
+                {explorerTree ? (
+                  <ExplorerTree
+                    node={explorerTree}
+                    expandedPaths={expandedExplorerPaths}
+                    onToggle={toggleExplorerPath}
+                  />
+                ) : (
+                  <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
+                )}
+              </div>
+            </aside>
+          )}
           <section className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col">
           <div
@@ -1536,7 +1852,7 @@ function App() {
                   </div>
                 }
               >
-                {renderTool(currentStage)}
+                {activeStage ? renderTool(activeStage) : <EmptyWorkspacePlaceholder />}
               </Suspense>
             </div>
           </div>
@@ -1576,11 +1892,27 @@ function App() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div className="mt-2 min-h-0 flex-1 overflow-auto font-mono text-[11px] text-muted-foreground">
-                  <p className="text-emerald-400">workspace ready</p>
-                  <p>active tool: {STAGE_LABELS[currentStage]}</p>
-                  <p>scope: {workspaceImages.length} images</p>
-                  <p>source: {sourceImages.length} / synthetic: {datasetItems.length}</p>
+                <div className="mt-2 min-h-0 flex-1 overflow-auto font-mono text-[11px]">
+                  {operationLogs.map((entry) => {
+                    const time = entry.timestamp.toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    });
+                    const levelClass =
+                      entry.level === 'error'
+                        ? 'text-destructive'
+                        : entry.level === 'warning'
+                          ? 'text-yellow-500'
+                          : entry.level === 'success'
+                            ? 'text-emerald-500'
+                            : 'text-muted-foreground';
+                    return (
+                      <p key={entry.id} className={levelClass}>
+                        [{time}] {entry.level.toUpperCase().padEnd(7, ' ')} {entry.message}
+                      </p>
+                    );
+                  })}
                 </div>
               </div>
             </section>
@@ -1623,8 +1955,10 @@ function App() {
                 <div className="space-y-4 text-xs">
                   <div>
                     <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Active tool</p>
-                    <p className="font-medium">{STAGE_LABELS[currentStage]}</p>
-                    <p className="mt-1 text-muted-foreground">{TOOL_DESCRIPTIONS[currentStage]}</p>
+                    <p className="font-medium">{activeStage ? STAGE_LABELS[activeStage] : 'No tool open'}</p>
+                    <p className="mt-1 text-muted-foreground">
+                      {activeStage ? TOOL_DESCRIPTIONS[activeStage] : 'Open one from the Tools menu'}
+                    </p>
                   </div>
                   <div className="border-t border-border pt-3">
                     <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Workspace</p>
@@ -1702,6 +2036,9 @@ function App() {
               <div>
                 <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Open editors</p>
                 <div className="space-y-1">
+                  {openTabs.length === 0 && (
+                    <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
+                  )}
                   {openTabs.map((tab) => {
                     const Icon = tab === 'hub' ? Archive : toolIcons[tab];
                     return (
@@ -1710,7 +2047,7 @@ function App() {
                         key={tab}
                         onClick={() => navigateToStage(tab)}
                         className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
-                          currentStage === tab ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
+                          activeStage === tab ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
                         }`}
                       >
                         <Icon className="h-3.5 w-3.5" />
@@ -1747,7 +2084,7 @@ function App() {
             <div className="space-y-4 text-xs">
               <div>
                 <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Selection</p>
-                <p className="font-medium">{STAGE_LABELS[currentStage]}</p>
+                <p className="font-medium">{activeStage ? STAGE_LABELS[activeStage] : 'No tool open'}</p>
                 <p className="mt-1 text-muted-foreground">{workspaceImages.length} images in scope</p>
               </div>
               <div className="border-t border-border pt-3">

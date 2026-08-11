@@ -14,6 +14,7 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { getImageDimensions, createThumbnail } from '../../services/image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
+import { createOperationLogger, shouldLogProgress } from '../../services/logging/applicationLog';
 
 import { Upload, Trash2 } from 'lucide-react';
 
@@ -59,6 +60,7 @@ export const ImportStage = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const importLogger = useRef(createOperationLogger('Import'));
 
   const logDev = useCallback((scope: string, message: string, value: number) => {
     if (import.meta.env.DEV) {
@@ -69,7 +71,7 @@ export const ImportStage = () => {
   const processImportedFile = useCallback(
     async (file: File, tags: string[] = []): Promise<SourceImage | null> => {
       if (!SUPPORTED_FORMATS.includes(file.type)) {
-        console.warn(`Skipping ${file.name}: unsupported format`);
+        importLogger.current.warning(`skipped unsupported file ${file.name}`);
         return null;
       }
 
@@ -114,8 +116,11 @@ export const ImportStage = () => {
       }
 
       const importedImages: SourceImage[] = [];
+      const imageEntries = entries.filter((entry) => IMAGE_EXTENSION_TYPES.has(getArchiveExtension(entry.name)));
+      importLogger.current.info(`archive ${file.name} contains ${imageEntries.length} image files`);
 
-      for (const entry of entries) {
+      for (let i = 0; i < imageEntries.length; i++) {
+        const entry = imageEntries[i];
         const extension = getArchiveExtension(entry.name);
         const mimeType = IMAGE_EXTENSION_TYPES.get(extension);
 
@@ -134,6 +139,15 @@ export const ImportStage = () => {
         if (sourceImage) {
           importedImages.push(sourceImage);
         }
+
+        const current = i + 1;
+        if (shouldLogProgress(current, imageEntries.length)) {
+          importLogger.current.progress({
+            current,
+            total: imageEntries.length,
+            label: `processing ${file.name}`,
+          });
+        }
       }
 
       return importedImages;
@@ -149,10 +163,13 @@ export const ImportStage = () => {
 
       setIsLoading(true);
       logDev('import', 'received files', files.length);
+      importLogger.current.info(`starting image import from ${files.length} selected file${files.length !== 1 ? 's' : ''}`);
       const newImages: SourceImage[] = [];
+      let skippedCount = 0;
 
       try {
-        for (const file of files) {
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
           try {
             if (isArchiveFile(file)) {
               const archiveImages = await processArchiveFile(file);
@@ -164,11 +181,25 @@ export const ImportStage = () => {
 
             if (sourceImage) {
               newImages.push(sourceImage);
+            } else {
+              skippedCount += 1;
             }
           } catch (error) {
             console.error(`Failed to process ${file.name}:`, error);
+            importLogger.current.error(
+              `failed to process ${file.name}: ${error instanceof Error ? error.message : 'unknown error'}`
+            );
             addNotification('error', `Failed to process ${file.name}`);
           }
+
+          const current = i + 1;
+          if (shouldLogProgress(current, files.length)) {
+            importLogger.current.progress({ current, total: files.length, label: 'processed selections' });
+          }
+        }
+
+        if (skippedCount > 0) {
+          importLogger.current.warning(`${skippedCount} unsupported file${skippedCount !== 1 ? 's' : ''} skipped`);
         }
 
         if (newImages.length > 0) {
@@ -183,9 +214,15 @@ export const ImportStage = () => {
             'success',
             `Imported ${newImages.length} image${newImages.length !== 1 ? 's' : ''}`
           );
+          importLogger.current.success(`completed: imported ${newImages.length} image${newImages.length !== 1 ? 's' : ''}`);
+        } else {
+          importLogger.current.warning('completed with no images imported');
         }
 
         return newImages.length;
+      } catch (error) {
+        importLogger.current.error(error instanceof Error ? error.message : 'image import failed');
+        throw error;
       } finally {
         setIsLoading(false);
       }

@@ -44,6 +44,13 @@ interface UIState {
     message: string;
     timestamp: Date;
   }>;
+
+  operationLogs: Array<{
+    id: string;
+    level: 'info' | 'warning' | 'error' | 'success';
+    message: string;
+    timestamp: Date;
+  }>;
 }
 
 interface UIActions {
@@ -74,6 +81,10 @@ interface UIActions {
   // Notifications
   addNotification: (type: UIState['notifications'][0]['type'], message: string) => void;
   removeNotification: (id: string) => void;
+
+  // Operation log
+  addOperationLog: (level: UIState['operationLogs'][0]['level'], message: string) => void;
+  clearOperationLogs: () => void;
 }
 
 export const useUIStore = create<UIState & UIActions>((set, get) => ({
@@ -99,6 +110,14 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
     settings: false,
   },
   notifications: [],
+  operationLogs: [
+    {
+      id: 'session-start',
+      level: 'success',
+      message: 'Workspace ready',
+      timestamp: new Date(),
+    },
+  ],
   
   toggleSourceImageSelection: (id: string) =>
     set((state) => {
@@ -219,4 +238,16 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
     set((state) => ({
       notifications: state.notifications.filter((n) => n.id !== id),
     })),
+
+  addOperationLog: (level, message) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    set((state) => ({
+      operationLogs: [
+        ...state.operationLogs.slice(-999),
+        { id, level, message, timestamp: new Date() },
+      ],
+    }));
+  },
+
+  clearOperationLogs: () => set({ operationLogs: [] }),
 }));

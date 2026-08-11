@@ -8,6 +8,7 @@ import {
   getExportBasename,
   saveDirectoryViaFilesystemAPI,
 } from '../../services/export/exportService';
+import { createOperationLogger } from '../../services/logging/applicationLog';
 import { toWorkspaceImages, getWorkspaceKindBadgeClass } from '../../lib/workspaceImages';
 import { AlertCircle, Download, FolderOpen } from 'lucide-react';
 
@@ -54,45 +55,56 @@ export const ExportStage = () => {
 
   const handleExport = async () => {
     if (exportItems.length === 0) {
+      createOperationLogger('Export').warning('no images to export');
       addNotification('warning', 'No images to export');
       return;
     }
 
     setIsExporting(true);
+    const logger = createOperationLogger('Export');
+    logger.info(`preparing ${exportItems.length} image${exportItems.length !== 1 ? 's' : ''}`);
 
     try {
       // Try directory API if selected
       if (exportMethod === 'directory') {
+        logger.info('starting directory export');
         const success = await saveDirectoryViaFilesystemAPI(
           {
             datasetKeyword: taggingConfig.datasetKeyword,
             items: exportItems,
           },
-          taggingConfig.blacklist
+          taggingConfig.blacklist,
+          logger
         );
 
         if (success) {
+          logger.success(`completed directory export: ${exportItems.length} images`);
           addNotification('success', `Exported ${exportItems.length} images and tag files`);
           setIsExporting(false);
           return;
         }
 
+        logger.warning('using ZIP fallback');
         addNotification('info', 'Directory API not available, using ZIP fallback');
       }
 
       // Fallback to ZIP
+      logger.info('starting ZIP export');
       const zipBlob = await exportAsZip(
         {
           datasetKeyword: taggingConfig.datasetKeyword,
           items: exportItems,
         },
-        taggingConfig.blacklist
+        taggingConfig.blacklist,
+        logger
       );
 
       downloadZipFile(zipBlob, `dataset-${new Date().toISOString().split('T')[0]}.zip`);
+      logger.success(`completed ZIP export: ${exportItems.length} images`);
       addNotification('success', `Exported ${exportItems.length} images as ZIP`);
     } catch (error) {
       console.error('Export failed:', error);
+      logger.error(error instanceof Error ? error.message : 'failed to export images');
       addNotification('error', 'Failed to export images');
     } finally {
       setIsExporting(false);

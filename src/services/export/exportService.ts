@@ -5,6 +5,8 @@
 
 import JSZip from 'jszip';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
+import type { OperationLogger } from '../logging/applicationLog';
+import { shouldLogProgress } from '../logging/applicationLog';
 
 interface ExportConfig {
   datasetKeyword: string;
@@ -53,7 +55,11 @@ export const generateTagString = (
 /**
  * Export as ZIP
  */
-export const exportAsZip = async (config: ExportConfig, blacklist: string[] = []): Promise<Blob> => {
+export const exportAsZip = async (
+  config: ExportConfig,
+  blacklist: string[] = [],
+  logger?: OperationLogger
+): Promise<Blob> => {
   const zip = new JSZip();
 
   for (let i = 0; i < config.items.length; i++) {
@@ -66,8 +72,14 @@ export const exportAsZip = async (config: ExportConfig, blacklist: string[] = []
     // Generate and add TXT
     const tagString = generateTagString(item, config.datasetKeyword, blacklist);
     zip.file(`${basename}.txt`, tagString + '\n');
+
+    const current = i + 1;
+    if (logger && shouldLogProgress(current, config.items.length)) {
+      logger.progress({ current, total: config.items.length, label: 'prepared files' });
+    }
   }
 
+  logger?.info('compressing ZIP');
   return await zip.generateAsync({ type: 'blob' });
 };
 
@@ -76,10 +88,12 @@ export const exportAsZip = async (config: ExportConfig, blacklist: string[] = []
  */
 export const saveDirectoryViaFilesystemAPI = async (
   config: ExportConfig,
-  blacklist: string[]
+  blacklist: string[],
+  logger?: OperationLogger
 ): Promise<boolean> => {
   // Check if File System Access API is available
   if (!('showDirectoryPicker' in window)) {
+    logger?.warning('directory export unavailable in this browser');
     return false;
   }
 
@@ -102,10 +116,20 @@ export const saveDirectoryViaFilesystemAPI = async (
       const txtWriter = await txtHandle.createWritable();
       await txtWriter.write(tagString + '\n');
       await txtWriter.close();
+
+      const current = i + 1;
+      if (logger && shouldLogProgress(current, config.items.length)) {
+        logger.progress({ current, total: config.items.length, label: 'wrote images' });
+      }
     }
 
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      logger?.warning('directory export canceled');
+    } else {
+      logger?.error(error instanceof Error ? error.message : 'directory export failed');
+    }
     return false;
   }
 };
