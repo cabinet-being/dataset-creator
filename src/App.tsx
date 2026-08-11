@@ -2121,19 +2121,6 @@ function App() {
           </div>
         ) : null}
 
-        <div className="border-t border-border pt-3">
-          <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Workspace</p>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded border border-border bg-background p-2">
-              <p className="text-muted-foreground">Source</p>
-              <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
-            </div>
-            <div className="rounded border border-border bg-background p-2">
-              <p className="text-muted-foreground">Synthetic</p>
-              <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
-            </div>
-          </div>
-        </div>
       </div>
     );
   };
