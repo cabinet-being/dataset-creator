@@ -1456,6 +1456,48 @@ function App() {
     );
   };
 
+  const applyExplorerPathMoves = (path: string, moves: Array<{ from: string; to: string }>): string => {
+    for (const move of moves) {
+      if (path === move.from || path.startsWith(`${move.from}/`)) {
+        return path === move.from ? move.to : `${move.to}/${path.slice(move.from.length + 1)}`;
+      }
+    }
+    return path;
+  };
+
+  const updateExplorerClipboardForPathMoves = (moves: Array<{ from: string; to: string }>) => {
+    setExplorerClipboard((clipboard) => {
+      if (!clipboard) {
+        return clipboard;
+      }
+      return {
+        ...clipboard,
+        entries: clipboard.entries.map((entry) => {
+          const nextPath = applyExplorerPathMoves(entry.path, moves);
+          return {
+            ...entry,
+            path: nextPath,
+            name: nextPath.split('/').pop() ?? entry.name,
+          };
+        }),
+      };
+    });
+  };
+
+  const clearExplorerClipboardForDeletedPaths = (entries: ExplorerClipboardEntry[]) => {
+    setExplorerClipboard((clipboard) => {
+      if (
+        !clipboard ||
+        !clipboard.entries.some((clipboardEntry) =>
+          entries.some((entry) => clipboardEntry.path === entry.path || clipboardEntry.path.startsWith(`${entry.path}/`))
+        )
+      ) {
+        return clipboard;
+      }
+      return null;
+    });
+  };
+
   const applyProjectRelativePathMoves = (
     path: string | undefined,
     moves: Array<{ from: string; to: string }>
@@ -1518,6 +1560,7 @@ function App() {
             !entries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))
         )
       );
+      clearExplorerClipboardForDeletedPaths(entries);
       setSelectedExplorerPaths(new Set());
       refreshExplorer();
       addNotification('success', 'Explorer entry deleted');
@@ -1561,6 +1604,7 @@ function App() {
       if (explorerClipboard.mode === 'cut') {
         updateFileTabsForPathMoves(moves);
         updateWorkspacePathsForPathMoves(moves);
+        updateExplorerClipboardForPathMoves(moves);
         setExplorerClipboard(null);
       }
       setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
@@ -1607,6 +1651,7 @@ function App() {
         const moves = [{ from: edit.path, to: nextPath }];
         updateFileTabsForPathMoves(moves);
         updateWorkspacePathsForPathMoves(moves);
+        updateExplorerClipboardForPathMoves(moves);
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
       }
@@ -1632,6 +1677,7 @@ function App() {
       const moves = await moveExplorerEntries(directory, entries, destinationPath);
       updateFileTabsForPathMoves(moves);
       updateWorkspacePathsForPathMoves(moves);
+      updateExplorerClipboardForPathMoves(moves);
       setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
       setDraggedExplorerEntries(null);
       refreshExplorer();
