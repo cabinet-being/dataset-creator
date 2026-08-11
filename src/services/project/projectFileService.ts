@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
 import type {
   BrickColumnCount,
+  Dataset,
   ProjectState,
   SourceImage,
   StageName,
@@ -75,6 +76,15 @@ type ProjectFileTaggingConfig = Omit<TaggingConfig, 'autoTaggingEndpoint'>;
 
 type ProjectFileWorkspaceSettings = WorkspaceSettings;
 
+type DatasetManifest = {
+  id: string;
+  name: string;
+  triggerWord: string;
+  assetIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ProjectFileManifest = {
   format: 'dataset-creator-project';
   version: 1 | 2 | 3 | 4;
@@ -85,6 +95,7 @@ type ProjectFileManifest = {
     currentStage?: StageName;
     taggingConfig: ProjectFileTaggingConfig;
     workspaceSettings?: ProjectFileWorkspaceSettings;
+    datasets?: Record<string, DatasetManifest>;
     sourceImages?: Record<string, LegacySourceImageManifest>;
     datasetItems?: Record<string, LegacySyntheticImageManifest>;
     sourceImageManifests?: Record<string, string>;
@@ -180,6 +191,15 @@ const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggin
   const { autoTaggingEndpoint: _autoTaggingEndpoint, ...serializableConfig } = taggingConfig;
   return serializableConfig;
 };
+
+const serializeDatasetManifest = (dataset: Dataset): DatasetManifest => ({
+  id: dataset.id,
+  name: dataset.name,
+  triggerWord: dataset.triggerWord,
+  assetIds: dataset.assetIds,
+  createdAt: toIsoString(dataset.createdAt),
+  updatedAt: toIsoString(dataset.updatedAt),
+});
 
 const deserializeTaggingConfig = (
   taggingConfig: ProjectFileManifest['project']['taggingConfig']
@@ -291,6 +311,9 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       currentTool: getToolSlug(project.currentStage),
       sourceImageManifests,
       syntheticImageManifests,
+      datasets: Object.fromEntries(
+        Object.values(project.datasets).map((dataset) => [dataset.id, serializeDatasetManifest(dataset)])
+      ),
       taggingConfig: serializeTaggingConfig(project.taggingConfig),
       workspaceSettings: project.workspaceSettings,
       lastModified: toIsoString(project.lastModified, exportedAt),
@@ -496,6 +519,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     sourceImageManifests: _sourceImageManifestPaths,
     syntheticImageManifests: _syntheticImageManifestPaths,
     datasetItemManifests: _datasetItemManifestPaths,
+    datasets,
     cleanupOverlays: _cleanupOverlays,
     lastModified,
     createdAt,
@@ -508,11 +532,25 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   } = manifest.project;
   const loadedStageState = stageState as Partial<Record<string, unknown>>;
   const restoredCurrentStage = getStageFromToolSlug(currentTool, currentStage ?? 'hub');
+  const sourceIds = new Set(Object.keys(sourceImages));
 
   return {
     ...projectMetadata,
     sourceImages,
     datasetItems,
+    datasets: Object.fromEntries(
+      Object.values(datasets ?? {}).map((dataset) => [
+        dataset.id,
+        {
+          id: dataset.id,
+          name: dataset.name,
+          triggerWord: dataset.triggerWord,
+          assetIds: dataset.assetIds.filter((assetId) => sourceIds.has(assetId)),
+          createdAt: new Date(dataset.createdAt),
+          updatedAt: new Date(dataset.updatedAt),
+        },
+      ])
+    ),
     cleanupOverlays: {},
     currentStage: restoredCurrentStage,
     stageState: {

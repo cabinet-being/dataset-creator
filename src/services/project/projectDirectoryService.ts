@@ -1,6 +1,7 @@
 import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
 import {
   createProject,
+  type Dataset,
   type ProjectState,
   type SourceImage,
   type StageName,
@@ -47,12 +48,22 @@ type DirectoryProjectManifest = {
     currentStage: StageName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
+    datasets?: Record<string, DatasetManifest>;
     sourceImageManifests?: Record<string, string>;
     syntheticImageManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
     lastModified: string;
     createdAt: string;
   };
+};
+
+type DatasetManifest = {
+  id: string;
+  name: string;
+  triggerWord: string;
+  assetIds: string[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 type SourceManifest = {
@@ -310,6 +321,15 @@ const serializeSyntheticManifest = (
   exportOrder: item.exportOrder,
 });
 
+const serializeDatasetManifest = (dataset: Dataset): DatasetManifest => ({
+  id: dataset.id,
+  name: dataset.name,
+  triggerWord: dataset.triggerWord,
+  assetIds: dataset.assetIds,
+  createdAt: toIsoString(dataset.createdAt),
+  updatedAt: toIsoString(dataset.updatedAt),
+});
+
 const getProjectManifest = (
   project: ProjectState,
   paths: {
@@ -331,6 +351,9 @@ const getProjectManifest = (
       blacklist: project.taggingConfig.blacklist,
     },
     workspaceSettings: project.workspaceSettings,
+    datasets: Object.fromEntries(
+      Object.values(project.datasets).map((dataset) => [dataset.id, serializeDatasetManifest(dataset)])
+    ),
     sourceImageManifests: paths.sourceImageManifests,
     syntheticImageManifests: paths.syntheticImageManifests,
     lastModified: toIsoString(project.lastModified),
@@ -574,6 +597,7 @@ export const writeProjectDirectoryChanges = async (
     project.currentStage !== previousProject.currentStage ||
     project.taggingConfig !== previousProject.taggingConfig ||
     project.workspaceSettings !== previousProject.workspaceSettings ||
+    project.datasets !== previousProject.datasets ||
     project.lastModified !== previousProject.lastModified;
 
   if (metadataChanged) {
@@ -818,6 +842,19 @@ export const readProjectDirectory = async (
     currentStage: manifest.project.currentStage,
     sourceImages: Object.fromEntries(sources.map((source) => [source.id, source])),
     datasetItems: Object.fromEntries(synthetic.map((item) => [item.id, item])),
+    datasets: Object.fromEntries(
+      Object.values(manifest.project.datasets ?? {}).map((dataset) => [
+        dataset.id,
+        {
+          id: dataset.id,
+          name: dataset.name,
+          triggerWord: dataset.triggerWord,
+          assetIds: dataset.assetIds.filter((assetId) => sourceIds.has(assetId)),
+          createdAt: toDate(dataset.createdAt, new Date()),
+          updatedAt: toDate(dataset.updatedAt, new Date()),
+        },
+      ])
+    ),
     taggingConfig: {
       ...defaults.taggingConfig,
       ...manifest.project.taggingConfig,

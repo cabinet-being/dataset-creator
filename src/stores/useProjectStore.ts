@@ -8,7 +8,9 @@ import {
   TaggingConfig,
   WorkspaceSettings,
   createProject,
+  createDataset,
   CleanupOverlay,
+  Dataset,
 } from '../types';
 import { OBJECT_STORES } from '../lib/constants';
 import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
@@ -27,6 +29,12 @@ interface ProjectStore extends ProjectState {
   removeSourceImage: (id: string) => void;
   updateSourceImage: (id: string, updates: Partial<SourceImage>) => void;
   getSourceImages: () => SourceImage[];
+
+  // Datasets
+  createDataset: (name?: string) => Dataset;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'triggerWord' | 'assetIds'>>) => void;
+  removeDataset: (id: string) => void;
+  addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
   // Synthetic images
   addDatasetItem: (item: SyntheticImage) => void;
@@ -182,6 +190,16 @@ export const useProjectStore = create<ProjectStore>()(
             const remainingDatasetItems = Object.fromEntries(
               Object.entries(state.datasetItems).filter(([, item]) => item.sourceImageId !== id)
             );
+            const datasets = Object.fromEntries(
+              Object.entries(state.datasets).map(([datasetId, dataset]) => [
+                datasetId,
+                {
+                  ...dataset,
+                  assetIds: dataset.assetIds.filter((assetId) => assetId !== id),
+                  updatedAt: new Date(),
+                },
+              ])
+            );
             void dbDelete(OBJECT_STORES.SOURCE_IMAGES, id);
             for (const item of Object.values(state.datasetItems)) {
               if (item.sourceImageId === id) {
@@ -192,6 +210,7 @@ export const useProjectStore = create<ProjectStore>()(
               ...state,
               sourceImages: rest,
               datasetItems: remainingDatasetItems,
+              datasets,
               lastModified: new Date(),
             };
           }),
@@ -215,6 +234,78 @@ export const useProjectStore = create<ProjectStore>()(
           }),
         
         getSourceImages: () => Object.values(get().sourceImages),
+
+        createDataset: (name = 'New Dataset') => {
+          const dataset = createDataset(name);
+          set((state) => ({
+            ...state,
+            datasets: {
+              ...state.datasets,
+              [dataset.id]: dataset,
+            },
+            lastModified: new Date(),
+          }));
+          return dataset;
+        },
+
+        updateDataset: (id, updates) =>
+          set((state) => {
+            const dataset = state.datasets[id];
+            if (!dataset) {
+              return state;
+            }
+
+            return {
+              ...state,
+              datasets: {
+                ...state.datasets,
+                [id]: {
+                  ...dataset,
+                  ...updates,
+                  assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
+                  updatedAt: new Date(),
+                },
+              },
+              lastModified: new Date(),
+            };
+          }),
+
+        removeDataset: (id) =>
+          set((state) => {
+            const { [id]: _, ...datasets } = state.datasets;
+            return {
+              ...state,
+              datasets,
+              lastModified: new Date(),
+            };
+          }),
+
+        addAssetsToDataset: (id, assetIds) =>
+          set((state) => {
+            const dataset = state.datasets[id];
+            if (!dataset) {
+              return state;
+            }
+            const existingAssetIds = new Set(Object.keys(state.sourceImages));
+            const nextAssetIds = [
+              ...new Set([
+                ...dataset.assetIds,
+                ...assetIds.filter((assetId) => existingAssetIds.has(assetId)),
+              ]),
+            ];
+            return {
+              ...state,
+              datasets: {
+                ...state.datasets,
+                [id]: {
+                  ...dataset,
+                  assetIds: nextAssetIds,
+                  updatedAt: new Date(),
+                },
+              },
+              lastModified: new Date(),
+            };
+          }),
         
         addDatasetItem: (item: SyntheticImage) =>
           set((state) => {

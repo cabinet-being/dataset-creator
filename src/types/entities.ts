@@ -117,6 +117,17 @@ export interface TaggingConfig {
   blacklist: string[];
 }
 
+// ============ DATASETS ============
+
+export interface Dataset {
+  id: string;
+  name: string;
+  triggerWord: string;
+  assetIds: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // ============ WORKSPACE SETTINGS ============
 
 export type BrickColumnCount = 'auto' | 1 | 2 | 3 | 4 | 5;
@@ -149,6 +160,7 @@ export interface ProjectState {
   name: string;
   sourceImages: Record<string, SourceImage>;
   datasetItems: Record<string, SyntheticImage>;
+  datasets: Record<string, Dataset>;
   cleanupOverlays: Record<string, CleanupOverlay>;
   currentStage: StageName;
   stageState: Record<StageName, unknown>;
@@ -253,11 +265,21 @@ export const createCleanupOverlay = (imageId: string): CleanupOverlay => ({
   historyIndex: -1,
 });
 
+export const createDataset = (name = 'New Dataset'): Dataset => ({
+  id: uuidv4(),
+  name,
+  triggerWord: '',
+  assetIds: [],
+  createdAt: new Date(),
+  updatedAt: new Date(),
+});
+
 export const createProject = (name: string): ProjectState => ({
   id: uuidv4(),
   name,
   sourceImages: {},
   datasetItems: {},
+  datasets: {},
   cleanupOverlays: {},
   currentStage: 'hub',
   stageState: {

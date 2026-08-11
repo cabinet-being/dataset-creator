@@ -83,7 +83,7 @@ import {
   type ExplorerClipboardEntry,
   type ExplorerFileKind,
 } from './services/project/explorerFileService';
-import { type BrickColumnCount, type StageName } from './types';
+import { type BrickColumnCount, type Dataset, type StageName } from './types';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
@@ -123,7 +123,13 @@ type FileWorkspaceTab = {
   workspaceImageId?: string;
 };
 
-type WorkspaceTab = ToolWorkspaceTab | FileWorkspaceTab;
+type DatasetWorkspaceTab = {
+  id: string;
+  kind: 'dataset';
+  datasetId: string;
+};
+
+type WorkspaceTab = ToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab;
 
 const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
   id: `tool:${stage}`,
@@ -133,9 +139,11 @@ const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
 
 const createFileTabId = (path: string): string => `file:${path}`;
 const createFileModeTabId = (mode: 'edit' | 'caption', path: string): string => `file:${mode}:${path}`;
+const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
 
 const isToolTab = (tab: WorkspaceTab): tab is ToolWorkspaceTab => tab.kind === 'tool';
-const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab => tab.kind !== 'tool';
+const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
+  tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption';
 
 type WorkspaceLayout = {
   openTabs: StageName[];
@@ -496,14 +504,16 @@ const FloatingWorkspacePanel = ({
 type ExplorerTreeNode = {
   name: string;
   path: string;
-  kind: 'folder' | 'file';
+  kind: 'folder' | 'file' | 'dataset-root' | 'dataset';
+  datasetId?: string;
   children?: ExplorerTreeNode[];
 };
 
 const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
   [...nodes].sort((a, b) => {
     if (a.kind !== b.kind) {
-      return a.kind === 'folder' ? -1 : 1;
+      const order = { folder: 0, 'dataset-root': 1, dataset: 2, file: 3 };
+      return order[a.kind] - order[b.kind];
     }
     return a.name.localeCompare(b.name);
   });
@@ -542,6 +552,32 @@ const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
   children: [],
 });
 
+const withDatasetExplorerNodes = (
+  tree: ExplorerTreeNode,
+  datasets: Record<string, Dataset>
+): ExplorerTreeNode => {
+  const datasetEntries = Object.values(datasets);
+  return {
+    ...tree,
+    children: sortExplorerNodes([
+      ...(tree.children ?? []).filter((child) => child.path !== 'Project/Datasets'),
+      {
+        name: 'Datasets',
+        path: 'Project/Datasets',
+        kind: 'dataset-root',
+        children: sortExplorerNodes(
+          datasetEntries.map((dataset) => ({
+            name: dataset.name,
+            path: `Project/Datasets/${dataset.id}`,
+            kind: 'dataset',
+            datasetId: dataset.id,
+          }))
+        ),
+      },
+    ]),
+  };
+};
+
 type ExplorerTreeProps = {
   node: ExplorerTreeNode;
   expandedPaths: Set<string>;
@@ -550,7 +586,7 @@ type ExplorerTreeProps = {
     mode: 'create' | 'rename';
     parentPath: string;
     path?: string;
-    kind: 'folder' | 'file';
+    kind: 'folder' | 'file' | 'dataset';
     value: string;
   } | null;
   focusedPath: string | null;
@@ -567,8 +603,11 @@ type ExplorerTreeProps = {
 };
 
 const getExplorerIcon = (node: ExplorerTreeNode): ComponentType<{ className?: string }> => {
-  if (node.kind === 'folder') {
+  if (node.kind === 'folder' || node.kind === 'dataset-root') {
     return FolderOpen;
+  }
+  if (node.kind === 'dataset') {
+    return Layers3;
   }
   switch (getExplorerFileKind(node.name)) {
     case 'image':
@@ -602,7 +641,8 @@ const ExplorerTree = ({
   onDropItems,
   depth = 0,
 }: ExplorerTreeProps) => {
-  const isFolder = node.kind === 'folder';
+  const isFolder = node.kind === 'folder' || node.kind === 'dataset-root';
+  const isDataset = node.kind === 'dataset';
   const isExpanded = isFolder && expandedPaths.has(node.path);
   const isSelected = selectedPaths.has(node.path);
   const isFocused = focusedPath === node.path;
@@ -614,7 +654,7 @@ const ExplorerTree = ({
       <button
         type="button"
         data-explorer-row
-        draggable={!isRenaming}
+        draggable={!isRenaming && !isDataset && node.kind !== 'dataset-root'}
         onClick={(event) => {
           onSelect(node, event);
           if (isFolder && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
@@ -626,19 +666,23 @@ const ExplorerTree = ({
           onContextMenu(node, event.clientX, event.clientY);
         }}
         onDragStart={(event) => {
+          if (isDataset || node.kind === 'dataset-root') {
+            event.preventDefault();
+            return;
+          }
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', node.path);
           onDragStartItem(node);
         }}
         onDragEnd={onDragEndItems}
         onDragOver={(event) => {
-          if (isFolder) {
+          if (node.kind === 'folder') {
             event.preventDefault();
             event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
           }
         }}
         onDrop={(event) => {
-          if (!isFolder) {
+          if (node.kind !== 'folder') {
             return;
           }
           event.preventDefault();
@@ -687,7 +731,11 @@ const ExplorerTree = ({
       {inlineEdit?.mode === 'create' && inlineEdit.parentPath === node.path && (
         <div style={{ paddingLeft: 4 + (depth + 1) * 12 }} className="flex h-7 items-center gap-1">
           <span className="w-3.5 shrink-0" />
-          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          {inlineEdit.kind === 'dataset' ? (
+            <Layers3 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          )}
           <input
             value={inlineEdit.value}
             autoFocus
@@ -753,10 +801,15 @@ function App() {
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const addSourceImage = useProjectStore((state) => state.addSourceImage);
+  const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
+  const createProjectDataset = useProjectStore((state) => state.createDataset);
+  const updateProjectDataset = useProjectStore((state) => state.updateDataset);
+  const addAssetsToDataset = useProjectStore((state) => state.addAssetsToDataset);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
+  const datasetsById = useProjectStore((state) => state.datasets);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const datasetItems = useMemo(
     () => Object.values(datasetItemsById).filter((item) => !item.deleted),
@@ -799,6 +852,10 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
   const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
+  const visibleExplorerTree = useMemo(
+    () => explorerTree ? withDatasetExplorerNodes(explorerTree, datasetsById) : null,
+    [datasetsById, explorerTree]
+  );
   const [explorerStatus, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
@@ -860,7 +917,7 @@ function App() {
     mode: 'create' | 'rename';
     parentPath: string;
     path?: string;
-    kind: 'folder' | 'file';
+    kind: 'folder' | 'file' | 'dataset';
     value: string;
   } | null>(null);
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
@@ -1220,7 +1277,7 @@ function App() {
     });
   };
 
-  const getVisibleExplorerNodes = (node: ExplorerTreeNode | null = explorerTree): ExplorerTreeNode[] => {
+  const getVisibleExplorerNodes = (node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode[] => {
     if (!node) {
       return [];
     }
@@ -1228,7 +1285,7 @@ function App() {
     const nodes: ExplorerTreeNode[] = [];
     const visit = (entry: ExplorerTreeNode) => {
       nodes.push(entry);
-      if (entry.kind === 'folder' && expandedExplorerPaths.has(entry.path)) {
+      if ((entry.kind === 'folder' || entry.kind === 'dataset-root') && expandedExplorerPaths.has(entry.path)) {
         entry.children?.forEach(visit);
       }
     };
@@ -1236,7 +1293,7 @@ function App() {
     return nodes;
   };
 
-  const findExplorerNodeByPath = (path: string, node: ExplorerTreeNode | null = explorerTree): ExplorerTreeNode | null => {
+  const findExplorerNodeByPath = (path: string, node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode | null => {
     if (!node) {
       return null;
     }
@@ -1254,7 +1311,7 @@ function App() {
 
   const getActiveDirectoryChildren = (): ExplorerTreeNode[] => {
     const directory = findExplorerNodeByPath(activeExplorerDirectoryPath);
-    return directory?.kind === 'folder' ? directory.children ?? [] : [];
+    return directory?.kind === 'folder' || directory?.kind === 'dataset-root' ? directory.children ?? [] : [];
   };
 
   const getFocusedExplorerNode = (): ExplorerTreeNode | null => {
@@ -1307,18 +1364,27 @@ function App() {
   const getSelectedExplorerEntries = (): ExplorerClipboardEntry[] =>
     getTopLevelExplorerEntries(
       getVisibleExplorerNodes()
-        .filter((node) => selectedExplorerPaths.has(node.path))
-        .map((node) => ({ path: node.path, name: node.name, kind: node.kind }))
+        .flatMap((node): ExplorerClipboardEntry[] =>
+          selectedExplorerPaths.has(node.path) && (node.kind === 'folder' || node.kind === 'file')
+            ? [{ path: node.path, name: node.name, kind: node.kind }]
+            : []
+        )
     );
 
   const getExplorerEntriesForPaths = (paths: Set<string>): ExplorerClipboardEntry[] =>
     getTopLevelExplorerEntries(
       getVisibleExplorerNodes()
-        .filter((node) => paths.has(node.path))
-        .map((node) => ({ path: node.path, name: node.name, kind: node.kind }))
+        .flatMap((node): ExplorerClipboardEntry[] =>
+          paths.has(node.path) && (node.kind === 'folder' || node.kind === 'file')
+            ? [{ path: node.path, name: node.name, kind: node.kind }]
+            : []
+        )
     );
 
   const getContextEntries = (node: ExplorerTreeNode): ExplorerClipboardEntry[] => {
+    if (node.kind !== 'folder' && node.kind !== 'file') {
+      return [];
+    }
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
       return getSelectedExplorerEntries();
     }
@@ -1327,7 +1393,11 @@ function App() {
 
   const setActiveExplorerNode = (node: ExplorerTreeNode) => {
     setFocusedExplorerPath(node.path);
-    setActiveExplorerDirectoryPath(node.kind === 'folder' ? node.path : node.path.split('/').slice(0, -1).join('/') || 'Project');
+    setActiveExplorerDirectoryPath(
+      node.kind === 'folder' || node.kind === 'dataset-root'
+        ? node.path
+        : node.path.split('/').slice(0, -1).join('/') || 'Project'
+    );
   };
 
   const selectExplorerRange = (anchorPath: string, targetPath: string) => {
@@ -1417,7 +1487,81 @@ function App() {
     return null;
   };
 
+  const findSourceImageIdForPath = (path: string): string | null => {
+    const projectRelativePath = toProjectRelativePath(path);
+    const source = Object.values(sourceImagesById).find(
+      (image) =>
+        (image.originalFilePath ??
+          `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
+        projectRelativePath
+    );
+    return source?.id ?? null;
+  };
+
+  const collectDatasetAssetIdsFromExplorerEntries = (entries: ExplorerClipboardEntry[]): string[] => {
+    const assetIds = new Set<string>();
+    const nodes = getVisibleExplorerNodes();
+    const logger = entries.some((entry) => entry.kind === 'folder') ? createOperationLogger('Dataset') : null;
+    if (logger) {
+      logger.info(`Adding assets from Explorer selection to Dataset`);
+    }
+
+    for (const entry of entries) {
+      const candidateNodes =
+        entry.kind === 'folder'
+          ? nodes.filter((node) => node.kind === 'file' && node.path.startsWith(`${entry.path}/`))
+          : nodes.filter((node) => node.path === entry.path && node.kind === 'file');
+
+      for (const node of candidateNodes) {
+        const sourceId = findSourceImageIdForPath(node.path);
+        if (sourceId) {
+          assetIds.add(sourceId);
+        }
+      }
+    }
+
+    if (logger) {
+      logger.success(`Added ${assetIds.size} eligible asset${assetIds.size !== 1 ? 's' : ''}`);
+    }
+
+    return [...assetIds];
+  };
+
+  const getUniqueDatasetName = (baseName = 'New Dataset'): string => {
+    const existingNames = new Set(Object.values(datasetsById).map((dataset) => dataset.name.toLowerCase()));
+    if (!existingNames.has(baseName.toLowerCase())) {
+      return baseName;
+    }
+
+    let index = 2;
+    while (existingNames.has(`${baseName} ${index}`.toLowerCase())) {
+      index += 1;
+    }
+    return `${baseName} ${index}`;
+  };
+
+  const openDatasetTab = (datasetId: string) => {
+    const dataset = datasetsById[datasetId];
+    if (!dataset) {
+      addNotification('error', 'Dataset is no longer available');
+      return;
+    }
+
+    const tab: DatasetWorkspaceTab = {
+      id: createDatasetTabId(datasetId),
+      kind: 'dataset',
+      datasetId,
+    };
+    setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
+    setActiveTabId(tab.id);
+  };
+
   const openExplorerFile = async (node: ExplorerTreeNode) => {
+    if (node.kind === 'dataset' && node.datasetId) {
+      openDatasetTab(node.datasetId);
+      return;
+    }
+
     if (node.kind !== 'file') {
       return;
     }
@@ -1486,6 +1630,83 @@ function App() {
 
     setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
     setActiveTabId(tab.id);
+  };
+
+  const renderDatasetWorkspace = (tab: DatasetWorkspaceTab) => {
+    const dataset = datasetsById[tab.datasetId];
+    if (!dataset) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          Dataset is no longer available
+        </div>
+      );
+    }
+
+    const assets = dataset.assetIds
+      .map((assetId) => sourceImagesById[assetId])
+      .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
+
+    return (
+      <div
+        className="h-full min-h-0 overflow-auto p-6"
+        onDragOver={(event) => {
+          if (draggedExplorerEntries?.length) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+          }
+        }}
+        onDrop={(event) => {
+          if (!draggedExplorerEntries?.length) {
+            return;
+          }
+          event.preventDefault();
+          const assetIds = collectDatasetAssetIdsFromExplorerEntries(draggedExplorerEntries);
+          if (assetIds.length > 0) {
+            addAssetsToDataset(dataset.id, assetIds);
+            addNotification('success', `Added ${assetIds.length} asset${assetIds.length !== 1 ? 's' : ''} to ${dataset.name}`);
+          }
+          setDraggedExplorerEntries(null);
+        }}
+      >
+        <div className="mx-auto max-w-3xl space-y-5">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
+            <input
+              value={dataset.name}
+              onChange={(event) => updateProjectDataset(dataset.id, { name: event.target.value })}
+              className="w-full rounded border border-border bg-background px-3 py-2 text-lg font-semibold"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Trigger Word</label>
+            <input
+              value={dataset.triggerWord}
+              onChange={(event) => updateProjectDataset(dataset.id, { triggerWord: event.target.value })}
+              className="w-full rounded border border-border bg-background px-3 py-2 font-mono text-sm"
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 text-sm font-semibold">Assets</h3>
+            <div className="min-h-40 rounded border border-dashed border-border bg-card">
+              {assets.length === 0 ? (
+                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+                  Drop project assets here
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {assets.map((asset) => (
+                    <div key={asset.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                      <File className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">{asset.originalFilePath ?? asset.fileName}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const requireProjectDirectory = (): ProjectDirectoryHandle | null => {
@@ -1616,6 +1837,19 @@ function App() {
     }
   };
 
+  const removeWorkspaceSourcesForDeletedEntries = (entries: ExplorerClipboardEntry[]) => {
+    const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
+    for (const source of Object.values(useProjectStore.getState().sourceImages)) {
+      const sourcePath = source.originalFilePath;
+      if (
+        sourcePath &&
+        deletedPaths.some((deletedPath) => sourcePath === deletedPath || sourcePath.startsWith(`${deletedPath}/`))
+      ) {
+        removeSourceImage(source.id);
+      }
+    }
+  };
+
   const handleExplorerDelete = async (node: ExplorerTreeNode) => {
     const directory = requireProjectDirectory();
     if (!directory || node.path === 'Project') {
@@ -1635,6 +1869,7 @@ function App() {
       for (const entry of entries) {
         await deleteExplorerEntry(directory, entry.path, true);
       }
+      removeWorkspaceSourcesForDeletedEntries(entries);
       setOpenTabs((tabs) =>
         tabs.filter(
           (tab) =>
@@ -1656,7 +1891,7 @@ function App() {
   };
 
   const handleExplorerRename = async (node: ExplorerTreeNode) => {
-    if (node.path === 'Project') {
+    if (node.path === 'Project' || node.kind === 'dataset-root') {
       return;
     }
     setInlineExplorerEdit({
@@ -1674,6 +1909,16 @@ function App() {
     }
     setInlineExplorerEdit({ mode: 'create', parentPath: node.path, kind: 'folder', value: 'New Folder' });
     setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
+  };
+
+  const handleExplorerNewDataset = () => {
+    setInlineExplorerEdit({
+      mode: 'create',
+      parentPath: 'Project/Datasets',
+      kind: 'dataset',
+      value: getUniqueDatasetName(),
+    });
+    setExpandedExplorerPaths((paths) => new Set([...paths, 'Project/Datasets']));
   };
 
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
@@ -1717,12 +1962,35 @@ function App() {
 
   const commitInlineExplorerEdit = async () => {
     const edit = inlineExplorerEdit;
-    const directory = requireProjectDirectory();
-    if (!edit || !directory) {
+    if (!edit) {
       return;
     }
 
     try {
+      if (edit.kind === 'dataset' && edit.mode === 'create') {
+        const dataset = createProjectDataset(edit.value.trim() || getUniqueDatasetName());
+        const path = `Project/Datasets/${dataset.id}`;
+        setSelectedExplorerPaths(new Set([path]));
+        setSelectionAnchorPath(path);
+        setFocusedExplorerPath(path);
+        setInlineExplorerEdit(null);
+        return;
+      }
+
+      if (edit.kind === 'dataset' && edit.mode === 'rename' && edit.path) {
+        const datasetId = edit.path.split('/').pop();
+        if (datasetId) {
+          updateProjectDataset(datasetId, { name: edit.value.trim() || 'Dataset' });
+        }
+        setInlineExplorerEdit(null);
+        return;
+      }
+
+      const directory = requireProjectDirectory();
+      if (!directory) {
+        return;
+      }
+
       if (edit.mode === 'create') {
         const nextPath = await createExplorerDirectory(directory, edit.parentPath, edit.value);
         setSelectedExplorerPaths(new Set([nextPath]));
@@ -1732,6 +2000,9 @@ function App() {
         const nextName = edit.value.trim();
         if (!nextName || nextName === edit.path.split('/').pop()) {
           setInlineExplorerEdit(null);
+          return;
+        }
+        if (edit.kind !== 'folder' && edit.kind !== 'file') {
           return;
         }
         const nextPath = await renameExplorerEntry(directory, edit.path, edit.kind, nextName);
@@ -1894,7 +2165,7 @@ function App() {
 
       if (event.key === 'ArrowRight') {
         const focusedNode = getFocusedExplorerNode();
-        if (focusedNode?.kind === 'folder') {
+        if (focusedNode?.kind === 'folder' || focusedNode?.kind === 'dataset-root') {
           event.preventDefault();
           if (!expandedExplorerPaths.has(focusedNode.path)) {
             setExpandedExplorerPaths((paths) => new Set([...paths, focusedNode.path]));
@@ -1909,7 +2180,7 @@ function App() {
         const focusedNode = getFocusedExplorerNode();
         if (focusedNode) {
           event.preventDefault();
-          if (focusedNode.kind === 'folder' && expandedExplorerPaths.has(focusedNode.path)) {
+          if ((focusedNode.kind === 'folder' || focusedNode.kind === 'dataset-root') && expandedExplorerPaths.has(focusedNode.path)) {
             setExpandedExplorerPaths((paths) => {
               const next = new Set(paths);
               next.delete(focusedNode.path);
@@ -1929,7 +2200,7 @@ function App() {
         const focusedNode = getFocusedExplorerNode();
         if (focusedNode) {
           event.preventDefault();
-          if (focusedNode.kind === 'folder') {
+          if (focusedNode.kind === 'folder' || focusedNode.kind === 'dataset-root') {
             toggleExplorerPath(focusedNode.path);
           } else {
             void openExplorerFile(focusedNode);
@@ -2326,19 +2597,62 @@ function App() {
     </>
   );
 
-  const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
+  const renderDatasetContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
     <>
       <button
         type="button"
         onClick={() => {
-          void handleExplorerNewFolder(node);
+          void openExplorerFile(node);
           setExplorerContextMenu(null);
         }}
         className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
       >
-        <FilePlus className="h-3.5 w-3.5" />
-        <span>New Folder</span>
+        <Layers3 className="h-3.5 w-3.5" />
+        <span>Open</span>
       </button>
+      <div className="my-1 h-px bg-border" />
+      <button
+        type="button"
+        onClick={() => {
+          void handleExplorerRename(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+        <span>Rename</span>
+      </button>
+    </>
+  );
+
+  const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
+    <>
+      {node.kind === 'folder' && (
+        <button
+          type="button"
+          onClick={() => {
+            void handleExplorerNewFolder(node);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <FilePlus className="h-3.5 w-3.5" />
+          <span>New Folder</span>
+        </button>
+      )}
+      {(node.path === 'Project' || node.kind === 'dataset-root') && (
+        <button
+          type="button"
+          onClick={() => {
+            handleExplorerNewDataset();
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Layers3 className="h-3.5 w-3.5" />
+          <span>New Dataset</span>
+        </button>
+      )}
       {(node.path !== 'Project' || explorerClipboard) && <div className="my-1 h-px bg-border" />}
       {node.path === 'Project' ? (
         explorerClipboard && (
@@ -2354,7 +2668,7 @@ function App() {
             <span>Paste</span>
           </button>
         )
-      ) : (
+      ) : node.kind === 'dataset-root' ? null : (
         <>
           <button
             type="button"
@@ -2665,11 +2979,15 @@ function App() {
                   ? tab.stage === 'hub'
                     ? Archive
                     : toolIcons[tab.stage]
-                  : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
+                  : tab.kind === 'dataset'
+                    ? Layers3
+                    : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
               const active = activeTabId === tab.id;
               const label =
                 tab.kind === 'tool'
                   ? STAGE_LABELS[tab.stage]
+                  : tab.kind === 'dataset'
+                    ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - Dataset`
                   : tab.kind === 'file-edit'
                     ? `${tab.name} - Edit`
                     : tab.kind === 'file-caption'
@@ -3076,9 +3394,9 @@ function App() {
                     Showing workspace state. {explorerError}
                   </p>
                 )}
-                {explorerTree ? (
+                {visibleExplorerTree ? (
                   <ExplorerTree
-                    node={explorerTree}
+                    node={visibleExplorerTree}
                     expandedPaths={expandedExplorerPaths}
                     selectedPaths={selectedExplorerPaths}
                     inlineEdit={inlineExplorerEdit}
@@ -3118,7 +3436,9 @@ function App() {
                   >
                     {explorerContextMenu.node.kind === 'file'
                       ? renderFileContextMenuItems(explorerContextMenu.node)
-                      : renderDirectoryContextMenuItems(explorerContextMenu.node)}
+                      : explorerContextMenu.node.kind === 'dataset'
+                        ? renderDatasetContextMenuItems(explorerContextMenu.node)
+                        : renderDirectoryContextMenuItems(explorerContextMenu.node)}
                   </div>
                 </>
               )}
@@ -3177,7 +3497,9 @@ function App() {
                     </div>
                   );
                 })}
-                {activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
+                {activeTab?.kind === 'dataset' ? (
+                  renderDatasetWorkspace(activeTab)
+                ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
                   renderTool(activeStage)
                 ) : (
                   <EmptyWorkspacePlaceholder />
@@ -3409,8 +3731,15 @@ function App() {
                         ? tab.stage === 'hub'
                           ? Archive
                           : toolIcons[tab.stage]
-                        : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
-                    const label = tab.kind === 'tool' ? STAGE_LABELS[tab.stage] : tab.name;
+                        : tab.kind === 'dataset'
+                          ? Layers3
+                          : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
+                    const label =
+                      tab.kind === 'tool'
+                        ? STAGE_LABELS[tab.stage]
+                        : tab.kind === 'dataset'
+                          ? datasetsById[tab.datasetId]?.name ?? 'Dataset'
+                          : tab.name;
                     return (
                       <button
                         type="button"
