@@ -18,6 +18,9 @@ import {
   Grip,
   Check,
   Layers3,
+  Copy,
+  Edit3,
+  FileJson,
   Maximize2,
   Minimize2,
   Moon,
@@ -30,7 +33,9 @@ import {
   Settings2,
   Sun,
   Tags,
+  Trash2,
   Upload,
+  Video,
   X,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
@@ -59,6 +64,19 @@ import {
   type LocalTaggerFileKey,
 } from './services/tagging/localTaggerFileSettings';
 import { createOperationLogger } from './services/logging/applicationLog';
+import { InternalFileViewer } from './components/InternalFileViewer';
+import {
+  canOpenExplorerFile,
+  copyExplorerEntry,
+  createExplorerDirectory,
+  deleteExplorerEntry,
+  getExplorerFileKind,
+  isExplorerImageFileName,
+  readExplorerFile,
+  renameExplorerEntry,
+  type ExplorerClipboardEntry,
+  type ExplorerFileKind,
+} from './services/project/explorerFileService';
 import { type BrickColumnCount, type StageName } from './types';
 import './App.css';
 
@@ -82,6 +100,33 @@ const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
 
 const WORKSPACE_LAYOUT_STORAGE_KEY = 'dataset-creator-workspace-layout';
+
+type ToolWorkspaceTab = {
+  id: string;
+  kind: 'tool';
+  stage: StageName;
+};
+
+type FileWorkspaceTab = {
+  id: string;
+  kind: 'file';
+  path: string;
+  name: string;
+  fileKind: ExplorerFileKind;
+  file: File | Blob;
+};
+
+type WorkspaceTab = ToolWorkspaceTab | FileWorkspaceTab;
+
+const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
+  id: `tool:${stage}`,
+  kind: 'tool',
+  stage,
+});
+
+const createFileTabId = (path: string): string => `file:${path}`;
+
+const isToolTab = (tab: WorkspaceTab): tab is ToolWorkspaceTab => tab.kind === 'tool';
 
 type WorkspaceLayout = {
   openTabs: StageName[];
@@ -113,7 +158,22 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
 
     const value = parsed as Record<string, unknown>;
     const openTabs = Array.isArray(value.openTabs)
-      ? value.openTabs.filter((tab): tab is StageName => typeof tab === 'string' && isStageName(tab))
+      ? value.openTabs
+          .map((tab): StageName | null => {
+            if (typeof tab === 'string' && isStageName(tab)) {
+              return tab;
+            }
+            if (
+              tab &&
+              typeof tab === 'object' &&
+              (tab as { kind?: unknown }).kind === 'tool' &&
+              isStageName((tab as { stage?: string }).stage ?? null)
+            ) {
+              return (tab as { stage: StageName }).stage;
+            }
+            return null;
+          })
+          .filter((tab): tab is StageName => Boolean(tab))
       : undefined;
     const readPanel = (panel: unknown, fallback: FloatingPanelState): FloatingPanelState => {
       if (!panel || typeof panel !== 'object') {
@@ -538,20 +598,57 @@ type ExplorerTreeProps = {
   node: ExplorerTreeNode;
   expandedPaths: Set<string>;
   onToggle: (path: string) => void;
+  onOpenFile: (node: ExplorerTreeNode) => void;
+  onContextMenu: (node: ExplorerTreeNode, x: number, y: number) => void;
   depth?: number;
 };
 
-const ExplorerTree = ({ node, expandedPaths, onToggle, depth = 0 }: ExplorerTreeProps) => {
+const getExplorerIcon = (node: ExplorerTreeNode): ComponentType<{ className?: string }> => {
+  if (node.kind === 'folder') {
+    return FolderOpen;
+  }
+  switch (getExplorerFileKind(node.name)) {
+    case 'image':
+    case 'psd':
+      return File;
+    case 'json':
+      return FileJson;
+    case 'text':
+      return File;
+    case 'video':
+      return Video;
+    default:
+      return File;
+  }
+};
+
+const ExplorerTree = ({
+  node,
+  expandedPaths,
+  onToggle,
+  onOpenFile,
+  onContextMenu,
+  depth = 0,
+}: ExplorerTreeProps) => {
   const isFolder = node.kind === 'folder';
   const isExpanded = isFolder && expandedPaths.has(node.path);
+  const Icon = getExplorerIcon(node);
 
   return (
     <div>
       <button
         type="button"
-        disabled={!isFolder}
         onClick={() => isFolder && onToggle(node.path)}
-        className="flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary disabled:cursor-default disabled:hover:bg-transparent"
+        onDoubleClick={() => {
+          if (!isFolder) {
+            onOpenFile(node);
+          }
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onContextMenu(node, event.clientX, event.clientY);
+        }}
+        className="flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary"
         style={{ paddingLeft: 4 + depth * 12 }}
         title={node.path}
       >
@@ -564,11 +661,7 @@ const ExplorerTree = ({ node, expandedPaths, onToggle, depth = 0 }: ExplorerTree
         ) : (
           <span className="w-3.5 shrink-0" />
         )}
-        {isFolder ? (
-          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        )}
+        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate">{node.name}</span>
       </button>
       {isExpanded &&
@@ -578,6 +671,8 @@ const ExplorerTree = ({ node, expandedPaths, onToggle, depth = 0 }: ExplorerTree
             node={child}
             expandedPaths={expandedPaths}
             onToggle={onToggle}
+            onOpenFile={onOpenFile}
+            onContextMenu={onContextMenu}
             depth={depth + 1}
           />
         ))}
@@ -602,6 +697,7 @@ function App() {
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
+  const setStageState = useProjectStore((state) => state.setStageState);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -637,7 +733,10 @@ function App() {
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
-  const [openTabs, setOpenTabs] = useState<StageName[]>(storedWorkspaceLayout.openTabs ?? ['hub']);
+  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(
+    () => (storedWorkspaceLayout.openTabs ?? ['hub']).map((stage) => createToolTab(stage))
+  );
+  const [activeTabId, setActiveTabId] = useState<string | null>(openTabs[0]?.id ?? null);
   const [leftPanelOpen, setLeftPanelOpen] = useState(storedWorkspaceLayout.leftPanelOpen ?? true);
   const [rightPanelOpen, setRightPanelOpen] = useState(storedWorkspaceLayout.rightPanelOpen ?? true);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(storedWorkspaceLayout.bottomPanelOpen ?? false);
@@ -671,7 +770,7 @@ function App() {
     storedWorkspaceLayout.inspectorWindowOpen ?? false
   );
   const [tabMenuOpen, setTabMenuOpen] = useState(false);
-  const [dragOverTab, setDragOverTab] = useState<StageName | null>(null);
+  const [dragOverTab, setDragOverTab] = useState<string | null>(null);
   const [floatingPanelOrder, setFloatingPanelOrder] = useState<Array<'project' | 'inspector'>>([
     'project',
     'inspector',
@@ -687,7 +786,14 @@ function App() {
     startY: number;
     origin: number;
   } | null>(null);
-  const draggedTabRef = useRef<StageName | null>(null);
+  const draggedTabRef = useRef<string | null>(null);
+  const [explorerContextMenu, setExplorerContextMenu] = useState<{
+    node: ExplorerTreeNode;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboardEntry | null>(null);
+  const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
 
   const focusFloatingPanel = (panel: 'project' | 'inspector') => {
     setFloatingPanelOrder((order) => [...order.filter((item) => item !== panel), panel]);
@@ -706,7 +812,12 @@ function App() {
     const stageFromUrl = readStageFromUrl();
     if (stageFromUrl) {
       setCurrentStage(stageFromUrl);
-      setOpenTabs((tabs) => (tabs.includes(stageFromUrl) ? tabs : [...tabs, stageFromUrl]));
+      setOpenTabs((tabs) =>
+        tabs.some((tab) => tab.kind === 'tool' && tab.stage === stageFromUrl)
+          ? tabs
+          : [...tabs, createToolTab(stageFromUrl)]
+      );
+      setActiveTabId(createToolTab(stageFromUrl).id);
     }
     setIsUrlStageReady(true);
 
@@ -714,7 +825,12 @@ function App() {
       const nextStage = readStageFromUrl();
       if (nextStage) {
         setCurrentStage(nextStage);
-        setOpenTabs((tabs) => (tabs.includes(nextStage) ? tabs : [...tabs, nextStage]));
+        setOpenTabs((tabs) =>
+          tabs.some((tab) => tab.kind === 'tool' && tab.stage === nextStage)
+            ? tabs
+            : [...tabs, createToolTab(nextStage)]
+        );
+        setActiveTabId(createToolTab(nextStage).id);
       }
     };
 
@@ -845,7 +961,33 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [fileMenuOpen, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
 
-  const activeStage = openTabs.includes(currentStage) ? currentStage : null;
+  useEffect(() => {
+    if (!explorerContextMenu) {
+      return;
+    }
+
+    const closeMenu = () => setExplorerContextMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeMenu();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [explorerContextMenu]);
+
+  const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeStage = activeTab?.kind === 'tool' ? activeTab.stage : null;
+
+  useEffect(() => {
+    if (activeTabId && openTabs.some((tab) => tab.id === activeTabId)) {
+      return;
+    }
+    setActiveTabId(openTabs[0]?.id ?? null);
+  }, [activeTabId, openTabs]);
   const showEditToolbar = activeStage === 'clean' && editToolbar.visible;
   const showTaggingToolbar = activeStage === 'tagging';
   const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
@@ -854,7 +996,9 @@ function App() {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
   };
   const navigateToStage = (stage: StageName) => {
-    setOpenTabs((tabs) => (tabs.includes(stage) ? tabs : [...tabs, stage]));
+    const nextTab = createToolTab(stage);
+    setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
+    setActiveTabId(nextTab.id);
     writeStageToUrl(stage, 'push');
     setCurrentStage(stage);
     setFileMenuOpen(false);
@@ -864,32 +1008,49 @@ function App() {
     setTabMenuOpen(false);
   };
 
-  const closeTab = (stage: StageName) => {
-    const tabIndex = openTabs.indexOf(stage);
-    const nextTabs = openTabs.filter((tab) => tab !== stage);
-    const nextStage = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? null;
+  const activateTab = (tab: WorkspaceTab) => {
+    setActiveTabId(tab.id);
+    if (tab.kind === 'tool') {
+      writeStageToUrl(tab.stage, 'push');
+      setCurrentStage(tab.stage);
+    }
+    setFileMenuOpen(false);
+    setViewMenuOpen(false);
+    setToolsMenuOpen(false);
+    setWindowsMenuOpen(false);
+    setTabMenuOpen(false);
+  };
+
+  const closeTab = (tabId: string) => {
+    const tabIndex = openTabs.findIndex((tab) => tab.id === tabId);
+    const nextTabs = openTabs.filter((tab) => tab.id !== tabId);
+    const nextTab = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? null;
     setOpenTabs(nextTabs);
 
-    if (currentStage === stage && nextStage) {
-      navigateToStage(nextStage);
+    if (activeTabId === tabId) {
+      if (nextTab) {
+        activateTab(nextTab);
+      } else {
+        setActiveTabId(null);
+      }
     }
   };
 
-  const reorderTabs = (source: StageName, target: StageName) => {
+  const reorderTabs = (source: string, target: string) => {
     if (source === target) {
       return;
     }
 
     setOpenTabs((tabs) => {
-      const sourceIndex = tabs.indexOf(source);
-      const targetIndex = tabs.indexOf(target);
+      const sourceIndex = tabs.findIndex((tab) => tab.id === source);
+      const targetIndex = tabs.findIndex((tab) => tab.id === target);
       if (sourceIndex < 0 || targetIndex < 0) {
         return tabs;
       }
 
       const nextTabs = [...tabs];
-      nextTabs.splice(sourceIndex, 1);
-      nextTabs.splice(targetIndex, 0, source);
+      const [sourceTab] = nextTabs.splice(sourceIndex, 1);
+      nextTabs.splice(targetIndex, 0, sourceTab);
       return nextTabs;
     });
   };
@@ -899,7 +1060,7 @@ function App() {
       window.localStorage.setItem(
         WORKSPACE_LAYOUT_STORAGE_KEY,
         JSON.stringify({
-          openTabs,
+          openTabs: openTabs.filter(isToolTab).map((tab) => tab.stage),
           leftPanelOpen,
           rightPanelOpen,
           bottomPanelOpen,
@@ -966,7 +1127,7 @@ function App() {
     return () => {
       canceled = true;
     };
-  }, [datasetItemsById, projectDirectoryHandle, projectDirectoryName, projectName, sourceImagesById]);
+  }, [datasetItemsById, explorerRefreshKey, projectDirectoryHandle, projectDirectoryName, projectName, sourceImagesById]);
 
   const toggleExplorerPath = (path: string) => {
     setExpandedExplorerPaths((paths) => {
@@ -980,6 +1141,286 @@ function App() {
     });
   };
 
+  const findWorkspaceFile = (path: string): File | Blob | null => {
+    const sourceMatch = path.match(/^Project\/sources\/([^/]+)\/([^/]+)$/);
+    if (sourceMatch) {
+      const source = sourceImagesById[sourceMatch[1]];
+      if (!source) {
+        return null;
+      }
+      if (sourceMatch[2] === 'manifest.json') {
+        return new Blob(
+          [
+            JSON.stringify(
+              {
+                id: source.id,
+                fileName: source.fileName,
+                originalFileName: source.originalFileName,
+                width: source.width,
+                height: source.height,
+                mimeType: source.mimeType,
+                tags: source.tags,
+                hidden: source.hidden,
+                excludedFromDataset: source.excludedFromDataset,
+                createdAt: source.createdAt,
+              },
+              null,
+              2
+            ),
+          ],
+          { type: 'application/json' }
+        );
+      }
+      return source.originalFile;
+    }
+
+    const syntheticMatch = path.match(/^Project\/synthetic\/([^/]+)\/([^/]+)$/);
+    if (syntheticMatch) {
+      const item = datasetItemsById[syntheticMatch[1]];
+      if (!item) {
+        return null;
+      }
+      if (syntheticMatch[2] === 'image.png') {
+        return item.imageData;
+      }
+      if (syntheticMatch[2] === 'image.psd') {
+        return item.psdData ?? null;
+      }
+      if (syntheticMatch[2] === 'manifest.json') {
+        return new Blob(
+          [
+            JSON.stringify(
+              {
+                id: item.id,
+                sourceImageId: item.sourceImageId,
+                imageFileName: 'image.png',
+                psdFileName: item.psdData ? 'image.psd' : undefined,
+                width: item.width,
+                height: item.height,
+                type: item.type,
+                tags: item.tags,
+                aspectRatio: item.aspectRatio,
+                deleted: item.deleted,
+                excludedFromDataset: item.excludedFromDataset,
+                createdAt: item.createdAt,
+                exportOrder: item.exportOrder,
+              },
+              null,
+              2
+            ),
+          ],
+          { type: 'application/json' }
+        );
+      }
+    }
+
+    if (path === `Project/${PROJECT_DIRECTORY_MANIFEST}`) {
+      return new Blob([JSON.stringify({ project: projectName }, null, 2)], { type: 'application/json' });
+    }
+
+    return null;
+  };
+
+  const findWorkspaceImageIdForPath = (path: string): string | null => {
+    const sourceMatch = path.match(/^Project\/sources\/([^/]+)\/original\.[^/]+$/);
+    if (sourceMatch && sourceImagesById[sourceMatch[1]]) {
+      return `source:${sourceMatch[1]}`;
+    }
+
+    const syntheticMatch = path.match(/^Project\/synthetic\/([^/]+)\/image\.png$/);
+    if (syntheticMatch && datasetItemsById[syntheticMatch[1]]) {
+      return `synthetic:${syntheticMatch[1]}`;
+    }
+
+    return null;
+  };
+
+  const openExplorerFile = async (node: ExplorerTreeNode) => {
+    if (node.kind !== 'file') {
+      return;
+    }
+
+    try {
+      const file = projectDirectoryHandle
+        ? await readExplorerFile(projectDirectoryHandle, node.path)
+        : findWorkspaceFile(node.path);
+      if (!file) {
+        addNotification('error', 'File is no longer available');
+        return;
+      }
+
+      const fileKind = getExplorerFileKind(node.name, 'type' in file ? file.type : undefined);
+      if (!canOpenExplorerFile(fileKind)) {
+        addNotification('warning', 'No viewer is available for this file type');
+        return;
+      }
+
+      const tab: FileWorkspaceTab = {
+        id: createFileTabId(node.path),
+        kind: 'file',
+        path: node.path,
+        name: node.name,
+        fileKind,
+        file,
+      };
+
+      setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
+      setActiveTabId(tab.id);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to open file');
+    }
+  };
+
+  const openImageEditFromExplorer = (node: ExplorerTreeNode) => {
+    const imageId = findWorkspaceImageIdForPath(node.path);
+    if (!imageId) {
+      addNotification('warning', 'Edit is available for project workspace images.');
+      return;
+    }
+
+    const cleanState = (useProjectStore.getState().stageState.clean as Record<string, unknown> | undefined) ?? {};
+    setStageState('clean', { ...cleanState, selectedImageId: imageId });
+    navigateToStage('clean');
+  };
+
+  const openImageCaptionFromExplorer = (node: ExplorerTreeNode) => {
+    const imageId = findWorkspaceImageIdForPath(node.path);
+    if (!imageId) {
+      addNotification('warning', 'Caption is available for project workspace images.');
+      return;
+    }
+
+    const taggingState = (useProjectStore.getState().stageState.tagging as Record<string, unknown> | undefined) ?? {};
+    setStageState('tagging', { ...taggingState, selectedItemId: imageId });
+    navigateToStage('tagging');
+  };
+
+  const requireProjectDirectory = (): ProjectDirectoryHandle | null => {
+    if (!projectDirectoryHandle) {
+      addNotification('warning', 'Save or open a project directory before changing Explorer files.');
+      return null;
+    }
+    return projectDirectoryHandle;
+  };
+
+  const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
+
+  const handleExplorerDelete = async (node: ExplorerTreeNode) => {
+    const directory = requireProjectDirectory();
+    if (!directory || node.path === 'Project') {
+      return;
+    }
+
+    if (!window.confirm(`Delete "${node.name}"? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await deleteExplorerEntry(directory, node.path, true);
+      if (node.kind === 'file') {
+        setOpenTabs((tabs) => tabs.filter((tab) => tab.kind !== 'file' || tab.path !== node.path));
+        if (activeTabId === createFileTabId(node.path)) {
+          setActiveTabId(null);
+        }
+      } else {
+        setOpenTabs((tabs) =>
+          tabs.filter((tab) => tab.kind !== 'file' || !tab.path.startsWith(`${node.path}/`))
+        );
+      }
+      refreshExplorer();
+      addNotification('success', 'Explorer entry deleted');
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to delete entry');
+    }
+  };
+
+  const handleExplorerRename = async (node: ExplorerTreeNode) => {
+    const directory = requireProjectDirectory();
+    if (!directory || node.path === 'Project') {
+      return;
+    }
+
+    const nextName = window.prompt('New name', node.name)?.trim();
+    if (!nextName || nextName === node.name) {
+      return;
+    }
+
+    try {
+      const nextPath = await renameExplorerEntry(directory, node.path, node.kind, nextName);
+      setOpenTabs((tabs) =>
+        tabs.map((tab) => {
+          if (tab.kind !== 'file') {
+            return tab;
+          }
+          if (tab.path === node.path) {
+            return {
+              ...tab,
+              id: createFileTabId(nextPath),
+              path: nextPath,
+              name: nextName,
+              fileKind: getExplorerFileKind(nextName, 'type' in tab.file ? tab.file.type : undefined),
+            };
+          }
+          if (node.kind === 'folder' && tab.path.startsWith(`${node.path}/`)) {
+            const nextChildPath = `${nextPath}/${tab.path.slice(node.path.length + 1)}`;
+            return { ...tab, id: createFileTabId(nextChildPath), path: nextChildPath };
+          }
+          return tab;
+        })
+      );
+      if (activeTabId === createFileTabId(node.path)) {
+        setActiveTabId(createFileTabId(nextPath));
+      } else if (
+        node.kind === 'folder' &&
+        activeTab?.kind === 'file' &&
+        activeTab.path.startsWith(`${node.path}/`)
+      ) {
+        setActiveTabId(createFileTabId(`${nextPath}/${activeTab.path.slice(node.path.length + 1)}`));
+      }
+      refreshExplorer();
+      addNotification('success', 'Explorer entry renamed');
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to rename entry');
+    }
+  };
+
+  const handleExplorerNewFolder = async (node: ExplorerTreeNode) => {
+    const directory = requireProjectDirectory();
+    if (!directory || node.kind !== 'folder') {
+      return;
+    }
+
+    const name = window.prompt('Folder name', 'New Folder')?.trim();
+    if (!name) {
+      return;
+    }
+
+    try {
+      await createExplorerDirectory(directory, node.path, name);
+      setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
+      refreshExplorer();
+      addNotification('success', 'Folder created');
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to create folder');
+    }
+  };
+
+  const handleExplorerPaste = async (node: ExplorerTreeNode) => {
+    const directory = requireProjectDirectory();
+    if (!directory || node.kind !== 'folder' || !explorerClipboard) {
+      return;
+    }
+
+    try {
+      await copyExplorerEntry(directory, explorerClipboard, node.path);
+      setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
+      refreshExplorer();
+      addNotification('success', 'Explorer entry pasted');
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to paste entry');
+    }
+  };
+
   useEffect(() => {
     const handleWorkspaceShortcut = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) {
@@ -987,11 +1428,11 @@ function App() {
       }
 
       if (event.key.toLowerCase() === 'w') {
-        if (!activeStage) {
+        if (!activeTab) {
           return;
         }
         event.preventDefault();
-        closeTab(activeStage);
+        closeTab(activeTab.id);
         return;
       }
 
@@ -1000,16 +1441,16 @@ function App() {
           return;
         }
         event.preventDefault();
-        const currentIndex = Math.max(0, activeStage ? openTabs.indexOf(activeStage) : 0);
+        const currentIndex = Math.max(0, activeTab ? openTabs.findIndex((tab) => tab.id === activeTab.id) : 0);
         const direction = event.key === 'PageUp' ? -1 : 1;
         const nextIndex = (currentIndex + direction + openTabs.length) % openTabs.length;
-        navigateToStage(openTabs[nextIndex]);
+        activateTab(openTabs[nextIndex]);
       }
     };
 
     window.addEventListener('keydown', handleWorkspaceShortcut);
     return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
-  }, [activeStage, openTabs]);
+  }, [activeTab, openTabs]);
 
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
@@ -1473,11 +1914,17 @@ function App() {
         <div className="workspace-tab-strip relative flex h-9 shrink-0 items-stretch border-b border-border bg-background">
           <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
             {openTabs.map((tab) => {
-              const Icon = tab === 'hub' ? Archive : toolIcons[tab];
-              const active = activeStage === tab;
+              const Icon =
+                tab.kind === 'tool'
+                  ? tab.stage === 'hub'
+                    ? Archive
+                    : toolIcons[tab.stage]
+                  : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
+              const active = activeTabId === tab.id;
+              const label = tab.kind === 'tool' ? STAGE_LABELS[tab.stage] : tab.name;
               return (
                 <div
-                  key={tab}
+                  key={tab.id}
                   role="tab"
                   tabIndex={0}
                   aria-selected={active}
@@ -1486,31 +1933,31 @@ function App() {
                     if ((event.target as HTMLElement).closest('[data-tab-close]')) {
                       return;
                     }
-                    navigateToStage(tab);
+                    activateTab(tab);
                   }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
-                      navigateToStage(tab);
+                      activateTab(tab);
                     }
                   }}
                   onDragStart={(event) => {
-                    draggedTabRef.current = tab;
+                    draggedTabRef.current = tab.id;
                     event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', tab);
+                    event.dataTransfer.setData('text/plain', tab.id);
                   }}
                   onDragOver={(event) => {
                     event.preventDefault();
                     event.dataTransfer.dropEffect = 'move';
-                    if (draggedTabRef.current !== tab) {
-                      setDragOverTab(tab);
+                    if (draggedTabRef.current !== tab.id) {
+                      setDragOverTab(tab.id);
                     }
                   }}
                   onDrop={(event) => {
                     event.preventDefault();
-                    const source = draggedTabRef.current ?? (event.dataTransfer.getData('text/plain') as StageName);
+                    const source = draggedTabRef.current ?? event.dataTransfer.getData('text/plain');
                     if (source) {
-                      reorderTabs(source, tab);
+                      reorderTabs(source, tab.id);
                     }
                     draggedTabRef.current = null;
                     setDragOverTab(null);
@@ -1522,23 +1969,23 @@ function App() {
                   onMouseDown={(event) => {
                     if (event.button === 1 && !(event.target as HTMLElement).closest('[data-tab-close]')) {
                       event.preventDefault();
-                      closeTab(tab);
+                      closeTab(tab.id);
                     }
                   }}
                   className={`group flex min-w-[7rem] max-w-52 shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
                     active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
-                  } ${dragOverTab === tab ? 'border-l-2 border-l-primary' : ''}`}
-                  title={`Open ${STAGE_LABELS[tab]}`}
+                  } ${dragOverTab === tab.id ? 'border-l-2 border-l-primary' : ''}`}
+                  title={`Open ${label}`}
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{STAGE_LABELS[tab]}</span>
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
                   <button
                     type="button"
                     data-tab-close
                     draggable={false}
                     onClick={(event) => {
                       event.stopPropagation();
-                      closeTab(tab);
+                      closeTab(tab.id);
                     }}
                     onMouseDown={(event) => event.stopPropagation()}
                     onDragStart={(event) => {
@@ -1547,7 +1994,7 @@ function App() {
                     }}
                     className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 focus:opacity-100"
                     title="Close tab"
-                    aria-label={`Close ${STAGE_LABELS[tab]} tab`}
+                    aria-label={`Close ${label} tab`}
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -1576,7 +2023,7 @@ function App() {
                   </p>
                   {STAGES.map((stage) => {
                     const Icon = stage === 'hub' ? Archive : toolIcons[stage];
-                    const isOpen = openTabs.includes(stage);
+                    const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.stage === stage);
                     return (
                       <DropdownMenu.Item
                         key={stage}
@@ -1826,21 +2273,191 @@ function App() {
                     node={explorerTree}
                     expandedPaths={expandedExplorerPaths}
                     onToggle={toggleExplorerPath}
+                    onOpenFile={(node) => void openExplorerFile(node)}
+                    onContextMenu={(node, x, y) => setExplorerContextMenu({ node, x, y })}
                   />
                 ) : (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
                 )}
               </div>
+              {explorerContextMenu && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Close Explorer context menu"
+                    className="fixed inset-0 z-[950] cursor-default"
+                    onClick={() => setExplorerContextMenu(null)}
+                  />
+                  <div
+                    className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
+                    style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
+                  >
+                    {explorerContextMenu.node.kind === 'file' && (
+                      <>
+                        {canOpenExplorerFile(getExplorerFileKind(explorerContextMenu.node.name)) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void openExplorerFile(explorerContextMenu.node);
+                              setExplorerContextMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                          >
+                            <File className="h-3.5 w-3.5" />
+                            <span>Open</span>
+                          </button>
+                        )}
+                        {isExplorerImageFileName(explorerContextMenu.node.name) &&
+                          Boolean(findWorkspaceImageIdForPath(explorerContextMenu.node.path)) && (
+                            <>
+                              <div className="my-1 h-px bg-border" />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  openImageEditFromExplorer(explorerContextMenu.node);
+                                  setExplorerContextMenu(null);
+                                }}
+                                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                                <span>Edit</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  openImageCaptionFromExplorer(explorerContextMenu.node);
+                                  setExplorerContextMenu(null);
+                                }}
+                                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                              >
+                                <Tags className="h-3.5 w-3.5" />
+                                <span>Caption</span>
+                              </button>
+                            </>
+                          )}
+                        <div className="my-1 h-px bg-border" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExplorerClipboard({
+                              path: explorerContextMenu.node.path,
+                              name: explorerContextMenu.node.name,
+                              kind: 'file',
+                            });
+                            setExplorerContextMenu(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          <span>Copy</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleExplorerRename(explorerContextMenu.node);
+                            setExplorerContextMenu(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span>Rename</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleExplorerDelete(explorerContextMenu.node);
+                            setExplorerContextMenu(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Delete</span>
+                        </button>
+                      </>
+                    )}
+                    {explorerContextMenu.node.kind === 'folder' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleExplorerNewFolder(explorerContextMenu.node);
+                            setExplorerContextMenu(null);
+                          }}
+                          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                        >
+                          <FilePlus className="h-3.5 w-3.5" />
+                          <span>New Folder</span>
+                        </button>
+                        {explorerClipboard && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleExplorerPaste(explorerContextMenu.node);
+                              setExplorerContextMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            <span>Paste</span>
+                          </button>
+                        )}
+                        {explorerContextMenu.node.path !== 'Project' && (
+                          <>
+                            <div className="my-1 h-px bg-border" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExplorerClipboard({
+                                  path: explorerContextMenu.node.path,
+                                  name: explorerContextMenu.node.name,
+                                  kind: 'folder',
+                                });
+                                setExplorerContextMenu(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                              <span>Copy</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleExplorerRename(explorerContextMenu.node);
+                                setExplorerContextMenu(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                              <span>Rename</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleExplorerDelete(explorerContextMenu.node);
+                                setExplorerContextMenu(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
             </aside>
           )}
           <section className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col">
           <div
-            className={showEditToolbar || showFullscreenTagging ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
+            className={showEditToolbar || showFullscreenTagging || activeTab?.kind === 'file' ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
           >
             <div
               className={
-                showEditToolbar || showFullscreenTagging
+                showEditToolbar || showFullscreenTagging || activeTab?.kind === 'file'
                   ? 'h-full min-h-0'
                   : 'p-4 md:p-6'
               }
@@ -1852,7 +2469,17 @@ function App() {
                   </div>
                 }
               >
-                {activeStage ? renderTool(activeStage) : <EmptyWorkspacePlaceholder />}
+                {activeTab?.kind === 'file' ? (
+                  <InternalFileViewer
+                    file={activeTab.file}
+                    fileName={activeTab.name}
+                    fileKind={activeTab.fileKind}
+                  />
+                ) : activeStage ? (
+                  renderTool(activeStage)
+                ) : (
+                  <EmptyWorkspacePlaceholder />
+                )}
               </Suspense>
             </div>
           </div>
@@ -1955,9 +2582,19 @@ function App() {
                 <div className="space-y-4 text-xs">
                   <div>
                     <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Active tool</p>
-                    <p className="font-medium">{activeStage ? STAGE_LABELS[activeStage] : 'No tool open'}</p>
+                    <p className="font-medium">
+                      {activeTab?.kind === 'file'
+                        ? activeTab.name
+                        : activeStage
+                          ? STAGE_LABELS[activeStage]
+                          : 'No tool open'}
+                    </p>
                     <p className="mt-1 text-muted-foreground">
-                      {activeStage ? TOOL_DESCRIPTIONS[activeStage] : 'Open one from the Tools menu'}
+                      {activeTab?.kind === 'file'
+                        ? activeTab.path
+                        : activeStage
+                          ? TOOL_DESCRIPTIONS[activeStage]
+                          : 'Open one from the Tools menu'}
                     </p>
                   </div>
                   <div className="border-t border-border pt-3">
@@ -2040,18 +2677,24 @@ function App() {
                     <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
                   )}
                   {openTabs.map((tab) => {
-                    const Icon = tab === 'hub' ? Archive : toolIcons[tab];
+                    const Icon =
+                      tab.kind === 'tool'
+                        ? tab.stage === 'hub'
+                          ? Archive
+                          : toolIcons[tab.stage]
+                        : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
+                    const label = tab.kind === 'tool' ? STAGE_LABELS[tab.stage] : tab.name;
                     return (
                       <button
                         type="button"
-                        key={tab}
-                        onClick={() => navigateToStage(tab)}
+                        key={tab.id}
+                        onClick={() => activateTab(tab)}
                         className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
-                          activeStage === tab ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
+                          activeTabId === tab.id ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
                         }`}
                       >
                         <Icon className="h-3.5 w-3.5" />
-                        <span className="truncate">{STAGE_LABELS[tab]}</span>
+                        <span className="truncate">{label}</span>
                       </button>
                     );
                   })}
@@ -2084,7 +2727,13 @@ function App() {
             <div className="space-y-4 text-xs">
               <div>
                 <p className="mb-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Selection</p>
-                <p className="font-medium">{activeStage ? STAGE_LABELS[activeStage] : 'No tool open'}</p>
+                <p className="font-medium">
+                  {activeTab?.kind === 'file'
+                    ? activeTab.name
+                    : activeStage
+                      ? STAGE_LABELS[activeStage]
+                      : 'No tool open'}
+                </p>
                 <p className="mt-1 text-muted-foreground">{workspaceImages.length} images in scope</p>
               </div>
               <div className="border-t border-border pt-3">

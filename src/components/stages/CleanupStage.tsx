@@ -17,6 +17,11 @@ import {
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
+import {
+  CLOSE_ALL_DOCUMENTS_SCRIPT,
+  PHOTOPEA_ORIGIN,
+  PhotopeaFrame,
+} from '../photopea/PhotopeaFrame';
 
 type PhotopeaPhase =
   | 'waiting-ready'
@@ -28,34 +33,11 @@ type PhotopeaPhase =
   | 'saving-png'
   | 'saving-psd';
 
-const PHOTOPEA_ORIGIN = 'https://www.photopea.com';
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
-const CLOSE_ALL_DOCUMENTS_SCRIPT = [
-  'while (app.documents.length > 0) {',
-  '  app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);',
-  '}',
-].join('\n');
 
 type PhotopeaSaveBuffers = {
   png?: ArrayBuffer;
   psd?: ArrayBuffer;
-};
-
-const createPhotopeaUrl = () => {
-  const config = {
-    environment: {
-      intro: false,
-      localsave: false,
-      customIO: {
-        open: 'app.echoToOE("Open");',
-        save: 'app.echoToOE("Save");',
-        exportAs: true,
-      },
-      panels: [0, 2],
-    },
-  };
-
-  return `${PHOTOPEA_ORIGIN}#${encodeURIComponent(JSON.stringify(config))}`;
 };
 
 export const CleanupStage = () => {
@@ -66,6 +48,9 @@ export const CleanupStage = () => {
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const addNotification = useUIStore((state) => state.addNotification);
   const setEditToolbar = useUIStore((state) => state.setEditToolbar);
+  const initialSelectedImageId = useProjectStore(
+    (state) => (state.stageState.clean as { selectedImageId?: string } | undefined)?.selectedImageId
+  );
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const phaseRef = useRef<PhotopeaPhase>('waiting-ready');
@@ -84,7 +69,6 @@ export const CleanupStage = () => {
   const [editorStatus, setEditorStatus] = useState('Loading Photopea...');
   const [hasPhotopeaMounted, setHasPhotopeaMounted] = useState(false);
 
-  const photopeaUrl = useMemo(createPhotopeaUrl, []);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
@@ -101,6 +85,13 @@ export const CleanupStage = () => {
     () => workspaceImages.find((image) => image.id === selectedImageKey) ?? null,
     [selectedImageKey, workspaceImages]
   );
+
+  useEffect(() => {
+    if (initialSelectedImageId && initialSelectedImageId !== selectedImageKey) {
+      setSelectedImageKey(initialSelectedImageId);
+      setHasPhotopeaMounted(true);
+    }
+  }, [initialSelectedImageId, selectedImageKey]);
 
   const resetEditorState = useCallback((status = 'Loading Photopea...', resetPhotopea = true) => {
     phaseRef.current = 'waiting-ready';
@@ -517,12 +508,10 @@ export const CleanupStage = () => {
         />
       </div>
       {hasPhotopeaMounted && (
-        <iframe
+        <PhotopeaFrame
           ref={iframeRef}
           title="Photopea image editor"
-          src={photopeaUrl}
           className={`h-full min-h-0 w-full border-0 bg-black ${selectedImage ? '' : 'hidden'}`}
-          allow="clipboard-read; clipboard-write; fullscreen"
         />
       )}
     </div>

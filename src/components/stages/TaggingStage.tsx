@@ -473,6 +473,9 @@ export const TaggingStage = () => {
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
+  const initialSelectedItemId = useProjectStore(
+    (state) => (state.stageState.tagging as { selectedItemId?: string } | undefined)?.selectedItemId
+  );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const { addNotification, taggingModals, setTaggingModal } = useUIStore();
@@ -532,6 +535,13 @@ export const TaggingStage = () => {
       setTaggingModal({ datasetTags: false, settings: false });
     };
   }, [setTaggingModal]);
+
+  useEffect(() => {
+    if (initialSelectedItemId && initialSelectedItemId !== selectedItemId) {
+      setSelectedItemId(initialSelectedItemId);
+      setSelectedTagInput('');
+    }
+  }, [initialSelectedItemId, selectedItemId]);
 
   useEffect(() => {
     const handleTaggingCommand = (event: Event) => {
