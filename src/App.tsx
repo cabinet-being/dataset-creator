@@ -1216,6 +1216,27 @@ function App() {
     return nodes;
   };
 
+  const findExplorerNodeByPath = (path: string, node: ExplorerTreeNode | null = explorerTree): ExplorerTreeNode | null => {
+    if (!node) {
+      return null;
+    }
+    if (node.path === path) {
+      return node;
+    }
+    for (const child of node.children ?? []) {
+      const match = findExplorerNodeByPath(path, child);
+      if (match) {
+        return match;
+      }
+    }
+    return null;
+  };
+
+  const getActiveDirectoryChildren = (): ExplorerTreeNode[] => {
+    const directory = findExplorerNodeByPath(activeExplorerDirectoryPath);
+    return directory?.kind === 'folder' ? directory.children ?? [] : [];
+  };
+
   const getTopLevelExplorerEntries = (entries: ExplorerClipboardEntry[]): ExplorerClipboardEntry[] =>
     entries.filter(
       (entry) =>
@@ -1689,7 +1710,7 @@ function App() {
 
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
         event.preventDefault();
-        const nodes = getVisibleExplorerNodes();
+        const nodes = getActiveDirectoryChildren();
         setSelectedExplorerPaths(new Set(nodes.map((node) => node.path)));
         setSelectionAnchorPath(nodes[0]?.path ?? null);
         return;
