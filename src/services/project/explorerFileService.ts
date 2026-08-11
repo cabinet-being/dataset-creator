@@ -10,6 +10,11 @@ export type ExplorerClipboardEntry = {
   kind: ExplorerEntryKind;
 };
 
+export type ExplorerClipboard = {
+  mode: 'copy' | 'cut';
+  entries: ExplorerClipboardEntry[];
+};
+
 type MovableFileSystemHandle = {
   move?: (destination: ProjectDirectoryHandle, name?: string) => Promise<void>;
 };
@@ -20,6 +25,8 @@ const VIDEO_EXTENSIONS = new Set(['mp4', 'webm']);
 const getExtension = (name: string): string => name.split('.').pop()?.toLowerCase() ?? '';
 
 const getPathParts = (path: string): string[] => path.split('/').filter(Boolean).slice(1);
+
+const getParentPath = (path: string): string => path.split('/').slice(0, -1).join('/') || 'Project';
 
 const isNotFoundError = (error: unknown): boolean =>
   typeof error === 'object' &&
@@ -97,16 +104,6 @@ export const readExplorerFile = async (
   return directory.getFileHandle(name).then((handle) => handle.getFile());
 };
 
-export const createExplorerDirectory = async (
-  root: ProjectDirectoryHandle,
-  destinationPath: string,
-  name: string
-) => {
-  const directory = await getDirectoryAtExplorerPath(root, destinationPath);
-  await assertAvailableName(directory, name);
-  await directory.getDirectoryHandle(name, { create: true });
-};
-
 const entryExists = async (directory: ProjectDirectoryHandle, name: string): Promise<boolean> => {
   try {
     await directory.getFileHandle(name);
@@ -129,15 +126,58 @@ const entryExists = async (directory: ProjectDirectoryHandle, name: string): Pro
   return false;
 };
 
-const assertAvailableName = async (directory: ProjectDirectoryHandle, name: string) => {
+const assertValidName = (name: string) => {
   const trimmed = name.trim();
   if (!trimmed || trimmed.includes('/') || trimmed.includes('\\')) {
     throw new Error('Use a valid file or folder name.');
   }
+};
+
+const assertAvailableName = async (directory: ProjectDirectoryHandle, name: string) => {
+  const trimmed = name.trim();
+  assertValidName(trimmed);
 
   if (await entryExists(directory, trimmed)) {
     throw new Error(`"${trimmed}" already exists.`);
   }
+};
+
+const splitExtension = (name: string): { stem: string; extension: string } => {
+  const index = name.lastIndexOf('.');
+  if (index <= 0) {
+    return { stem: name, extension: '' };
+  }
+  return { stem: name.slice(0, index), extension: name.slice(index) };
+};
+
+export const getUniqueExplorerName = async (
+  directory: ProjectDirectoryHandle,
+  desiredName: string
+): Promise<string> => {
+  const trimmed = desiredName.trim() || 'New Folder';
+  assertValidName(trimmed);
+  if (!(await entryExists(directory, trimmed))) {
+    return trimmed;
+  }
+
+  const { stem, extension } = splitExtension(trimmed);
+  const baseStem = stem.replace(/\s+\d+$/, '') || stem;
+  let index = 2;
+  while (await entryExists(directory, `${baseStem} ${index}${extension}`)) {
+    index += 1;
+  }
+  return `${baseStem} ${index}${extension}`;
+};
+
+export const createExplorerDirectory = async (
+  root: ProjectDirectoryHandle,
+  destinationPath: string,
+  name: string
+): Promise<string> => {
+  const directory = await getDirectoryAtExplorerPath(root, destinationPath);
+  const targetName = await getUniqueExplorerName(directory, name);
+  await directory.getDirectoryHandle(targetName, { create: true });
+  return `${destinationPath}/${targetName}`;
 };
 
 const writeFile = async (directory: ProjectDirectoryHandle, name: string, file: Blob) => {
@@ -166,10 +206,11 @@ export const copyExplorerEntry = async (
   source: ExplorerClipboardEntry,
   destinationPath: string,
   requestedName?: string
-) => {
+): Promise<string> => {
   const destination = await getDirectoryAtExplorerPath(root, destinationPath);
-  const targetName = (requestedName ?? source.name).trim();
-  await assertAvailableName(destination, targetName);
+  const targetName = requestedName
+    ? await getUniqueExplorerName(destination, requestedName)
+    : await getUniqueExplorerName(destination, source.name);
 
   if (source.kind === 'folder') {
     if (destinationPath === source.path || destinationPath.startsWith(`${source.path}/`)) {
@@ -179,11 +220,24 @@ export const copyExplorerEntry = async (
     const sourceDirectory = await getDirectoryAtExplorerPath(root, source.path);
     const targetDirectory = await destination.getDirectoryHandle(targetName, { create: true });
     await copyDirectoryContents(sourceDirectory, targetDirectory);
-    return;
+    return `${destinationPath}/${targetName}`;
   }
 
   const file = await readExplorerFile(root, source.path);
   await writeFile(destination, targetName, file);
+  return `${destinationPath}/${targetName}`;
+};
+
+export const copyExplorerEntries = async (
+  root: ProjectDirectoryHandle,
+  sources: ExplorerClipboardEntry[],
+  destinationPath: string
+): Promise<Array<{ from: string; to: string }>> => {
+  const results: Array<{ from: string; to: string }> = [];
+  for (const source of sources) {
+    results.push({ from: source.path, to: await copyExplorerEntry(root, source, destinationPath) });
+  }
+  return results;
 };
 
 export const deleteExplorerEntry = async (
@@ -226,4 +280,55 @@ export const renameExplorerEntry = async (
   }
 
   return `${path.split('/').slice(0, -1).join('/')}/${trimmedName}`;
+};
+
+const moveExplorerEntry = async (
+  root: ProjectDirectoryHandle,
+  source: ExplorerClipboardEntry,
+  destinationPath: string
+): Promise<string> => {
+  if (source.kind === 'folder' && (destinationPath === source.path || destinationPath.startsWith(`${source.path}/`))) {
+    throw new Error('Cannot move a folder into itself.');
+  }
+
+  const destination = await getDirectoryAtExplorerPath(root, destinationPath);
+  const targetName = await getUniqueExplorerName(destination, source.name);
+  const { directory, name } = await getExplorerParentDirectory(root, source.path);
+  const handle =
+    source.kind === 'folder'
+      ? await directory.getDirectoryHandle(name)
+      : await directory.getFileHandle(name);
+  const movable = handle as unknown as MovableFileSystemHandle;
+
+  if (typeof movable.move === 'function') {
+    await movable.move(destination, targetName);
+  } else {
+    await copyExplorerEntry(root, source, destinationPath, targetName);
+    await directory.removeEntry(name, { recursive: source.kind === 'folder' });
+  }
+
+  return `${destinationPath}/${targetName}`;
+};
+
+export const moveExplorerEntries = async (
+  root: ProjectDirectoryHandle,
+  sources: ExplorerClipboardEntry[],
+  destinationPath: string
+): Promise<Array<{ from: string; to: string }>> => {
+  const results: Array<{ from: string; to: string }> = [];
+  for (const source of sources) {
+    results.push({ from: source.path, to: await moveExplorerEntry(root, source, destinationPath) });
+  }
+  return results;
+};
+
+export const duplicateExplorerEntries = async (
+  root: ProjectDirectoryHandle,
+  sources: ExplorerClipboardEntry[]
+): Promise<Array<{ from: string; to: string }>> => {
+  const results: Array<{ from: string; to: string }> = [];
+  for (const source of sources) {
+    results.push({ from: source.path, to: await copyExplorerEntry(root, source, getParentPath(source.path)) });
+  }
+  return results;
 };

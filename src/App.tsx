@@ -69,13 +69,16 @@ import { CleanupStage as CleanupStageComponent } from './components/stages/Clean
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
 import {
   canOpenExplorerFile,
-  copyExplorerEntry,
+  copyExplorerEntries,
   createExplorerDirectory,
   deleteExplorerEntry,
+  duplicateExplorerEntries,
   getExplorerFileKind,
   isExplorerImageFileName,
+  moveExplorerEntries,
   readExplorerFile,
   renameExplorerEntry,
+  type ExplorerClipboard,
   type ExplorerClipboardEntry,
   type ExplorerFileKind,
 } from './services/project/explorerFileService';
@@ -592,9 +595,21 @@ const buildWorkspaceExplorerTree = (
 type ExplorerTreeProps = {
   node: ExplorerTreeNode;
   expandedPaths: Set<string>;
+  selectedPaths: Set<string>;
+  inlineEdit: {
+    mode: 'create' | 'rename';
+    parentPath: string;
+    path?: string;
+    kind: 'folder' | 'file';
+    value: string;
+  } | null;
   onToggle: (path: string) => void;
-  onOpenFile: (node: ExplorerTreeNode) => void;
+  onSelect: (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
   onContextMenu: (node: ExplorerTreeNode, x: number, y: number) => void;
+  onInlineChange: (value: string) => void;
+  onInlineCommit: () => void;
+  onInlineCancel: () => void;
+  onDropItems: (node: ExplorerTreeNode) => void;
   depth?: number;
 };
 
@@ -620,25 +635,59 @@ const getExplorerIcon = (node: ExplorerTreeNode): ComponentType<{ className?: st
 const ExplorerTree = ({
   node,
   expandedPaths,
+  selectedPaths,
+  inlineEdit,
   onToggle,
-  onOpenFile,
+  onSelect,
   onContextMenu,
+  onInlineChange,
+  onInlineCommit,
+  onInlineCancel,
+  onDropItems,
   depth = 0,
 }: ExplorerTreeProps) => {
   const isFolder = node.kind === 'folder';
   const isExpanded = isFolder && expandedPaths.has(node.path);
+  const isSelected = selectedPaths.has(node.path);
+  const isRenaming = inlineEdit?.mode === 'rename' && inlineEdit.path === node.path;
   const Icon = getExplorerIcon(node);
 
   return (
     <div>
       <button
         type="button"
-        onClick={() => (isFolder ? onToggle(node.path) : onOpenFile(node))}
+        data-explorer-row
+        draggable={!isRenaming}
+        onClick={(event) => {
+          onSelect(node, event);
+          if (isFolder && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+            onToggle(node.path);
+          }
+        }}
         onContextMenu={(event) => {
           event.preventDefault();
           onContextMenu(node, event.clientX, event.clientY);
         }}
-        className="flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary"
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', node.path);
+        }}
+        onDragOver={(event) => {
+          if (isFolder) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+          }
+        }}
+        onDrop={(event) => {
+          if (!isFolder) {
+            return;
+          }
+          event.preventDefault();
+          onDropItems(node);
+        }}
+        className={`flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary ${
+          isSelected ? 'bg-primary/15 text-foreground' : ''
+        }`}
         style={{ paddingLeft: 4 + depth * 12 }}
         title={node.path}
       >
@@ -652,17 +701,67 @@ const ExplorerTree = ({
           <span className="w-3.5 shrink-0" />
         )}
         <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        {isRenaming ? (
+          <input
+            value={inlineEdit.value}
+            autoFocus
+            onChange={(event) => onInlineChange(event.target.value)}
+            onBlur={onInlineCommit}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                onInlineCommit();
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                onInlineCancel();
+              }
+            }}
+            className="min-w-0 flex-1 rounded border border-primary bg-background px-1 py-0.5 text-xs"
+          />
+        ) : (
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        )}
       </button>
+      {inlineEdit?.mode === 'create' && inlineEdit.parentPath === node.path && (
+        <div style={{ paddingLeft: 4 + (depth + 1) * 12 }} className="flex h-7 items-center gap-1">
+          <span className="w-3.5 shrink-0" />
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <input
+            value={inlineEdit.value}
+            autoFocus
+            onChange={(event) => onInlineChange(event.target.value)}
+            onBlur={onInlineCommit}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                onInlineCommit();
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                onInlineCancel();
+              }
+            }}
+            className="min-w-0 flex-1 rounded border border-primary bg-background px-1 py-0.5 text-xs"
+          />
+        </div>
+      )}
       {isExpanded &&
         node.children?.map((child) => (
           <ExplorerTree
             key={child.path}
             node={child}
             expandedPaths={expandedPaths}
+            selectedPaths={selectedPaths}
+            inlineEdit={inlineEdit}
             onToggle={onToggle}
-            onOpenFile={onOpenFile}
+            onSelect={onSelect}
             onContextMenu={onContextMenu}
+            onInlineChange={onInlineChange}
+            onInlineCommit={onInlineCommit}
+            onInlineCancel={onInlineCancel}
+            onDropItems={onDropItems}
             depth={depth + 1}
           />
         ))}
@@ -781,7 +880,17 @@ function App() {
     x: number;
     y: number;
   } | null>(null);
-  const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboardEntry | null>(null);
+  const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
+  const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
+  const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
+  const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
+  const [inlineExplorerEdit, setInlineExplorerEdit] = useState<{
+    mode: 'create' | 'rename';
+    parentPath: string;
+    path?: string;
+    kind: 'folder' | 'file';
+    value: string;
+  } | null>(null);
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
 
   const focusFloatingPanel = (panel: 'project' | 'inspector') => {
@@ -1130,6 +1239,66 @@ function App() {
     });
   };
 
+  const getVisibleExplorerNodes = (node: ExplorerTreeNode | null = explorerTree): ExplorerTreeNode[] => {
+    if (!node) {
+      return [];
+    }
+
+    const nodes: ExplorerTreeNode[] = [];
+    const visit = (entry: ExplorerTreeNode) => {
+      nodes.push(entry);
+      if (entry.kind === 'folder' && expandedExplorerPaths.has(entry.path)) {
+        entry.children?.forEach(visit);
+      }
+    };
+    node.children?.forEach(visit);
+    return nodes;
+  };
+
+  const getSelectedExplorerEntries = (): ExplorerClipboardEntry[] =>
+    getVisibleExplorerNodes()
+      .filter((node) => selectedExplorerPaths.has(node.path))
+      .map((node) => ({ path: node.path, name: node.name, kind: node.kind }));
+
+  const getContextEntries = (node: ExplorerTreeNode): ExplorerClipboardEntry[] => {
+    if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
+      return getSelectedExplorerEntries();
+    }
+    return [{ path: node.path, name: node.name, kind: node.kind }];
+  };
+
+  const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+    setActiveExplorerDirectoryPath(node.kind === 'folder' ? node.path : node.path.split('/').slice(0, -1).join('/') || 'Project');
+    const visibleNodes = getVisibleExplorerNodes();
+
+    if (event.shiftKey && selectionAnchorPath) {
+      const anchorIndex = visibleNodes.findIndex((entry) => entry.path === selectionAnchorPath);
+      const targetIndex = visibleNodes.findIndex((entry) => entry.path === node.path);
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+        setSelectedExplorerPaths(new Set(visibleNodes.slice(start, end + 1).map((entry) => entry.path)));
+        return;
+      }
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedExplorerPaths((paths) => {
+        const next = new Set(paths);
+        if (next.has(node.path)) {
+          next.delete(node.path);
+        } else {
+          next.add(node.path);
+        }
+        return next;
+      });
+      setSelectionAnchorPath(node.path);
+      return;
+    }
+
+    setSelectedExplorerPaths(new Set([node.path]));
+    setSelectionAnchorPath(node.path);
+  };
+
   const findWorkspaceFile = (path: string): File | Blob | null => {
     const sourceMatch = path.match(/^Project\/sources\/([^/]+)\/([^/]+)$/);
     if (sourceMatch) {
@@ -1299,28 +1468,54 @@ function App() {
 
   const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
 
+  const updateFileTabsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
+    setOpenTabs((tabs) =>
+      tabs.map((tab) => {
+        if (!isFileBackedTab(tab)) {
+          return tab;
+        }
+
+        for (const move of moves) {
+          if (tab.path === move.from || tab.path.startsWith(`${move.from}/`)) {
+            const nextPath = tab.path === move.from ? move.to : `${move.to}/${tab.path.slice(move.from.length + 1)}`;
+            const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
+            return {
+              ...tab,
+              id: mode ? createFileModeTabId(mode, nextPath) : createFileTabId(nextPath),
+              path: nextPath,
+              name: tab.path === move.from ? move.to.split('/').pop() ?? tab.name : tab.name,
+            };
+          }
+        }
+
+        return tab;
+      })
+    );
+  };
+
   const handleExplorerDelete = async (node: ExplorerTreeNode) => {
     const directory = requireProjectDirectory();
     if (!directory || node.path === 'Project') {
       return;
     }
+    const entries = getContextEntries(node);
 
-    if (!window.confirm(`Delete "${node.name}"? This cannot be undone.`)) {
+    if (!window.confirm(`Delete ${entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`}? This cannot be undone.`)) {
       return;
     }
 
     try {
-      await deleteExplorerEntry(directory, node.path, true);
-      if (node.kind === 'file') {
-        setOpenTabs((tabs) => tabs.filter((tab) => !isFileBackedTab(tab) || tab.path !== node.path));
-        if (activeTab && isFileBackedTab(activeTab) && activeTab.path === node.path) {
-          setActiveTabId(null);
-        }
-      } else {
-        setOpenTabs((tabs) =>
-          tabs.filter((tab) => !isFileBackedTab(tab) || !tab.path.startsWith(`${node.path}/`))
-        );
+      for (const entry of entries) {
+        await deleteExplorerEntry(directory, entry.path, true);
       }
+      setOpenTabs((tabs) =>
+        tabs.filter(
+          (tab) =>
+            !isFileBackedTab(tab) ||
+            !entries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))
+        )
+      );
+      setSelectedExplorerPaths(new Set());
       refreshExplorer();
       addNotification('success', 'Explorer entry deleted');
     } catch (error) {
@@ -1329,80 +1524,24 @@ function App() {
   };
 
   const handleExplorerRename = async (node: ExplorerTreeNode) => {
-    const directory = requireProjectDirectory();
-    if (!directory || node.path === 'Project') {
+    if (node.path === 'Project') {
       return;
     }
-
-    const nextName = window.prompt('New name', node.name)?.trim();
-    if (!nextName || nextName === node.name) {
-      return;
-    }
-
-    try {
-      const nextPath = await renameExplorerEntry(directory, node.path, node.kind, nextName);
-      setOpenTabs((tabs) =>
-        tabs.map((tab) => {
-          if (!isFileBackedTab(tab)) {
-            return tab;
-          }
-          if (tab.path === node.path) {
-            const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
-            return {
-              ...tab,
-              id: mode ? createFileModeTabId(mode, nextPath) : createFileTabId(nextPath),
-              path: nextPath,
-              name: nextName,
-              fileKind: getExplorerFileKind(nextName, 'type' in tab.file ? tab.file.type : undefined),
-            };
-          }
-          if (node.kind === 'folder' && tab.path.startsWith(`${node.path}/`)) {
-            const nextChildPath = `${nextPath}/${tab.path.slice(node.path.length + 1)}`;
-            const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
-            return { ...tab, id: mode ? createFileModeTabId(mode, nextChildPath) : createFileTabId(nextChildPath), path: nextChildPath };
-          }
-          return tab;
-        })
-      );
-      if (activeTab && isFileBackedTab(activeTab) && activeTab.path === node.path) {
-        const mode = activeTab.kind === 'file-edit' ? 'edit' : activeTab.kind === 'file-caption' ? 'caption' : null;
-        setActiveTabId(mode ? createFileModeTabId(mode, nextPath) : createFileTabId(nextPath));
-      } else if (
-        node.kind === 'folder' &&
-        activeTab &&
-        isFileBackedTab(activeTab) &&
-        activeTab.path.startsWith(`${node.path}/`)
-      ) {
-        const mode = activeTab.kind === 'file-edit' ? 'edit' : activeTab.kind === 'file-caption' ? 'caption' : null;
-        const nextActivePath = `${nextPath}/${activeTab.path.slice(node.path.length + 1)}`;
-        setActiveTabId(mode ? createFileModeTabId(mode, nextActivePath) : createFileTabId(nextActivePath));
-      }
-      refreshExplorer();
-      addNotification('success', 'Explorer entry renamed');
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to rename entry');
-    }
+    setInlineExplorerEdit({
+      mode: 'rename',
+      parentPath: node.path.split('/').slice(0, -1).join('/') || 'Project',
+      path: node.path,
+      kind: node.kind,
+      value: node.name,
+    });
   };
 
   const handleExplorerNewFolder = async (node: ExplorerTreeNode) => {
-    const directory = requireProjectDirectory();
-    if (!directory || node.kind !== 'folder') {
+    if (node.kind !== 'folder') {
       return;
     }
-
-    const name = window.prompt('Folder name', 'New Folder')?.trim();
-    if (!name) {
-      return;
-    }
-
-    try {
-      await createExplorerDirectory(directory, node.path, name);
-      setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
-      refreshExplorer();
-      addNotification('success', 'Folder created');
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to create folder');
-    }
+    setInlineExplorerEdit({ mode: 'create', parentPath: node.path, kind: 'folder', value: 'New Folder' });
+    setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
   };
 
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
@@ -1412,12 +1551,81 @@ function App() {
     }
 
     try {
-      await copyExplorerEntry(directory, explorerClipboard, node.path);
+      const moves =
+        explorerClipboard.mode === 'cut'
+          ? await moveExplorerEntries(directory, explorerClipboard.entries, node.path)
+          : await copyExplorerEntries(directory, explorerClipboard.entries, node.path);
+      if (explorerClipboard.mode === 'cut') {
+        updateFileTabsForPathMoves(moves);
+        setExplorerClipboard(null);
+      }
       setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
       refreshExplorer();
       addNotification('success', 'Explorer entry pasted');
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to paste entry');
+    }
+  };
+
+  const handleExplorerDuplicate = async (node: ExplorerTreeNode) => {
+    const directory = requireProjectDirectory();
+    if (!directory) {
+      return;
+    }
+    try {
+      await duplicateExplorerEntries(directory, getContextEntries(node));
+      refreshExplorer();
+      addNotification('success', 'Explorer entry duplicated');
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to duplicate entry');
+    }
+  };
+
+  const commitInlineExplorerEdit = async () => {
+    const edit = inlineExplorerEdit;
+    const directory = requireProjectDirectory();
+    if (!edit || !directory) {
+      return;
+    }
+
+    try {
+      if (edit.mode === 'create') {
+        const nextPath = await createExplorerDirectory(directory, edit.parentPath, edit.value);
+        setSelectedExplorerPaths(new Set([nextPath]));
+        setSelectionAnchorPath(nextPath);
+      } else if (edit.path) {
+        const nextName = edit.value.trim();
+        if (!nextName || nextName === edit.path.split('/').pop()) {
+          setInlineExplorerEdit(null);
+          return;
+        }
+        const nextPath = await renameExplorerEntry(directory, edit.path, edit.kind, nextName);
+        updateFileTabsForPathMoves([{ from: edit.path, to: nextPath }]);
+        setSelectedExplorerPaths(new Set([nextPath]));
+        setSelectionAnchorPath(nextPath);
+      }
+      setInlineExplorerEdit(null);
+      refreshExplorer();
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to update Explorer entry');
+    }
+  };
+
+  const cancelInlineExplorerEdit = () => setInlineExplorerEdit(null);
+
+  const moveSelectedExplorerEntries = async (destinationPath: string) => {
+    const directory = requireProjectDirectory();
+    const entries = getSelectedExplorerEntries();
+    if (!directory || entries.length === 0) {
+      return;
+    }
+    try {
+      const moves = await moveExplorerEntries(directory, entries, destinationPath);
+      updateFileTabsForPathMoves(moves);
+      setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
+      refreshExplorer();
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to move Explorer entries');
     }
   };
 
@@ -1451,6 +1659,66 @@ function App() {
     window.addEventListener('keydown', handleWorkspaceShortcut);
     return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
   }, [activeTab, openTabs]);
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      Boolean(target.closest('input, textarea, select, [contenteditable="true"], iframe'));
+
+    const handleExplorerShortcut = (event: KeyboardEvent) => {
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+
+      const selectedEntries = getSelectedExplorerEntries();
+      const selectedNode = selectedEntries.length === 1
+        ? getVisibleExplorerNodes().find((node) => node.path === selectedEntries[0].path)
+        : null;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && selectedEntries.length > 0) {
+        event.preventDefault();
+        setExplorerClipboard({ mode: 'copy', entries: selectedEntries });
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x' && selectedEntries.length > 0) {
+        event.preventDefault();
+        setExplorerClipboard({ mode: 'cut', entries: selectedEntries });
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && explorerClipboard) {
+        event.preventDefault();
+        void handleExplorerPaste({ name: activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path: activeExplorerDirectoryPath, kind: 'folder' });
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        const nodes = getVisibleExplorerNodes();
+        setSelectedExplorerPaths(new Set(nodes.map((node) => node.path)));
+        setSelectionAnchorPath(nodes[0]?.path ?? null);
+        return;
+      }
+
+      if (event.key === 'F2' && selectedNode) {
+        event.preventDefault();
+        handleExplorerRename(selectedNode);
+        return;
+      }
+
+      if (event.key === 'Delete' && selectedEntries.length > 0) {
+        event.preventDefault();
+        const node = selectedNode ?? getVisibleExplorerNodes().find((entry) => entry.path === selectedEntries[0].path);
+        if (node) {
+          void handleExplorerDelete(node);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleExplorerShortcut);
+    return () => window.removeEventListener('keydown', handleExplorerShortcut);
+  }, [activeExplorerDirectoryPath, explorerClipboard, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
 
   const handleThemeChange = (nextDarkMode: boolean) => {
     setDarkMode(nextDarkMode);
@@ -1688,7 +1956,7 @@ function App() {
 
   const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
     <>
-      {canOpenExplorerFile(getExplorerFileKind(node.name)) && (
+      {getContextEntries(node).length === 1 && canOpenExplorerFile(getExplorerFileKind(node.name)) && (
         <button
           type="button"
           onClick={() => {
@@ -1701,7 +1969,7 @@ function App() {
           <span>Open</span>
         </button>
       )}
-      {isExplorerImageFileName(node.name) && Boolean(findWorkspaceImageIdForPath(node.path)) && (
+      {getContextEntries(node).length === 1 && isExplorerImageFileName(node.name) && Boolean(findWorkspaceImageIdForPath(node.path)) && (
         <>
           <div className="my-1 h-px bg-border" />
           <button
@@ -1732,7 +2000,18 @@ function App() {
       <button
         type="button"
         onClick={() => {
-          setExplorerClipboard({ path: node.path, name: node.name, kind: 'file' });
+          setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Copy className="h-3.5 w-3.5" />
+        <span>Cut</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
           setExplorerContextMenu(null);
         }}
         className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
@@ -1743,14 +2022,27 @@ function App() {
       <button
         type="button"
         onClick={() => {
-          void handleExplorerRename(node);
+          void handleExplorerDuplicate(node);
           setExplorerContextMenu(null);
         }}
         className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
       >
-        <Pencil className="h-3.5 w-3.5" />
-        <span>Rename</span>
+        <Copy className="h-3.5 w-3.5" />
+        <span>Duplicate</span>
       </button>
+      {getContextEntries(node).length === 1 && (
+        <button
+          type="button"
+          onClick={() => {
+            void handleExplorerRename(node);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          <span>Rename</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={() => {
@@ -1797,7 +2089,18 @@ function App() {
           <button
             type="button"
             onClick={() => {
-              setExplorerClipboard({ path: node.path, name: node.name, kind: 'folder' });
+              setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            <span>Cut</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
               setExplorerContextMenu(null);
             }}
             className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
@@ -1808,14 +2111,27 @@ function App() {
           <button
             type="button"
             onClick={() => {
-              void handleExplorerRename(node);
+              void handleExplorerDuplicate(node);
               setExplorerContextMenu(null);
             }}
             className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
           >
-            <Pencil className="h-3.5 w-3.5" />
-            <span>Rename</span>
+            <Copy className="h-3.5 w-3.5" />
+            <span>Duplicate</span>
           </button>
+          {getContextEntries(node).length === 1 && (
+            <button
+              type="button"
+              onClick={() => {
+                void handleExplorerRename(node);
+                setExplorerContextMenu(null);
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              <span>Rename</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -2423,9 +2739,51 @@ function App() {
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto p-2">
+              <div
+                className="min-h-0 flex-1 overflow-auto p-2"
+                tabIndex={0}
+                onContextMenu={(event) => {
+                  if ((event.target as HTMLElement).closest('[data-explorer-row]')) {
+                    return;
+                  }
+                  event.preventDefault();
+                  setActiveExplorerDirectoryPath('Project');
+                  setExplorerContextMenu({ node: { name: projectName || 'Project', path: 'Project', kind: 'folder' }, x: event.clientX, y: event.clientY });
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void moveSelectedExplorerEntries('Project');
+                }}
+              >
                 {explorerStatus === 'loading' && (
                   <p className="px-2 py-1 text-xs text-muted-foreground">Reading project files...</p>
+                )}
+                {inlineExplorerEdit?.mode === 'create' && inlineExplorerEdit.parentPath === 'Project' && (
+                  <div className="flex h-7 items-center gap-1">
+                    <span className="w-3.5 shrink-0" />
+                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <input
+                      value={inlineExplorerEdit.value}
+                      autoFocus
+                      onChange={(event) => setInlineExplorerEdit((edit) => edit ? { ...edit, value: event.target.value } : edit)}
+                      onBlur={() => void commitInlineExplorerEdit()}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          void commitInlineExplorerEdit();
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          cancelInlineExplorerEdit();
+                        }
+                      }}
+                      className="min-w-0 flex-1 rounded border border-primary bg-background px-1 py-0.5 text-xs"
+                    />
+                  </div>
                 )}
                 {explorerError && (
                   <p className="mb-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-600">
@@ -2433,13 +2791,25 @@ function App() {
                   </p>
                 )}
                 {explorerTree ? (
-                  <ExplorerTree
-                    node={explorerTree}
-                    expandedPaths={expandedExplorerPaths}
-                    onToggle={toggleExplorerPath}
-                    onOpenFile={(node) => void openExplorerFile(node)}
-                    onContextMenu={(node, x, y) => setExplorerContextMenu({ node, x, y })}
-                  />
+	                  <ExplorerTree
+	                    node={explorerTree}
+	                    expandedPaths={expandedExplorerPaths}
+                    selectedPaths={selectedExplorerPaths}
+                    inlineEdit={inlineExplorerEdit}
+	                    onToggle={toggleExplorerPath}
+                    onSelect={selectExplorerNode}
+                    onContextMenu={(node, x, y) => {
+                      if (!selectedExplorerPaths.has(node.path)) {
+                        setSelectedExplorerPaths(new Set([node.path]));
+                        setSelectionAnchorPath(node.path);
+                      }
+                      setExplorerContextMenu({ node, x, y });
+                    }}
+                    onInlineChange={(value) => setInlineExplorerEdit((edit) => edit ? { ...edit, value } : edit)}
+                    onInlineCommit={() => void commitInlineExplorerEdit()}
+                    onInlineCancel={cancelInlineExplorerEdit}
+                    onDropItems={(node) => void moveSelectedExplorerEntries(node.path)}
+	                  />
                 ) : (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
                 )}
