@@ -4,7 +4,7 @@ import { createThumbnail, getImageDimensions } from '../image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../image/embeddingService';
 import { createOperationLogger, shouldLogProgress, type OperationLogger } from '../logging/applicationLog';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
-import { getAssetManifestPath } from '../project/assetManifestService';
+import { getAssetManifestName, getAssetManifestPath } from '../project/assetManifestService';
 import { getDirectoryAtExplorerPath, getUniqueExplorerName } from '../project/explorerFileService';
 
 export const SUPPORTED_IMPORT_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -59,15 +59,44 @@ const toProjectRelativePath = (explorerPath: string): string =>
 
 const joinPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
 
+const splitExtension = (name: string): { stem: string; extension: string } => {
+  const index = name.lastIndexOf('.');
+  if (index <= 0) {
+    return { stem: name, extension: '' };
+  }
+  return { stem: name.slice(0, index), extension: name.slice(index) };
+};
+
+const getUniqueReservedName = (name: string, reservedNames: Set<string>): string => {
+  if (!reservedNames.has(name)) {
+    return name;
+  }
+  const { stem, extension } = splitExtension(name);
+  const baseStem = stem.replace(/\s+\d+$/, '') || stem;
+  let index = 2;
+  while (reservedNames.has(`${baseStem} ${index}${extension}`)) {
+    index += 1;
+  }
+  return `${baseStem} ${index}${extension}`;
+};
+
 const resolveImportFileName = async (
   fileName: string,
-  destination?: ImportDestination
+  destination: ImportDestination | undefined,
+  reservedNames: Set<string>
 ): Promise<string> => {
-  if (!destination?.projectDirectory || !destination.explorerPath) {
-    return fileName;
+  if (destination?.projectDirectory && destination.explorerPath) {
+    const directory = await getDirectoryAtExplorerPath(destination.projectDirectory, destination.explorerPath);
+    const filesystemName = await getUniqueExplorerName(directory, fileName);
+    const targetName = getUniqueReservedName(filesystemName, reservedNames);
+    reservedNames.add(targetName);
+    reservedNames.add(getAssetManifestName(targetName));
+    return targetName;
   }
-  const directory = await getDirectoryAtExplorerPath(destination.projectDirectory, destination.explorerPath);
-  return getUniqueExplorerName(directory, fileName);
+  const targetName = getUniqueReservedName(fileName, reservedNames);
+  reservedNames.add(targetName);
+  reservedNames.add(getAssetManifestName(targetName));
+  return targetName;
 };
 
 const applyImportDestination = (sourceImage: SourceImage, fileName: string, destination?: ImportDestination) => {
@@ -85,14 +114,15 @@ const processImportedFile = async (
   file: File,
   tags: string[],
   destination: ImportDestination | undefined,
-  logger: OperationLogger
+  logger: OperationLogger,
+  reservedNames: Set<string>
 ): Promise<SourceImage | null> => {
   if (!SUPPORTED_IMPORT_IMAGE_FORMATS.includes(file.type)) {
     logger.warning(`skipped unsupported file ${file.name}`);
     return null;
   }
 
-  const targetFileName = await resolveImportFileName(file.name, destination);
+  const targetFileName = await resolveImportFileName(file.name, destination, reservedNames);
   const { width, height } = await getImageDimensions(file);
   const thumbnail = await createThumbnail(file);
   const embedding = await generateEmbedding(file);
@@ -112,7 +142,8 @@ const processImportedFile = async (
 const processArchiveFile = async (
   file: File,
   destination: ImportDestination | undefined,
-  logger: OperationLogger
+  logger: OperationLogger,
+  reservedNames: Set<string>
 ): Promise<SourceImage[]> => {
   const zip = await JSZip.loadAsync(file);
   const entries = Object.values(zip.files).filter((entry) => !entry.dir);
@@ -145,7 +176,7 @@ const processArchiveFile = async (
       captionsByPathStem.get(getArchivePathStem(entry.name)) ??
       captionsByFileStem.get(getArchiveFileStem(entry.name));
     const tags = captionEntry ? parseCaptionTags(await captionEntry.async('string')) : [];
-    const sourceImage = await processImportedFile(imageFile, tags, destination, logger);
+    const sourceImage = await processImportedFile(imageFile, tags, destination, logger, reservedNames);
     if (sourceImage) {
       importedImages.push(sourceImage);
     }
@@ -165,6 +196,7 @@ export const importImageFiles = async (
 ): Promise<ImportImagesResult> => {
   const logger = options.logger ?? createOperationLogger('Import');
   const importedImages: SourceImage[] = [];
+  const reservedNames = new Set<string>();
   let skippedCount = 0;
 
   if (files.length === 0) {
@@ -180,9 +212,9 @@ export const importImageFiles = async (
     const file = files[i];
     try {
       if (isImportArchiveFile(file)) {
-        importedImages.push(...await processArchiveFile(file, options.destination, logger));
+        importedImages.push(...await processArchiveFile(file, options.destination, logger, reservedNames));
       } else {
-        const sourceImage = await processImportedFile(file, [], options.destination, logger);
+        const sourceImage = await processImportedFile(file, [], options.destination, logger, reservedNames);
         if (sourceImage) {
           importedImages.push(sourceImage);
         } else {

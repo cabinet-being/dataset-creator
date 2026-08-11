@@ -1,7 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, ComponentType, ReactNode } from 'react';
+import type { ChangeEvent, ComponentType, DragEvent, ReactNode } from 'react';
 import {
   AlertCircle,
   Archive,
@@ -58,6 +58,7 @@ import {
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
 import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
+import { importImageFiles } from './services/import/importService';
 import {
   deleteLocalTaggerFileHandle,
   saveLocalTaggerFileHandle,
@@ -560,7 +561,7 @@ type ExplorerTreeProps = {
   onInlineCancel: () => void;
   onDragStartItem: (node: ExplorerTreeNode) => void;
   onDragEndItems: () => void;
-  onDropItems: (node: ExplorerTreeNode) => void;
+  onDropItems: (node: ExplorerTreeNode, event: DragEvent) => void;
   depth?: number;
 };
 
@@ -630,7 +631,7 @@ const ExplorerTree = ({
         onDragOver={(event) => {
           if (isFolder) {
             event.preventDefault();
-            event.dataTransfer.dropEffect = 'move';
+            event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
           }
         }}
         onDrop={(event) => {
@@ -638,7 +639,7 @@ const ExplorerTree = ({
             return;
           }
           event.preventDefault();
-          onDropItems(node);
+          onDropItems(node, event);
         }}
         className={`flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary ${
           isSelected ? 'bg-primary/15 text-foreground' : ''
@@ -747,6 +748,7 @@ function App() {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
+  const addSourceImages = useProjectStore((state) => state.addSourceImages);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -1702,6 +1704,47 @@ function App() {
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to move Explorer entries');
     }
+  };
+
+  const importExternalFilesIntoExplorer = async (files: File[], destinationPath: string) => {
+    const directory = requireProjectDirectory();
+    if (!directory || files.length === 0) {
+      return;
+    }
+
+    try {
+      const result = await importImageFiles(files, {
+        logger: createOperationLogger('Import'),
+        destination: {
+          projectDirectory: directory,
+          explorerPath: destinationPath,
+        },
+        onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
+      });
+
+      if (result.importedImages.length > 0) {
+        addSourceImages(result.importedImages);
+        addNotification(
+          'success',
+          `Imported ${result.importedImages.length} image${result.importedImages.length !== 1 ? 's' : ''}`
+        );
+        setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
+        refreshExplorer();
+      }
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to import files');
+    }
+  };
+
+  const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length > 0) {
+      event.dataTransfer.dropEffect = 'copy';
+      void importExternalFilesIntoExplorer(files, destinationPath);
+      return;
+    }
+
+    void moveSelectedExplorerEntries(destinationPath, draggedExplorerEntries);
   };
 
   useEffect(() => {
@@ -2850,11 +2893,11 @@ function App() {
                 }}
                 onDragOver={(event) => {
                   event.preventDefault();
-                  event.dataTransfer.dropEffect = 'move';
+                  event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
                 }}
                 onDrop={(event) => {
                   event.preventDefault();
-                  void moveSelectedExplorerEntries('Project', draggedExplorerEntries);
+                  handleExplorerDrop(event, 'Project');
                 }}
               >
                 {explorerStatus === 'loading' && (
@@ -2909,7 +2952,7 @@ function App() {
                     onInlineCancel={cancelInlineExplorerEdit}
                     onDragStartItem={startExplorerDrag}
                     onDragEndItems={() => setDraggedExplorerEntries(null)}
-                    onDropItems={(node) => void moveSelectedExplorerEntries(node.path, draggedExplorerEntries)}
+                    onDropItems={(node, event) => handleExplorerDrop(event, node.path)}
                   />
                 ) : (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
