@@ -27,6 +27,8 @@ export interface SourceImage {
   originalFile: Blob;
   fileName: string;
   originalFileName?: string;
+  originalFilePath?: string;
+  manifestPath?: string;
   width: number;
   height: number;
   mimeType: string;
@@ -86,6 +88,9 @@ export interface SyntheticImage {
   sourceImageId: string;
   imageData: Blob;
   psdData?: Blob;
+  imageDataPath?: string;
+  psdDataPath?: string;
+  manifestPath?: string;
   width: number;
   height: number;
   type: ImageType;

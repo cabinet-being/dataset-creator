@@ -534,62 +534,11 @@ const readExplorerDirectory = async (
   };
 };
 
-const getFileExtension = (fileName: string, mimeType: string): string => {
-  const extension = fileName.split('.').pop()?.toLowerCase();
-  if (extension && extension !== fileName.toLowerCase()) {
-    return extension;
-  }
-
-  return mimeType.split('/')[1] || 'bin';
-};
-
-const buildWorkspaceExplorerTree = (
-  projectName: string,
-  sourceImages: ReturnType<typeof useProjectStore.getState>['sourceImages'],
-  datasetItems: ReturnType<typeof useProjectStore.getState>['datasetItems']
-): ExplorerTreeNode => ({
+const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
   name: projectName || 'Project',
   path: 'Project',
   kind: 'folder',
-  children: sortExplorerNodes([
-    {
-      name: 'sources',
-      path: 'Project/sources',
-      kind: 'folder',
-      children: sortExplorerNodes(
-        Object.values(sourceImages).map((source) => ({
-          name: source.id,
-          path: `Project/sources/${source.id}`,
-          kind: 'folder',
-          children: sortExplorerNodes([
-            {
-              name: `original.${getFileExtension(source.fileName, source.mimeType)}`,
-              path: `Project/sources/${source.id}/original.${getFileExtension(source.fileName, source.mimeType)}`,
-              kind: 'file',
-            },
-          ]),
-        }))
-      ),
-    },
-    {
-      name: 'synthetic',
-      path: 'Project/synthetic',
-      kind: 'folder',
-      children: sortExplorerNodes(
-        Object.values(datasetItems).map((item) => ({
-          name: item.id,
-          path: `Project/synthetic/${item.id}`,
-          kind: 'folder',
-          children: sortExplorerNodes([
-            { name: 'image.png', path: `Project/synthetic/${item.id}/image.png`, kind: 'file' },
-            ...(item.psdData
-              ? [{ name: 'image.psd', path: `Project/synthetic/${item.id}/image.psd`, kind: 'file' as const }]
-              : []),
-          ]),
-        }))
-      ),
-    },
-  ]),
+  children: [],
 });
 
 type ExplorerTreeProps = {
@@ -788,6 +737,8 @@ function App() {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
@@ -835,7 +786,7 @@ function App() {
   const [explorerStatus, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
-    () => new Set(['Project', 'Project/sources', 'Project/synthetic'])
+    () => new Set(['Project'])
   );
   const [projectWindow, setProjectWindow] = useState<FloatingPanelState>({
     ...storedWorkspaceLayout.projectWindow,
@@ -1207,7 +1158,7 @@ function App() {
           }
         } catch (error) {
           if (!canceled) {
-            setExplorerTree(buildWorkspaceExplorerTree(projectName, sourceImagesById, datasetItemsById));
+            setExplorerTree(buildEmptyExplorerTree(projectName));
             setExplorerStatus('error');
             setExplorerError(error instanceof Error ? error.message : 'Unable to read project files');
           }
@@ -1215,7 +1166,7 @@ function App() {
         return;
       }
 
-      setExplorerTree(buildWorkspaceExplorerTree(projectName, sourceImagesById, datasetItemsById));
+      setExplorerTree(buildEmptyExplorerTree(projectName));
       setExplorerStatus('ready');
       setExplorerError(null);
     };
@@ -1225,7 +1176,7 @@ function App() {
     return () => {
       canceled = true;
     };
-  }, [datasetItemsById, explorerRefreshKey, projectDirectoryHandle, projectDirectoryName, projectName, sourceImagesById]);
+  }, [explorerRefreshKey, projectDirectoryHandle, projectDirectoryName, projectName]);
 
   const toggleExplorerPath = (path: string) => {
     setExpandedExplorerPaths((paths) => {
@@ -1299,95 +1250,19 @@ function App() {
     setSelectionAnchorPath(node.path);
   };
 
-  const findWorkspaceFile = (path: string): File | Blob | null => {
-    const sourceMatch = path.match(/^Project\/sources\/([^/]+)\/([^/]+)$/);
-    if (sourceMatch) {
-      const source = sourceImagesById[sourceMatch[1]];
-      if (!source) {
-        return null;
-      }
-      if (sourceMatch[2] === 'manifest.json') {
-        return new Blob(
-          [
-            JSON.stringify(
-              {
-                id: source.id,
-                fileName: source.fileName,
-                originalFileName: source.originalFileName,
-                width: source.width,
-                height: source.height,
-                mimeType: source.mimeType,
-                tags: source.tags,
-                hidden: source.hidden,
-                excludedFromDataset: source.excludedFromDataset,
-                createdAt: source.createdAt,
-              },
-              null,
-              2
-            ),
-          ],
-          { type: 'application/json' }
-        );
-      }
-      return source.originalFile;
-    }
-
-    const syntheticMatch = path.match(/^Project\/synthetic\/([^/]+)\/([^/]+)$/);
-    if (syntheticMatch) {
-      const item = datasetItemsById[syntheticMatch[1]];
-      if (!item) {
-        return null;
-      }
-      if (syntheticMatch[2] === 'image.png') {
-        return item.imageData;
-      }
-      if (syntheticMatch[2] === 'image.psd') {
-        return item.psdData ?? null;
-      }
-      if (syntheticMatch[2] === 'manifest.json') {
-        return new Blob(
-          [
-            JSON.stringify(
-              {
-                id: item.id,
-                sourceImageId: item.sourceImageId,
-                imageFileName: 'image.png',
-                psdFileName: item.psdData ? 'image.psd' : undefined,
-                width: item.width,
-                height: item.height,
-                type: item.type,
-                tags: item.tags,
-                aspectRatio: item.aspectRatio,
-                deleted: item.deleted,
-                excludedFromDataset: item.excludedFromDataset,
-                createdAt: item.createdAt,
-                exportOrder: item.exportOrder,
-              },
-              null,
-              2
-            ),
-          ],
-          { type: 'application/json' }
-        );
-      }
-    }
-
-    if (path === `Project/${PROJECT_DIRECTORY_MANIFEST}`) {
-      return new Blob([JSON.stringify({ project: projectName }, null, 2)], { type: 'application/json' });
-    }
-
-    return null;
-  };
+  const toProjectRelativePath = (path: string): string =>
+    path === 'Project' ? '' : path.replace(/^Project\//, '');
 
   const findWorkspaceImageIdForPath = (path: string): string | null => {
-    const sourceMatch = path.match(/^Project\/sources\/([^/]+)\/original\.[^/]+$/);
-    if (sourceMatch && sourceImagesById[sourceMatch[1]]) {
-      return `source:${sourceMatch[1]}`;
+    const projectRelativePath = toProjectRelativePath(path);
+    const source = Object.values(sourceImagesById).find((image) => image.originalFilePath === projectRelativePath);
+    if (source) {
+      return `source:${source.id}`;
     }
 
-    const syntheticMatch = path.match(/^Project\/synthetic\/([^/]+)\/image\.png$/);
-    if (syntheticMatch && datasetItemsById[syntheticMatch[1]]) {
-      return `synthetic:${syntheticMatch[1]}`;
+    const synthetic = Object.values(datasetItemsById).find((item) => item.imageDataPath === projectRelativePath);
+    if (synthetic) {
+      return `synthetic:${synthetic.id}`;
     }
 
     return null;
@@ -1399,9 +1274,12 @@ function App() {
     }
 
     try {
-      const file = projectDirectoryHandle
-        ? await readExplorerFile(projectDirectoryHandle, node.path)
-        : findWorkspaceFile(node.path);
+      if (!projectDirectoryHandle) {
+        addNotification('warning', 'Open a project directory before opening Explorer files.');
+        return;
+      }
+
+      const file = await readExplorerFile(projectDirectoryHandle, node.path);
       if (!file) {
         addNotification('error', 'File is no longer available');
         return;
@@ -1436,9 +1314,12 @@ function App() {
       return;
     }
 
-    const file = projectDirectoryHandle
-      ? await readExplorerFile(projectDirectoryHandle, node.path)
-      : findWorkspaceFile(node.path);
+    if (!projectDirectoryHandle) {
+      addNotification('warning', 'Open a project directory before opening Explorer files.');
+      return;
+    }
+
+    const file = await readExplorerFile(projectDirectoryHandle, node.path);
     if (!file) {
       addNotification('error', 'File is no longer available');
       return;
@@ -1491,6 +1372,46 @@ function App() {
         return tab;
       })
     );
+  };
+
+  const applyProjectRelativePathMoves = (
+    path: string | undefined,
+    moves: Array<{ from: string; to: string }>
+  ): string | undefined => {
+    if (!path) {
+      return path;
+    }
+    const explorerPath = `Project/${path}`;
+    for (const move of moves) {
+      if (explorerPath === move.from || explorerPath.startsWith(`${move.from}/`)) {
+        const nextPath = explorerPath === move.from ? move.to : `${move.to}/${explorerPath.slice(move.from.length + 1)}`;
+        return toProjectRelativePath(nextPath);
+      }
+    }
+    return path;
+  };
+
+  const updateWorkspacePathsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
+    for (const source of Object.values(sourceImagesById)) {
+      const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
+      const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves);
+      if (originalFilePath !== source.originalFilePath || manifestPath !== source.manifestPath) {
+        updateSourceImage(source.id, { originalFilePath, manifestPath });
+      }
+    }
+
+    for (const item of Object.values(datasetItemsById)) {
+      const imageDataPath = applyProjectRelativePathMoves(item.imageDataPath, moves);
+      const psdDataPath = applyProjectRelativePathMoves(item.psdDataPath, moves);
+      const manifestPath = applyProjectRelativePathMoves(item.manifestPath, moves);
+      if (
+        imageDataPath !== item.imageDataPath ||
+        psdDataPath !== item.psdDataPath ||
+        manifestPath !== item.manifestPath
+      ) {
+        updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath });
+      }
+    }
   };
 
   const handleExplorerDelete = async (node: ExplorerTreeNode) => {
@@ -1557,6 +1478,7 @@ function App() {
           : await copyExplorerEntries(directory, explorerClipboard.entries, node.path);
       if (explorerClipboard.mode === 'cut') {
         updateFileTabsForPathMoves(moves);
+        updateWorkspacePathsForPathMoves(moves);
         setExplorerClipboard(null);
       }
       setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
@@ -1600,7 +1522,9 @@ function App() {
           return;
         }
         const nextPath = await renameExplorerEntry(directory, edit.path, edit.kind, nextName);
-        updateFileTabsForPathMoves([{ from: edit.path, to: nextPath }]);
+        const moves = [{ from: edit.path, to: nextPath }];
+        updateFileTabsForPathMoves(moves);
+        updateWorkspacePathsForPathMoves(moves);
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
       }
@@ -1622,6 +1546,7 @@ function App() {
     try {
       const moves = await moveExplorerEntries(directory, entries, destinationPath);
       updateFileTabsForPathMoves(moves);
+      updateWorkspacePathsForPathMoves(moves);
       setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
       refreshExplorer();
     } catch (error) {
