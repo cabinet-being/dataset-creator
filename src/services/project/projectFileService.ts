@@ -110,6 +110,18 @@ const downloadBlob = (blob: Blob, filename: string) => {
 const sanitizeFilename = (name: string) =>
   name.trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
 
+const getPathParts = (path: string): string[] => path.split('/').filter(Boolean);
+
+const getParentPath = (path: string): string => getPathParts(path).slice(0, -1).join('/');
+
+const joinPath = (...parts: string[]): string => parts.flatMap(getPathParts).join('/');
+
+const getDefaultSourceManifestPath = (source: SourceImage): string =>
+  `.dataset-creator-data/source-images/${source.id}/manifest.json`;
+
+const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
+  `.dataset-creator-data/generated-images/${item.id}/manifest.json`;
+
 const toIsoString = (value: Date | string | number | undefined, fallback = new Date()): string => {
   if (value instanceof Date) {
     return value.toISOString();
@@ -189,8 +201,8 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   const exportedAt = new Date();
 
   for (const source of Object.values(project.sourceImages)) {
-    const originalFilePath = `sources/${source.id}/original`;
-    const manifestPath = `sources/${source.id}/manifest.json`;
+    const manifestPath = source.manifestPath ?? getDefaultSourceManifestPath(source);
+    const originalFilePath = source.originalFilePath ?? joinPath(getParentPath(manifestPath), 'original');
     zip.file(originalFilePath, source.originalFile);
 
     const sourceManifest: SourceImageManifest = {
@@ -211,9 +223,11 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   }
 
   for (const item of Object.values(project.datasetItems).filter((entry) => !entry.deleted)) {
-    const imageDataPath = `synthetic/${item.id}/image.png`;
-    const psdDataPath = item.psdData ? `synthetic/${item.id}/image.psd` : undefined;
-    const manifestPath = `synthetic/${item.id}/manifest.json`;
+    const manifestPath = item.manifestPath ?? getDefaultSyntheticManifestPath(item);
+    const imageDataPath = item.imageDataPath ?? joinPath(getParentPath(manifestPath), 'image.png');
+    const psdDataPath = item.psdData
+      ? item.psdDataPath ?? joinPath(getParentPath(manifestPath), 'image.psd')
+      : undefined;
     zip.file(imageDataPath, item.imageData);
     if (item.psdData && psdDataPath) {
       zip.file(psdDataPath, item.psdData);
@@ -333,24 +347,36 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     throw new Error('Unsupported project file');
   }
 
-  const sourceManifests = manifest.project.sourceImageManifests
+  const sourceManifestEntries: Array<{
+    manifestPath?: string;
+    manifest: SourceImageManifest | LegacySourceImageManifest;
+  }> = manifest.project.sourceImageManifests
     ? await Promise.all(
-        Object.values(manifest.project.sourceImageManifests).map((path) =>
-          readJsonFile<SourceImageManifest | LegacySourceImageManifest>(zip, path)
+        Object.values(manifest.project.sourceImageManifests).map(
+          async (path) => ({
+            manifestPath: path,
+            manifest: await readJsonFile<SourceImageManifest | LegacySourceImageManifest>(zip, path),
+          })
         )
       )
-    : Object.values(manifest.project.sourceImages ?? {});
+    : Object.values(manifest.project.sourceImages ?? {}).map((source) => ({ manifest: source }));
   const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
-  const syntheticManifests = syntheticManifestPaths
+  const syntheticManifestEntries: Array<{
+    manifestPath?: string;
+    manifest: SyntheticImageManifest | LegacySyntheticImageManifest;
+  }> = syntheticManifestPaths
     ? await Promise.all(
-        Object.values(syntheticManifestPaths).map((path) =>
-          readJsonFile<SyntheticImageManifest | LegacySyntheticImageManifest>(zip, path)
+        Object.values(syntheticManifestPaths).map(
+          async (path) => ({
+            manifestPath: path,
+            manifest: await readJsonFile<SyntheticImageManifest | LegacySyntheticImageManifest>(zip, path),
+          })
         )
       )
-    : Object.values(manifest.project.datasetItems ?? {});
+    : Object.values(manifest.project.datasetItems ?? {}).map((item) => ({ manifest: item }));
 
   const sourceImages: Record<string, SourceImage> = {};
-  for (const source of sourceManifests) {
+  for (const { manifestPath, manifest: source } of sourceManifestEntries) {
     const originalFileBuffer = await zip.file(source.originalFilePath)?.async('arraybuffer');
     if (!originalFileBuffer) {
       throw new Error(`Project file is missing Source data for ${source.id}`);
@@ -377,6 +403,8 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
       width: source.width,
       height: source.height,
       mimeType: source.mimeType,
+      originalFilePath: source.originalFilePath,
+      manifestPath,
       tags: source.tags,
       hidden: sourceHidden,
       excludedFromDataset: source.excludedFromDataset,
@@ -389,7 +417,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   }
 
   const datasetItems: Record<string, SyntheticImage> = {};
-  for (const item of syntheticManifests) {
+  for (const { manifestPath, manifest: item } of syntheticManifestEntries) {
     if ('deleted' in item && item.deleted) {
       continue;
     }
@@ -422,6 +450,9 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
       exportOrder: 'exportOrder' in item ? item.exportOrder : undefined,
       imageData,
       psdData,
+      imageDataPath: item.imageDataPath,
+      psdDataPath: item.psdDataPath,
+      manifestPath,
       createdAt: new Date(item.createdAt),
       deletedAt: deletedAt ? new Date(deletedAt) : undefined,
     };
