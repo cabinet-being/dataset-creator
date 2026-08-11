@@ -2111,6 +2111,7 @@ function App() {
         <Copy className="h-3.5 w-3.5" />
         <span>Duplicate</span>
       </button>
+      <div className="my-1 h-px bg-border" />
       {getContextEntries(node).length === 1 && (
         <button
           type="button"
@@ -2151,22 +2152,23 @@ function App() {
         <FilePlus className="h-3.5 w-3.5" />
         <span>New Folder</span>
       </button>
-      {explorerClipboard && (
-        <button
-          type="button"
-          onClick={() => {
-            void handleExplorerPaste(node);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          <span>Paste</span>
-        </button>
-      )}
-      {node.path !== 'Project' && (
+      {(node.path !== 'Project' || explorerClipboard) && <div className="my-1 h-px bg-border" />}
+      {node.path === 'Project' ? (
+        explorerClipboard && (
+          <button
+            type="button"
+            onClick={() => {
+              void handleExplorerPaste(node);
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            <span>Paste</span>
+          </button>
+        )
+      ) : (
         <>
-          <div className="my-1 h-px bg-border" />
           <button
             type="button"
             onClick={() => {
@@ -2189,6 +2191,19 @@ function App() {
             <Copy className="h-3.5 w-3.5" />
             <span>Copy</span>
           </button>
+          {explorerClipboard && (
+            <button
+              type="button"
+              onClick={() => {
+                void handleExplorerPaste(node);
+                setExplorerContextMenu(null);
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              <span>Paste</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -2200,6 +2215,7 @@ function App() {
             <Copy className="h-3.5 w-3.5" />
             <span>Duplicate</span>
           </button>
+          <div className="my-1 h-px bg-border" />
           {getContextEntries(node).length === 1 && (
             <button
               type="button"
