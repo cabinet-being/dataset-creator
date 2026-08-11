@@ -53,11 +53,11 @@ import {
   clearProjectDirectory,
   pickProjectDirectory,
   projectDirectoryHasManifest,
-  PROJECT_DIRECTORY_MANIFEST,
   readProjectDirectory,
   writeProjectDirectoryChanges,
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
+import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
 import {
   deleteLocalTaggerFileHandle,
   saveLocalTaggerFileHandle,
@@ -515,7 +515,7 @@ const readExplorerDirectory = async (
   const children: ExplorerTreeNode[] = [];
 
   for await (const [entryName, entry] of directory.entries()) {
-    if (entryName === PROJECT_DIRECTORY_MANIFEST) {
+    if (isHiddenExplorerManifestName(entryName)) {
       continue;
     }
     const childPath = `${path}/${entryName}`;
