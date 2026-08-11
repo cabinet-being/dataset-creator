@@ -5,8 +5,13 @@
 }
 
 .workspace-tab-scroll {
-  scrollbar-gutter: stable;
   overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.workspace-tab-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .workspace-tab-strip > * {
