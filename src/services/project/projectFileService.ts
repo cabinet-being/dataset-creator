@@ -9,6 +9,7 @@ import type {
   TaggingConfig,
   WorkspaceSettings,
 } from '../../types';
+import { getAssetManifestName, PROJECT_MANIFEST_NAME } from './assetManifestService';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -126,10 +127,25 @@ const getProjectDataFileExtension = (fileName: string, mimeType: string): string
 };
 
 const getDefaultSourceManifestPath = (source: SourceImage): string =>
-  `.dataset-creator-data/source-images/${source.id}/manifest.json`;
+  `.dataset-creator-data/source-images/${source.id}/${getAssetManifestName(
+    `original.${getProjectDataFileExtension(source.fileName, source.mimeType)}`
+  )}`;
 
 const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
-  `.dataset-creator-data/generated-images/${item.id}/manifest.json`;
+  `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
+
+const getNormalizedAssetManifestPath = (
+  currentPath: string | undefined,
+  assetFileName: string,
+  fallbackPath: string
+): string => {
+  if (!currentPath) {
+    return fallbackPath;
+  }
+  return getPathParts(currentPath).slice(-1)[0] === PROJECT_MANIFEST_NAME
+    ? joinPath(getParentPath(currentPath), getAssetManifestName(assetFileName))
+    : currentPath;
+};
 
 const toIsoString = (value: Date | string | number | undefined, fallback = new Date()): string => {
   if (value instanceof Date) {
@@ -210,10 +226,15 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   const exportedAt = new Date();
 
   for (const source of Object.values(project.sourceImages)) {
-    const manifestPath = source.manifestPath ?? getDefaultSourceManifestPath(source);
+    const originalFileNameOnDisk = `original.${getProjectDataFileExtension(source.fileName, source.mimeType)}`;
+    const manifestPath = getNormalizedAssetManifestPath(
+      source.manifestPath,
+      originalFileNameOnDisk,
+      getDefaultSourceManifestPath(source)
+    );
     const originalFilePath =
       source.originalFilePath ??
-      joinPath(getParentPath(manifestPath), `original.${getProjectDataFileExtension(source.fileName, source.mimeType)}`);
+      joinPath(getParentPath(manifestPath), originalFileNameOnDisk);
     zip.file(originalFilePath, source.originalFile);
 
     const sourceManifest: SourceImageManifest = {
@@ -234,7 +255,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   }
 
   for (const item of Object.values(project.datasetItems).filter((entry) => !entry.deleted)) {
-    const manifestPath = item.manifestPath ?? getDefaultSyntheticManifestPath(item);
+    const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, 'image.png', getDefaultSyntheticManifestPath(item));
     const imageDataPath = item.imageDataPath ?? joinPath(getParentPath(manifestPath), 'image.png');
     const psdDataPath = item.psdData
       ? item.psdDataPath ?? joinPath(getParentPath(manifestPath), 'image.psd')

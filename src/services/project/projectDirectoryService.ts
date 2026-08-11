@@ -8,6 +8,7 @@ import {
   type TaggingConfig,
   type WorkspaceSettings,
 } from '../../types';
+import { getAssetManifestName } from './assetManifestService';
 
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
@@ -338,14 +339,34 @@ const getProjectManifest = (
 });
 
 const getDefaultSourceManifestPath = (source: SourceImage): string =>
-  `.dataset-creator-data/source-images/${source.id}/manifest.json`;
+  `.dataset-creator-data/source-images/${source.id}/${getAssetManifestName(
+    `original.${getFileExtension(source.fileName, source.mimeType)}`
+  )}`;
 
 const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
-  `.dataset-creator-data/generated-images/${item.id}/manifest.json`;
+  `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
+
+const getNormalizedAssetManifestPath = (
+  currentPath: string | undefined,
+  assetFileName: string,
+  fallbackPath: string
+): string => {
+  if (!currentPath) {
+    return fallbackPath;
+  }
+  const relativePath = toProjectRelativePath(currentPath);
+  return getFileName(relativePath) === PROJECT_DIRECTORY_MANIFEST
+    ? joinPath(getParentPath(relativePath), getAssetManifestName(assetFileName))
+    : relativePath;
+};
 
 const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): Promise<string> => {
-  const manifestPath = source.manifestPath ? toProjectRelativePath(source.manifestPath) : getDefaultSourceManifestPath(source);
   const originalFileNameOnDisk = `original.${getFileExtension(source.fileName, source.mimeType)}`;
+  const manifestPath = getNormalizedAssetManifestPath(
+    source.manifestPath,
+    originalFileNameOnDisk,
+    getDefaultSourceManifestPath(source)
+  );
   const originalFilePath = source.originalFilePath
     ? toProjectRelativePath(source.originalFilePath)
     : joinPath(getParentPath(manifestPath), originalFileNameOnDisk);
@@ -355,6 +376,9 @@ const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): P
     manifestPath,
     JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath), null, 2)
   );
+  if (source.manifestPath && toProjectRelativePath(source.manifestPath) !== manifestPath) {
+    await removeProjectFileAtPath(root, source.manifestPath);
+  }
   return manifestPath;
 };
 
@@ -363,12 +387,12 @@ const writeSourceChanges = async (
   source: SourceImage,
   previousSource?: SourceImage
 ): Promise<string> => {
-  const manifestPath = source.manifestPath
-    ? toProjectRelativePath(source.manifestPath)
-    : previousSource?.manifestPath
-      ? toProjectRelativePath(previousSource.manifestPath)
-      : getDefaultSourceManifestPath(source);
   const originalFileNameOnDisk = `original.${getFileExtension(source.fileName, source.mimeType)}`;
+  const manifestPath = getNormalizedAssetManifestPath(
+    source.manifestPath ?? previousSource?.manifestPath,
+    originalFileNameOnDisk,
+    getDefaultSourceManifestPath(source)
+  );
   const originalFilePath =
     source.originalFilePath
       ? toProjectRelativePath(source.originalFilePath)
@@ -383,12 +407,16 @@ const writeSourceChanges = async (
     manifestPath,
     JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath), null, 2)
   );
+  const previousManifestPath = source.manifestPath ?? previousSource?.manifestPath;
+  if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
+    await removeProjectFileAtPath(root, previousManifestPath);
+  }
   return manifestPath;
 };
 
 const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage): Promise<string> => {
-  const manifestPath = item.manifestPath ? toProjectRelativePath(item.manifestPath) : getDefaultSyntheticManifestPath(item);
   const imageFileName = 'image.png';
+  const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, imageFileName, getDefaultSyntheticManifestPath(item));
   const imageDataPath = item.imageDataPath
     ? toProjectRelativePath(item.imageDataPath)
     : joinPath(getParentPath(manifestPath), imageFileName);
@@ -407,6 +435,9 @@ const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage
     manifestPath,
     JSON.stringify(serializeSyntheticManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
   );
+  if (item.manifestPath && toProjectRelativePath(item.manifestPath) !== manifestPath) {
+    await removeProjectFileAtPath(root, item.manifestPath);
+  }
   return manifestPath;
 };
 
@@ -415,12 +446,12 @@ const writeSyntheticChanges = async (
   item: SyntheticImage,
   previousItem?: SyntheticImage
 ): Promise<string> => {
-  const manifestPath = item.manifestPath
-    ? toProjectRelativePath(item.manifestPath)
-    : previousItem?.manifestPath
-      ? toProjectRelativePath(previousItem.manifestPath)
-      : getDefaultSyntheticManifestPath(item);
   const imageFileName = 'image.png';
+  const manifestPath = getNormalizedAssetManifestPath(
+    item.manifestPath ?? previousItem?.manifestPath,
+    imageFileName,
+    getDefaultSyntheticManifestPath(item)
+  );
   const imageDataPath =
     item.imageDataPath
       ? toProjectRelativePath(item.imageDataPath)
@@ -453,6 +484,10 @@ const writeSyntheticChanges = async (
     manifestPath,
     JSON.stringify(serializeSyntheticManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
   );
+  const previousManifestPath = item.manifestPath ?? previousItem?.manifestPath;
+  if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
+    await removeProjectFileAtPath(root, previousManifestPath);
+  }
   return manifestPath;
 };
 
@@ -464,6 +499,14 @@ const removeProjectEntryAtPath = async (root: ProjectDirectoryHandle, manifestPa
     await (await getDirectoryAtPath(root, parentPath)).removeEntry(name, { recursive: true });
   } catch {
     // The entry may already be absent after a partial save.
+  }
+};
+
+const removeProjectFileAtPath = async (root: ProjectDirectoryHandle, path: string) => {
+  try {
+    await (await getDirectoryForFilePath(root, toProjectRelativePath(path))).removeEntry(getFileName(path));
+  } catch {
+    // The file may already be absent after a partial save or migration.
   }
 };
 
@@ -581,7 +624,7 @@ const readSource = async (
 ): Promise<SourceImage> => {
   const manifest = await readJsonFile<SourceManifest>(
     directory,
-    'manifest.json',
+    paths?.manifestPath ? getFileName(paths.manifestPath) : PROJECT_DIRECTORY_MANIFEST,
     `source manifest in "${directory.name}"`
   );
   if (!manifest.id || !manifest.fileName || !manifest.originalFileNameOnDisk) {
@@ -630,7 +673,7 @@ const readSynthetic = async (
 ): Promise<SyntheticImage> => {
   const manifest = await readJsonFile<SyntheticManifest>(
     directory,
-    'manifest.json',
+    paths?.manifestPath ? getFileName(paths.manifestPath) : PROJECT_DIRECTORY_MANIFEST,
     `synthetic manifest in "${directory.name}"`
   );
   if (!manifest.id || !manifest.sourceImageId || !manifest.imageFileName) {
