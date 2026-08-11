@@ -67,6 +67,7 @@ import {
 import { createOperationLogger } from './services/logging/applicationLog';
 import { indexProjectAssets } from './services/project/assetIndexService';
 import { isSupportedProjectAsset } from './services/project/assetTypeService';
+import { downloadZipFile, exportAsZip } from './services/export/exportService';
 import {
   createDatasetForFile,
   getDatasetDisplayName,
@@ -111,7 +112,12 @@ type FilePickerWindow = Window &
         accept: Record<string, string[]>;
       }>;
     }) => Promise<FileSystemFileHandle[]>;
+    showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
   };
+
+type ImportDirectoryHandle = FileSystemDirectoryHandle & {
+  entries: () => AsyncIterableIterator<[string, FileSystemDirectoryHandle | FileSystemFileHandle]>;
+};
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
@@ -318,6 +324,8 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   tagging: Tags,
   export: Download,
 };
+
+const TOOLS_MENU_STAGES = STAGES.filter((stage) => stage !== 'import' && stage !== 'export');
 
 const renderTool = (currentStage: StageName) => {
   switch (currentStage) {
@@ -2329,6 +2337,106 @@ function App() {
     }
   };
 
+  const joinImportPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
+
+  const readImportDirectoryFiles = async (
+    directory: ImportDirectoryHandle,
+    parentPath = ''
+  ): Promise<ImportInputFile[]> => {
+    const directoryPath = joinImportPath(parentPath, directory.name);
+    const inputs: ImportInputFile[] = [{ directoryPath }];
+
+    for await (const [entryName, entry] of directory.entries()) {
+      if ('entries' in entry) {
+        inputs.push(...await readImportDirectoryFiles(entry as ImportDirectoryHandle, directoryPath));
+      } else {
+        const file = await (entry as FileSystemFileHandle).getFile();
+        inputs.push({ file, relativePath: joinImportPath(directoryPath, entryName) });
+      }
+    }
+
+    return inputs;
+  };
+
+  const pickImportFiles = async (): Promise<ImportInputFile[]> => {
+    const pickerWindow = window as FilePickerWindow;
+    if (!pickerWindow.showOpenFilePicker) {
+      throw new Error('File picker is not available in this browser.');
+    }
+
+    const handles = await pickerWindow.showOpenFilePicker({
+      multiple: true,
+      excludeAcceptAllOption: false,
+      types: [
+        {
+          description: 'Project assets',
+          accept: {
+            'image/*': ['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.webp'],
+            'text/plain': ['.txt'],
+            'application/json': ['.json'],
+            'image/vnd.adobe.photoshop': ['.psd'],
+            'video/*': ['.mp4', '.webm'],
+          },
+        },
+      ],
+    });
+    return Promise.all(handles.map((handle) => handle.getFile()));
+  };
+
+  const pickImportDirectory = async (): Promise<ImportInputFile[]> => {
+    const pickerWindow = window as FilePickerWindow;
+    if (!pickerWindow.showDirectoryPicker) {
+      throw new Error('Folder picker is not available in this browser.');
+    }
+
+    const directory = await pickerWindow.showDirectoryPicker({ mode: 'read' });
+    return readImportDirectoryFiles(directory as ImportDirectoryHandle);
+  };
+
+  const handleExplorerImport = async (destinationPath: string, importDirectory = false) => {
+    try {
+      const files = importDirectory ? await pickImportDirectory() : await pickImportFiles();
+      await importExternalFilesIntoExplorer(files, destinationPath);
+    } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
+      addNotification('error', error instanceof Error ? error.message : 'Failed to select files for import');
+    }
+  };
+
+  const handleDatasetExport = async (node: ExplorerTreeNode) => {
+    try {
+      const dataset = await readDatasetEntry(node);
+      const assetIds = new Set(dataset.assetIds);
+      const exportItems = workspaceImages.filter(
+        (item) => assetIds.has(item.sourceImageId) && !item.excludedFromDataset
+      );
+
+      if (exportItems.length === 0) {
+        createOperationLogger('Export').warning(`no images to export for Dataset "${dataset.name}"`);
+        addNotification('warning', 'No images to export');
+        return;
+      }
+
+      const logger = createOperationLogger('Export');
+      logger.info(`exporting Dataset "${dataset.name}" with ${exportItems.length} image${exportItems.length !== 1 ? 's' : ''}`);
+      const zipBlob = await exportAsZip(
+        {
+          datasetKeyword: dataset.triggerWord,
+          items: exportItems,
+        },
+        useProjectStore.getState().taggingConfig.blacklist,
+        logger
+      );
+      downloadZipFile(zipBlob, `${dataset.name || 'dataset'}-${new Date().toISOString().split('T')[0]}.zip`);
+      logger.success(`exported Dataset "${dataset.name}"`);
+      addNotification('success', `Exported ${exportItems.length} image${exportItems.length !== 1 ? 's' : ''} as ZIP`);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to export Dataset');
+    }
+  };
+
   const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
     if (Array.from(event.dataTransfer.types).includes('Files')) {
       event.dataTransfer.dropEffect = 'copy';
@@ -2928,6 +3036,17 @@ function App() {
         <Copy className="h-3.5 w-3.5" />
         <span>Duplicate</span>
       </button>
+      <button
+        type="button"
+        onClick={() => {
+          void handleDatasetExport(node);
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Download className="h-3.5 w-3.5" />
+        <span>Export</span>
+      </button>
       <div className="my-1 h-px bg-border" />
       <button
         type="button"
@@ -2980,6 +3099,20 @@ function App() {
         >
           <Layers3 className="h-3.5 w-3.5" />
           <span>New Dataset</span>
+        </button>
+      )}
+      {node.kind === 'folder' && (
+        <button
+          type="button"
+          title="Shift-click to import a folder"
+          onClick={(event) => {
+            void handleExplorerImport(node.path, event.shiftKey);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Upload className="h-3.5 w-3.5" />
+          <span>Import</span>
         </button>
       )}
       {(node.path !== 'Project' || explorerClipboard) && <div className="my-1 h-px bg-border" />}
@@ -3189,7 +3322,7 @@ function App() {
             </button>
             {toolsMenuOpen && (
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {STAGES.map((stage) => {
+                {TOOLS_MENU_STAGES.map((stage) => {
                   const Icon = stage === 'hub' ? Archive : toolIcons[stage];
                   const active = activeStage === stage;
                   return (
