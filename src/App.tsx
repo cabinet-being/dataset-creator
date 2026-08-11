@@ -1431,7 +1431,22 @@ function App() {
 
   const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
 
+  const applyExplorerPathMoves = (path: string, moves: Array<{ from: string; to: string }>): string => {
+    for (const move of moves) {
+      if (path === move.from || path.startsWith(`${move.from}/`)) {
+        return path === move.from ? move.to : `${move.to}/${path.slice(move.from.length + 1)}`;
+      }
+    }
+    return path;
+  };
+
+  const getFileTabIdForPath = (tab: FileWorkspaceTab, path: string): string => {
+    const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
+    return mode ? createFileModeTabId(mode, path) : createFileTabId(path);
+  };
+
   const updateFileTabsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
+    const activeFileTab = activeTab && isFileBackedTab(activeTab) ? activeTab : null;
     setOpenTabs((tabs) =>
       tabs.map((tab) => {
         if (!isFileBackedTab(tab)) {
@@ -1441,10 +1456,9 @@ function App() {
         for (const move of moves) {
           if (tab.path === move.from || tab.path.startsWith(`${move.from}/`)) {
             const nextPath = tab.path === move.from ? move.to : `${move.to}/${tab.path.slice(move.from.length + 1)}`;
-            const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
             return {
               ...tab,
-              id: mode ? createFileModeTabId(mode, nextPath) : createFileTabId(nextPath),
+              id: getFileTabIdForPath(tab, nextPath),
               path: nextPath,
               name: tab.path === move.from ? move.to.split('/').pop() ?? tab.name : tab.name,
             };
@@ -1454,15 +1468,12 @@ function App() {
         return tab;
       })
     );
-  };
-
-  const applyExplorerPathMoves = (path: string, moves: Array<{ from: string; to: string }>): string => {
-    for (const move of moves) {
-      if (path === move.from || path.startsWith(`${move.from}/`)) {
-        return path === move.from ? move.to : `${move.to}/${path.slice(move.from.length + 1)}`;
+    if (activeFileTab) {
+      const nextPath = applyExplorerPathMoves(activeFileTab.path, moves);
+      if (nextPath !== activeFileTab.path) {
+        setActiveTabId(getFileTabIdForPath(activeFileTab, nextPath));
       }
     }
-    return path;
   };
 
   const updateExplorerClipboardForPathMoves = (moves: Array<{ from: string; to: string }>) => {
@@ -1544,6 +1555,10 @@ function App() {
       return;
     }
     const entries = getContextEntries(node);
+    const activeFileTabDeleted =
+      activeTab &&
+      isFileBackedTab(activeTab) &&
+      entries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
 
     if (!window.confirm(`Delete ${entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`}? This cannot be undone.`)) {
       return;
@@ -1560,6 +1575,9 @@ function App() {
             !entries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))
         )
       );
+      if (activeFileTabDeleted) {
+        setActiveTabId(null);
+      }
       clearExplorerClipboardForDeletedPaths(entries);
       setSelectedExplorerPaths(new Set());
       refreshExplorer();
