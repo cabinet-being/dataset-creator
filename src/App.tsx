@@ -65,6 +65,8 @@ import {
   type LocalTaggerFileKey,
 } from './services/tagging/localTaggerFileSettings';
 import { createOperationLogger } from './services/logging/applicationLog';
+import { indexProjectAssets } from './services/project/assetIndexService';
+import { isSupportedProjectAsset } from './services/project/assetTypeService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
@@ -504,7 +506,7 @@ const FloatingWorkspacePanel = ({
 type ExplorerTreeNode = {
   name: string;
   path: string;
-  kind: 'folder' | 'file' | 'dataset-root' | 'dataset';
+  kind: 'folder' | 'file' | 'dataset';
   datasetId?: string;
   children?: ExplorerTreeNode[];
 };
@@ -512,7 +514,7 @@ type ExplorerTreeNode = {
 const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
   [...nodes].sort((a, b) => {
     if (a.kind !== b.kind) {
-      const order = { folder: 0, 'dataset-root': 1, dataset: 2, file: 3 };
+      const order = { folder: 0, dataset: 1, file: 2 };
       return order[a.kind] - order[b.kind];
     }
     return a.name.localeCompare(b.name);
@@ -529,10 +531,13 @@ const readExplorerDirectory = async (
     if (isHiddenExplorerManifestName(entryName)) {
       continue;
     }
+    if (entryName === '.dataset-creator-data') {
+      continue;
+    }
     const childPath = `${path}/${entryName}`;
     if ('entries' in entry) {
       children.push(await readExplorerDirectory(entry, entryName, childPath));
-    } else {
+    } else if (isSupportedProjectAsset(entryName)) {
       children.push({ name: entryName, path: childPath, kind: 'file' });
     }
   }
@@ -560,20 +565,13 @@ const withDatasetExplorerNodes = (
   return {
     ...tree,
     children: sortExplorerNodes([
-      ...(tree.children ?? []).filter((child) => child.path !== 'Project/Datasets'),
-      {
-        name: 'Datasets',
-        path: 'Project/Datasets',
-        kind: 'dataset-root',
-        children: sortExplorerNodes(
-          datasetEntries.map((dataset) => ({
-            name: dataset.name,
-            path: `Project/Datasets/${dataset.id}`,
-            kind: 'dataset',
-            datasetId: dataset.id,
-          }))
-        ),
-      },
+      ...(tree.children ?? []).filter((child) => child.kind !== 'dataset'),
+      ...datasetEntries.map((dataset) => ({
+        name: dataset.name,
+        path: `dataset:${dataset.id}`,
+        kind: 'dataset' as const,
+        datasetId: dataset.id,
+      })),
     ]),
   };
 };
@@ -603,7 +601,7 @@ type ExplorerTreeProps = {
 };
 
 const getExplorerIcon = (node: ExplorerTreeNode): ComponentType<{ className?: string }> => {
-  if (node.kind === 'folder' || node.kind === 'dataset-root') {
+  if (node.kind === 'folder') {
     return FolderOpen;
   }
   if (node.kind === 'dataset') {
@@ -641,7 +639,7 @@ const ExplorerTree = ({
   onDropItems,
   depth = 0,
 }: ExplorerTreeProps) => {
-  const isFolder = node.kind === 'folder' || node.kind === 'dataset-root';
+  const isFolder = node.kind === 'folder';
   const isDataset = node.kind === 'dataset';
   const isExpanded = isFolder && expandedPaths.has(node.path);
   const isSelected = selectedPaths.has(node.path);
@@ -654,7 +652,7 @@ const ExplorerTree = ({
       <button
         type="button"
         data-explorer-row
-        draggable={!isRenaming && !isDataset && node.kind !== 'dataset-root'}
+        draggable={!isRenaming && !isDataset}
         onClick={(event) => {
           onSelect(node, event);
           if (isFolder && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
@@ -666,7 +664,7 @@ const ExplorerTree = ({
           onContextMenu(node, event.clientX, event.clientY);
         }}
         onDragStart={(event) => {
-          if (isDataset || node.kind === 'dataset-root') {
+          if (isDataset) {
             event.preventDefault();
             return;
           }
@@ -841,9 +839,7 @@ function App() {
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
-  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(
-    () => (storedWorkspaceLayout.openTabs ?? ['hub']).map((stage) => createToolTab(stage))
-  );
+  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(openTabs[0]?.id ?? null);
   const [leftPanelOpen, setLeftPanelOpen] = useState(storedWorkspaceLayout.leftPanelOpen ?? true);
   const [rightPanelOpen, setRightPanelOpen] = useState(storedWorkspaceLayout.rightPanelOpen ?? true);
@@ -1285,7 +1281,7 @@ function App() {
     const nodes: ExplorerTreeNode[] = [];
     const visit = (entry: ExplorerTreeNode) => {
       nodes.push(entry);
-      if ((entry.kind === 'folder' || entry.kind === 'dataset-root') && expandedExplorerPaths.has(entry.path)) {
+      if (entry.kind === 'folder' && expandedExplorerPaths.has(entry.path)) {
         entry.children?.forEach(visit);
       }
     };
@@ -1311,7 +1307,7 @@ function App() {
 
   const getActiveDirectoryChildren = (): ExplorerTreeNode[] => {
     const directory = findExplorerNodeByPath(activeExplorerDirectoryPath);
-    return directory?.kind === 'folder' || directory?.kind === 'dataset-root' ? directory.children ?? [] : [];
+    return directory?.kind === 'folder' ? directory.children ?? [] : [];
   };
 
   const getFocusedExplorerNode = (): ExplorerTreeNode | null => {
@@ -1394,7 +1390,7 @@ function App() {
   const setActiveExplorerNode = (node: ExplorerTreeNode) => {
     setFocusedExplorerPath(node.path);
     setActiveExplorerDirectoryPath(
-      node.kind === 'folder' || node.kind === 'dataset-root'
+      node.kind === 'folder'
         ? node.path
         : node.path.split('/').slice(0, -1).join('/') || 'Project'
     );
@@ -1414,6 +1410,9 @@ function App() {
 
   const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
     setActiveExplorerNode(node);
+    if (node.kind === 'dataset' && node.datasetId && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      openDatasetTab(node.datasetId);
+    }
 
     if (event.shiftKey && selectionAnchorPath) {
       if (selectExplorerRange(selectionAnchorPath, node.path)) {
@@ -1891,7 +1890,7 @@ function App() {
   };
 
   const handleExplorerRename = async (node: ExplorerTreeNode) => {
-    if (node.path === 'Project' || node.kind === 'dataset-root') {
+    if (node.path === 'Project') {
       return;
     }
     setInlineExplorerEdit({
@@ -1914,11 +1913,10 @@ function App() {
   const handleExplorerNewDataset = () => {
     setInlineExplorerEdit({
       mode: 'create',
-      parentPath: 'Project/Datasets',
+      parentPath: 'Project',
       kind: 'dataset',
       value: getUniqueDatasetName(),
     });
-    setExpandedExplorerPaths((paths) => new Set([...paths, 'Project/Datasets']));
   };
 
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
@@ -1969,7 +1967,7 @@ function App() {
     try {
       if (edit.kind === 'dataset' && edit.mode === 'create') {
         const dataset = createProjectDataset(edit.value.trim() || getUniqueDatasetName());
-        const path = `Project/Datasets/${dataset.id}`;
+        const path = `dataset:${dataset.id}`;
         setSelectedExplorerPaths(new Set([path]));
         setSelectionAnchorPath(path);
         setFocusedExplorerPath(path);
@@ -2165,7 +2163,7 @@ function App() {
 
       if (event.key === 'ArrowRight') {
         const focusedNode = getFocusedExplorerNode();
-        if (focusedNode?.kind === 'folder' || focusedNode?.kind === 'dataset-root') {
+        if (focusedNode?.kind === 'folder') {
           event.preventDefault();
           if (!expandedExplorerPaths.has(focusedNode.path)) {
             setExpandedExplorerPaths((paths) => new Set([...paths, focusedNode.path]));
@@ -2180,7 +2178,7 @@ function App() {
         const focusedNode = getFocusedExplorerNode();
         if (focusedNode) {
           event.preventDefault();
-          if ((focusedNode.kind === 'folder' || focusedNode.kind === 'dataset-root') && expandedExplorerPaths.has(focusedNode.path)) {
+          if (focusedNode.kind === 'folder' && expandedExplorerPaths.has(focusedNode.path)) {
             setExpandedExplorerPaths((paths) => {
               const next = new Set(paths);
               next.delete(focusedNode.path);
@@ -2200,7 +2198,7 @@ function App() {
         const focusedNode = getFocusedExplorerNode();
         if (focusedNode) {
           event.preventDefault();
-          if (focusedNode.kind === 'folder' || focusedNode.kind === 'dataset-root') {
+          if (focusedNode.kind === 'folder') {
             toggleExplorerPath(focusedNode.path);
           } else {
             void openExplorerFile(focusedNode);
@@ -2450,6 +2448,25 @@ function App() {
     setProjectDirectory({ handle: directory, name: directory.name });
     logger.success(`opened project directory ${directory.name}`);
     addNotification('success', 'Project directory opened');
+    void indexProjectAssets(directory, {
+      logger: createOperationLogger('Index'),
+      existingSourceImages: useProjectStore.getState().sourceImages,
+      onAssetIndexed: async ({ sourceImage }) => {
+        const previousProject = useProjectStore.getState();
+        if (sourceImage && !previousProject.sourceImages[sourceImage.id]) {
+          addSourceImage(sourceImage);
+        }
+        await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
+        refreshExplorer();
+      },
+    })
+      .then(async () => {
+        await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, directory);
+        refreshExplorer();
+      })
+      .catch((error) => {
+        addNotification('error', error instanceof Error ? error.message : 'Failed to index project assets');
+      });
   };
 
   const handleOpenProject = async () => {
@@ -2640,7 +2657,7 @@ function App() {
           <span>New Folder</span>
         </button>
       )}
-      {(node.path === 'Project' || node.kind === 'dataset-root') && (
+      {node.path === 'Project' && (
         <button
           type="button"
           onClick={() => {
@@ -2668,7 +2685,7 @@ function App() {
             <span>Paste</span>
           </button>
         )
-      ) : node.kind === 'dataset-root' ? null : (
+      ) : (
         <>
           <button
             type="button"
@@ -3106,11 +3123,21 @@ function App() {
                   {STAGES.map((stage) => {
                     const Icon = stage === 'hub' ? Archive : toolIcons[stage];
                     const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.stage === stage);
+                    const isDisabled = stage === 'import';
                     return (
                       <DropdownMenu.Item
                         key={stage}
-                        onSelect={() => navigateToStage(stage)}
-                        className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-xs outline-none hover:bg-secondary"
+                        disabled={isDisabled}
+                        onSelect={() => {
+                          if (!isDisabled) {
+                            navigateToStage(stage);
+                          }
+                        }}
+                        className={`flex items-center gap-2 rounded px-3 py-2 text-xs outline-none ${
+                          isDisabled
+                            ? 'cursor-not-allowed opacity-45'
+                            : 'cursor-pointer hover:bg-secondary'
+                        }`}
                       >
                         <Icon className="h-3.5 w-3.5" />
                         <span className="min-w-0 flex-1 truncate">{STAGE_LABELS[stage]}</span>

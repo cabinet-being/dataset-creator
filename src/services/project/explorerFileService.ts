@@ -1,5 +1,6 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
 import { getAssetManifestName, isAssetManifestName, isProjectManifestName } from './assetManifestService';
+import { resolveProjectAssetKind } from './assetTypeService';
 
 export type ExplorerEntryKind = 'folder' | 'file';
 
@@ -20,11 +21,6 @@ type MovableFileSystemHandle = {
   move?: (destination: ProjectDirectoryHandle, name?: string) => Promise<void>;
 };
 
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
-const VIDEO_EXTENSIONS = new Set(['mp4', 'webm']);
-
-const getExtension = (name: string): string => name.split('.').pop()?.toLowerCase() ?? '';
-
 const getPathParts = (path: string): string[] => path.split('/').filter(Boolean).slice(1);
 
 const getParentPath = (path: string): string => path.split('/').slice(0, -1).join('/') || 'Project';
@@ -36,29 +32,7 @@ const isNotFoundError = (error: unknown): boolean =>
   (error as { name?: string }).name === 'NotFoundError';
 
 export const getExplorerFileKind = (name: string, mimeType = ''): ExplorerFileKind => {
-  const extension = getExtension(name);
-
-  if (extension === 'psd') {
-    return 'psd';
-  }
-
-  if (mimeType.startsWith('image/') || IMAGE_EXTENSIONS.has(extension)) {
-    return 'image';
-  }
-
-  if (extension === 'json' || mimeType === 'application/json') {
-    return 'json';
-  }
-
-  if (extension === 'txt' || mimeType.startsWith('text/')) {
-    return 'text';
-  }
-
-  if (mimeType.startsWith('video/') || VIDEO_EXTENSIONS.has(extension)) {
-    return 'video';
-  }
-
-  return 'unknown';
+  return resolveProjectAssetKind(name, mimeType);
 };
 
 export const canOpenExplorerFile = (kind: ExplorerFileKind): boolean => kind !== 'unknown';

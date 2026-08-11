@@ -810,22 +810,32 @@ export const readProjectDirectory = async (
   const defaults = createProject(manifest.project.name);
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
-  const [sources, synthetic] = await Promise.all([
+  const [sourceResults, syntheticResults] = await Promise.all([
     sourceManifestPaths
       ? Promise.all(
-          Object.values(sourceManifestPaths).map(async (manifestPath) =>
-            readSource(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath })
-          )
+          Object.values(sourceManifestPaths).map(async (manifestPath) => {
+            try {
+              return await readSource(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
+            } catch {
+              return null;
+            }
+          })
         )
       : readOptionalProjectChildren(directory, 'sources', (entry) => readSource(entry)),
     syntheticManifestPaths
       ? Promise.all(
-          Object.values(syntheticManifestPaths).map(async (manifestPath) =>
-            readSynthetic(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath })
-          )
+          Object.values(syntheticManifestPaths).map(async (manifestPath) => {
+            try {
+              return await readSynthetic(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
+            } catch {
+              return null;
+            }
+          })
         )
       : readOptionalProjectChildren(directory, 'synthetic', (entry) => readSynthetic(entry)),
   ]);
+  const sources = sourceResults.filter((source): source is SourceImage => Boolean(source));
+  const synthetic = syntheticResults.filter((item): item is SyntheticImage => Boolean(item));
 
   const sourceIds = new Set(sources.map((source) => source.id));
   const orphanSynthetic = synthetic.find((item) => !sourceIds.has(item.sourceImageId));

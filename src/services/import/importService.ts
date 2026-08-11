@@ -7,39 +7,25 @@ import type { ProjectDirectoryHandle } from '../project/projectDirectoryService'
 import {
   getAssetManifestName,
   getAssetManifestPath,
-  isAssetManifestName,
-  isProjectManifestName,
 } from '../project/assetManifestService';
-import { getDirectoryAtExplorerPath, getExplorerFileKind, getUniqueExplorerName } from '../project/explorerFileService';
+import { getExplorerFileKind, getUniqueExplorerName } from '../project/explorerFileService';
+import {
+  SUPPORTED_PROJECT_ASSET_ACCEPT,
+  isInternalProjectFileName,
+  isSupportedProjectAsset,
+} from '../project/assetTypeService';
 
-export const SUPPORTED_IMPORT_IMAGE_FORMATS = [
+const SUPPORTED_IMPORT_IMAGE_FORMATS = [
   'image/bmp',
   'image/gif',
   'image/jpeg',
   'image/png',
   'image/webp',
 ];
-export const SUPPORTED_IMPORT_TEXT_FORMATS = ['text/plain', 'application/json'];
-export const SUPPORTED_IMPORT_PHOTOSHOP_FORMATS = ['image/vnd.adobe.photoshop', 'application/octet-stream'];
-export const SUPPORTED_IMPORT_VIDEO_FORMATS = ['video/mp4', 'video/webm'];
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
 export const SUPPORTED_IMPORT_FILE_FORMATS = [
-  ...SUPPORTED_IMPORT_IMAGE_FORMATS,
-  ...SUPPORTED_IMPORT_TEXT_FORMATS,
-  ...SUPPORTED_IMPORT_PHOTOSHOP_FORMATS,
-  ...SUPPORTED_IMPORT_VIDEO_FORMATS,
+  ...SUPPORTED_PROJECT_ASSET_ACCEPT,
   ...SUPPORTED_IMPORT_ARCHIVE_FORMATS,
-  '.bmp',
-  '.gif',
-  '.jpeg',
-  '.jpg',
-  '.json',
-  '.mp4',
-  '.png',
-  '.psd',
-  '.txt',
-  '.webm',
-  '.webp',
   '.zip',
 ];
 
@@ -50,20 +36,6 @@ const IMAGE_EXTENSION_TYPES = new Map([
   ['.jpg', 'image/jpeg'],
   ['.png', 'image/png'],
   ['.webp', 'image/webp'],
-]);
-
-const SUPPORTED_ASSET_EXTENSIONS = new Set([
-  '.bmp',
-  '.gif',
-  '.jpeg',
-  '.jpg',
-  '.json',
-  '.mp4',
-  '.png',
-  '.psd',
-  '.txt',
-  '.webm',
-  '.webp',
 ]);
 
 export type ImportInputFile = File | {
@@ -138,15 +110,10 @@ export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
 
 export const isInternalImportFileName = (fileName: string): boolean =>
-  isProjectManifestName(fileName) || isAssetManifestName(fileName);
+  isInternalProjectFileName(fileName);
 
 export const isSupportedImportAssetFile = (file: File): boolean =>
-  !isInternalImportFileName(file.name) &&
-  (SUPPORTED_IMPORT_IMAGE_FORMATS.includes(file.type) ||
-    SUPPORTED_IMPORT_TEXT_FORMATS.includes(file.type) ||
-    SUPPORTED_IMPORT_VIDEO_FORMATS.includes(file.type) ||
-    file.name.toLowerCase().endsWith('.psd') ||
-    SUPPORTED_ASSET_EXTENSIONS.has(getFileExtension(file.name)));
+  isSupportedProjectAsset(file.name, file.type);
 
 const readFileEntry = async (
   entry: WebkitFileSystemFileEntry,
@@ -215,6 +182,7 @@ const toProjectRelativePath = (explorerPath: string): string =>
 
 const joinPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
 const getParentPath = (path: string): string => path.split('/').filter(Boolean).slice(0, -1).join('/');
+const yieldToUi = async () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
 const normalizeImportInput = (input: ImportInputFile): { file: File; relativePath?: string } => {
   if ('file' in input) {
@@ -256,7 +224,7 @@ const resolveImportFileName = async (
   explorerDirectoryPath?: string
 ): Promise<string> => {
   if (destination?.projectDirectory && explorerDirectoryPath) {
-    const directory = await getDirectoryAtExplorerPath(destination.projectDirectory, explorerDirectoryPath);
+    const directory = await getOrCreateDirectoryAtExplorerPath(destination.projectDirectory, explorerDirectoryPath);
     const filesystemName = await getUniqueExplorerName(directory, fileName);
     const targetName = getUniqueReservedName(filesystemName, reservedNames);
     reservedNames.add(targetName);
@@ -546,6 +514,7 @@ export const importImageFiles = async (
     if (shouldLogProgress(current, files.length)) {
       logger.progress({ current, total: files.length, label: 'processed selections' });
     }
+    await yieldToUi();
   }
 
   if (skippedCount > 0) {
