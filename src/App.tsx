@@ -67,6 +67,14 @@ import {
 import { createOperationLogger } from './services/logging/applicationLog';
 import { indexProjectAssets } from './services/project/assetIndexService';
 import { isSupportedProjectAsset } from './services/project/assetTypeService';
+import {
+  createDatasetForFile,
+  getDatasetDisplayName,
+  getDatasetFileName,
+  isDatasetFileName,
+  readDatasetFile,
+  writeDatasetFile,
+} from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
@@ -76,7 +84,9 @@ import {
   createExplorerDirectory,
   deleteExplorerEntry,
   duplicateExplorerEntries,
+  getDirectoryAtExplorerPath,
   getExplorerFileKind,
+  getUniqueExplorerName,
   isExplorerImageFileName,
   moveExplorerEntries,
   readExplorerFile,
@@ -551,6 +561,8 @@ const readExplorerDirectory = async (
     const childPath = `${path}/${entryName}`;
     if ('entries' in entry) {
       children.push(await readExplorerDirectory(entry, entryName, childPath));
+    } else if (isDatasetFileName(entryName)) {
+      children.push({ name: getDatasetDisplayName(entryName), path: childPath, kind: 'dataset' });
     } else if (isSupportedProjectAsset(entryName)) {
       children.push({ name: entryName, path: childPath, kind: 'file' });
     }
@@ -564,63 +576,36 @@ const readExplorerDirectory = async (
   };
 };
 
+const readProjectDatasetsFromDirectory = async (
+  root: ProjectDirectoryHandle,
+  directory: ProjectDirectoryHandle = root,
+  path = 'Project'
+): Promise<Dataset[]> => {
+  const datasets: Dataset[] = [];
+  for await (const [entryName, entry] of directory.entries()) {
+    if (entryName === '.dataset-creator-data') {
+      continue;
+    }
+    const childPath = `${path}/${entryName}`;
+    if ('entries' in entry) {
+      datasets.push(...await readProjectDatasetsFromDirectory(root, entry, childPath));
+    } else if (isDatasetFileName(entryName)) {
+      try {
+        datasets.push(await readDatasetFile(root, childPath));
+      } catch (error) {
+        console.warn('Failed to read Dataset file', childPath, error);
+      }
+    }
+  }
+  return datasets;
+};
+
 const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
   name: projectName || 'Project',
   path: 'Project',
   kind: 'folder',
   children: [],
 });
-
-const withDatasetExplorerNodes = (
-  tree: ExplorerTreeNode,
-  datasets: Record<string, Dataset>
-): ExplorerTreeNode => {
-  const datasetEntries = Object.values(datasets);
-  const insertDatasets = (node: ExplorerTreeNode): ExplorerTreeNode => {
-    if (node.kind !== 'folder') {
-      return node;
-    }
-    const children = (node.children ?? []).map(insertDatasets);
-    const localDatasets = datasetEntries.filter((dataset) => (dataset.parentPath || 'Project') === node.path);
-    return {
-      ...node,
-      children: sortExplorerNodes([
-        ...children.filter((child) => child.kind !== 'dataset'),
-        ...localDatasets.map((dataset) => ({
-          name: dataset.name,
-          path: `dataset:${dataset.id}`,
-          kind: 'dataset' as const,
-          datasetId: dataset.id,
-        })),
-      ]),
-    };
-  };
-  const knownFolderPaths = new Set<string>();
-  const collectFolderPaths = (node: ExplorerTreeNode) => {
-    if (node.kind !== 'folder') {
-      return;
-    }
-    knownFolderPaths.add(node.path);
-    node.children?.forEach(collectFolderPaths);
-  };
-  collectFolderPaths(tree);
-  const orphanDatasets = datasetEntries.filter(
-    (dataset) => !knownFolderPaths.has(dataset.parentPath || 'Project')
-  );
-  const treeWithNestedDatasets = insertDatasets(tree);
-  return {
-    ...treeWithNestedDatasets,
-    children: sortExplorerNodes([
-      ...(treeWithNestedDatasets.children ?? []).filter((child) => child.kind !== 'dataset'),
-      ...orphanDatasets.map((dataset) => ({
-        name: dataset.name,
-        path: `dataset:${dataset.id}`,
-        kind: 'dataset' as const,
-        datasetId: dataset.id,
-      })),
-    ]),
-  };
-};
 
 type ExplorerTreeProps = {
   node: ExplorerTreeNode;
@@ -843,10 +828,9 @@ function App() {
   const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
-  const createProjectDataset = useProjectStore((state) => state.createDataset);
+  const upsertProjectDataset = useProjectStore((state) => state.upsertDataset);
   const updateProjectDataset = useProjectStore((state) => state.updateDataset);
   const removeProjectDataset = useProjectStore((state) => state.removeDataset);
-  const addAssetsToDataset = useProjectStore((state) => state.addAssetsToDataset);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
@@ -890,10 +874,7 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
   const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
-  const visibleExplorerTree = useMemo(
-    () => explorerTree ? withDatasetExplorerNodes(explorerTree, datasetsById) : null,
-    [datasetsById, explorerTree]
-  );
+  const visibleExplorerTree = explorerTree;
   const [, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
@@ -1450,10 +1431,7 @@ function App() {
   const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
     setActiveExplorerNode(node);
     if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
-      if (node.kind === 'dataset' && node.datasetId) {
-        openDatasetTab(node.datasetId);
-      }
-      if (node.kind === 'file') {
+      if (node.kind === 'dataset' || node.kind === 'file') {
         void openExplorerFile(node);
       }
     }
@@ -1587,27 +1565,61 @@ function App() {
     return `${baseName} ${index}`;
   };
 
-  const getDatasetIdFromPath = (path: string): string | null =>
-    path.startsWith('dataset:') ? path.slice('dataset:'.length) : null;
+  const getExplorerPathName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path;
 
-  const duplicateDatasetEntry = (entry: ExplorerItemEntry, parentPath?: string): string | null => {
-    const datasetId = entry.datasetId ?? getDatasetIdFromPath(entry.path);
-    const dataset = datasetId ? datasetsById[datasetId] : undefined;
-    if (!dataset) {
-      return null;
+  const toPhysicalExplorerEntry = (entry: ExplorerItemEntry): ExplorerClipboardEntry => ({
+    path: entry.path,
+    name: entry.kind === 'dataset' ? getExplorerPathName(entry.path) : entry.name,
+    kind: entry.kind === 'folder' ? 'folder' : 'file',
+  });
+
+  const readDatasetEntry = async (entry: ExplorerItemEntry): Promise<Dataset> => {
+    const directory = requireProjectDirectory();
+    if (!directory) {
+      throw new Error('Open a project directory before using Datasets.');
     }
-    const copyParentPath = parentPath ?? dataset.parentPath ?? 'Project';
-    const copy = createProjectDataset(getUniqueDatasetName(`${dataset.name} Copy`, copyParentPath));
-    updateProjectDataset(copy.id, {
-      parentPath: copyParentPath,
+    if (!isDatasetFileName(getExplorerPathName(entry.path))) {
+      throw new Error('Dataset file is no longer available.');
+    }
+    const dataset = await readDatasetFile(directory, entry.path);
+    upsertProjectDataset(dataset);
+    return dataset;
+  };
+
+  const createDatasetFileInDirectory = async (
+    parentPath: string,
+    name: string,
+    source?: Pick<Dataset, 'triggerWord' | 'assetIds'>
+  ): Promise<Dataset> => {
+    const directory = requireProjectDirectory();
+    if (!directory) {
+      throw new Error('Open a project directory before creating a Dataset.');
+    }
+    const parentDirectory = await getDirectoryAtExplorerPath(directory, parentPath);
+    const fileName = await getUniqueExplorerName(parentDirectory, getDatasetFileName(name));
+    const filePath = `${parentPath}/${fileName}`;
+    const dataset = {
+      ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
+      triggerWord: source?.triggerWord ?? '',
+      assetIds: [...new Set(source?.assetIds ?? [])],
+    };
+    await writeDatasetFile(directory, dataset);
+    upsertProjectDataset(dataset);
+    return dataset;
+  };
+
+  const duplicateDatasetEntry = async (entry: ExplorerItemEntry, parentPath?: string): Promise<Dataset | null> => {
+    const dataset = await readDatasetEntry(entry);
+    const copyParentPath =
+      parentPath ?? dataset.parentPath ?? (entry.path.split('/').slice(0, -1).join('/') || 'Project');
+    return createDatasetFileInDirectory(copyParentPath, `${dataset.name} Copy`, {
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
     });
-    return copy.id;
   };
 
   const openDatasetTab = (datasetId: string) => {
-    const dataset = datasetsById[datasetId];
+    const dataset = useProjectStore.getState().datasets[datasetId];
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
       return;
@@ -1622,9 +1634,31 @@ function App() {
     setActiveTabId(tab.id);
   };
 
+  const updateDatasetFileBackedState = async (
+    dataset: Dataset,
+    updates: Partial<Pick<Dataset, 'name' | 'triggerWord' | 'assetIds'>>
+  ) => {
+    const nextDataset = {
+      ...dataset,
+      ...updates,
+      assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
+      updatedAt: new Date(),
+    };
+    updateProjectDataset(dataset.id, updates);
+    const directory = requireProjectDirectory();
+    if (directory && nextDataset.filePath) {
+      await writeDatasetFile(directory, nextDataset);
+    }
+  };
+
   const openExplorerFile = async (node: ExplorerTreeNode) => {
-    if (node.kind === 'dataset' && node.datasetId) {
-      openDatasetTab(node.datasetId);
+    if (node.kind === 'dataset') {
+      try {
+        const dataset = await readDatasetEntry(node);
+        openDatasetTab(dataset.id);
+      } catch (error) {
+        addNotification('error', error instanceof Error ? error.message : 'Failed to open Dataset');
+      }
       return;
     }
 
@@ -1728,7 +1762,8 @@ function App() {
           event.preventDefault();
           const assetIds = collectDatasetAssetIdsFromExplorerEntries(draggedExplorerEntries);
           if (assetIds.length > 0) {
-            addAssetsToDataset(dataset.id, assetIds);
+            const nextAssetIds = [...new Set([...dataset.assetIds, ...assetIds])];
+            void updateDatasetFileBackedState(dataset, { assetIds: nextAssetIds });
             addNotification('success', `Added ${assetIds.length} asset${assetIds.length !== 1 ? 's' : ''} to ${dataset.name}`);
           }
           setDraggedExplorerEntries(null);
@@ -1739,7 +1774,7 @@ function App() {
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Name</label>
             <input
               value={dataset.name}
-              onChange={(event) => updateProjectDataset(dataset.id, { name: event.target.value })}
+              onChange={(event) => void updateDatasetFileBackedState(dataset, { name: event.target.value })}
               className="w-full rounded border border-border bg-background px-3 py-2 text-lg font-semibold"
             />
           </div>
@@ -1747,7 +1782,7 @@ function App() {
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Trigger Word</label>
             <input
               value={dataset.triggerWord}
-              onChange={(event) => updateProjectDataset(dataset.id, { triggerWord: event.target.value })}
+              onChange={(event) => void updateDatasetFileBackedState(dataset, { triggerWord: event.target.value })}
               className="w-full rounded border border-border bg-background px-3 py-2 font-mono text-sm"
             />
           </div>
@@ -1949,17 +1984,20 @@ function App() {
     try {
       const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
       const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
-      const directory = filesystemEntries.length > 0 ? requireProjectDirectory() : null;
-      if (filesystemEntries.length > 0 && !directory) {
+      const directory = filesystemEntries.length > 0 || datasetEntries.length > 0 ? requireProjectDirectory() : null;
+      if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
         return;
       }
       for (const entry of filesystemEntries) {
         await deleteExplorerEntry(directory!, entry.path, true);
       }
+      const deletedDatasetIds: string[] = [];
       for (const entry of datasetEntries) {
-        const datasetId = entry.datasetId ?? getDatasetIdFromPath(entry.path);
-        if (datasetId) {
-          removeProjectDataset(datasetId);
+        const dataset = await readDatasetFile(directory!, entry.path).catch(() => null);
+        await deleteExplorerEntry(directory!, entry.path, false);
+        if (dataset) {
+          removeProjectDataset(dataset.id);
+          deletedDatasetIds.push(dataset.id);
         }
       }
       removeWorkspaceSourcesForDeletedEntries(filesystemEntries);
@@ -1969,7 +2007,7 @@ function App() {
             (isFileBackedTab(tab) &&
               !filesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
             (tab.kind === 'dataset' &&
-              !datasetEntries.some((entry) => (entry.datasetId ?? getDatasetIdFromPath(entry.path)) === tab.datasetId)) ||
+              !deletedDatasetIds.includes(tab.datasetId)) ||
             tab.kind === 'tool'
         )
       );
@@ -2041,16 +2079,38 @@ function App() {
       }
       if (explorerClipboard.mode === 'copy') {
         for (const entry of datasetEntries) {
-          duplicateDatasetEntry(entry, node.path);
+          await duplicateDatasetEntry(entry, node.path);
         }
       }
       if (explorerClipboard.mode === 'cut') {
-        for (const entry of datasetEntries) {
-          const datasetId = entry.datasetId ?? getDatasetIdFromPath(entry.path);
-          if (datasetId) {
-            updateProjectDataset(datasetId, { parentPath: node.path });
-          }
+        const directory = requireProjectDirectory();
+        if (!directory) {
+          return;
         }
+        const datasetMoves = await moveExplorerEntries(
+          directory,
+          datasetEntries.map(toPhysicalExplorerEntry),
+          node.path
+        );
+        const movedPaths: string[] = [];
+        for (const entry of datasetEntries) {
+          const move = datasetMoves.find((candidate) => candidate.from === entry.path);
+          if (!move) {
+            continue;
+          }
+          const dataset = await readDatasetFile(directory, move.to);
+          const updatedDataset = {
+            ...dataset,
+            parentPath: node.path,
+            filePath: move.to,
+            updatedAt: new Date(),
+          };
+          await writeDatasetFile(directory, updatedDataset);
+          upsertProjectDataset(updatedDataset);
+          movedPaths.push(move.to);
+        }
+        updateExplorerClipboardForPathMoves(datasetMoves);
+        setSelectedExplorerPaths(new Set(movedPaths));
       }
       if (explorerClipboard.mode === 'cut') {
         setExplorerClipboard(null);
@@ -2076,7 +2136,7 @@ function App() {
         await duplicateExplorerEntries(directory, filesystemEntries);
       }
       for (const entry of datasetEntries) {
-        duplicateDatasetEntry(entry);
+        await duplicateDatasetEntry(entry);
       }
       refreshExplorer();
       addNotification('success', 'Explorer entry duplicated');
@@ -2093,22 +2153,41 @@ function App() {
 
     try {
       if (edit.kind === 'dataset' && edit.mode === 'create') {
-        const dataset = createProjectDataset(edit.value.trim() || getUniqueDatasetName());
-        updateProjectDataset(dataset.id, { parentPath: edit.parentPath });
-        const path = `dataset:${dataset.id}`;
-        setSelectedExplorerPaths(new Set([path]));
-        setSelectionAnchorPath(path);
-        setFocusedExplorerPath(path);
+        const dataset = await createDatasetFileInDirectory(
+          edit.parentPath,
+          edit.value.trim() || getUniqueDatasetName('New Dataset', edit.parentPath)
+        );
+        setSelectedExplorerPaths(new Set([dataset.filePath!]));
+        setSelectionAnchorPath(dataset.filePath!);
+        setFocusedExplorerPath(dataset.filePath!);
         setInlineExplorerEdit(null);
+        refreshExplorer();
         return;
       }
 
       if (edit.kind === 'dataset' && edit.mode === 'rename' && edit.path) {
-        const datasetId = getDatasetIdFromPath(edit.path);
-        if (datasetId) {
-          updateProjectDataset(datasetId, { name: edit.value.trim() || 'Dataset' });
+        const directory = requireProjectDirectory();
+        if (!directory) {
+          return;
         }
+        const previousDataset = await readDatasetFile(directory, edit.path);
+        const nextName = edit.value.trim() || 'Dataset';
+        const nextPath = await renameExplorerEntry(directory, edit.path, 'file', getDatasetFileName(nextName));
+        const dataset = {
+          ...previousDataset,
+          name: nextName,
+          parentPath: nextPath.split('/').slice(0, -1).join('/') || 'Project',
+          filePath: nextPath,
+          updatedAt: new Date(),
+        };
+        await writeDatasetFile(directory, dataset);
+        upsertProjectDataset(dataset);
+        updateExplorerClipboardForPathMoves([{ from: edit.path, to: nextPath }]);
+        setSelectedExplorerPaths(new Set([nextPath]));
+        setSelectionAnchorPath(nextPath);
+        setFocusedExplorerPath(nextPath);
         setInlineExplorerEdit(null);
+        refreshExplorer();
         return;
       }
 
@@ -2157,8 +2236,8 @@ function App() {
     const filesystemEntries = allEntries.filter(isFilesystemExplorerEntry);
     const datasetEntries = allEntries.filter((entry) => entry.kind === 'dataset');
     try {
-      const directory = filesystemEntries.length > 0 ? requireProjectDirectory() : null;
-      if (filesystemEntries.length > 0 && !directory) {
+      const directory = filesystemEntries.length > 0 || datasetEntries.length > 0 ? requireProjectDirectory() : null;
+      if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
         return;
       }
       const moves = directory
@@ -2169,15 +2248,30 @@ function App() {
         updateWorkspacePathsForPathMoves(moves);
         updateExplorerClipboardForPathMoves(moves);
       }
-      const movedDatasetIds: string[] = [];
+      const datasetMoves = datasetEntries.length > 0
+        ? await moveExplorerEntries(directory!, datasetEntries.map(toPhysicalExplorerEntry), destinationPath)
+        : [];
+      const movedDatasetPaths: string[] = [];
       for (const entry of datasetEntries) {
-        const datasetId = entry.datasetId ?? getDatasetIdFromPath(entry.path);
-        if (datasetId) {
-          updateProjectDataset(datasetId, { parentPath: destinationPath });
-          movedDatasetIds.push(datasetId);
+        const move = datasetMoves.find((candidate) => candidate.from === entry.path);
+        if (!move) {
+          continue;
         }
+        const dataset = await readDatasetFile(directory!, move.to);
+        const updatedDataset = {
+          ...dataset,
+          parentPath: destinationPath,
+          filePath: move.to,
+          updatedAt: new Date(),
+        };
+        await writeDatasetFile(directory!, updatedDataset);
+        upsertProjectDataset(updatedDataset);
+        movedDatasetPaths.push(move.to);
       }
-      const selectedPaths = [...moves.map((move) => move.to), ...movedDatasetIds.map((id) => `dataset:${id}`)];
+      if (datasetMoves.length > 0) {
+        updateExplorerClipboardForPathMoves(datasetMoves);
+      }
+      const selectedPaths = [...moves.map((move) => move.to), ...movedDatasetPaths];
       setSelectedExplorerPaths(new Set(selectedPaths));
       setFocusedExplorerPath(selectedPaths[0] ?? null);
       setDraggedExplorerEntries(null);
@@ -2601,6 +2695,10 @@ function App() {
     autoSaveQueueRef.current = Promise.resolve();
     setProjectDirectory(undefined);
     loadProject(project);
+    const datasets = await readProjectDatasetsFromDirectory(directory);
+    for (const dataset of datasets) {
+      upsertProjectDataset(dataset);
+    }
     setProjectDirectory({ handle: directory, name: directory.name });
     logger.success(`opened project directory ${directory.name}`);
     addNotification('success', 'Project directory opened');

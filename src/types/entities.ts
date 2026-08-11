@@ -123,6 +123,7 @@ export interface Dataset {
   id: string;
   name: string;
   parentPath: string;
+  filePath?: string;
   triggerWord: string;
   assetIds: string[];
   createdAt: Date;

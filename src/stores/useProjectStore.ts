@@ -32,7 +32,8 @@ interface ProjectStore extends ProjectState {
 
   // Datasets
   createDataset: (name?: string) => Dataset;
-  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'triggerWord' | 'assetIds'>>) => void;
+  upsertDataset: (dataset: Dataset) => void;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds'>>) => void;
   removeDataset: (id: string) => void;
   addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
@@ -247,6 +248,19 @@ export const useProjectStore = create<ProjectStore>()(
           }));
           return dataset;
         },
+
+        upsertDataset: (dataset) =>
+          set((state) => ({
+            ...state,
+            datasets: {
+              ...state.datasets,
+              [dataset.id]: {
+                ...dataset,
+                assetIds: [...new Set(dataset.assetIds)],
+              },
+            },
+            lastModified: new Date(),
+          })),
 
         updateDataset: (id, updates) =>
           set((state) => {

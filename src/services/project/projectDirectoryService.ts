@@ -1,7 +1,6 @@
 import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
 import {
   createProject,
-  type Dataset,
   type ProjectState,
   type SourceImage,
   type StageName,
@@ -322,16 +321,6 @@ const serializeSyntheticManifest = (
   exportOrder: item.exportOrder,
 });
 
-const serializeDatasetManifest = (dataset: Dataset): DatasetManifest => ({
-  id: dataset.id,
-  name: dataset.name,
-  parentPath: dataset.parentPath,
-  triggerWord: dataset.triggerWord,
-  assetIds: dataset.assetIds,
-  createdAt: toIsoString(dataset.createdAt),
-  updatedAt: toIsoString(dataset.updatedAt),
-});
-
 const getProjectManifest = (
   project: ProjectState,
   paths: {
@@ -353,9 +342,6 @@ const getProjectManifest = (
       blacklist: project.taggingConfig.blacklist,
     },
     workspaceSettings: project.workspaceSettings,
-    datasets: Object.fromEntries(
-      Object.values(project.datasets).map((dataset) => [dataset.id, serializeDatasetManifest(dataset)])
-    ),
     sourceImageManifests: paths.sourceImageManifests,
     syntheticImageManifests: paths.syntheticImageManifests,
     lastModified: toIsoString(project.lastModified),
@@ -854,20 +840,7 @@ export const readProjectDirectory = async (
     currentStage: manifest.project.currentStage,
     sourceImages: Object.fromEntries(sources.map((source) => [source.id, source])),
     datasetItems: Object.fromEntries(synthetic.map((item) => [item.id, item])),
-    datasets: Object.fromEntries(
-      Object.values(manifest.project.datasets ?? {}).map((dataset) => [
-        dataset.id,
-        {
-          id: dataset.id,
-          name: dataset.name,
-          parentPath: dataset.parentPath ?? 'Project',
-          triggerWord: dataset.triggerWord,
-          assetIds: dataset.assetIds.filter((assetId) => sourceIds.has(assetId)),
-          createdAt: toDate(dataset.createdAt, new Date()),
-          updatedAt: toDate(dataset.updatedAt, new Date()),
-        },
-      ])
-    ),
+    datasets: {},
     taggingConfig: {
       ...defaults.taggingConfig,
       ...manifest.project.taggingConfig,
