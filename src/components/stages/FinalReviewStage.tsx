@@ -27,7 +27,7 @@ import { useUIStore } from '../../stores/useUIStore';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
-import type { AspectRatio, StageName, WorkspaceImageKind } from '../../types';
+import type { AspectRatio, Dataset, StageName, WorkspaceImageKind } from '../../types';
 
 type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | null;
 type SortMode = 'identity-asc' | 'identity-desc' | 'kind' | 'aspect' | 'size-desc' | 'size-asc';
@@ -42,6 +42,8 @@ type ReviewCardProps = {
   onDelete: (item: WorkspaceImage) => void;
   onToggleActive: (item: WorkspaceImage) => void;
   onOpenTool: (stage: StageName) => void;
+  deleteLabel?: string;
+  showActiveToggle?: boolean;
 };
 
 const KIND_LABELS: Record<WorkspaceImageKind, string> = {
@@ -81,6 +83,8 @@ const ReviewCard = memo(
     onDelete,
     onToggleActive,
     onOpenTool,
+    deleteLabel = 'Delete',
+    showActiveToggle = true,
   }: ReviewCardProps) => {
   return (
     <div
@@ -120,18 +124,22 @@ const ReviewCard = memo(
               onClick={onCloseMenu}
             />
             <div className="absolute right-2 top-11 z-[1000] w-56 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
-              <button
-                type="button"
-                onClick={() => {
-                  onToggleActive(item);
-                  onCloseMenu();
-                }}
-                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-              >
-                {item.excludedFromDataset ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-                <span>{item.excludedFromDataset ? 'Activate' : 'Deactivate'}</span>
-              </button>
-              <div className="my-1 h-px bg-border" />
+              {showActiveToggle ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onToggleActive(item);
+                      onCloseMenu();
+                    }}
+                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                  >
+                    {item.excludedFromDataset ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                    <span>{item.excludedFromDataset ? 'Activate' : 'Deactivate'}</span>
+                  </button>
+                  <div className="my-1 h-px bg-border" />
+                </>
+              ) : null}
               <button
                 type="button"
                 onClick={() => onOpenTool('clean')}
@@ -166,7 +174,7 @@ const ReviewCard = memo(
                 className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="h-4 w-4" />
-                <span>Delete</span>
+                <span>{deleteLabel}</span>
               </button>
             </div>
           </>
@@ -202,9 +210,24 @@ const ReviewCard = memo(
 
 ReviewCard.displayName = 'ReviewCard';
 
-export const FinalReviewStage = () => {
+type FinalReviewStageProps = {
+  datasetId?: string;
+  mode?: 'review' | 'select';
+  onUpdateDataset?: (
+    updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+  ) => void | Promise<void>;
+  onOpenTool?: (stage: StageName) => void;
+};
+
+export const FinalReviewStage = ({
+  datasetId,
+  mode = 'review',
+  onUpdateDataset,
+  onOpenTool,
+}: FinalReviewStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
   const cleanupStageState = useProjectStore(
     (state) =>
       (state.stageState.clean as
@@ -230,10 +253,23 @@ export const FinalReviewStage = () => {
   const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
 
-  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
+  const sourceImages = useMemo(() => {
+    const allSources = Object.values(sourceImagesById);
+    if (!datasetId) {
+      return allSources;
+    }
+    if (mode === 'select') {
+      return allSources.filter((image) => !datasetAssetIds.has(image.id));
+    }
+    return allSources.filter((image) => datasetAssetIds.has(image.id));
+  }, [datasetAssetIds, datasetId, mode, sourceImagesById]);
   const syntheticImages = useMemo(
-    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
-    [syntheticImagesById]
+    () =>
+      Object.values(syntheticImagesById).filter(
+        (item) => !item.deleted && (!datasetId || (mode !== 'select' && datasetAssetIds.has(item.sourceImageId)))
+      ),
+    [datasetAssetIds, datasetId, mode, syntheticImagesById]
   );
   const items = useMemo(
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
@@ -373,13 +409,24 @@ export const FinalReviewStage = () => {
   };
 
   const handleDeleteItem = useCallback((item: WorkspaceImage) => {
+    if (dataset && onUpdateDataset) {
+      if (mode === 'select') {
+        void onUpdateDataset({ assetIds: [...new Set([...dataset.assetIds, item.sourceImageId])] });
+        addNotification('success', 'Asset added to Dataset');
+        return;
+      }
+      void onUpdateDataset({ assetIds: dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId) });
+      addNotification('info', 'Asset removed from Dataset');
+      return;
+    }
+
     if (item.kind === 'source' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { hidden: true });
     } else if (item.syntheticImageId) {
       softDeleteDatasetItem(item.syntheticImageId);
     }
     addNotification('info', 'Image removed from review');
-  }, [addNotification, softDeleteDatasetItem, updateSourceImage]);
+  }, [addNotification, dataset, mode, onUpdateDataset, softDeleteDatasetItem, updateSourceImage]);
 
   const handleToggleActive = useCallback((item: WorkspaceImage) => {
     const excludedFromDataset = !item.excludedFromDataset;
@@ -393,8 +440,12 @@ export const FinalReviewStage = () => {
 
   const handleOpenTool = useCallback((stage: StageName) => {
     setOpenItemMenuId(null);
+    if (onOpenTool) {
+      onOpenTool(stage);
+      return;
+    }
     setCurrentStage(stage);
-  }, [setCurrentStage]);
+  }, [onOpenTool, setCurrentStage]);
 
   const handleToggleItemMenu = useCallback((id: string) => {
     setOpenMenu(null);
@@ -409,7 +460,9 @@ export const FinalReviewStage = () => {
     return (
       <div className="text-center py-12">
         <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No Source or Synthetic images to review.</p>
+        <p className="text-muted-foreground">
+          {mode === 'select' ? 'No project assets available to add.' : 'No Source or Synthetic images to review.'}
+        </p>
       </div>
     );
   }
@@ -585,6 +638,8 @@ export const FinalReviewStage = () => {
               onDelete={handleDeleteItem}
               onToggleActive={handleToggleActive}
               onOpenTool={handleOpenTool}
+              deleteLabel={mode === 'select' ? 'Add to Dataset' : datasetId ? 'Remove from Dataset' : 'Delete'}
+              showActiveToggle={!datasetId}
             />
           )}
         />

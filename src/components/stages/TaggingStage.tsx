@@ -28,6 +28,7 @@ import {
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
+import type { Dataset } from '../../types';
 
 const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 
@@ -464,9 +465,19 @@ type TaggingStageProps = {
   selectedItemId?: string;
   singleFileMode?: boolean;
   active?: boolean;
+  datasetId?: string;
+  onUpdateDataset?: (
+    updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+  ) => void | Promise<void>;
 };
 
-export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMode = false, active = true }: TaggingStageProps = {}) => {
+export const TaggingStage = ({
+  selectedItemId: selectedItemIdProp,
+  singleFileMode = false,
+  active = true,
+  datasetId,
+  onUpdateDataset,
+}: TaggingStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
@@ -484,9 +495,13 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
   );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const datasetsById = useProjectStore((state) => state.datasets);
+  const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
   const datasetTriggerWord = useMemo(
-    () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
-    [datasetsById]
+    () =>
+      dataset?.triggerWord.trim() ||
+      Object.values(datasetsById).find((entry) => entry.triggerWord.trim())?.triggerWord.trim() ||
+      '',
+    [dataset?.triggerWord, datasetsById]
   );
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const { addNotification, taggingModals, setTaggingModal } = useUIStore();
@@ -514,17 +529,30 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const autoConnectSettingsKeyRef = useRef<string | null>(null);
   const savedSuggestionLoadKeyRef = useRef<string | null>(null);
-  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
+  const sourceImages = useMemo(
+    () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
+    [datasetAssetIds, datasetId, sourceImagesById]
+  );
   const syntheticImages = useMemo(
     () =>
       Object.values(syntheticImagesById)
-        .filter((item) => !item.deleted)
+        .filter((item) => !item.deleted && (!datasetId || datasetAssetIds.has(item.sourceImageId)))
         .sort((left, right) => (left.exportOrder ?? 0) - (right.exportOrder ?? 0)),
-    [syntheticImagesById]
+    [datasetAssetIds, datasetId, syntheticImagesById]
   );
   const items = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
-    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
+    () =>
+      toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits).map((item) => {
+        if (!datasetId || !dataset?.overwriteCaptions) {
+          return item;
+        }
+        return {
+          ...item,
+          tags: (dataset.captionOverrides ?? {})[item.id] ?? item.tags,
+        };
+      }),
+    [cleanupStageState.workingEdits, dataset?.captionOverrides, dataset?.overwriteCaptions, datasetId, sourceImages, syntheticImages]
   );
   const previewUrls = useWorkspacePreviewUrls(items);
   const selectedItem = useMemo(
@@ -620,6 +648,20 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
     (item: WorkspaceImage, tags: string[]) => {
       const nextTags = normalizeUniqueTags(tags);
 
+      if (dataset && onUpdateDataset) {
+        if (!dataset.overwriteCaptions) {
+          addNotification('warning', 'Enable Overwrite Caption in Dataset Inspector before editing Dataset captions');
+          return;
+        }
+        void onUpdateDataset({
+          captionOverrides: {
+            ...(dataset.captionOverrides ?? {}),
+            [item.id]: nextTags,
+          },
+        });
+        return;
+      }
+
       if (item.kind === 'source') {
         updateSourceImage(item.sourceImageId, { tags: nextTags });
         return;
@@ -627,7 +669,7 @@ export const TaggingStage = ({ selectedItemId: selectedItemIdProp, singleFileMod
 
       updateDatasetItem(item.id.replace(/^synthetic:/, ''), { tags: nextTags });
     },
-    [updateDatasetItem, updateSourceImage]
+    [addNotification, dataset, onUpdateDataset, updateDatasetItem, updateSourceImage]
   );
 
   const applyTagsToItem = useCallback(

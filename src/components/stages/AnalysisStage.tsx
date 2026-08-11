@@ -22,7 +22,7 @@ import {
   findSimilarPairs,
   performClustering,
 } from '../../services/similarity/similarityService';
-import type { SimilarityCluster, SimilarityResult } from '../../types';
+import type { Dataset, SimilarityCluster, SimilarityResult } from '../../types';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import {
@@ -927,9 +927,17 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
 
 ReviewCard.displayName = 'ReviewCard';
 
-export const AnalysisStage = () => {
+type AnalysisStageProps = {
+  datasetId?: string;
+  onUpdateDataset?: (
+    updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+  ) => void | Promise<void>;
+};
+
+export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps = {}) => {
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
   const cleanupStageState = useProjectStore(
     (state) =>
       (state.stageState.clean as
@@ -939,11 +947,18 @@ export const AnalysisStage = () => {
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const { addNotification } = useUIStore();
+  const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const syntheticImages = useMemo(
-    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
-    [syntheticImagesById]
+    () =>
+      Object.values(syntheticImagesById).filter(
+        (item) => !item.deleted && (!datasetId || datasetAssetIds.has(item.sourceImageId))
+      ),
+    [datasetAssetIds, datasetId, syntheticImagesById]
   );
-  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const sourceImages = useMemo(
+    () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
+    [datasetAssetIds, datasetId, sourceImagesById]
+  );
   const items = useMemo(
     () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
     [cleanupStageState.workingEdits, sourceImages, syntheticImages]
@@ -1497,6 +1512,17 @@ export const AnalysisStage = () => {
 
   const handleDeleteItem = useCallback(
     (id: string) => {
+      if (dataset && onUpdateDataset) {
+        const sourceImageId = id.startsWith('source:')
+          ? id.replace(/^source:/, '')
+          : items.find((item) => item.id === id)?.sourceImageId;
+        if (sourceImageId) {
+          void onUpdateDataset({ assetIds: dataset.assetIds.filter((assetId) => assetId !== sourceImageId) });
+          addNotification('info', 'Asset removed from Dataset');
+        }
+        return;
+      }
+
       if (id.startsWith('source:')) {
         updateSourceImage(id.replace(/^source:/, ''), { hidden: true });
       } else {
@@ -1504,7 +1530,7 @@ export const AnalysisStage = () => {
       }
       addNotification('info', 'Image removed from review');
     },
-    [addNotification, softDeleteDatasetItem, updateSourceImage]
+    [addNotification, dataset, items, onUpdateDataset, softDeleteDatasetItem, updateSourceImage]
   );
 
   const showPairs = useCallback(() => {

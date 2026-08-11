@@ -145,6 +145,22 @@ type ToolWorkspaceTab = {
   stage: StageName;
 };
 
+type DatasetToolStage = Extract<StageName, 'select' | 'analysis' | 'review' | 'tagging'>;
+
+const DATASET_TOOL_LABELS: Record<DatasetToolStage, string> = {
+  select: 'Select',
+  analysis: 'Analysis',
+  review: 'Review',
+  tagging: 'Caption',
+};
+
+type DatasetToolWorkspaceTab = {
+  id: string;
+  kind: 'dataset-tool';
+  datasetId: string;
+  stage: DatasetToolStage;
+};
+
 type FileWorkspaceTab = {
   id: string;
   kind: 'file-view' | 'file-edit' | 'file-caption';
@@ -161,7 +177,7 @@ type DatasetWorkspaceTab = {
   datasetId: string;
 };
 
-type WorkspaceTab = ToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab;
+type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab;
 
 const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
   id: `tool:${stage}`,
@@ -172,8 +188,10 @@ const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
 const createFileTabId = (path: string): string => `file:${path}`;
 const createFileModeTabId = (mode: 'edit' | 'caption', path: string): string => `file:${mode}:${path}`;
 const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
+const createDatasetToolTabId = (datasetId: string, stage: DatasetToolStage): string => `dataset:${datasetId}:${stage}`;
 
 const isToolTab = (tab: WorkspaceTab): tab is ToolWorkspaceTab => tab.kind === 'tool';
+const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
   tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption';
 
@@ -1182,8 +1200,11 @@ function App() {
   }, [explorerContextMenu]);
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
-  const activeStage = activeTab?.kind === 'tool' ? activeTab.stage : null;
-  const activeDataset = activeTab?.kind === 'dataset' ? datasetsById[activeTab.datasetId] : null;
+  const activeStage = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.stage : null;
+  const activeDataset =
+    activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
+      ? datasetsById[activeTab.datasetId]
+      : null;
   const activeFileSource = activeTab && isFileBackedTab(activeTab) && activeTab.workspaceImageId
     ? sourceImagesById[activeTab.workspaceImageId]
     : null;
@@ -1727,7 +1748,7 @@ function App() {
   const createDatasetFileInDirectory = async (
     parentPath: string,
     name: string,
-    source?: Pick<Dataset, 'triggerWord' | 'assetIds'>
+    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>
   ): Promise<Dataset> => {
     const directory = requireProjectDirectory();
     if (!directory) {
@@ -1740,6 +1761,8 @@ function App() {
       ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
       triggerWord: source?.triggerWord ?? '',
       assetIds: [...new Set(source?.assetIds ?? [])],
+      overwriteCaptions: source?.overwriteCaptions ?? false,
+      captionOverrides: source?.captionOverrides ?? {},
     };
     await writeDatasetFile(directory, dataset);
     upsertProjectDataset(dataset);
@@ -1753,6 +1776,8 @@ function App() {
     return createDatasetFileInDirectory(copyParentPath, `${dataset.name} Copy`, {
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
+      overwriteCaptions: dataset.overwriteCaptions,
+      captionOverrides: dataset.captionOverrides,
     });
   };
 
@@ -1772,20 +1797,96 @@ function App() {
     setActiveTabId(tab.id);
   };
 
+  const openDatasetToolTab = (datasetId: string, stage: DatasetToolStage) => {
+    const dataset = useProjectStore.getState().datasets[datasetId];
+    if (!dataset) {
+      addNotification('error', 'Dataset is no longer available');
+      return;
+    }
+
+    const tab: DatasetToolWorkspaceTab = {
+      id: createDatasetToolTabId(datasetId, stage),
+      kind: 'dataset-tool',
+      datasetId,
+      stage,
+    };
+    setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
+    setActiveTabId(tab.id);
+  };
+
+  const openDatasetToolFromExplorer = async (node: ExplorerTreeNode, stage: DatasetToolStage) => {
+    try {
+      const dataset = await readDatasetEntry(node);
+      openDatasetToolTab(dataset.id, stage);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to open Dataset tool');
+    }
+  };
+
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => {
     const nextDataset = {
       ...dataset,
       ...updates,
       assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
+      overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
+      captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
       updatedAt: new Date(),
     };
     updateProjectDataset(dataset.id, updates);
     const directory = requireProjectDirectory();
     if (directory && nextDataset.filePath) {
       await writeDatasetFile(directory, nextDataset);
+    }
+  };
+
+  const renderDatasetTool = (tab: DatasetToolWorkspaceTab) => {
+    const dataset = datasetsById[tab.datasetId];
+    if (!dataset) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          Dataset is no longer available
+        </div>
+      );
+    }
+
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>) =>
+      updateDatasetFileBackedState(dataset, updates);
+    const openScopedTool = (stage: StageName) => {
+      if (stage === 'select' || stage === 'analysis' || stage === 'review' || stage === 'tagging') {
+        openDatasetToolTab(dataset.id, stage);
+        return;
+      }
+      navigateToStage(stage);
+    };
+
+    switch (tab.stage) {
+      case 'select':
+        return (
+          <FinalReviewStage
+            datasetId={dataset.id}
+            mode="select"
+            onUpdateDataset={updateDataset}
+            onOpenTool={openScopedTool}
+          />
+        );
+      case 'review':
+        return (
+          <FinalReviewStage
+            datasetId={dataset.id}
+            mode="review"
+            onUpdateDataset={updateDataset}
+            onOpenTool={openScopedTool}
+          />
+        );
+      case 'analysis':
+        return <AnalysisStage datasetId={dataset.id} onUpdateDataset={updateDataset} />;
+      case 'tagging':
+        return <TaggingStageComponent datasetId={dataset.id} onUpdateDataset={updateDataset} />;
+      default:
+        return null;
     }
   };
 
@@ -1907,33 +2008,34 @@ function App() {
           setDraggedExplorerEntries(null);
         }}
       >
-        <div className="mx-auto max-w-3xl space-y-5">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Trigger Word</label>
-            <input
-              value={dataset.triggerWord}
-              onChange={(event) => void updateDatasetFileBackedState(dataset, { triggerWord: event.target.value })}
-              className="w-full rounded border border-border bg-background px-3 py-2 font-mono text-sm"
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 text-sm font-semibold">Assets</h3>
-            <div className="min-h-40 rounded border border-dashed border-border bg-card">
+        <div className="mx-auto max-w-3xl">
+          <div className="min-h-40 rounded border border-dashed border-border bg-card">
               {assets.length === 0 ? (
                 <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
                   Drop project assets here
                 </div>
               ) : (
-                <div className="divide-y divide-border">
+                <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4">
                   {assets.map((asset) => (
-                    <div key={asset.id} className="flex items-center gap-2 px-3 py-2 text-sm">
-                      <File className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{asset.originalFilePath ?? asset.fileName}</span>
+                    <div key={asset.id} className="min-w-0 overflow-hidden rounded border border-border bg-background">
+                      <div className="aspect-square bg-secondary">
+                        {asset.previewUrl ? (
+                          <img
+                            src={asset.previewUrl}
+                            alt={asset.originalFileName ?? asset.fileName}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center">
+                            <File className="h-5 w-5 text-muted-foreground" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="truncate px-2 py-1.5 text-xs">{asset.originalFilePath ?? asset.fileName}</div>
                     </div>
                   ))}
                 </div>
               )}
-            </div>
           </div>
         </div>
       </div>
@@ -1942,7 +2044,7 @@ function App() {
 
   const renderInspectorContent = () => {
     const Icon =
-      activeTab?.kind === 'dataset'
+      activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
         ? Layers3
         : activeTab && isFileBackedTab(activeTab)
           ? activeTab.fileKind === 'video'
@@ -1956,7 +2058,7 @@ function App() {
               : toolIcons[activeStage]
             : PanelRight;
     const title =
-      activeTab?.kind === 'dataset'
+      activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
         ? activeDataset?.name ?? 'Dataset'
         : activeTab && isFileBackedTab(activeTab)
           ? activeTab.name
@@ -2003,7 +2105,7 @@ function App() {
             <p className="mt-1 truncate text-muted-foreground">
               {activeTab && isFileBackedTab(activeTab)
                 ? activeTab.path
-                : activeTab?.kind === 'dataset'
+                : activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
                   ? activeDataset?.filePath ?? 'Dataset'
                   : activeStage
                     ? TOOL_DESCRIPTIONS[activeStage]
@@ -2056,7 +2158,7 @@ function App() {
           </div>
         ) : null}
 
-        {activeTab?.kind === 'dataset' && activeDataset ? (
+        {activeDataset ? (
           <div className="border-t border-border pt-3">
             <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dataset</p>
             <div className="space-y-3">
@@ -2072,6 +2174,17 @@ function App() {
                 <span className="text-muted-foreground">Assets</span>
                 <span className="font-medium">{activeDataset.assetIds.length}</span>
               </div>
+              <label className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
+                <input
+                  type="checkbox"
+                  checked={Boolean(activeDataset.overwriteCaptions)}
+                  onChange={(event) =>
+                    void updateDatasetFileBackedState(activeDataset, { overwriteCaptions: event.target.checked })
+                  }
+                  className="h-4 w-4"
+                />
+                <span>Overwrite Caption</span>
+              </label>
             </div>
           </div>
         ) : null}
@@ -2369,6 +2482,8 @@ function App() {
             (isFileBackedTab(tab) &&
               !filesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
             (tab.kind === 'dataset' &&
+              !deletedDatasetIds.includes(tab.datasetId)) ||
+            (tab.kind === 'dataset-tool' &&
               !deletedDatasetIds.includes(tab.datasetId)) ||
             tab.kind === 'tool'
         )
@@ -3324,6 +3439,50 @@ function App() {
         <Layers3 className="h-3.5 w-3.5" />
         <span>Open</span>
       </button>
+      <button
+        type="button"
+        onClick={() => {
+          void openDatasetToolFromExplorer(node, 'select');
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <ScanSearch className="h-3.5 w-3.5" />
+        <span>Select</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void openDatasetToolFromExplorer(node, 'review');
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Layers3 className="h-3.5 w-3.5" />
+        <span>Review</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void openDatasetToolFromExplorer(node, 'tagging');
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <Tags className="h-3.5 w-3.5" />
+        <span>Caption</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void openDatasetToolFromExplorer(node, 'analysis');
+          setExplorerContextMenu(null);
+        }}
+        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+      >
+        <BarChart3 className="h-3.5 w-3.5" />
+        <span>Analysis</span>
+      </button>
       <div className="my-1 h-px bg-border" />
       <button
         type="button"
@@ -3776,6 +3935,8 @@ function App() {
                   ? tab.stage === 'hub'
                     ? Archive
                     : toolIcons[tab.stage]
+                  : tab.kind === 'dataset-tool'
+                    ? toolIcons[tab.stage]
                   : tab.kind === 'dataset'
                     ? Layers3
                     : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
@@ -3783,6 +3944,8 @@ function App() {
               const label =
                 tab.kind === 'tool'
                   ? STAGE_LABELS[tab.stage]
+                  : tab.kind === 'dataset-tool'
+                    ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - ${DATASET_TOOL_LABELS[tab.stage]}`
                   : tab.kind === 'dataset'
                     ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - Dataset`
                   : tab.kind === 'file-edit'
@@ -4249,6 +4412,8 @@ function App() {
                 })}
                 {activeTab?.kind === 'dataset' ? (
                   renderDatasetWorkspace(activeTab)
+                ) : activeTab && isDatasetToolTab(activeTab) ? (
+                  renderDatasetTool(activeTab)
                 ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
                   renderTool(activeStage)
                 ) : (
@@ -4445,12 +4610,16 @@ function App() {
                         ? tab.stage === 'hub'
                           ? Archive
                           : toolIcons[tab.stage]
+                        : tab.kind === 'dataset-tool'
+                          ? toolIcons[tab.stage]
                         : tab.kind === 'dataset'
                           ? Layers3
                           : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
                     const label =
                       tab.kind === 'tool'
                         ? STAGE_LABELS[tab.stage]
+                        : tab.kind === 'dataset-tool'
+                          ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - ${DATASET_TOOL_LABELS[tab.stage]}`
                         : tab.kind === 'dataset'
                           ? datasetsById[tab.datasetId]?.name ?? 'Dataset'
                           : tab.name;

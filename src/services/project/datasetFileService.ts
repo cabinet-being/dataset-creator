@@ -11,6 +11,8 @@ type DatasetFileManifest = {
   name: string;
   triggerWord: string;
   assetIds: string[];
+  overwriteCaptions?: boolean;
+  captionOverrides?: Record<string, string[]>;
   createdAt: string;
   updatedAt: string;
 };
@@ -56,6 +58,8 @@ export const serializeDatasetFile = (dataset: Dataset): string =>
       name: dataset.name,
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
+      overwriteCaptions: dataset.overwriteCaptions,
+      captionOverrides: dataset.captionOverrides,
       createdAt: dataset.createdAt.toISOString(),
       updatedAt: dataset.updatedAt.toISOString(),
     } satisfies DatasetFileManifest,
@@ -81,6 +85,8 @@ export const readDatasetFile = async (
     filePath: path,
     triggerWord: manifest.triggerWord ?? '',
     assetIds: manifest.assetIds ?? [],
+    overwriteCaptions: manifest.overwriteCaptions ?? false,
+    captionOverrides: manifest.captionOverrides ?? {},
     createdAt: new Date(manifest.createdAt),
     updatedAt: new Date(manifest.updatedAt),
   };
