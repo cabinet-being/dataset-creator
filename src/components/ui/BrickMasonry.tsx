@@ -63,7 +63,7 @@ export const BrickMasonry = <T,>({
   }, [brickColumnCount, maxColumnCount, minColumnWidth]);
 
   const columns = useMemo(() => {
-    const activeColumnCount = Math.min(columnCount, Math.max(1, items.length));
+    const activeColumnCount = Math.max(1, columnCount);
     const nextColumns: T[][] = Array.from({ length: activeColumnCount }, () => []);
     const columnHeights = Array.from({ length: activeColumnCount }, () => 0);
 

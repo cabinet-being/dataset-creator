@@ -9,8 +9,10 @@ import {
   EyeOff,
   Tags,
   MoreVertical,
+  Plus,
   Trash2,
   Undo2,
+  X,
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
 import {
@@ -44,6 +46,9 @@ type ReviewCardProps = {
   onOpenTool: (stage: StageName) => void;
   deleteLabel?: string;
   showActiveToggle?: boolean;
+  quickActionLabel?: string;
+  quickActionVariant?: 'add' | 'remove';
+  onQuickAction?: (item: WorkspaceImage) => void;
 };
 
 const KIND_LABELS: Record<WorkspaceImageKind, string> = {
@@ -85,7 +90,16 @@ const ReviewCard = memo(
     onOpenTool,
     deleteLabel = 'Delete',
     showActiveToggle = true,
+    quickActionLabel,
+    quickActionVariant = 'add',
+    onQuickAction,
   }: ReviewCardProps) => {
+  const QuickActionIcon = quickActionVariant === 'remove' ? X : Plus;
+  const quickActionClass =
+    quickActionVariant === 'remove'
+      ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
+      : 'bg-primary text-primary-foreground hover:bg-primary/90';
+
   return (
     <div
       className={`gallery-masonry-item group relative overflow-visible rounded-lg ${
@@ -105,6 +119,18 @@ const ReviewCard = memo(
           className={getWorkspaceKindFrameOverlayClass()}
           style={getWorkspaceKindFrameOverlayStyle(item.kind)}
         />
+
+        {quickActionLabel && onQuickAction ? (
+          <button
+            type="button"
+            onClick={() => onQuickAction(item)}
+            className={`absolute left-1/2 top-1/2 z-20 inline-flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md shadow-lg transition-colors ${quickActionClass}`}
+            aria-label={quickActionLabel}
+            title={quickActionLabel}
+          >
+            <QuickActionIcon className="h-6 w-6" />
+          </button>
+        ) : null}
 
         <button
           type="button"
@@ -180,7 +206,7 @@ const ReviewCard = memo(
           </>
         )}
 
-        {item.excludedFromDataset && (
+        {item.excludedFromDataset && !quickActionLabel && (
           <div className="absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white">
             Inactive
           </div>
@@ -428,6 +454,26 @@ export const FinalReviewStage = ({
     addNotification('info', 'Image removed from review');
   }, [addNotification, dataset, mode, onUpdateDataset, softDeleteDatasetItem, updateSourceImage]);
 
+  const addItemsToDataset = useCallback((nextItems: WorkspaceImage[]) => {
+    if (!dataset || !onUpdateDataset) {
+      return;
+    }
+
+    const sourceImageIds = nextItems.map((item) => item.sourceImageId).filter(Boolean);
+    if (sourceImageIds.length === 0) {
+      return;
+    }
+
+    const nextAssetIds = [...new Set([...dataset.assetIds, ...sourceImageIds])];
+    const addedCount = nextAssetIds.length - dataset.assetIds.length;
+    if (addedCount === 0) {
+      return;
+    }
+
+    void onUpdateDataset({ assetIds: nextAssetIds });
+    addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to Dataset`);
+  }, [addNotification, dataset, onUpdateDataset]);
+
   const handleToggleActive = useCallback((item: WorkspaceImage) => {
     const excludedFromDataset = !item.excludedFromDataset;
     if (item.kind === 'source' && item.sourceImageId) {
@@ -451,6 +497,9 @@ export const FinalReviewStage = ({
     setOpenMenu(null);
     setOpenItemMenuId((current) => (current === id ? null : id));
   }, []);
+
+  const showSelectActions = Boolean(dataset && onUpdateDataset && mode === 'select');
+  const showReviewRemoveActions = Boolean(dataset && onUpdateDataset && mode === 'review');
 
   const handleCloseItemMenu = useCallback(() => {
     setOpenItemMenuId(null);
@@ -611,7 +660,18 @@ export const FinalReviewStage = ({
             )}
           </div>
 
-          <div className="ml-auto rounded-md border border-border bg-background px-3 py-2 text-sm">
+          {showSelectActions && sortedItems.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => addItemsToDataset(sortedItems)}
+              className="ml-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Add Visible</span>
+            </button>
+          ) : null}
+
+          <div className={`${showSelectActions && sortedItems.length > 0 ? '' : 'ml-auto'} rounded-md border border-border bg-background px-3 py-2 text-sm`}>
             <span className="text-muted-foreground">Visible</span>
             <span className="ml-2 font-mono font-medium">{sortedItems.length}</span>
             {inactiveCount > 0 && (
@@ -640,6 +700,17 @@ export const FinalReviewStage = ({
               onOpenTool={handleOpenTool}
               deleteLabel={mode === 'select' ? 'Add to Dataset' : datasetId ? 'Remove from Dataset' : 'Delete'}
               showActiveToggle={!datasetId}
+              quickActionLabel={
+                showSelectActions ? 'Add to Dataset' : showReviewRemoveActions ? 'Remove from Dataset' : undefined
+              }
+              quickActionVariant={showReviewRemoveActions ? 'remove' : 'add'}
+              onQuickAction={
+                showSelectActions
+                  ? (item) => addItemsToDataset([item])
+                  : showReviewRemoveActions
+                    ? handleDeleteItem
+                    : undefined
+              }
             />
           )}
         />

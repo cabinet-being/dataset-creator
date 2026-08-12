@@ -582,6 +582,7 @@ type ExplorerItemEntry = {
   name: string;
   kind: ExplorerTreeNode['kind'];
   datasetId?: string;
+  workspaceImageId?: string;
 };
 
 type ExplorerClipboard = {
@@ -589,7 +590,9 @@ type ExplorerClipboard = {
   entries: ExplorerItemEntry[];
 };
 
-const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is ExplorerClipboardEntry =>
+type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file' };
+
+const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is FilesystemExplorerItemEntry =>
   entry.kind === 'folder' || entry.kind === 'file';
 
 const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
@@ -751,7 +754,7 @@ const ExplorerTree = ({
           onContextMenu(node, event.clientX, event.clientY);
         }}
         onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.effectAllowed = 'copyMove';
           event.dataTransfer.setData('text/plain', node.path);
           onDragStartItem(node);
         }}
@@ -996,6 +999,7 @@ function App() {
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const [focusedExplorerPath, setFocusedExplorerPath] = useState<string | null>(null);
   const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerItemEntry[] | null>(null);
+  const draggedExplorerEntriesRef = useRef<ExplorerItemEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
   const [inlineExplorerEdit, setInlineExplorerEdit] = useState<{
     mode: 'create' | 'rename';
@@ -1471,6 +1475,20 @@ function App() {
     return nodes;
   };
 
+  const getAllExplorerNodes = (node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode[] => {
+    if (!node) {
+      return [];
+    }
+
+    const nodes: ExplorerTreeNode[] = [];
+    const visit = (entry: ExplorerTreeNode) => {
+      nodes.push(entry);
+      entry.children?.forEach(visit);
+    };
+    node.children?.forEach(visit);
+    return nodes;
+  };
+
   const findExplorerNodeByPath = (path: string, node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode | null => {
     if (!node) {
       return null;
@@ -1544,7 +1562,13 @@ function App() {
       getVisibleExplorerNodes()
         .flatMap((node): ExplorerItemEntry[] =>
           selectedExplorerPaths.has(node.path)
-            ? [{ path: node.path, name: node.name, kind: node.kind, datasetId: node.datasetId }]
+            ? [{
+                path: node.path,
+                name: node.name,
+                kind: node.kind,
+                datasetId: node.datasetId,
+                workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
+              }]
             : []
         )
     );
@@ -1554,10 +1578,34 @@ function App() {
       getVisibleExplorerNodes()
         .flatMap((node): ExplorerItemEntry[] =>
           paths.has(node.path)
-            ? [{ path: node.path, name: node.name, kind: node.kind, datasetId: node.datasetId }]
+            ? [{
+                path: node.path,
+                name: node.name,
+                kind: node.kind,
+                datasetId: node.datasetId,
+                workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
+              }]
             : []
         )
     );
+
+  const createExplorerEntryForNode = (node: ExplorerTreeNode): ExplorerItemEntry => ({
+    path: node.path,
+    name: node.name,
+    kind: node.kind,
+    datasetId: node.datasetId,
+    workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
+  });
+
+  const getExplorerEntriesFromTransferPath = (path: string): ExplorerItemEntry[] => {
+    const node = findExplorerNodeByPath(path);
+    return node ? [createExplorerEntryForNode(node)] : [];
+  };
+
+  const setCurrentDraggedExplorerEntries = (entries: ExplorerItemEntry[] | null) => {
+    draggedExplorerEntriesRef.current = entries;
+    setDraggedExplorerEntries(entries);
+  };
 
   const getContextEntries = (node: ExplorerTreeNode): ExplorerItemEntry[] => {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
@@ -1621,7 +1669,7 @@ function App() {
 
   const startExplorerDrag = (node: ExplorerTreeNode) => {
     if (selectedExplorerPaths.has(node.path)) {
-      setDraggedExplorerEntries(getSelectedExplorerEntries());
+      setCurrentDraggedExplorerEntries(getSelectedExplorerEntries());
       return;
     }
 
@@ -1629,7 +1677,7 @@ function App() {
     setActiveExplorerNode(node);
     setSelectedExplorerPaths(nextSelection);
     setSelectionAnchorPath(node.path);
-    setDraggedExplorerEntries(getExplorerEntriesForPaths(nextSelection));
+    setCurrentDraggedExplorerEntries(getExplorerEntriesForPaths(nextSelection));
   };
 
   const toProjectRelativePath = (path: string): string =>
@@ -1646,7 +1694,8 @@ function App() {
 
   const findWorkspaceImageIdForPath = (path: string): string | null => {
     const projectRelativePath = toProjectRelativePath(path);
-    const source = Object.values(sourceImagesById).find(
+    const projectState = useProjectStore.getState();
+    const source = Object.values(projectState.sourceImages).find(
       (image) =>
         (image.originalFilePath ??
           `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
@@ -1656,7 +1705,7 @@ function App() {
       return `source:${source.id}`;
     }
 
-    const synthetic = Object.values(datasetItemsById).find(
+    const synthetic = Object.values(projectState.datasetItems).find(
       (item) =>
         (item.imageDataPath ?? `.dataset-creator-data/generated-images/${item.id}/image.png`) === projectRelativePath
     );
@@ -1669,7 +1718,7 @@ function App() {
 
   const findSourceImageIdForPath = (path: string): string | null => {
     const projectRelativePath = toProjectRelativePath(path);
-    const source = Object.values(sourceImagesById).find(
+    const source = Object.values(useProjectStore.getState().sourceImages).find(
       (image) =>
         (image.originalFilePath ??
           `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
@@ -1680,20 +1729,37 @@ function App() {
 
   const collectDatasetAssetIdsFromExplorerEntries = (entries: ExplorerItemEntry[]): string[] => {
     const assetIds = new Set<string>();
-    const nodes = getVisibleExplorerNodes();
+    const nodes = getAllExplorerNodes();
     const logger = entries.some((entry) => entry.kind === 'folder') ? createOperationLogger('Dataset') : null;
     if (logger) {
       logger.info(`Adding assets from Explorer selection to Dataset`);
     }
 
     for (const entry of entries.filter(isFilesystemExplorerEntry)) {
+      if (entry.workspaceImageId?.startsWith('source:')) {
+        assetIds.add(entry.workspaceImageId.replace(/^source:/, ''));
+        continue;
+      }
+      if (entry.workspaceImageId?.startsWith('synthetic:')) {
+        const synthetic = datasetItemsById[entry.workspaceImageId.replace(/^synthetic:/, '')];
+        if (synthetic) {
+          assetIds.add(synthetic.sourceImageId);
+          continue;
+        }
+      }
+
       const candidateNodes =
         entry.kind === 'folder'
           ? nodes.filter((node) => node.kind === 'file' && node.path.startsWith(`${entry.path}/`))
           : nodes.filter((node) => node.path === entry.path && node.kind === 'file');
 
       for (const node of candidateNodes) {
-        const sourceId = findSourceImageIdForPath(node.path);
+        const workspaceImageId = findWorkspaceImageIdForPath(node.path);
+        const sourceId = workspaceImageId?.startsWith('source:')
+          ? workspaceImageId.replace(/^source:/, '')
+          : workspaceImageId?.startsWith('synthetic:')
+            ? datasetItemsById[workspaceImageId.replace(/^synthetic:/, '')]?.sourceImageId
+          : findSourceImageIdForPath(node.path);
         if (sourceId) {
           assetIds.add(sourceId);
         }
@@ -1705,6 +1771,64 @@ function App() {
     }
 
     return [...assetIds];
+  };
+
+  const indexProjectAssetsForDatasetDrop = async () => {
+    if (!projectDirectoryHandle) {
+      return;
+    }
+
+    await indexProjectAssets(projectDirectoryHandle, {
+      logger: createOperationLogger('Index'),
+      existingSourceImages: useProjectStore.getState().sourceImages,
+      onAssetIndexed: async ({ sourceImage }) => {
+        const previousProject = useProjectStore.getState();
+        if (sourceImage && !previousProject.sourceImages[sourceImage.id]) {
+          addSourceImage(sourceImage);
+        }
+        await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, projectDirectoryHandle);
+        refreshExplorer();
+      },
+    });
+    await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, projectDirectoryHandle);
+    refreshExplorer();
+  };
+
+  const importDroppedFilesIntoDataset = async (
+    dataTransfer: DataTransfer,
+    dataset: Dataset
+  ): Promise<string[]> => {
+    if (!projectDirectoryHandle) {
+      addNotification('warning', 'Open a project directory before importing files into a Dataset');
+      return [];
+    }
+
+    const files = await getImportFilesFromDataTransfer(dataTransfer);
+    if (files.length === 0) {
+      return [];
+    }
+
+    const importedAssetIds: string[] = [];
+    const previousProject = useProjectStore.getState();
+    const result = await importImageFiles(files, {
+      logger: createOperationLogger('Dataset'),
+      destination: {
+        projectDirectory: projectDirectoryHandle,
+        explorerPath: dataset.parentPath ?? 'Project',
+      },
+      onImageImported: (image) => {
+        addSourceImage(image);
+        importedAssetIds.push(image.id);
+      },
+      onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
+    });
+
+    if (result.importedImages.length > 0 || result.importedAssets.length > 0) {
+      await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, projectDirectoryHandle);
+      refreshExplorer();
+    }
+
+    return importedAssetIds;
   };
 
   const getUniqueDatasetName = (baseName = 'New Dataset', parentPath?: string): string => {
@@ -1989,57 +2113,87 @@ function App() {
       <div
         className="h-full min-h-0 overflow-auto p-6"
         onDragOver={(event) => {
-          if (draggedExplorerEntries?.length) {
+          if (
+            draggedExplorerEntriesRef.current?.length ||
+            draggedExplorerEntries?.length ||
+            event.dataTransfer.types.includes('text/plain') ||
+            event.dataTransfer.types.includes('Files')
+          ) {
             event.preventDefault();
             event.dataTransfer.dropEffect = 'copy';
           }
         }}
         onDrop={(event) => {
-          if (!draggedExplorerEntries?.length) {
+          const transferPath = event.dataTransfer.getData('text/plain');
+          const droppedEntries =
+            draggedExplorerEntriesRef.current ??
+            draggedExplorerEntries ??
+            (transferPath ? getExplorerEntriesFromTransferPath(transferPath) : null);
+          const hasFiles = event.dataTransfer.types.includes('Files');
+          if (!droppedEntries?.length && !hasFiles) {
             return;
           }
           event.preventDefault();
-          const assetIds = collectDatasetAssetIdsFromExplorerEntries(draggedExplorerEntries);
-          if (assetIds.length > 0) {
-            const nextAssetIds = [...new Set([...dataset.assetIds, ...assetIds])];
-            void updateDatasetFileBackedState(dataset, { assetIds: nextAssetIds });
-            addNotification('success', `Added ${assetIds.length} asset${assetIds.length !== 1 ? 's' : ''} to ${dataset.name}`);
-          }
-          setDraggedExplorerEntries(null);
+          const dataTransfer = event.dataTransfer;
+          setCurrentDraggedExplorerEntries(null);
+          void (async () => {
+            let assetIds = droppedEntries?.length
+              ? collectDatasetAssetIdsFromExplorerEntries(droppedEntries)
+              : [];
+            if (droppedEntries?.length && assetIds.length === 0) {
+              await indexProjectAssetsForDatasetDrop();
+              assetIds = collectDatasetAssetIdsFromExplorerEntries(droppedEntries);
+            }
+            if (hasFiles) {
+              assetIds = [...assetIds, ...await importDroppedFilesIntoDataset(dataTransfer, dataset)];
+            }
+            if (assetIds.length > 0) {
+              const currentDataset = useProjectStore.getState().datasets[dataset.id] ?? dataset;
+              const nextAssetIds = [...new Set([...currentDataset.assetIds, ...assetIds])];
+              const addedCount = nextAssetIds.length - currentDataset.assetIds.length;
+              if (addedCount > 0) {
+                await updateDatasetFileBackedState(currentDataset, { assetIds: nextAssetIds });
+                addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
+              } else {
+                addNotification('info', 'Selected assets are already in this Dataset');
+              }
+            } else {
+              addNotification('warning', 'No supported project images found to add');
+            }
+          })();
         }}
       >
-        <div className="mx-auto max-w-3xl">
-          <div className="min-h-40 rounded border border-dashed border-border bg-card">
-              {assets.length === 0 ? (
-                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-                  Drop project assets here
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4">
-                  {assets.map((asset) => (
-                    <div key={asset.id} className="min-w-0 overflow-hidden rounded border border-border bg-background">
-                      <div className="aspect-square bg-secondary">
-                        {asset.previewUrl ? (
-                          <img
-                            src={asset.previewUrl}
-                            alt={asset.originalFileName ?? asset.fileName}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full items-center justify-center">
-                            <File className="h-5 w-5 text-muted-foreground" />
-                          </div>
-                        )}
-                      </div>
-                      <div className="truncate px-2 py-1.5 text-xs">{asset.originalFilePath ?? asset.fileName}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
+        <div className="mx-auto max-w-3xl space-y-4">
+          <div className="flex min-h-28 items-center justify-center rounded border border-dashed border-border bg-card text-sm text-muted-foreground">
+            Drop project assets here
           </div>
-        </div>
-      </div>
-    );
+          {assets.length > 0 ? (
+            <div className="min-h-40 rounded border border-border bg-card">
+              <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4">
+                {assets.map((asset) => (
+                  <div key={asset.id} className="min-w-0 overflow-hidden rounded border border-border bg-background">
+                    <div className="aspect-square bg-secondary">
+                      {asset.previewUrl ? (
+                        <img
+                          src={asset.previewUrl}
+                          alt={asset.originalFileName ?? asset.fileName}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center">
+                          <File className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="truncate px-2 py-1.5 text-xs">{asset.originalFilePath ?? asset.fileName}</div>
+	                  </div>
+	                ))}
+	              </div>
+	            </div>
+	          ) : null}
+	        </div>
+	      </div>
+	    );
   };
 
   const renderInspectorContent = () => {
@@ -2732,7 +2886,7 @@ function App() {
       const selectedPaths = [...moves.map((move) => move.to), ...movedDatasetPaths];
       setSelectedExplorerPaths(new Set(selectedPaths));
       setFocusedExplorerPath(selectedPaths[0] ?? null);
-      setDraggedExplorerEntries(null);
+      setCurrentDraggedExplorerEntries(null);
       refreshExplorer();
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to move Explorer entries');
@@ -4328,7 +4482,7 @@ function App() {
                     onInlineCommit={() => void commitInlineExplorerEdit()}
                     onInlineCancel={cancelInlineExplorerEdit}
                     onDragStartItem={startExplorerDrag}
-                    onDragEndItems={() => setDraggedExplorerEntries(null)}
+                    onDragEndItems={() => setCurrentDraggedExplorerEntries(null)}
                     onDropItems={(node, event) => handleExplorerDrop(event, node.path)}
                   />
                 ) : (
