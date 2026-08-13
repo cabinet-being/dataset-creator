@@ -17,6 +17,8 @@ import {
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
+import { readExplorerFile } from '../../services/project/explorerFileService';
+import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import {
   CLOSE_ALL_DOCUMENTS_SCRIPT,
   PHOTOPEA_ORIGIN,
@@ -40,13 +42,41 @@ type PhotopeaSaveBuffers = {
   psd?: ArrayBuffer;
 };
 
+const readEditableBlobBuffer = async (blob: Blob): Promise<ArrayBuffer> => {
+  if (!(blob instanceof Blob)) {
+    throw new Error('Selected workspace image data is not a readable file.');
+  }
+
+  if (typeof blob.arrayBuffer === 'function') {
+    return blob.arrayBuffer();
+  }
+
+  return new Response(blob).arrayBuffer();
+};
+
+const postImageBufferToPhotopea = (photopeaWindow: Window, buffer: ArrayBuffer) => {
+  try {
+    const transferableBuffer = buffer.slice(0);
+    photopeaWindow.postMessage(transferableBuffer, PHOTOPEA_ORIGIN, [transferableBuffer]);
+  } catch (error) {
+    console.warn('Transferable Photopea postMessage failed; retrying without transfer list.', error);
+    photopeaWindow.postMessage(buffer, PHOTOPEA_ORIGIN);
+  }
+};
+
 type CleanupStageProps = {
   selectedImageId?: string;
   singleFileMode?: boolean;
   active?: boolean;
+  projectDirectoryHandle?: ProjectDirectoryHandle | null;
 };
 
-export const CleanupStage = ({ selectedImageId, singleFileMode = false, active = true }: CleanupStageProps = {}) => {
+export const CleanupStage = ({
+  selectedImageId,
+  singleFileMode = false,
+  active = true,
+  projectDirectoryHandle = null,
+}: CleanupStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
@@ -92,6 +122,30 @@ export const CleanupStage = ({ selectedImageId, singleFileMode = false, active =
     [selectedImageKey, workspaceImages]
   );
 
+  const readEditableImageBuffer = useCallback(
+    async (image: WorkspaceImage): Promise<ArrayBuffer> => {
+      const editableBlob = image.kind === 'synthetic' && image.psdData ? image.psdData : image.imageData;
+      try {
+        return await readEditableBlobBuffer(editableBlob);
+      } catch (error) {
+        const fallbackPath =
+          image.kind === 'source'
+            ? sourceImagesById[image.sourceImageId]?.originalFilePath
+            : image.psdData
+              ? syntheticImagesById[image.syntheticImageId ?? '']?.psdDataPath
+              : syntheticImagesById[image.syntheticImageId ?? '']?.imageDataPath;
+
+        if (!projectDirectoryHandle || !fallbackPath) {
+          throw error;
+        }
+
+        const fallbackFile = await readExplorerFile(projectDirectoryHandle, fallbackPath);
+        return readEditableBlobBuffer(fallbackFile);
+      }
+    },
+    [projectDirectoryHandle, sourceImagesById, syntheticImagesById]
+  );
+
   useEffect(() => {
     const nextSelectedImageId = selectedImageId ?? initialSelectedImageId;
     if (nextSelectedImageId && nextSelectedImageId !== selectedImageKey) {
@@ -117,6 +171,13 @@ export const CleanupStage = ({ selectedImageId, singleFileMode = false, active =
     setEditorStatus(status);
   }, []);
 
+  const focusPhotopea = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      iframeRef.current?.focus();
+      window.setTimeout(() => iframeRef.current?.focus(), 0);
+    });
+  }, []);
+
   const closeEditor = useCallback(() => {
     setSelectedImageKey(null);
     resetEditorState(photopeaReady ? 'Photopea is ready.' : 'Loading Photopea...', false);
@@ -129,9 +190,17 @@ export const CleanupStage = ({ selectedImageId, singleFileMode = false, active =
       setHasPhotopeaMounted(true);
       resetEditorState(keepLoadedPhotopea ? 'Preparing Photopea...' : 'Loading Photopea...', !keepLoadedPhotopea);
       setSelectedImageKey(imageId);
+      focusPhotopea();
     },
-    [hasPhotopeaMounted, resetEditorState]
+    [focusPhotopea, hasPhotopeaMounted, resetEditorState]
   );
+
+  useEffect(() => {
+    if (active && selectedImage && hasPhotopeaMounted) {
+      focusPhotopea();
+    }
+  }, [active, focusPhotopea, hasPhotopeaMounted, selectedImage?.id]);
+
   useEffect(() => {
     if (!active) {
       return;
@@ -172,21 +241,21 @@ export const CleanupStage = ({ selectedImageId, singleFileMode = false, active =
       setDocumentReady(false);
       pendingSyntheticPsdUpgradeRef.current =
         image.kind === 'synthetic' && Boolean(image.syntheticImageId) && !image.psdData;
-      const editableBlob = image.kind === 'synthetic' && image.psdData ? image.psdData : image.imageData;
-      const buffer = await editableBlob.arrayBuffer();
+      const buffer = await readEditableImageBuffer(image);
       phaseRef.current = 'opening-buffer';
       pendingImageRef.current = image;
-      photopeaWindow.postMessage(buffer, PHOTOPEA_ORIGIN, [buffer]);
+      postImageBufferToPhotopea(photopeaWindow, buffer);
     } catch (error) {
       console.error('Failed to send image to Photopea:', error);
       loadedImageKeyRef.current = null;
       loadingImageKeyRef.current = null;
       pendingImageRef.current = null;
       phaseRef.current = 'idle';
-      setEditorStatus('Failed to open image in Photopea.');
-      addNotification('error', 'Failed to open image in Photopea');
+      const message = error instanceof Error ? error.message : 'Failed to open image in Photopea.';
+      setEditorStatus(message);
+      addNotification('error', message);
     }
-  }, [addNotification]);
+  }, [addNotification, readEditableImageBuffer]);
 
   const openImageInPhotopea = useCallback((image: WorkspaceImage) => {
     const photopeaWindow = iframeRef.current?.contentWindow;
@@ -380,8 +449,8 @@ export const CleanupStage = ({ selectedImageId, singleFileMode = false, active =
         loadingImageKeyRef.current = null;
         pendingImageRef.current = null;
         setDocumentReady(true);
-        setEditorStatus('Ready to edit in Photopea.');
-        window.setTimeout(() => iframeRef.current?.focus(), 0);
+        setEditorStatus('Ready in Photopea.');
+        focusPhotopea();
         return;
       }
 
@@ -441,6 +510,7 @@ export const CleanupStage = ({ selectedImageId, singleFileMode = false, active =
     selectedImage,
     sendImageBufferToPhotopea,
     updateDatasetItem,
+    focusPhotopea,
   ]);
 
   useEffect(() => {

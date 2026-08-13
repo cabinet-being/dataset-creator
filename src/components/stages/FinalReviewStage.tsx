@@ -172,7 +172,7 @@ const ReviewCard = memo(
                 className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
               >
                 <Edit3 className="h-4 w-4" />
-                <span>Edit</span>
+                <span>Photopea</span>
               </button>
               <button
                 type="button"

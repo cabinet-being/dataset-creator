@@ -126,6 +126,7 @@ export interface Dataset {
   filePath?: string;
   triggerWord: string;
   assetIds: string[];
+  psdAssetPaths: string[];
   overwriteCaptions: boolean;
   captionOverrides: Record<string, string[]>;
   createdAt: Date;
@@ -275,6 +276,7 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   parentPath: 'Project',
   triggerWord: '',
   assetIds: [],
+  psdAssetPaths: [],
   overwriteCaptions: false,
   captionOverrides: {},
   createdAt: new Date(),

@@ -78,6 +78,7 @@ import {
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
+import { PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
 import {
   canOpenExplorerFile,
   copyExplorerEntries,
@@ -85,6 +86,7 @@ import {
   deleteExplorerEntry,
   duplicateExplorerEntries,
   getDirectoryAtExplorerPath,
+  getExplorerParentDirectory,
   getExplorerFileKind,
   getUniqueExplorerName,
   isExplorerImageFileName,
@@ -376,7 +378,7 @@ const getAspectRatioLabel = (width: number, height: number): string => {
   return `${Math.round(width / value)}:${Math.round(height / value)}`;
 };
 
-const renderTool = (currentStage: StageName) => {
+const renderTool = (currentStage: StageName, projectDirectoryHandle?: ProjectDirectoryHandle | null) => {
   switch (currentStage) {
     case 'hub':
       return <ToolHub />;
@@ -385,7 +387,7 @@ const renderTool = (currentStage: StageName) => {
     case 'select':
       return <SimilarityReviewStage />;
     case 'clean':
-      return <CleanupStageComponent />;
+      return <CleanupStageComponent projectDirectoryHandle={projectDirectoryHandle} />;
     case 'analysis':
       return <AnalysisStage />;
     case 'review':
@@ -1283,6 +1285,9 @@ function App() {
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
   };
+  const runPsdCommand = (command: 'save' | 'saveCopy') => {
+    window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
+  };
   const navigateToStage = (stage: StageName) => {
     const nextTab = createToolTab(stage);
     setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
@@ -1773,6 +1778,26 @@ function App() {
     return [...assetIds];
   };
 
+  const collectDatasetPsdPathsFromExplorerEntries = (entries: ExplorerItemEntry[]): string[] => {
+    const psdPaths = new Set<string>();
+    const nodes = getAllExplorerNodes();
+
+    for (const entry of entries.filter(isFilesystemExplorerEntry)) {
+      const candidateNodes =
+        entry.kind === 'folder'
+          ? nodes.filter((node) => node.kind === 'file' && node.path.startsWith(`${entry.path}/`))
+          : nodes.filter((node) => node.path === entry.path && node.kind === 'file');
+
+      for (const node of candidateNodes) {
+        if (getExplorerFileKind(node.name) === 'psd') {
+          psdPaths.add(node.path);
+        }
+      }
+    }
+
+    return [...psdPaths];
+  };
+
   const indexProjectAssetsForDatasetDrop = async () => {
     if (!projectDirectoryHandle) {
       return;
@@ -1797,18 +1822,19 @@ function App() {
   const importDroppedFilesIntoDataset = async (
     dataTransfer: DataTransfer,
     dataset: Dataset
-  ): Promise<string[]> => {
+  ): Promise<{ assetIds: string[]; psdAssetPaths: string[] }> => {
     if (!projectDirectoryHandle) {
       addNotification('warning', 'Open a project directory before importing files into a Dataset');
-      return [];
+      return { assetIds: [], psdAssetPaths: [] };
     }
 
     const files = await getImportFilesFromDataTransfer(dataTransfer);
     if (files.length === 0) {
-      return [];
+      return { assetIds: [], psdAssetPaths: [] };
     }
 
     const importedAssetIds: string[] = [];
+    const importedPsdPaths: string[] = [];
     const previousProject = useProjectStore.getState();
     const result = await importImageFiles(files, {
       logger: createOperationLogger('Dataset'),
@@ -1820,6 +1846,11 @@ function App() {
         addSourceImage(image);
         importedAssetIds.push(image.id);
       },
+      onAssetImported: (asset) => {
+        if (asset.kind === 'psd') {
+          importedPsdPaths.push(asset.assetPath.startsWith('Project/') ? asset.assetPath : `Project/${asset.assetPath}`);
+        }
+      },
       onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
     });
 
@@ -1828,7 +1859,7 @@ function App() {
       refreshExplorer();
     }
 
-    return importedAssetIds;
+    return { assetIds: importedAssetIds, psdAssetPaths: importedPsdPaths };
   };
 
   const getUniqueDatasetName = (baseName = 'New Dataset', parentPath?: string): string => {
@@ -1872,7 +1903,7 @@ function App() {
   const createDatasetFileInDirectory = async (
     parentPath: string,
     name: string,
-    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>
+    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>
   ): Promise<Dataset> => {
     const directory = requireProjectDirectory();
     if (!directory) {
@@ -1885,6 +1916,7 @@ function App() {
       ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
       triggerWord: source?.triggerWord ?? '',
       assetIds: [...new Set(source?.assetIds ?? [])],
+      psdAssetPaths: [...new Set(source?.psdAssetPaths ?? [])],
       overwriteCaptions: source?.overwriteCaptions ?? false,
       captionOverrides: source?.captionOverrides ?? {},
     };
@@ -1900,6 +1932,7 @@ function App() {
     return createDatasetFileInDirectory(copyParentPath, `${dataset.name} Copy`, {
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
+      psdAssetPaths: dataset.psdAssetPaths,
       overwriteCaptions: dataset.overwriteCaptions,
       captionOverrides: dataset.captionOverrides,
     });
@@ -1949,12 +1982,13 @@ function App() {
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => {
     const nextDataset = {
       ...dataset,
       ...updates,
       assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
+      psdAssetPaths: updates.psdAssetPaths ? [...new Set(updates.psdAssetPaths)] : dataset.psdAssetPaths,
       overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
       captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
       updatedAt: new Date(),
@@ -1976,7 +2010,7 @@ function App() {
       );
     }
 
-    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>) =>
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) =>
       updateDatasetFileBackedState(dataset, updates);
     const openScopedTool = (stage: StageName) => {
       if (stage === 'select' || stage === 'analysis' || stage === 'review' || stage === 'tagging') {
@@ -2064,35 +2098,83 @@ function App() {
   };
 
   const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption') => {
-    const imageId = findWorkspaceImageIdForPath(node.path);
-    if (!imageId) {
-      addNotification('warning', `${mode === 'edit' ? 'Edit' : 'Caption'} is available for project workspace images.`);
-      return;
+    try {
+      const imageId = findWorkspaceImageIdForPath(node.path);
+      if (!imageId) {
+        addNotification('warning', `${mode === 'edit' ? 'Photopea' : 'Caption'} is available for project workspace images.`);
+        return;
+      }
+
+      if (!projectDirectoryHandle) {
+        addNotification('warning', 'Open a project directory before opening Explorer files.');
+        return;
+      }
+
+      const file = await readExplorerFile(projectDirectoryHandle, node.path);
+      if (!file) {
+        addNotification('error', 'File is no longer available');
+        return;
+      }
+
+      const tab: FileWorkspaceTab = {
+        id: createFileModeTabId(mode, node.path),
+        kind: mode === 'edit' ? 'file-edit' : 'file-caption',
+        path: node.path,
+        name: node.name,
+        fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
+        file,
+        workspaceImageId: imageId,
+      };
+
+      setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
+      setActiveTabId(tab.id);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : `Failed to open ${mode === 'edit' ? 'Photopea' : 'Caption'}`);
     }
+  };
 
-    if (!projectDirectoryHandle) {
-      addNotification('warning', 'Open a project directory before opening Explorer files.');
-      return;
+  const savePsdFileFromViewer = async (
+    tab: FileWorkspaceTab,
+    buffer: ArrayBuffer,
+    saveCopy: boolean
+  ) => {
+    try {
+      if (!projectDirectoryHandle) {
+        addNotification('warning', 'Open a project directory before saving PSD files.');
+        return;
+      }
+
+      const { directory, name } = await getExplorerParentDirectory(projectDirectoryHandle, tab.path);
+      const targetName = saveCopy ? await getUniqueExplorerName(directory, `${name.replace(/\.psd$/i, '')} Copy.psd`) : name;
+      const nextBlob = new Blob([buffer], { type: 'image/vnd.adobe.photoshop' });
+      const handle = await directory.getFileHandle(targetName, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(nextBlob);
+      await writable.close();
+
+      const nextPath = `${tab.path.split('/').slice(0, -1).join('/') || 'Project'}/${targetName}`;
+      const nextTab: FileWorkspaceTab = {
+        ...tab,
+        id: createFileTabId(nextPath),
+        path: nextPath,
+        name: targetName,
+        file: new globalThis.File([nextBlob], targetName, { type: 'image/vnd.adobe.photoshop' }),
+      };
+
+      setOpenTabs((tabs) => {
+        if (saveCopy) {
+          return tabs.some((entry) => entry.id === nextTab.id) ? tabs : [...tabs, nextTab];
+        }
+        return tabs.map((entry) => (entry.id === tab.id ? { ...entry, file: nextTab.file } : entry));
+      });
+      if (saveCopy) {
+        setActiveTabId(nextTab.id);
+      }
+      refreshExplorer();
+      addNotification('success', saveCopy ? `Saved PSD copy "${targetName}"` : `Saved "${name}"`);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to save PSD file');
     }
-
-    const file = await readExplorerFile(projectDirectoryHandle, node.path);
-    if (!file) {
-      addNotification('error', 'File is no longer available');
-      return;
-    }
-
-    const tab: FileWorkspaceTab = {
-      id: createFileModeTabId(mode, node.path),
-      kind: mode === 'edit' ? 'file-edit' : 'file-caption',
-      path: node.path,
-      name: node.name,
-      fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
-      file,
-      workspaceImageId: imageId,
-    };
-
-    setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
-    setActiveTabId(tab.id);
   };
 
   const renderDatasetWorkspace = (tab: DatasetWorkspaceTab) => {
@@ -2108,6 +2190,7 @@ function App() {
     const assets = dataset.assetIds
       .map((assetId) => sourceImagesById[assetId])
       .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
+    const psdAssets = dataset.psdAssetPaths ?? [];
 
     return (
       <div
@@ -2140,19 +2223,33 @@ function App() {
             let assetIds = droppedEntries?.length
               ? collectDatasetAssetIdsFromExplorerEntries(droppedEntries)
               : [];
-            if (droppedEntries?.length && assetIds.length === 0) {
+            let psdAssetPaths = droppedEntries?.length
+              ? collectDatasetPsdPathsFromExplorerEntries(droppedEntries)
+              : [];
+            if (droppedEntries?.length && assetIds.length === 0 && psdAssetPaths.length === 0) {
               await indexProjectAssetsForDatasetDrop();
               assetIds = collectDatasetAssetIdsFromExplorerEntries(droppedEntries);
+              psdAssetPaths = collectDatasetPsdPathsFromExplorerEntries(droppedEntries);
             }
             if (hasFiles) {
-              assetIds = [...assetIds, ...await importDroppedFilesIntoDataset(dataTransfer, dataset)];
+              const imported = await importDroppedFilesIntoDataset(dataTransfer, dataset);
+              assetIds = [...assetIds, ...imported.assetIds];
+              psdAssetPaths = [...psdAssetPaths, ...imported.psdAssetPaths];
             }
-            if (assetIds.length > 0) {
+            if (assetIds.length > 0 || psdAssetPaths.length > 0) {
               const currentDataset = useProjectStore.getState().datasets[dataset.id] ?? dataset;
               const nextAssetIds = [...new Set([...currentDataset.assetIds, ...assetIds])];
-              const addedCount = nextAssetIds.length - currentDataset.assetIds.length;
+              const nextPsdAssetPaths = [...new Set([...(currentDataset.psdAssetPaths ?? []), ...psdAssetPaths])];
+              const addedCount =
+                nextAssetIds.length -
+                currentDataset.assetIds.length +
+                nextPsdAssetPaths.length -
+                (currentDataset.psdAssetPaths ?? []).length;
               if (addedCount > 0) {
-                await updateDatasetFileBackedState(currentDataset, { assetIds: nextAssetIds });
+                await updateDatasetFileBackedState(currentDataset, {
+                  assetIds: nextAssetIds,
+                  psdAssetPaths: nextPsdAssetPaths,
+                });
                 addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
               } else {
                 addNotification('info', 'Selected assets are already in this Dataset');
@@ -2167,7 +2264,7 @@ function App() {
           <div className="flex min-h-28 items-center justify-center rounded border border-dashed border-border bg-card text-sm text-muted-foreground">
             Drop project assets here
           </div>
-          {assets.length > 0 ? (
+          {assets.length > 0 || psdAssets.length > 0 ? (
             <div className="min-h-40 rounded border border-border bg-card">
               <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4">
                 {assets.map((asset) => (
@@ -2186,11 +2283,19 @@ function App() {
                       )}
                     </div>
                     <div className="truncate px-2 py-1.5 text-xs">{asset.originalFilePath ?? asset.fileName}</div>
-	                  </div>
-	                ))}
-	              </div>
-	            </div>
-	          ) : null}
+                  </div>
+                ))}
+                {psdAssets.map((path) => (
+                  <div key={path} className="min-w-0 overflow-hidden rounded border border-border bg-background">
+                    <div className="flex aspect-square items-center justify-center bg-secondary">
+                      <File className="h-8 w-8 text-muted-foreground" />
+                    </div>
+                    <div className="truncate px-2 py-1.5 text-xs">{path}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 	        </div>
 	      </div>
 	    );
@@ -2326,7 +2431,9 @@ function App() {
               </div>
               <div className="flex justify-between gap-3">
                 <span className="text-muted-foreground">Assets</span>
-                <span className="font-medium">{activeDataset.assetIds.length}</span>
+                <span className="font-medium">
+                  {activeDataset.assetIds.length + (activeDataset.psdAssetPaths ?? []).length}
+                </span>
               </div>
               <label className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
                 <input
@@ -2345,7 +2452,7 @@ function App() {
 
         {activeTab?.kind === 'file-edit' ? (
           <div className="border-t border-border pt-3">
-            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Edit</p>
+            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Photopea</p>
             <div className="grid gap-2">
               <button type="button" onClick={() => runEditCommand('back')} disabled={editToolbar.isProcessing} className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
                 <ArrowLeft className="h-3.5 w-3.5" />
@@ -2363,6 +2470,28 @@ function App() {
               </button>
               <button type="button" onClick={() => runEditCommand('cancel')} disabled={editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
                 Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab && isFileBackedTab(activeTab) && activeTab.fileKind === 'psd' ? (
+          <div className="border-t border-border pt-3">
+            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">PSD</p>
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => runPsdCommand('save')}
+                className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => runPsdCommand('saveCopy')}
+                className="rounded border border-border px-2 py-2 text-left hover:bg-secondary"
+              >
+                Save Copy
               </button>
             </div>
           </div>
@@ -3016,26 +3145,46 @@ function App() {
       const exportItems = workspaceImages.filter(
         (item) => assetIds.has(item.sourceImageId) && !item.excludedFromDataset
       );
+      const directory = requireProjectDirectory();
+      if (!directory) {
+        return;
+      }
+      const psdAssets = (await Promise.all(
+        (dataset.psdAssetPaths ?? []).map(async (path): Promise<{ file: File; fileName: string } | null> => {
+          try {
+            const file = await readExplorerFile(directory, path);
+            return {
+              file,
+              fileName: path.split('/').pop() ?? file.name,
+            };
+          } catch (error) {
+            addNotification('warning', error instanceof Error ? error.message : `Unable to read "${path}"`);
+            return null;
+          }
+        })
+      )).filter((asset): asset is { file: File; fileName: string } => Boolean(asset));
 
-      if (exportItems.length === 0) {
+      if (exportItems.length === 0 && psdAssets.length === 0) {
         createOperationLogger('Export').warning(`no images to export for Dataset "${dataset.name}"`);
         addNotification('warning', 'No images to export');
         return;
       }
 
       const logger = createOperationLogger('Export');
-      logger.info(`exporting Dataset "${dataset.name}" with ${exportItems.length} image${exportItems.length !== 1 ? 's' : ''}`);
+      const exportCount = exportItems.length + psdAssets.length;
+      logger.info(`exporting Dataset "${dataset.name}" with ${exportCount} asset${exportCount !== 1 ? 's' : ''}`);
       const zipBlob = await exportAsZip(
         {
           datasetKeyword: dataset.triggerWord,
           items: exportItems,
+          psdAssets,
         },
         useProjectStore.getState().taggingConfig.blacklist,
         logger
       );
       downloadZipFile(zipBlob, `${dataset.name || 'dataset'}-${new Date().toISOString().split('T')[0]}.zip`);
       logger.success(`exported Dataset "${dataset.name}"`);
-      addNotification('success', `Exported ${exportItems.length} image${exportItems.length !== 1 ? 's' : ''} as ZIP`);
+      addNotification('success', `Exported ${exportCount} asset${exportCount !== 1 ? 's' : ''} as ZIP`);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to export Dataset');
     }
@@ -3503,7 +3652,7 @@ function App() {
             className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
           >
             <Edit3 className="h-3.5 w-3.5" />
-            <span>Edit</span>
+            <span>Photopea</span>
           </button>
           <button
             type="button"
@@ -4103,7 +4252,7 @@ function App() {
                   : tab.kind === 'dataset'
                     ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - Dataset`
                   : tab.kind === 'file-edit'
-                    ? `${tab.name} - Edit`
+                    ? `${tab.name} - Photopea`
                     : tab.kind === 'file-caption'
                       ? `${tab.name} - Caption`
                       : tab.name;
@@ -4202,8 +4351,8 @@ function App() {
                 <button
                   type="button"
                   className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                  title="Open editor"
-                  aria-label="Open editor"
+                  title="Open Photopea"
+                  aria-label="Open Photopea"
                 >
                   <Plus className="h-4 w-4" />
                 </button>
@@ -4215,7 +4364,7 @@ function App() {
                   className="z-[100] w-52 rounded-md border border-border bg-popover p-1 shadow-xl"
                 >
                   <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                    Open editor
+                    Open Photopea
                   </p>
                   {STAGES.map((stage) => {
                     const Icon = stage === 'hub' ? Archive : toolIcons[stage];
@@ -4539,6 +4688,12 @@ function App() {
                           file={tab.file}
                           fileName={tab.name}
                           fileKind={tab.fileKind}
+                          active={isActiveFileTab}
+                          onSavePsd={
+                            tab.fileKind === 'psd'
+                              ? (buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)
+                              : undefined
+                          }
                           onContextMenu={(event) => {
                             event.preventDefault();
                             setExplorerContextMenu({
@@ -4553,6 +4708,7 @@ function App() {
                           selectedImageId={tab.workspaceImageId}
                           singleFileMode
                           active={isActiveFileTab}
+                          projectDirectoryHandle={projectDirectoryHandle}
                         />
                       ) : (
                         <TaggingStageComponent
@@ -4569,7 +4725,7 @@ function App() {
                 ) : activeTab && isDatasetToolTab(activeTab) ? (
                   renderDatasetTool(activeTab)
                 ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
-                  renderTool(activeStage)
+                  renderTool(activeStage, projectDirectoryHandle)
                 ) : (
                   <EmptyWorkspacePlaceholder />
                 )}

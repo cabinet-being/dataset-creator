@@ -33,7 +33,7 @@ interface ProjectStore extends ProjectState {
   // Datasets
   createDataset: (name?: string) => Dataset;
   upsertDataset: (dataset: Dataset) => void;
-  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>) => void;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) => void;
   removeDataset: (id: string) => void;
   addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
@@ -98,6 +98,18 @@ export const useProjectStore = create<ProjectStore>()(
             return {
               ...defaults,
               ...project,
+              datasets: Object.fromEntries(
+                Object.entries(project.datasets ?? {}).map(([id, dataset]) => [
+                  id,
+                  {
+                    ...dataset,
+                    assetIds: [...new Set(dataset.assetIds ?? [])],
+                    psdAssetPaths: [...new Set(dataset.psdAssetPaths ?? [])],
+                    overwriteCaptions: dataset.overwriteCaptions ?? false,
+                    captionOverrides: dataset.captionOverrides ?? {},
+                  },
+                ])
+              ),
               workspaceSettings: {
                 ...defaults.workspaceSettings,
                 ...project.workspaceSettings,
@@ -257,6 +269,7 @@ export const useProjectStore = create<ProjectStore>()(
               [dataset.id]: {
                 ...dataset,
                 assetIds: [...new Set(dataset.assetIds)],
+                psdAssetPaths: [...new Set(dataset.psdAssetPaths ?? [])],
                 overwriteCaptions: dataset.overwriteCaptions ?? false,
                 captionOverrides: dataset.captionOverrides ?? {},
               },
@@ -279,6 +292,7 @@ export const useProjectStore = create<ProjectStore>()(
                   ...dataset,
                   ...updates,
                   assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
+                  psdAssetPaths: updates.psdAssetPaths ? [...new Set(updates.psdAssetPaths)] : dataset.psdAssetPaths,
                   overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
                   captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
                   updatedAt: new Date(),

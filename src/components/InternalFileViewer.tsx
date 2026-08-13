@@ -8,7 +8,9 @@ type InternalFileViewerProps = {
   file: File | Blob;
   fileName: string;
   fileKind: ExplorerFileKind;
+  active?: boolean;
   onContextMenu?: (event: MouseEvent) => void;
+  onSavePsd?: (buffer: ArrayBuffer, saveCopy: boolean) => void | Promise<void>;
 };
 
 const useObjectUrl = (file: Blob | null) => {
@@ -168,7 +170,14 @@ const ViewerError = ({ message }: { message: string }) => (
   </div>
 );
 
-export const InternalFileViewer = ({ file, fileName, fileKind, onContextMenu }: InternalFileViewerProps) => {
+export const InternalFileViewer = ({
+  file,
+  fileName,
+  fileKind,
+  active,
+  onContextMenu,
+  onSavePsd,
+}: InternalFileViewerProps) => {
   switch (fileKind) {
     case 'image':
       return <ImageFileViewer file={file} fileName={fileName} onContextMenu={onContextMenu} />;
@@ -179,7 +188,7 @@ export const InternalFileViewer = ({ file, fileName, fileKind, onContextMenu }: 
     case 'video':
       return <VideoFileViewer file={file} onContextMenu={onContextMenu} />;
     case 'psd':
-      return <PhotopeaBlobViewer file={file} fileName={fileName} />;
+      return <PhotopeaBlobViewer file={file} fileName={fileName} active={active} onSavePsd={onSavePsd} />;
     default:
       return <ViewerError message="This file type does not have a viewer." />;
   }

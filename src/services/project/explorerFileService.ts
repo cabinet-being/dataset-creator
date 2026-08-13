@@ -21,15 +21,29 @@ type MovableFileSystemHandle = {
   move?: (destination: ProjectDirectoryHandle, name?: string) => Promise<void>;
 };
 
-const getPathParts = (path: string): string[] => path.split('/').filter(Boolean).slice(1);
+const getPathParts = (path: string): string[] => {
+  const parts = path.split('/').filter(Boolean);
+  return parts[0] === 'Project' ? parts.slice(1) : parts;
+};
 
-const getParentPath = (path: string): string => path.split('/').slice(0, -1).join('/') || 'Project';
+const getParentPath = (path: string): string => {
+  const parts = getPathParts(path);
+  return parts.length > 1 ? ['Project', ...parts.slice(0, -1)].join('/') : 'Project';
+};
 
 const isNotFoundError = (error: unknown): boolean =>
   typeof error === 'object' &&
   error !== null &&
   'name' in error &&
   (error as { name?: string }).name === 'NotFoundError';
+
+const getExplorerOperationErrorMessage = (error: unknown, path: string): string | null => {
+  if (isNotFoundError(error)) {
+    return `"${path}" no longer exists. Refresh Explorer or reopen the project directory.`;
+  }
+
+  return null;
+};
 
 export const getExplorerFileKind = (name: string, mimeType = ''): ExplorerFileKind => {
   return resolveProjectAssetKind(name, mimeType);
@@ -47,8 +61,12 @@ export const getDirectoryAtExplorerPath = async (
   path: string
 ): Promise<ProjectDirectoryHandle> => {
   let directory = root;
-  for (const part of getPathParts(path)) {
-    directory = await directory.getDirectoryHandle(part);
+  try {
+    for (const part of getPathParts(path)) {
+      directory = await directory.getDirectoryHandle(part);
+    }
+  } catch (error) {
+    throw new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to open project directory.'));
   }
   return directory;
 };
@@ -60,12 +78,16 @@ export const getExplorerParentDirectory = async (
   const parts = getPathParts(path);
   const name = parts.pop();
   if (!name) {
-    throw new Error('The project root has no parent directory.');
+    throw new Error('Select a file or folder inside the project.');
   }
 
   let directory = root;
-  for (const part of parts) {
-    directory = await directory.getDirectoryHandle(part);
+  try {
+    for (const part of parts) {
+      directory = await directory.getDirectoryHandle(part);
+    }
+  } catch (error) {
+    throw new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to open project path.'));
   }
 
   return { directory, name };
@@ -79,7 +101,11 @@ export const readExplorerFile = async (
   if (isProjectManifestName(name) || isAssetManifestName(name)) {
     throw new Error('Project metadata files cannot be opened from Explorer.');
   }
-  return directory.getFileHandle(name).then((handle) => handle.getFile());
+  try {
+    return await directory.getFileHandle(name).then((handle) => handle.getFile());
+  } catch (error) {
+    throw new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to read file.'));
+  }
 };
 
 const entryExists = async (directory: ProjectDirectoryHandle, name: string): Promise<boolean> => {
