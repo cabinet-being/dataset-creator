@@ -151,7 +151,7 @@ export const toWorkspaceImages = (
         fileName: `${image.id}.png`,
         imageData: workingEdit?.blob ?? image.imageData,
         psdData: image.psdData,
-        previewUrl: workingEdit?.previewUrl,
+        previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
         width: workingEdit?.width ?? image.width,
         height: workingEdit?.height ?? image.height,
         tags: image.tags,

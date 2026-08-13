@@ -12,17 +12,10 @@ import {
   toWorkspaceImages,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
-import { getCachedPreviewUrl } from '../../lib/previewUrlCache';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
-
-type WorkspacePreviewRecord = {
-  blob: Blob;
-  previewUrl: string;
-  width: number;
-  height: number;
-};
 
 export const SimilarityReviewStage = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -46,26 +39,11 @@ export const SimilarityReviewStage = () => {
     return remapped;
   }, [uiThreshold]);
 
-  const syntheticPreviewRecords = useMemo<Record<string, WorkspacePreviewRecord>>(
-    () =>
-      Object.fromEntries(
-        syntheticImages.map((image) => [
-          `synthetic:${image.id}`,
-          {
-            blob: image.imageData,
-            previewUrl: getCachedPreviewUrl(`synthetic:${image.id}`, image.imageData),
-            width: image.width,
-            height: image.height,
-          },
-        ])
-      ),
-    [syntheticImages]
-  );
-
   const images = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages, syntheticPreviewRecords),
-    [sourceImages, syntheticImages, syntheticPreviewRecords]
+    () => toWorkspaceImages(sourceImages, syntheticImages),
+    [sourceImages, syntheticImages]
   );
+  const previewUrls = useWorkspacePreviewUrls(images);
   const imageById = useMemo(() => new Map(images.map((image) => [image.id, image])), [images]);
   const sourceImageById = useMemo(
     () => Object.fromEntries(sourceImages.map((image) => [image.id, image])),
@@ -254,7 +232,7 @@ export const SimilarityReviewStage = () => {
                             style={getWorkspaceKindFrameStyle(image.kind)}
                           >
                             <MasonryImageFrame
-                              src={image.previewUrl}
+                              src={previewUrls[image.id]}
                               alt={image.fileName}
                               width={image.width}
                               height={image.height}

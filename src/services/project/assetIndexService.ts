@@ -40,7 +40,7 @@ type IndexProjectAssetsOptions = {
   onProgress?: (current: number, total: number) => void;
 };
 
-const INTERNAL_DIRECTORY_NAMES = new Set(['.dataset-creator-data']);
+const INTERNAL_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
 
 const yieldToUi = async () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 

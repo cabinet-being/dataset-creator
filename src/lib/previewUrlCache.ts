@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 type PreviewItem = {
   id: string;
@@ -12,6 +12,7 @@ type CachedPreviewUrl = {
 };
 
 const previewUrlCache = new Map<string, CachedPreviewUrl>();
+const previewUrlConsumers = new Map<symbol, Set<string>>();
 
 export const getCachedPreviewUrl = (id: string, blob: Blob): string => {
   const cached = previewUrlCache.get(id);
@@ -39,7 +40,25 @@ export const pruneCachedPreviewUrls = (activeIds: Set<string>): void => {
   }
 };
 
+const pruneUnusedPreviewUrls = (): void => {
+  const activeIds = new Set<string>();
+
+  for (const ids of previewUrlConsumers.values()) {
+    for (const id of ids) {
+      activeIds.add(id);
+    }
+  }
+
+  pruneCachedPreviewUrls(activeIds);
+};
+
 export const useWorkspacePreviewUrls = (items: PreviewItem[]): Record<string, string> => {
+  const consumerIdRef = useRef<symbol | null>(null);
+  if (!consumerIdRef.current) {
+    consumerIdRef.current = Symbol('workspace-preview-consumer');
+  }
+  const consumerId = consumerIdRef.current;
+
   const previewUrls = useMemo(() => {
     const nextPreviewUrls: Record<string, string> = {};
 
@@ -50,9 +69,20 @@ export const useWorkspacePreviewUrls = (items: PreviewItem[]): Record<string, st
     return nextPreviewUrls;
   }, [items]);
 
+  const activeIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
+
+  previewUrlConsumers.set(consumerId, activeIds);
+
   useEffect(() => {
-    pruneCachedPreviewUrls(new Set(items.map((item) => item.id)));
-  }, [items]);
+    pruneUnusedPreviewUrls();
+  }, [activeIds]);
+
+  useEffect(() => {
+    return () => {
+      previewUrlConsumers.delete(consumerId);
+      pruneUnusedPreviewUrls();
+    };
+  }, [consumerId]);
 
   return previewUrls;
 };

@@ -88,6 +88,7 @@ export interface SyntheticImage {
   sourceImageId: string;
   imageData: Blob;
   psdData?: Blob;
+  previewUrl?: string;
   imageDataPath?: string;
   psdDataPath?: string;
   manifestPath?: string;

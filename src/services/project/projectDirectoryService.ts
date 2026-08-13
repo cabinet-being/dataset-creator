@@ -8,11 +8,15 @@ import {
   type TaggingConfig,
   type WorkspaceSettings,
 } from '../../types';
+import { createThumbnail } from '../image/imageProcessor';
 import { getAssetManifestName } from './assetManifestService';
 
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
 export const PROJECT_DIRECTORY_DESCRIPTION = 'Dataset Creator project directory';
+export const PROJECT_DIRECTORY_CACHE = '.cache';
+const PROJECT_PREVIEW_CACHE_DIRECTORY = `${PROJECT_DIRECTORY_CACHE}/previews`;
+const PROJECT_PREVIEW_CACHE_SIZE = 512;
 
 export type ProjectDirectoryWritable = {
   write: (data: Blob | string) => Promise<void> | void;
@@ -357,6 +361,77 @@ const getDefaultSourceManifestPath = (source: SourceImage): string =>
 const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
   `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
 
+const getPreviewCachePath = (kind: 'source' | 'synthetic', id: string): string =>
+  joinPath(PROJECT_PREVIEW_CACHE_DIRECTORY, kind, `${id}.jpg`);
+
+const createProjectPreview = async (blob: Blob): Promise<Blob> =>
+  createThumbnail(blob, PROJECT_PREVIEW_CACHE_SIZE);
+
+const readProjectPreviewUrl = async (
+  root: ProjectDirectoryHandle | undefined,
+  kind: 'source' | 'synthetic',
+  id: string
+): Promise<string | undefined> => {
+  if (!root) {
+    return undefined;
+  }
+
+  try {
+    return URL.createObjectURL(await readBlobFileAtPath(root, getPreviewCachePath(kind, id)));
+  } catch {
+    return undefined;
+  }
+};
+
+const getOrCreateProjectPreviewUrl = async (
+  root: ProjectDirectoryHandle | undefined,
+  kind: 'source' | 'synthetic',
+  id: string,
+  blob: Blob
+): Promise<string | undefined> => {
+  const cachedUrl = await readProjectPreviewUrl(root, kind, id);
+  if (cachedUrl) {
+    return cachedUrl;
+  }
+
+  if (!root) {
+    return undefined;
+  }
+
+  try {
+    const preview = await createProjectPreview(blob);
+    await writeBlobFileAtPath(root, getPreviewCachePath(kind, id), preview);
+    return URL.createObjectURL(preview);
+  } catch {
+    return undefined;
+  }
+};
+
+const writeProjectPreview = async (
+  root: ProjectDirectoryHandle,
+  kind: 'source' | 'synthetic',
+  id: string,
+  blob: Blob
+): Promise<void> => {
+  try {
+    await writeBlobFileAtPath(root, getPreviewCachePath(kind, id), await createProjectPreview(blob));
+  } catch {
+    // Preview cache failures should not block saving the project data itself.
+  }
+};
+
+const removeProjectPreview = async (
+  root: ProjectDirectoryHandle,
+  kind: 'source' | 'synthetic',
+  id: string
+): Promise<void> => {
+  try {
+    await removeProjectFileAtPath(root, getPreviewCachePath(kind, id));
+  } catch {
+    // Cache entries are disposable and may already be absent.
+  }
+};
+
 const getNormalizedAssetManifestPath = (
   currentPath: string | undefined,
   assetFileName: string,
@@ -383,6 +458,7 @@ const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): P
     : joinPath(getParentPath(manifestPath), defaultOriginalFileName);
   const originalFileNameOnDisk = getFileName(originalFilePath);
   await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
+  await writeProjectPreview(root, 'source', source.id, source.originalFile);
   await writeTextFileAtPath(
     root,
     manifestPath,
@@ -414,6 +490,7 @@ const writeSourceChanges = async (
   const originalFileNameOnDisk = getFileName(originalFilePath);
   if (!previousSource || source.originalFile !== previousSource.originalFile) {
     await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
+    await writeProjectPreview(root, 'source', source.id, source.originalFile);
   }
   await writeTextFileAtPath(
     root,
@@ -441,6 +518,7 @@ const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage
     : undefined;
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   await writeBlobFileAtPath(root, imageDataPath, item.imageData);
+  await writeProjectPreview(root, 'synthetic', item.id, item.imageData);
   if (item.psdData && psdFileName) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), psdFileName), item.psdData);
   }
@@ -483,6 +561,7 @@ const writeSyntheticChanges = async (
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   if (!previousItem || item.imageData !== previousItem.imageData) {
     await writeBlobFileAtPath(root, imageDataPath, item.imageData);
+    await writeProjectPreview(root, 'synthetic', item.id, item.imageData);
   }
   if (item.psdData && (!previousItem || item.psdData !== previousItem.psdData)) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), 'image.psd'), item.psdData);
@@ -563,7 +642,7 @@ export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHan
 
 export const clearProjectDirectory = async (directory: ProjectDirectoryHandle) => {
   await Promise.all(
-    ['.dataset-creator-data', 'sources', 'synthetic', PROJECT_DIRECTORY_MANIFEST].map(async (entry) => {
+    ['.dataset-creator-data', PROJECT_DIRECTORY_CACHE, 'sources', 'synthetic', PROJECT_DIRECTORY_MANIFEST].map(async (entry) => {
       try {
         await directory.removeEntry(entry, { recursive: true });
       } catch {
@@ -605,7 +684,12 @@ export const writeProjectDirectoryChanges = async (
       }),
     ...Object.keys(previousSources)
       .filter((id) => !project.sourceImages[id])
-      .map((id) => previousSources[id]?.manifestPath ? removeProjectEntryAtPath(directory, previousSources[id].manifestPath) : Promise.resolve()),
+      .map(async (id) => {
+        await removeProjectPreview(directory, 'source', id);
+        if (previousSources[id]?.manifestPath) {
+          await removeProjectEntryAtPath(directory, previousSources[id].manifestPath);
+        }
+      }),
     ...Object.entries(project.datasetItems)
       .filter(([id, item]) => item !== previousSynthetic[id])
       .map(async ([id, item]) => {
@@ -613,7 +697,12 @@ export const writeProjectDirectoryChanges = async (
       }),
     ...Object.keys(previousSynthetic)
       .filter((id) => !project.datasetItems[id])
-      .map((id) => previousSynthetic[id]?.manifestPath ? removeProjectEntryAtPath(directory, previousSynthetic[id].manifestPath) : Promise.resolve()),
+      .map(async (id) => {
+        await removeProjectPreview(directory, 'synthetic', id);
+        if (previousSynthetic[id]?.manifestPath) {
+          await removeProjectEntryAtPath(directory, previousSynthetic[id].manifestPath);
+        }
+      }),
   ]);
 
   for (const source of Object.values(project.sourceImages)) {
@@ -673,6 +762,7 @@ const readSource = async (
     width: manifest.width,
     height: manifest.height,
     mimeType: manifest.mimeType,
+    previewUrl: await getOrCreateProjectPreviewUrl(root, 'source', manifest.id, originalFile),
     originalFilePath,
     manifestPath: paths?.manifestPath,
     tags: manifest.tags,
@@ -727,6 +817,7 @@ const readSynthetic = async (
     sourceImageId: manifest.sourceImageId,
     imageData,
     psdData,
+    previewUrl: await getOrCreateProjectPreviewUrl(root, 'synthetic', manifest.id, imageData),
     imageDataPath,
     psdDataPath,
     manifestPath: paths?.manifestPath,

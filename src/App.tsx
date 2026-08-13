@@ -47,6 +47,7 @@ import {
   URL_STAGE_ALIASES,
 } from './lib/constants';
 import { toWorkspaceImages } from './lib/workspaceImages';
+import { useWorkspacePreviewUrls } from './lib/previewUrlCache';
 import {
   createProjectDirectory,
   clearProjectDirectory,
@@ -903,6 +904,16 @@ function App() {
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const sourcePreviewItems = useMemo(
+    () =>
+      sourceImages.map((image) => ({
+        id: image.id,
+        imageData: image.originalFile,
+        previewUrl: image.previewUrl,
+      })),
+    [sourceImages]
+  );
+  const sourcePreviewUrls = useWorkspacePreviewUrls(sourcePreviewItems);
   const datasetItems = useMemo(
     () => Object.values(datasetItemsById).filter((item) => !item.deleted),
     [datasetItemsById]
@@ -2270,9 +2281,9 @@ function App() {
                 {assets.map((asset) => (
                   <div key={asset.id} className="min-w-0 overflow-hidden rounded border border-border bg-background">
                     <div className="aspect-square bg-secondary">
-                      {asset.previewUrl ? (
+                      {sourcePreviewUrls[asset.id] ? (
                         <img
-                          src={asset.previewUrl}
+                          src={sourcePreviewUrls[asset.id]}
                           alt={asset.originalFileName ?? asset.fileName}
                           className="h-full w-full object-cover"
                         />

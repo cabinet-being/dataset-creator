@@ -15,6 +15,23 @@ import {
 import { OBJECT_STORES } from '../lib/constants';
 import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
 
+const revokePreviewUrl = (previewUrl: string | undefined) => {
+  if (!previewUrl) {
+    return;
+  }
+
+  try {
+    URL.revokeObjectURL(previewUrl);
+  } catch (error) {
+    console.warn('Failed to revoke preview URL', error);
+  }
+};
+
+const stripSyntheticPreviewUrl = (item: SyntheticImage): SyntheticImage => ({
+  ...item,
+  previewUrl: undefined,
+});
+
 interface ProjectStore extends ProjectState {
   // Project management
   initializeProject: (name: string) => void;
@@ -69,13 +86,10 @@ export const useProjectStore = create<ProjectStore>()(
         initializeProject: (name: string) =>
           set((state) => {
             for (const image of Object.values(state.sourceImages)) {
-              if (image.previewUrl) {
-                try {
-                  URL.revokeObjectURL(image.previewUrl);
-                } catch (error) {
-                  console.warn('Failed to revoke preview URL', error);
-                }
-              }
+              revokePreviewUrl(image.previewUrl);
+            }
+            for (const item of Object.values(state.datasetItems)) {
+              revokePreviewUrl(item.previewUrl);
             }
 
             return createProject(name);
@@ -84,13 +98,10 @@ export const useProjectStore = create<ProjectStore>()(
         loadProject: (project: ProjectState) =>
           set((state) => {
             for (const image of Object.values(state.sourceImages)) {
-              if (image.previewUrl) {
-                try {
-                  URL.revokeObjectURL(image.previewUrl);
-                } catch (error) {
-                  console.warn('Failed to revoke preview URL', error);
-                }
-              }
+              revokePreviewUrl(image.previewUrl);
+            }
+            for (const item of Object.values(state.datasetItems)) {
+              revokePreviewUrl(item.previewUrl);
             }
 
             const defaults = createProject(project.name);
@@ -191,11 +202,10 @@ export const useProjectStore = create<ProjectStore>()(
         removeSourceImage: (id: string) =>
           set((state) => {
             const imageToRemove = state.sourceImages[id];
-            if (imageToRemove?.previewUrl) {
-              try {
-                URL.revokeObjectURL(imageToRemove.previewUrl);
-              } catch (error) {
-                console.warn('Failed to revoke preview URL', error);
+            revokePreviewUrl(imageToRemove?.previewUrl);
+            for (const item of Object.values(state.datasetItems)) {
+              if (item.sourceImageId === id) {
+                revokePreviewUrl(item.previewUrl);
               }
             }
 
@@ -230,7 +240,22 @@ export const useProjectStore = create<ProjectStore>()(
         
         updateSourceImage: (id: string, updates: Partial<SourceImage>) =>
           set((state) => {
-            const updatedImage = { ...state.sourceImages[id], ...updates };
+            const currentImage = state.sourceImages[id];
+            if (!currentImage) {
+              return state;
+            }
+            const originalFileChanged =
+              updates.originalFile !== undefined && updates.originalFile !== currentImage.originalFile;
+            const previewUrlChanged =
+              updates.previewUrl !== undefined && updates.previewUrl !== currentImage.previewUrl;
+            if ((originalFileChanged || previewUrlChanged) && currentImage.previewUrl) {
+              revokePreviewUrl(currentImage.previewUrl);
+            }
+            const updatedImage = {
+              ...currentImage,
+              ...updates,
+              previewUrl: originalFileChanged && updates.previewUrl === undefined ? undefined : updates.previewUrl ?? currentImage.previewUrl,
+            };
             void dbPut(OBJECT_STORES.SOURCE_IMAGES, {
               ...updatedImage,
               previewUrl: undefined,
@@ -341,7 +366,7 @@ export const useProjectStore = create<ProjectStore>()(
         
         addDatasetItem: (item: SyntheticImage) =>
           set((state) => {
-            void dbPut(OBJECT_STORES.DATASET_ITEMS, item);
+            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(item));
 
             return {
               ...state,
@@ -361,7 +386,7 @@ export const useProjectStore = create<ProjectStore>()(
             ...state,
             datasetItems: {
               ...state.datasetItems,
-              ...Object.fromEntries(storedItems.map((item) => [item.id, item])),
+              ...Object.fromEntries(storedItems.map((item) => [item.id, stripSyntheticPreviewUrl(item)])),
             },
             lastModified: new Date(),
           }));
@@ -369,6 +394,7 @@ export const useProjectStore = create<ProjectStore>()(
         
         removeDatasetItem: (id: string) =>
           set((state) => {
+            revokePreviewUrl(state.datasetItems[id]?.previewUrl);
             const { [id]: _, ...rest } = state.datasetItems;
             void dbDelete(OBJECT_STORES.DATASET_ITEMS, id);
             return { ...state, datasetItems: rest, lastModified: new Date() };
@@ -376,8 +402,21 @@ export const useProjectStore = create<ProjectStore>()(
         
         updateDatasetItem: (id: string, updates: Partial<SyntheticImage>) =>
           set((state) => {
-            const updatedItem = { ...state.datasetItems[id], ...updates };
-            void dbPut(OBJECT_STORES.DATASET_ITEMS, updatedItem);
+            const currentItem = state.datasetItems[id];
+            if (!currentItem) {
+              return state;
+            }
+            const imageDataChanged = updates.imageData !== undefined && updates.imageData !== currentItem.imageData;
+            const previewUrlChanged = updates.previewUrl !== undefined && updates.previewUrl !== currentItem.previewUrl;
+            if ((imageDataChanged || previewUrlChanged) && currentItem.previewUrl) {
+              revokePreviewUrl(currentItem.previewUrl);
+            }
+            const updatedItem = {
+              ...currentItem,
+              ...updates,
+              previewUrl: imageDataChanged && updates.previewUrl === undefined ? undefined : updates.previewUrl ?? currentItem.previewUrl,
+            };
+            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(updatedItem));
 
             return {
               ...state,
@@ -399,7 +438,7 @@ export const useProjectStore = create<ProjectStore>()(
               deleted: true,
               deletedAt: new Date(),
             };
-            void dbPut(OBJECT_STORES.DATASET_ITEMS, updatedItem);
+            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(updatedItem));
 
             return {
               ...state,

@@ -93,6 +93,9 @@ const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '
 const getArchiveFileName = (path: string): string => path.split('/').pop() ?? path;
 const getArchiveFileStem = (path: string): string => getArchiveFileName(path).replace(/\.[^.]+$/, '');
 const getArchiveExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
+const INTERNAL_IMPORT_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
+const isInternalImportPath = (path: string): boolean =>
+  path.split('/').some((part) => INTERNAL_IMPORT_DIRECTORY_NAMES.has(part));
 
 export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
@@ -135,6 +138,9 @@ const readEntryFiles = async (
   parentPath = ''
 ): Promise<ImportInputFile[]> => {
   const relativePath = joinPath(parentPath, entry.name);
+  if (isInternalImportPath(relativePath)) {
+    return [];
+  }
   if (entry.isFile) {
     return readFileEntry(entry, relativePath);
   }
@@ -397,7 +403,9 @@ const processArchiveFile = async (
   onAssetImported?: ImportImagesOptions['onAssetImported']
 ): Promise<{ importedImages: SourceImage[]; importedAssets: ImportedProjectAsset[] }> => {
   const zip = await JSZip.loadAsync(file);
-  const entries = Object.values(zip.files).filter((entry) => !entry.dir && !isInternalImportFileName(getArchiveFileName(entry.name)));
+  const entries = Object.values(zip.files).filter(
+    (entry) => !entry.dir && !isInternalImportPath(entry.name) && !isInternalImportFileName(getArchiveFileName(entry.name))
+  );
   const captionsByPathStem = new Map<string, JSZip.JSZipObject>();
   const captionsByFileStem = new Map<string, JSZip.JSZipObject>();
 

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 type MasonryImageFrameProps = {
   src?: string;
@@ -22,9 +22,15 @@ export const MasonryImageFrame = ({
   children,
 }: MasonryImageFrameProps) => {
   const [loaded, setLoaded] = useState(false);
+  const [errored, setErrored] = useState(false);
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
-  const placeholderContent = src ? null : placeholder ?? `${safeWidth} x ${safeHeight}`;
+  const placeholderContent = !src || errored ? placeholder ?? `${safeWidth} x ${safeHeight}` : null;
+
+  useEffect(() => {
+    setLoaded(false);
+    setErrored(false);
+  }, [src]);
 
   return (
     <div
@@ -33,7 +39,7 @@ export const MasonryImageFrame = ({
     >
       <div
         className={`absolute inset-0 flex items-center justify-center bg-secondary text-xs text-muted-foreground transition-opacity ${
-          loaded && src ? 'opacity-0' : 'opacity-100'
+          loaded && src && !errored ? 'opacity-0' : 'opacity-100'
         }`}
       >
         {placeholderContent}
@@ -49,7 +55,14 @@ export const MasonryImageFrame = ({
           loading="lazy"
           decoding="async"
           draggable={false}
-          onLoad={() => setLoaded(true)}
+          onLoad={() => {
+            setLoaded(true);
+            setErrored(false);
+          }}
+          onError={() => {
+            setLoaded(false);
+            setErrored(true);
+          }}
         />
       ) : null}
 

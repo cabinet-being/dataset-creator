@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { createStandardImageFileName } from '../../types';
@@ -9,6 +9,7 @@ import {
   getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
 } from '../../lib/workspaceImages';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { createOperationLogger } from '../../services/logging/applicationLog';
@@ -29,7 +30,17 @@ export const ImportStage = () => {
   } = useProjectStore();
 
   const sourceImages = useProjectStore((state) => state.sourceImages);
-  const images = Object.values(sourceImages);
+  const images = useMemo(() => Object.values(sourceImages), [sourceImages]);
+  const previewItems = useMemo(
+    () =>
+      images.map((image) => ({
+        id: image.id,
+        imageData: image.originalFile,
+        previewUrl: image.previewUrl,
+      })),
+    [images]
+  );
+  const previewUrls = useWorkspacePreviewUrls(previewItems);
 
   const { addNotification } = useUIStore();
   
@@ -256,7 +267,7 @@ export const ImportStage = () => {
               >
                 <div className="group relative bg-secondary transition-colors">
                   <MasonryImageFrame
-                    src={typeof image.previewUrl === 'string' ? image.previewUrl : undefined}
+                    src={previewUrls[image.id]}
                     alt={createStandardImageFileName(image.id, image.fileName, image.mimeType)}
                     width={image.width}
                     height={image.height}
