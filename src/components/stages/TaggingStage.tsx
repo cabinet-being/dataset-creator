@@ -280,6 +280,7 @@ const TaggingCard = memo(
         <WorkspacePreviewCard
           item={item}
           previewUrl={previewUrl}
+          className="gallery-masonry-item"
           onClick={() => onOpen(item.id)}
           onOpenContextMenu={onOpenContextMenu}
           footer={

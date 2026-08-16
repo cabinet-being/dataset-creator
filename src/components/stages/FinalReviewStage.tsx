@@ -91,6 +91,7 @@ const ReviewCard = memo(
     <WorkspacePreviewCard
       item={item}
       previewUrl={previewUrl}
+      className="gallery-masonry-item"
       imageClassName={item.excludedFromDataset ? 'grayscale' : ''}
       onOpenContextMenu={onOpenContextMenu}
     >

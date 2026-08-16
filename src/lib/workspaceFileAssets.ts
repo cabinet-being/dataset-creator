@@ -15,6 +15,8 @@ type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
 const REVIEW_FILE_KINDS = new Set<WorkspaceFileAssetKind>(['video', 'psd']);
 const INTERNAL_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
 const PSD_PREVIEW_CONCURRENCY = 3;
+type PsdPreviewUpdate = Pick<WorkspaceFileAsset, 'previewUrl' | 'previewStatus' | 'width' | 'height'>;
+const pendingPsdPreviewByRoot = new WeakMap<ProjectDirectoryHandle, Map<string, Promise<PsdPreviewUpdate>>>();
 
 const getFileName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path;
 
@@ -39,6 +41,60 @@ const readImageBlobDimensions = async (blob: Blob): Promise<{ width: number; hei
   } finally {
     URL.revokeObjectURL(url);
   }
+};
+
+const getPendingPsdPreviewMap = (root: ProjectDirectoryHandle): Map<string, Promise<PsdPreviewUpdate>> => {
+  const existing = pendingPsdPreviewByRoot.get(root);
+  if (existing) {
+    return existing;
+  }
+
+  const next = new Map<string, Promise<PsdPreviewUpdate>>();
+  pendingPsdPreviewByRoot.set(root, next);
+  return next;
+};
+
+const createWorkspacePsdPreview = async (
+  root: ProjectDirectoryHandle,
+  asset: WorkspaceFileAsset
+): Promise<PsdPreviewUpdate> => {
+  const psdPreview = await createPsdPreview(asset.file) ?? await requestPhotopeaPsdPreview(asset.file, asset.path);
+  if (!psdPreview) {
+    appLog.warning(`PSD preview: unavailable for ${asset.path}`);
+    return { previewStatus: 'failed', previewUrl: undefined, width: undefined, height: undefined };
+  }
+
+  const previewDimensions = await readImageBlobDimensions(psdPreview);
+  const previewUrl = await getOrCreateProjectPreviewUrl(root, 'psd', asset.path, psdPreview);
+  if (!previewUrl) {
+    appLog.warning(`PSD preview: cache write failed for ${asset.path}`);
+    return { previewStatus: 'failed', previewUrl: undefined, width: undefined, height: undefined };
+  }
+
+  appLog.success(`PSD preview: ready for ${asset.path}`);
+  return {
+    previewUrl,
+    previewStatus: undefined,
+    width: previewDimensions?.width,
+    height: previewDimensions?.height,
+  };
+};
+
+const getOrCreateWorkspacePsdPreview = (
+  root: ProjectDirectoryHandle,
+  asset: WorkspaceFileAsset
+): Promise<PsdPreviewUpdate> => {
+  const pendingByPath = getPendingPsdPreviewMap(root);
+  const pending = pendingByPath.get(asset.path);
+  if (pending) {
+    return pending;
+  }
+
+  const promise = createWorkspacePsdPreview(root, asset).finally(() => {
+    pendingByPath.delete(asset.path);
+  });
+  pendingByPath.set(asset.path, promise);
+  return promise;
 };
 
 const collectAssetPaths = async (
@@ -134,28 +190,12 @@ export const generateMissingWorkspacePsdPreviews = async (
 
     try {
       onUpdate(asset.path, { previewStatus: 'generating' });
-      const psdPreview = await createPsdPreview(asset.file) ?? await requestPhotopeaPsdPreview(asset.file, asset.path);
-      if (isCanceled() || !psdPreview) {
-        onUpdate(asset.path, { previewStatus: 'failed', previewUrl: undefined, width: undefined, height: undefined });
-        appLog.warning(`PSD preview: unavailable for ${asset.path}`);
+      const update = await getOrCreateWorkspacePsdPreview(root, asset);
+      if (isCanceled()) {
         return;
       }
 
-      const previewDimensions = await readImageBlobDimensions(psdPreview);
-      const previewUrl = await getOrCreateProjectPreviewUrl(root, 'psd', asset.path, psdPreview);
-      if (isCanceled() || !previewUrl) {
-        onUpdate(asset.path, { previewStatus: 'failed', previewUrl: undefined, width: undefined, height: undefined });
-        appLog.warning(`PSD preview: cache write failed for ${asset.path}`);
-        return;
-      }
-
-      onUpdate(asset.path, {
-        previewUrl,
-        previewStatus: undefined,
-        width: previewDimensions?.width,
-        height: previewDimensions?.height,
-      });
-      appLog.success(`PSD preview: ready for ${asset.path}`);
+      onUpdate(asset.path, update);
     } catch (error) {
       onUpdate(asset.path, { previewStatus: 'failed', previewUrl: undefined, width: undefined, height: undefined });
       appLog.warning(`PSD preview: failed for ${asset.path}`);

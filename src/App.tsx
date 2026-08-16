@@ -46,7 +46,8 @@ import {
   TOOL_DESCRIPTIONS,
   URL_STAGE_ALIASES,
 } from './lib/constants';
-import { toWorkspaceImages, type WorkspaceImage } from './lib/workspaceImages';
+import { toWorkspaceImages, toWorkspaceReviewAssets, type WorkspaceFileAsset, type WorkspaceImage } from './lib/workspaceImages';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
 import { useWorkspacePreviewUrls } from './lib/previewUrlCache';
 import {
   createProjectDirectory,
@@ -83,6 +84,8 @@ import {
   writeDatasetFile,
 } from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
+import { BrickMasonry } from './components/ui/BrickMasonry';
+import { WorkspacePreviewCard } from './components/ui/WorkspacePreviewCard';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
 import { FinalReviewStage } from './components/stages/FinalReviewStage';
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
@@ -937,16 +940,6 @@ function App() {
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
-  const sourcePreviewItems = useMemo(
-    () =>
-      sourceImages.map((image) => ({
-        id: image.id,
-        imageData: image.originalFile,
-        previewUrl: image.previewUrl,
-      })),
-    [sourceImages]
-  );
-  const sourcePreviewUrls = useWorkspacePreviewUrls(sourcePreviewItems);
   const datasetItems = useMemo(
     () => Object.values(datasetItemsById).filter((item) => !item.deleted),
     [datasetItemsById]
@@ -968,6 +961,7 @@ function App() {
     projectDirectoryName,
     setProjectDirectory,
   } = useUIStore();
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
@@ -1040,6 +1034,7 @@ function App() {
   const [inspectorRenameValue, setInspectorRenameValue] = useState('');
   const [inspectorRenaming, setInspectorRenaming] = useState(false);
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
+  const [datasetWorkspaceFileAssets, setDatasetWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
@@ -1255,6 +1250,29 @@ function App() {
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
       ? datasetsById[activeTab.datasetId]
       : null;
+  const activeDatasetWorkspaceAssetPaths = useMemo(
+    () =>
+      activeTab?.kind === 'dataset' && activeDataset
+        ? filterLegacyProjectAssetPaths([
+            ...new Set([...(activeDataset.assetPaths ?? []), ...(activeDataset.psdAssetPaths ?? [])]),
+          ])
+        : [],
+    [activeDataset, activeTab]
+  );
+  const activeDatasetSourceImages = useMemo(
+    () =>
+      activeTab?.kind === 'dataset' && activeDataset
+        ? activeDataset.assetIds
+            .map((assetId) => sourceImagesById[assetId])
+            .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset))
+        : [],
+    [activeDataset, activeTab, sourceImagesById]
+  );
+  const activeDatasetPreviewItems = useMemo(
+    () => toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets),
+    [activeDatasetSourceImages, datasetWorkspaceFileAssets]
+  );
+  const activeDatasetPreviewUrls = useWorkspacePreviewUrls(activeDatasetPreviewItems);
   const activeFileSource = activeTab && isFileBackedTab(activeTab) && activeTab.workspaceImageId
     ? sourceImagesById[activeTab.workspaceImageId]
     : null;
@@ -1271,6 +1289,51 @@ function App() {
     }
     setInspectorRenameValue(activeStage ? STAGE_LABELS[activeStage] : '');
   }, [activeDataset?.name, activeStage, activeTab]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    if (!projectDirectoryHandle || activeTab?.kind !== 'dataset' || activeDatasetWorkspaceAssetPaths.length === 0) {
+      setDatasetWorkspaceFileAssets([]);
+      return;
+    }
+
+    const loadDatasetWorkspaceFileAssets = async () => {
+      try {
+        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle, activeDatasetWorkspaceAssetPaths);
+        const pendingAssets = assets.map((asset) =>
+          asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
+        );
+
+        if (canceled) {
+          return;
+        }
+
+        setDatasetWorkspaceFileAssets(pendingAssets);
+        void generateMissingWorkspacePsdPreviews(
+          projectDirectoryHandle,
+          pendingAssets,
+          (path, update) => {
+            setDatasetWorkspaceFileAssets((currentAssets) =>
+              currentAssets.map((asset) => (asset.path === path ? { ...asset, ...update } : asset))
+            );
+          },
+          () => canceled
+        );
+      } catch (error) {
+        if (!canceled) {
+          setDatasetWorkspaceFileAssets([]);
+          addNotification('warning', error instanceof Error ? error.message : 'Unable to read Dataset file assets');
+        }
+      }
+    };
+
+    void loadDatasetWorkspaceFileAssets();
+
+    return () => {
+      canceled = true;
+    };
+  }, [activeDatasetWorkspaceAssetPaths, activeTab?.kind, addNotification, assetPreviewRefreshKey, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!activeTab || !isFileBackedTab(activeTab)) {
@@ -2305,11 +2368,6 @@ function App() {
       );
     }
 
-    const assets = dataset.assetIds
-      .map((assetId) => sourceImagesById[assetId])
-      .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
-    const psdAssets = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []);
-
     return (
       <div
         className="h-full min-h-0 overflow-auto p-6"
@@ -2384,36 +2442,22 @@ function App() {
           <div className="flex min-h-28 items-center justify-center rounded border border-dashed border-border bg-card text-sm text-muted-foreground">
             Drop project assets here
           </div>
-          {assets.length > 0 || psdAssets.length > 0 ? (
+          {activeDatasetPreviewItems.length > 0 ? (
             <div className="min-h-40 rounded border border-border bg-card">
-              <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4">
-                {assets.map((asset) => (
-                  <div key={asset.id} className="min-w-0 overflow-hidden rounded border border-border bg-background">
-                    <div className="aspect-square bg-secondary">
-                      {sourcePreviewUrls[asset.id] ? (
-                        <img
-                          src={sourcePreviewUrls[asset.id]}
-                          alt={asset.originalFileName ?? asset.fileName}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center">
-                          <File className="h-5 w-5 text-muted-foreground" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="truncate px-2 py-1.5 text-xs">{asset.originalFilePath ?? asset.fileName}</div>
-                  </div>
-                ))}
-                {psdAssets.map((path) => (
-                  <div key={path} className="min-w-0 overflow-hidden rounded border border-border bg-background">
-                    <div className="flex aspect-square items-center justify-center bg-secondary">
-                      <File className="h-8 w-8 text-muted-foreground" />
-                    </div>
-                    <div className="truncate px-2 py-1.5 text-xs">{path}</div>
-                  </div>
-                ))}
-              </div>
+              <BrickMasonry
+                items={activeDatasetPreviewItems}
+                getKey={(item) => item.id}
+                getEstimate={(item) => item.height / Math.max(1, item.width)}
+                className="p-3"
+                renderItem={(item) => (
+                  <WorkspacePreviewCard
+                    item={item}
+                    previewUrl={activeDatasetPreviewUrls[item.id]}
+                    className="gallery-masonry-item"
+                    onOpenContextMenu={openAssetExplorerContextMenu}
+                  />
+                )}
+              />
             </div>
           ) : null}
 	        </div>

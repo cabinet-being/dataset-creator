@@ -102,7 +102,7 @@ export const WorkspacePreviewCard = ({
 
   return (
     <div
-      className={`gallery-masonry-item group relative overflow-visible rounded-lg ${
+      className={`group relative overflow-visible rounded-lg ${
         item.excludedFromDataset ? 'border border-muted opacity-75' : getWorkspaceKindFrameClass(item.kind)
       } ${className}`}
       style={getWorkspaceKindFrameStyle(item.kind)}
