@@ -18,6 +18,7 @@ interface UIState {
   // Project directory session
   projectDirectoryHandle?: ProjectDirectoryHandle;
   projectDirectoryName?: string;
+  assetPreviewRefreshKey: number;
 
   // Edit tool header actions
   editToolbar: {
@@ -72,6 +73,7 @@ interface UIActions {
 
   // Project directory session
   setProjectDirectory: (directory?: { handle?: ProjectDirectoryHandle; name?: string }) => void;
+  refreshAssetPreviews: () => void;
 
   // Edit tool header actions
   setEditToolbar: (toolbar: Partial<UIState['editToolbar']>) => void;
@@ -97,6 +99,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   showHelp: false,
   projectDirectoryHandle: undefined,
   projectDirectoryName: undefined,
+  assetPreviewRefreshKey: 0,
   editToolbar: {
     visible: false,
     canSave: false,
@@ -170,6 +173,9 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
       projectDirectoryHandle: directory?.handle,
       projectDirectoryName: directory?.name,
     }),
+
+  refreshAssetPreviews: () =>
+    set((state) => ({ assetPreviewRefreshKey: state.assetPreviewRefreshKey + 1 })),
 
   setEditToolbar: (toolbar) =>
     set((state) => {

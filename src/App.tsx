@@ -54,6 +54,7 @@ import {
   pickProjectDirectory,
   projectDirectoryHasManifest,
   readProjectDirectory,
+  writeProjectPreview,
   writeProjectDirectoryChanges,
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
@@ -67,6 +68,11 @@ import {
 import { createOperationLogger } from './services/logging/applicationLog';
 import { indexProjectAssets } from './services/project/assetIndexService';
 import { isSupportedProjectAsset } from './services/project/assetTypeService';
+import {
+  filterLegacyProjectAssetPaths,
+  isLegacyProjectRootPath,
+  LEGACY_PROJECT_ROOT_DIRECTORY_NAMES,
+} from './services/project/projectPathFilters';
 import { downloadZipFile, exportAsZip } from './services/export/exportService';
 import {
   createDatasetForFile,
@@ -78,8 +84,9 @@ import {
 } from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
+import { FinalReviewStage } from './components/stages/FinalReviewStage';
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
-import { PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
+import { PhotopeaPsdPreviewWorker, PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
 import {
   canOpenExplorerFile,
   copyExplorerEntries,
@@ -300,9 +307,6 @@ const SimilarityReviewStage = lazy(() =>
 );
 const AnalysisStage = lazy(() =>
   import('./components/stages/AnalysisStage').then((module) => ({ default: module.AnalysisStage }))
-);
-const FinalReviewStage = lazy(() =>
-  import('./components/stages/FinalReviewStage').then((module) => ({ default: module.FinalReviewStage }))
 );
 const ExportStage = lazy(() =>
   import('./components/stages/ExportStage').then((module) => ({ default: module.ExportStage }))
@@ -618,7 +622,10 @@ const readExplorerDirectory = async (
     if (isHiddenExplorerManifestName(entryName)) {
       continue;
     }
-    if (entryName === '.dataset-creator-data') {
+    if (entryName === '.cache' || entryName === '.dataset-creator-data') {
+      continue;
+    }
+    if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
       continue;
     }
     const childPath = `${path}/${entryName}`;
@@ -646,7 +653,10 @@ const readProjectDatasetsFromDirectory = async (
 ): Promise<Dataset[]> => {
   const datasets: Dataset[] = [];
   for await (const [entryName, entry] of directory.entries()) {
-    if (entryName === '.dataset-creator-data') {
+    if (entryName === '.cache' || entryName === '.dataset-creator-data') {
+      continue;
+    }
+    if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
       continue;
     }
     const childPath = `${path}/${entryName}`;
@@ -669,6 +679,23 @@ const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
   kind: 'folder',
   children: [],
 });
+
+const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTreeNode | null => {
+  if (!node) {
+    return null;
+  }
+
+  if (node.path !== 'Project' && isLegacyProjectRootPath(node.path)) {
+    return null;
+  }
+
+  return {
+    ...node,
+    children: node.children
+      ?.map((child) => sanitizeExplorerTree(child))
+      .filter((child): child is ExplorerTreeNode => Boolean(child)),
+  };
+};
 
 type ExplorerTreeProps = {
   node: ExplorerTreeNode;
@@ -952,7 +979,7 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
   const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
-  const visibleExplorerTree = explorerTree;
+  const visibleExplorerTree = useMemo(() => sanitizeExplorerTree(explorerTree), [explorerTree]);
   const [, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
@@ -1623,6 +1650,34 @@ function App() {
     setDraggedExplorerEntries(entries);
   };
 
+  useEffect(() => {
+    setSelectedExplorerPaths((paths) => {
+      const nextPaths = [...paths].filter((path) => !isLegacyProjectRootPath(path));
+      return nextPaths.length === paths.size ? paths : new Set(nextPaths);
+    });
+    setExpandedExplorerPaths((paths) => {
+      const nextPaths = [...paths].filter((path) => !isLegacyProjectRootPath(path));
+      return nextPaths.length === paths.size ? paths : new Set(nextPaths);
+    });
+    setFocusedExplorerPath((path) => (path && isLegacyProjectRootPath(path) ? null : path));
+    setSelectionAnchorPath((path) => (path && isLegacyProjectRootPath(path) ? null : path));
+    setActiveExplorerDirectoryPath((path) => (isLegacyProjectRootPath(path) ? 'Project' : path));
+    setExplorerContextMenu((menu) => (menu && isLegacyProjectRootPath(menu.node.path) ? null : menu));
+    setOpenTabs((tabs) => {
+      const nextTabs = tabs.filter((tab) => !isFileBackedTab(tab) || !isLegacyProjectRootPath(tab.path));
+      return nextTabs.length === tabs.length ? tabs : nextTabs;
+    });
+    setDraggedExplorerEntries((entries) => {
+      if (!entries) {
+        draggedExplorerEntriesRef.current = null;
+        return entries;
+      }
+      const nextEntries = entries.filter((entry) => !isLegacyProjectRootPath(entry.path));
+      draggedExplorerEntriesRef.current = nextEntries.length > 0 ? nextEntries : null;
+      return nextEntries.length === entries.length ? entries : draggedExplorerEntriesRef.current;
+    });
+  }, [explorerRefreshKey, projectDirectoryHandle]);
+
   const getContextEntries = (node: ExplorerTreeNode): ExplorerItemEntry[] => {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
       return getSelectedExplorerEntries();
@@ -1710,6 +1765,9 @@ function App() {
 
   const findWorkspaceImageIdForPath = (path: string): string | null => {
     const projectRelativePath = toProjectRelativePath(path);
+    if (isLegacyProjectRootPath(projectRelativePath)) {
+      return null;
+    }
     const projectState = useProjectStore.getState();
     const source = Object.values(projectState.sourceImages).find(
       (image) =>
@@ -1789,8 +1847,8 @@ function App() {
     return [...assetIds];
   };
 
-  const collectDatasetPsdPathsFromExplorerEntries = (entries: ExplorerItemEntry[]): string[] => {
-    const psdPaths = new Set<string>();
+  const collectDatasetAssetPathsFromExplorerEntries = (entries: ExplorerItemEntry[]): string[] => {
+    const assetPaths = new Set<string>();
     const nodes = getAllExplorerNodes();
 
     for (const entry of entries.filter(isFilesystemExplorerEntry)) {
@@ -1800,14 +1858,18 @@ function App() {
           : nodes.filter((node) => node.path === entry.path && node.kind === 'file');
 
       for (const node of candidateNodes) {
-        if (getExplorerFileKind(node.name) === 'psd') {
-          psdPaths.add(node.path);
+        const kind = getExplorerFileKind(node.name);
+        if (kind === 'video' || kind === 'psd') {
+          assetPaths.add(node.path);
         }
       }
     }
 
-    return [...psdPaths];
+    return [...assetPaths];
   };
+
+  const collectDatasetPsdPathsFromAssetPaths = (assetPaths: string[]): string[] =>
+    filterLegacyProjectAssetPaths(assetPaths).filter((path) => getExplorerFileKind(path.split('/').pop() ?? path) === 'psd');
 
   const indexProjectAssetsForDatasetDrop = async () => {
     if (!projectDirectoryHandle) {
@@ -1833,18 +1895,19 @@ function App() {
   const importDroppedFilesIntoDataset = async (
     dataTransfer: DataTransfer,
     dataset: Dataset
-  ): Promise<{ assetIds: string[]; psdAssetPaths: string[] }> => {
+  ): Promise<{ assetIds: string[]; assetPaths: string[]; psdAssetPaths: string[] }> => {
     if (!projectDirectoryHandle) {
       addNotification('warning', 'Open a project directory before importing files into a Dataset');
-      return { assetIds: [], psdAssetPaths: [] };
+      return { assetIds: [], assetPaths: [], psdAssetPaths: [] };
     }
 
     const files = await getImportFilesFromDataTransfer(dataTransfer);
     if (files.length === 0) {
-      return { assetIds: [], psdAssetPaths: [] };
+      return { assetIds: [], assetPaths: [], psdAssetPaths: [] };
     }
 
     const importedAssetIds: string[] = [];
+    const importedAssetPaths: string[] = [];
     const importedPsdPaths: string[] = [];
     const previousProject = useProjectStore.getState();
     const result = await importImageFiles(files, {
@@ -1858,8 +1921,12 @@ function App() {
         importedAssetIds.push(image.id);
       },
       onAssetImported: (asset) => {
-        if (asset.kind === 'psd') {
-          importedPsdPaths.push(asset.assetPath.startsWith('Project/') ? asset.assetPath : `Project/${asset.assetPath}`);
+        if (asset.kind === 'video' || asset.kind === 'psd') {
+          const assetPath = asset.assetPath.startsWith('Project/') ? asset.assetPath : `Project/${asset.assetPath}`;
+          importedAssetPaths.push(assetPath);
+          if (asset.kind === 'psd') {
+            importedPsdPaths.push(assetPath);
+          }
         }
       },
       onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
@@ -1870,7 +1937,7 @@ function App() {
       refreshExplorer();
     }
 
-    return { assetIds: importedAssetIds, psdAssetPaths: importedPsdPaths };
+    return { assetIds: importedAssetIds, assetPaths: importedAssetPaths, psdAssetPaths: importedPsdPaths };
   };
 
   const getUniqueDatasetName = (baseName = 'New Dataset', parentPath?: string): string => {
@@ -1914,7 +1981,7 @@ function App() {
   const createDatasetFileInDirectory = async (
     parentPath: string,
     name: string,
-    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>
+    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>
   ): Promise<Dataset> => {
     const directory = requireProjectDirectory();
     if (!directory) {
@@ -1927,7 +1994,8 @@ function App() {
       ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
       triggerWord: source?.triggerWord ?? '',
       assetIds: [...new Set(source?.assetIds ?? [])],
-      psdAssetPaths: [...new Set(source?.psdAssetPaths ?? [])],
+      assetPaths: filterLegacyProjectAssetPaths([...new Set([...(source?.assetPaths ?? []), ...(source?.psdAssetPaths ?? [])])]),
+      psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(source?.psdAssetPaths ?? [])]),
       overwriteCaptions: source?.overwriteCaptions ?? false,
       captionOverrides: source?.captionOverrides ?? {},
     };
@@ -1943,6 +2011,7 @@ function App() {
     return createDatasetFileInDirectory(copyParentPath, `${dataset.name} Copy`, {
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
+      assetPaths: dataset.assetPaths,
       psdAssetPaths: dataset.psdAssetPaths,
       overwriteCaptions: dataset.overwriteCaptions,
       captionOverrides: dataset.captionOverrides,
@@ -1993,18 +2062,25 @@ function App() {
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => {
     const nextDataset = {
       ...dataset,
       ...updates,
       assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
-      psdAssetPaths: updates.psdAssetPaths ? [...new Set(updates.psdAssetPaths)] : dataset.psdAssetPaths,
+      assetPaths: 'assetPaths' in updates
+        ? filterLegacyProjectAssetPaths([...new Set(updates.assetPaths ?? [])])
+        : filterLegacyProjectAssetPaths(dataset.assetPaths),
+      psdAssetPaths: updates.psdAssetPaths
+        ? filterLegacyProjectAssetPaths([...new Set(updates.psdAssetPaths)])
+        : 'assetPaths' in updates
+          ? collectDatasetPsdPathsFromAssetPaths(filterLegacyProjectAssetPaths(updates.assetPaths ?? []))
+          : filterLegacyProjectAssetPaths(dataset.psdAssetPaths),
       overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
       captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
       updatedAt: new Date(),
     };
-    updateProjectDataset(dataset.id, updates);
+    updateProjectDataset(dataset.id, nextDataset);
     const directory = requireProjectDirectory();
     if (directory && nextDataset.filePath) {
       await writeDatasetFile(directory, nextDataset);
@@ -2021,7 +2097,7 @@ function App() {
       );
     }
 
-    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) =>
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) =>
       updateDatasetFileBackedState(dataset, updates);
     const openScopedTool = (stage: StageName) => {
       if (stage === 'select' || stage === 'analysis' || stage === 'review' || stage === 'tagging') {
@@ -2146,7 +2222,7 @@ function App() {
 
   const savePsdFileFromViewer = async (
     tab: FileWorkspaceTab,
-    buffer: ArrayBuffer,
+    payload: { psd: ArrayBuffer; preview?: ArrayBuffer },
     saveCopy: boolean
   ) => {
     try {
@@ -2157,13 +2233,17 @@ function App() {
 
       const { directory, name } = await getExplorerParentDirectory(projectDirectoryHandle, tab.path);
       const targetName = saveCopy ? await getUniqueExplorerName(directory, `${name.replace(/\.psd$/i, '')} Copy.psd`) : name;
-      const nextBlob = new Blob([buffer], { type: 'image/vnd.adobe.photoshop' });
+      const nextBlob = new Blob([payload.psd], { type: 'image/vnd.adobe.photoshop' });
       const handle = await directory.getFileHandle(targetName, { create: true });
       const writable = await handle.createWritable();
       await writable.write(nextBlob);
       await writable.close();
 
       const nextPath = `${tab.path.split('/').slice(0, -1).join('/') || 'Project'}/${targetName}`;
+      if (payload.preview) {
+        await writeProjectPreview(projectDirectoryHandle, 'psd', nextPath, new Blob([payload.preview], { type: 'image/png' }));
+        useUIStore.getState().refreshAssetPreviews();
+      }
       const nextTab: FileWorkspaceTab = {
         ...tab,
         id: createFileTabId(nextPath),
@@ -2201,7 +2281,7 @@ function App() {
     const assets = dataset.assetIds
       .map((assetId) => sourceImagesById[assetId])
       .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
-    const psdAssets = dataset.psdAssetPaths ?? [];
+    const psdAssets = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []);
 
     return (
       <div
@@ -2234,31 +2314,33 @@ function App() {
             let assetIds = droppedEntries?.length
               ? collectDatasetAssetIdsFromExplorerEntries(droppedEntries)
               : [];
-            let psdAssetPaths = droppedEntries?.length
-              ? collectDatasetPsdPathsFromExplorerEntries(droppedEntries)
+            let assetPaths = droppedEntries?.length
+              ? collectDatasetAssetPathsFromExplorerEntries(droppedEntries)
               : [];
-            if (droppedEntries?.length && assetIds.length === 0 && psdAssetPaths.length === 0) {
+            if (droppedEntries?.length && assetIds.length === 0 && assetPaths.length === 0) {
               await indexProjectAssetsForDatasetDrop();
               assetIds = collectDatasetAssetIdsFromExplorerEntries(droppedEntries);
-              psdAssetPaths = collectDatasetPsdPathsFromExplorerEntries(droppedEntries);
+              assetPaths = collectDatasetAssetPathsFromExplorerEntries(droppedEntries);
             }
             if (hasFiles) {
               const imported = await importDroppedFilesIntoDataset(dataTransfer, dataset);
               assetIds = [...assetIds, ...imported.assetIds];
-              psdAssetPaths = [...psdAssetPaths, ...imported.psdAssetPaths];
+              assetPaths = [...assetPaths, ...imported.assetPaths];
             }
-            if (assetIds.length > 0 || psdAssetPaths.length > 0) {
+            if (assetIds.length > 0 || assetPaths.length > 0) {
               const currentDataset = useProjectStore.getState().datasets[dataset.id] ?? dataset;
               const nextAssetIds = [...new Set([...currentDataset.assetIds, ...assetIds])];
-              const nextPsdAssetPaths = [...new Set([...(currentDataset.psdAssetPaths ?? []), ...psdAssetPaths])];
+              const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(currentDataset.assetPaths ?? []), ...assetPaths])]);
+              const nextPsdAssetPaths = collectDatasetPsdPathsFromAssetPaths(nextAssetPaths);
               const addedCount =
                 nextAssetIds.length -
                 currentDataset.assetIds.length +
-                nextPsdAssetPaths.length -
-                (currentDataset.psdAssetPaths ?? []).length;
+                nextAssetPaths.length -
+                (currentDataset.assetPaths ?? []).length;
               if (addedCount > 0) {
                 await updateDatasetFileBackedState(currentDataset, {
                   assetIds: nextAssetIds,
+                  assetPaths: nextAssetPaths,
                   psdAssetPaths: nextPsdAssetPaths,
                 });
                 addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
@@ -2266,7 +2348,7 @@ function App() {
                 addNotification('info', 'Selected assets are already in this Dataset');
               }
             } else {
-              addNotification('warning', 'No supported project images found to add');
+              addNotification('warning', 'No supported project assets found to add');
             }
           })();
         }}
@@ -2443,7 +2525,7 @@ function App() {
               <div className="flex justify-between gap-3">
                 <span className="text-muted-foreground">Assets</span>
                 <span className="font-medium">
-                  {activeDataset.assetIds.length + (activeDataset.psdAssetPaths ?? []).length}
+                  {activeDataset.assetIds.length + filterLegacyProjectAssetPaths(activeDataset.assetPaths ?? activeDataset.psdAssetPaths ?? []).length}
                 </span>
               </div>
               <label className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
@@ -3160,8 +3242,9 @@ function App() {
       if (!directory) {
         return;
       }
-      const psdAssets = (await Promise.all(
-        (dataset.psdAssetPaths ?? []).map(async (path): Promise<{ file: File; fileName: string } | null> => {
+      const fileAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]);
+      const fileAssets = (await Promise.all(
+        fileAssetPaths.map(async (path): Promise<{ file: File; fileName: string } | null> => {
           try {
             const file = await readExplorerFile(directory, path);
             return {
@@ -3175,20 +3258,20 @@ function App() {
         })
       )).filter((asset): asset is { file: File; fileName: string } => Boolean(asset));
 
-      if (exportItems.length === 0 && psdAssets.length === 0) {
-        createOperationLogger('Export').warning(`no images to export for Dataset "${dataset.name}"`);
-        addNotification('warning', 'No images to export');
+      if (exportItems.length === 0 && fileAssets.length === 0) {
+        createOperationLogger('Export').warning(`no assets to export for Dataset "${dataset.name}"`);
+        addNotification('warning', 'No assets to export');
         return;
       }
 
       const logger = createOperationLogger('Export');
-      const exportCount = exportItems.length + psdAssets.length;
+      const exportCount = exportItems.length + fileAssets.length;
       logger.info(`exporting Dataset "${dataset.name}" with ${exportCount} asset${exportCount !== 1 ? 's' : ''}`);
       const zipBlob = await exportAsZip(
         {
           datasetKeyword: dataset.triggerWord,
           items: exportItems,
-          psdAssets,
+          psdAssets: fileAssets,
         },
         useProjectStore.getState().taggingConfig.blacklist,
         logger
@@ -4018,6 +4101,7 @@ function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
+      <PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
           {(fileMenuOpen || viewMenuOpen || toolsMenuOpen || windowsMenuOpen) && (
@@ -4966,7 +5050,7 @@ function App() {
                   <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
                 </div>
                 <div className="rounded border border-border p-2">
-                  <p className="text-muted-foreground">Synthetic</p>
+                  <p className="text-muted-foreground">Generated</p>
                   <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
                 </div>
               </div>

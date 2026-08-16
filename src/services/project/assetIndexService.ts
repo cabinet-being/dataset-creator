@@ -4,6 +4,8 @@ import { getImageDimensions } from '../image/imageProcessor';
 import { getAssetManifestName, getAssetManifestPath } from './assetManifestService';
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from './projectDirectoryService';
 import { isInternalProjectFileName, isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
+import { snapshotFile } from './fileSnapshotService';
+import { LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from './projectPathFilters';
 
 type IndexedAssetManifest = {
   id?: string;
@@ -100,7 +102,7 @@ const collectAssetFiles = async (
       continue;
     }
     if ('entries' in entry) {
-      if (!INTERNAL_DIRECTORY_NAMES.has(entryName)) {
+      if (!INTERNAL_DIRECTORY_NAMES.has(entryName) && !(relativeDirectory === '' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase()))) {
         assets.push(...await collectAssetFiles(entry, joinPath(relativeDirectory, entryName)));
       }
       continue;
@@ -132,7 +134,7 @@ export const indexProjectAssets = async (
 
   for (let index = 0; index < assetFiles.length; index += 1) {
     const { directory, handle, assetPath } = assetFiles[index];
-    const file = await handle.getFile();
+    const file = await snapshotFile(await handle.getFile());
     const existingSource = existingByPath.get(assetPath);
     const manifestName = getAssetManifestName(file.name);
     const existingManifest = await readOptionalManifest(directory, manifestName);

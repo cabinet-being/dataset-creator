@@ -17,17 +17,19 @@ import {
   getLocalTaggerFileHandle,
 } from '../../services/tagging/localTaggerFileSettings';
 import {
-  toWorkspaceImages,
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
   getWorkspaceKindFrameOverlayClass,
   getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
+  toWorkspaceReviewAssets,
+  type WorkspaceFileAsset,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
-import { MasonryImageFrame } from '../ui/MasonryImageFrame';
+import { WorkspaceAssetFrame } from '../ui/WorkspaceAssetFrame';
 import type { Dataset } from '../../types';
 
 const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
@@ -285,11 +287,10 @@ const TaggingCard = memo(
           className="block w-full text-left"
           aria-label={`Open ${item.fileName} caption editor`}
         >
-          <MasonryImageFrame
-            src={previewUrl}
+          <WorkspaceAssetFrame
+            item={item}
+            previewUrl={previewUrl}
             alt={item.fileName}
-            width={item.width}
-            height={item.height}
             placeholder="Preview unavailable"
           >
             <div
@@ -305,7 +306,7 @@ const TaggingCard = memo(
                 </span>
               </div>
             </div>
-          </MasonryImageFrame>
+          </WorkspaceAssetFrame>
         </button>
 
         <div className="p-3 space-y-3">
@@ -467,7 +468,7 @@ type TaggingStageProps = {
   active?: boolean;
   datasetId?: string;
   onUpdateDataset?: (
-    updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => void | Promise<void>;
 };
 
@@ -479,8 +480,6 @@ export const TaggingStage = ({
   onUpdateDataset,
 }: TaggingStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
-  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
@@ -505,6 +504,7 @@ export const TaggingStage = ({
   );
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const { addNotification, taggingModals, setTaggingModal } = useUIStore();
+  const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
   const setTaggingToolbar = useUIStore((state) => state.setTaggingToolbar);
   const localTagger = useLocalTaggerStore((state) => state.bundle);
   const localTaggerStatus = useLocalTaggerStore((state) => state.status);
@@ -525,25 +525,24 @@ export const TaggingStage = ({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedTagInput, setSelectedTagInput] = useState('');
   const [isSelectedAutoTagging, setIsSelectedAutoTagging] = useState(false);
+  const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const autoConnectSettingsKeyRef = useRef<string | null>(null);
   const savedSuggestionLoadKeyRef = useRef<string | null>(null);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
+  const datasetAssetPaths = useMemo(
+    () => new Set([...(dataset?.assetPaths ?? []), ...(dataset?.psdAssetPaths ?? [])]),
+    [dataset?.assetPaths, dataset?.psdAssetPaths]
+  );
   const sourceImages = useMemo(
     () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
     [datasetAssetIds, datasetId, sourceImagesById]
   );
-  const syntheticImages = useMemo(
-    () =>
-      Object.values(syntheticImagesById)
-        .filter((item) => !item.deleted && (!datasetId || datasetAssetIds.has(item.sourceImageId)))
-        .sort((left, right) => (left.exportOrder ?? 0) - (right.exportOrder ?? 0)),
-    [datasetAssetIds, datasetId, syntheticImagesById]
-  );
   const items = useMemo(
     () =>
-      toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits).map((item) => {
+      toWorkspaceReviewAssets(sourceImages, fileAssets, cleanupStageState.workingEdits).map((item) => {
         if (!datasetId || !dataset?.overwriteCaptions) {
           return item;
         }
@@ -552,7 +551,7 @@ export const TaggingStage = ({
           tags: (dataset.captionOverrides ?? {})[item.id] ?? item.tags,
         };
       }),
-    [cleanupStageState.workingEdits, dataset?.captionOverrides, dataset?.overwriteCaptions, datasetId, sourceImages, syntheticImages]
+    [cleanupStageState.workingEdits, dataset?.captionOverrides, dataset?.overwriteCaptions, datasetId, fileAssets, sourceImages]
   );
   const previewUrls = useWorkspacePreviewUrls(items);
   const selectedItem = useMemo(
@@ -565,6 +564,7 @@ export const TaggingStage = ({
     [globalTagsToAdd, normalizedDatasetKeyword]
   );
   const hasBulkTags = bulkTags.length > 0;
+  const autoTaggableItems = useMemo(() => items.filter((item) => item.kind === 'image'), [items]);
 
   const canUseDirectoryPicker =
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
@@ -574,6 +574,51 @@ export const TaggingStage = ({
       setTaggingModal({ datasetTags: false, settings: false });
     };
   }, [setTaggingModal]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    if (!projectDirectoryHandle) {
+      setFileAssets([]);
+      return;
+    }
+
+    const loadFileAssets = async () => {
+      try {
+        const assets = await collectWorkspaceFileAssets(
+          projectDirectoryHandle,
+          datasetId ? [...datasetAssetPaths] : undefined
+        );
+        const pendingAssets = assets.map((asset) =>
+          asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
+        );
+        if (!canceled) {
+          setFileAssets(pendingAssets);
+          void generateMissingWorkspacePsdPreviews(
+            projectDirectoryHandle,
+            pendingAssets,
+            (path, update) => {
+              setFileAssets((currentAssets) =>
+                currentAssets.map((asset) => (asset.path === path ? { ...asset, ...update } : asset))
+              );
+            },
+            () => canceled
+          );
+        }
+      } catch (error) {
+        if (!canceled) {
+          setFileAssets([]);
+          addNotification('warning', error instanceof Error ? error.message : 'Unable to read project file assets');
+        }
+      }
+    };
+
+    void loadFileAssets();
+
+    return () => {
+      canceled = true;
+    };
+  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, projectDirectoryHandle]);
 
   useEffect(() => {
     const nextSelectedItemId = selectedItemIdProp ?? initialSelectedItemId;
@@ -662,14 +707,14 @@ export const TaggingStage = ({
         return;
       }
 
-      if (item.kind === 'source') {
+      if (item.kind === 'image') {
         updateSourceImage(item.sourceImageId, { tags: nextTags });
         return;
       }
 
-      updateDatasetItem(item.id.replace(/^synthetic:/, ''), { tags: nextTags });
+      addNotification('warning', 'Open this asset through a Dataset with Overwrite Caption enabled before editing captions');
     },
-    [addNotification, dataset, onUpdateDataset, updateDatasetItem, updateSourceImage]
+    [addNotification, dataset, onUpdateDataset, updateSourceImage]
   );
 
   const applyTagsToItem = useCallback(
@@ -1151,15 +1196,20 @@ export const TaggingStage = ({
       return;
     }
 
+    if (autoTaggableItems.length === 0) {
+      addNotification('warning', 'No image assets available for auto-tagging');
+      return;
+    }
+
     setLocalTaggerStatus('running');
-    setAutoTaggingProgress({ completed: 0, total: items.length });
+    setAutoTaggingProgress({ completed: 0, total: autoTaggableItems.length });
 
     try {
       let changedItemCount = 0;
 
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
-        setAutoTaggingProgress({ completed: index, total: items.length });
+      for (let index = 0; index < autoTaggableItems.length; index += 1) {
+        const item = autoTaggableItems[index];
+        setAutoTaggingProgress({ completed: index, total: autoTaggableItems.length });
 
         const predictions = await predictLocalTags(
           localTagger,
@@ -1184,10 +1234,10 @@ export const TaggingStage = ({
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       }
 
-      setAutoTaggingProgress({ completed: items.length, total: items.length });
+      setAutoTaggingProgress({ completed: autoTaggableItems.length, total: autoTaggableItems.length });
       setLocalTaggerStatus('ready');
       setLocalTaggerMessage(`Ready. Last run updated ${changedItemCount} image(s).`);
-      addNotification('success', `Auto-tagging completed for ${items.length} image(s)`);
+      addNotification('success', `Auto-tagging completed for ${autoTaggableItems.length} image(s)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Runtime inference failed.';
       setLocalTaggerStatus('not-ready');
@@ -1196,7 +1246,7 @@ export const TaggingStage = ({
     }
   }, [
     addNotification,
-    items,
+    autoTaggableItems,
     localTagger,
     localTaggerStatus,
     mergeAutoTags,
@@ -1237,6 +1287,10 @@ export const TaggingStage = ({
 
   const handleRunSelectedAutoTagging = useCallback(async () => {
     if (!selectedItem) {
+      return;
+    }
+    if (selectedItem.kind !== 'image') {
+      addNotification('warning', 'Auto-tagging is only available for image assets');
       return;
     }
 
@@ -1333,10 +1387,10 @@ export const TaggingStage = ({
                 <button
                   type="button"
                   onClick={() => void handleRunSelectedAutoTagging()}
-                  disabled={!localTagger || localTaggerStatus !== 'ready' || isSelectedAutoTagging}
+                  disabled={selectedItem.kind !== 'image' || !localTagger || localTaggerStatus !== 'ready' || isSelectedAutoTagging}
                   className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                  title={isSelectedAutoTagging ? 'Auto-tagging...' : 'Auto-tag image'}
-                  aria-label={isSelectedAutoTagging ? 'Auto-tagging' : 'Auto-tag image'}
+                  title={selectedItem.kind !== 'image' ? 'Auto-tagging is only available for image assets' : isSelectedAutoTagging ? 'Auto-tagging...' : 'Auto-tag image'}
+                  aria-label={selectedItem.kind !== 'image' ? 'Auto-tagging unavailable' : isSelectedAutoTagging ? 'Auto-tagging' : 'Auto-tag image'}
                   aria-busy={isSelectedAutoTagging}
                 >
                   <Sparkles size={16} />
@@ -1696,7 +1750,7 @@ export const TaggingStage = ({
           <div className="py-12 text-center">
             <AlertCircle className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
             <p className="text-muted-foreground">
-              {singleFileMode ? 'Selected image is no longer available.' : 'No images to tag.'}
+              {singleFileMode ? 'Selected asset is no longer available.' : 'No assets to tag.'}
             </p>
           </div>
         ) : (

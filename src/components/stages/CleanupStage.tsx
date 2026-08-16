@@ -129,7 +129,7 @@ export const CleanupStage = ({
         return await readEditableBlobBuffer(editableBlob);
       } catch (error) {
         const fallbackPath =
-          image.kind === 'source'
+          image.kind === 'image'
             ? sourceImagesById[image.sourceImageId]?.originalFilePath
             : image.psdData
               ? syntheticImagesById[image.syntheticImageId ?? '']?.psdDataPath
@@ -321,7 +321,7 @@ export const CleanupStage = ({
 
           addDatasetItem(syntheticImage);
 
-          if (!saveCopy && image.kind === 'source') {
+          if (!saveCopy && image.kind === 'image') {
             updateSourceImage(image.sourceImageId, { hidden: true });
           }
         }
@@ -372,7 +372,7 @@ export const CleanupStage = ({
       if (data instanceof ArrayBuffer) {
         if (phaseRef.current === 'preparing-synthetic-psd') {
           pendingSyntheticPsdBufferRef.current = data;
-          setEditorStatus('Receiving Synthetic PSD from Photopea...');
+          setEditorStatus('Receiving generated PSD from Photopea...');
           return;
         }
 
@@ -439,7 +439,7 @@ export const CleanupStage = ({
       if (phaseRef.current === 'opening-source') {
         if (pendingSyntheticPsdUpgradeRef.current) {
           phaseRef.current = 'preparing-synthetic-psd';
-          setEditorStatus('Preparing Synthetic PSD...');
+          setEditorStatus('Preparing generated PSD...');
           iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', PHOTOPEA_ORIGIN);
           return;
         }
@@ -463,8 +463,8 @@ export const CleanupStage = ({
           pendingImageRef.current = null;
           pendingSyntheticPsdBufferRef.current = null;
           pendingSyntheticPsdUpgradeRef.current = false;
-          setEditorStatus('Failed to prepare Synthetic PSD.');
-          addNotification('error', 'Failed to prepare Synthetic PSD');
+          setEditorStatus('Failed to prepare generated PSD.');
+          addNotification('error', 'Failed to prepare generated PSD');
           return;
         }
 
@@ -475,7 +475,7 @@ export const CleanupStage = ({
         pendingSyntheticPsdUpgradeRef.current = false;
         loadedImageKeyRef.current = null;
         phaseRef.current = 'clearing-documents';
-        setEditorStatus('Opening Synthetic PSD...');
+        setEditorStatus('Opening generated PSD...');
         iframeRef.current?.contentWindow?.postMessage(CLOSE_ALL_DOCUMENTS_SCRIPT, PHOTOPEA_ORIGIN);
         return;
       }

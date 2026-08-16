@@ -6,7 +6,7 @@ export type AspectRatio = '2:3' | '3:2' | '1:1';
 
 export type ImageType = 'cleaned' | 'crop' | 'augmented';
 
-export type WorkspaceImageKind = 'source' | 'synthetic';
+export type WorkspaceImageKind = 'image' | 'synthetic' | 'video' | 'psd';
 
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
@@ -127,6 +127,7 @@ export interface Dataset {
   filePath?: string;
   triggerWord: string;
   assetIds: string[];
+  assetPaths: string[];
   psdAssetPaths: string[];
   overwriteCaptions: boolean;
   captionOverrides: Record<string, string[]>;
@@ -277,6 +278,7 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   parentPath: 'Project',
   triggerWord: '',
   assetIds: [],
+  assetPaths: [],
   psdAssetPaths: [],
   overwriteCaptions: false,
   captionOverrides: {},

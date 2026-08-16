@@ -10,6 +10,8 @@ import {
 } from '../../types';
 import { createThumbnail } from '../image/imageProcessor';
 import { getAssetManifestName } from './assetManifestService';
+import { snapshotFileIfNeeded } from './fileSnapshotService';
+import { isLegacyProjectRootPath } from './projectPathFilters';
 
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
@@ -17,6 +19,7 @@ export const PROJECT_DIRECTORY_DESCRIPTION = 'Dataset Creator project directory'
 export const PROJECT_DIRECTORY_CACHE = '.cache';
 const PROJECT_PREVIEW_CACHE_DIRECTORY = `${PROJECT_DIRECTORY_CACHE}/previews`;
 const PROJECT_PREVIEW_CACHE_SIZE = 512;
+type ProjectPreviewKind = 'source' | 'synthetic' | 'psd';
 
 export type ProjectDirectoryWritable = {
   write: (data: Blob | string) => Promise<void> | void;
@@ -66,6 +69,7 @@ type DatasetManifest = {
   parentPath?: string;
   triggerWord: string;
   assetIds: string[];
+  assetPaths?: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -228,7 +232,7 @@ const readTextFile = async (directory: ProjectDirectoryHandle, name: string): Pr
   (await (await getProjectFile(directory, name)).getFile()).text();
 
 const readBlobFile = async (directory: ProjectDirectoryHandle, name: string): Promise<Blob> =>
-  (await getProjectFile(directory, name)).getFile();
+  snapshotFileIfNeeded(await (await getProjectFile(directory, name)).getFile());
 
 const readBlobFileAtPath = async (root: ProjectDirectoryHandle, path: string): Promise<Blob> =>
   readBlobFile(await getDirectoryForFilePath(root, path), getFileName(path));
@@ -361,15 +365,31 @@ const getDefaultSourceManifestPath = (source: SourceImage): string =>
 const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
   `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
 
-const getPreviewCachePath = (kind: 'source' | 'synthetic', id: string): string =>
-  joinPath(PROJECT_PREVIEW_CACHE_DIRECTORY, kind, `${id}.jpg`);
+const getPreviewCachePath = (kind: ProjectPreviewKind, id: string): string => {
+  const cacheKind = kind === 'psd' ? 'psd-v2' : kind;
+  return joinPath(PROJECT_PREVIEW_CACHE_DIRECTORY, cacheKind, `${encodeURIComponent(id)}.jpg`);
+};
 
 const createProjectPreview = async (blob: Blob): Promise<Blob> =>
   createThumbnail(blob, PROJECT_PREVIEW_CACHE_SIZE);
 
-const readProjectPreviewUrl = async (
+const canLoadImageBlob = (blob: Blob): Promise<boolean> =>
+  new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    const cleanup = (result: boolean) => {
+      URL.revokeObjectURL(url);
+      resolve(result);
+    };
+
+    image.onload = () => cleanup(image.naturalWidth > 0 && image.naturalHeight > 0);
+    image.onerror = () => cleanup(false);
+    image.src = url;
+  });
+
+export const readProjectPreviewUrl = async (
   root: ProjectDirectoryHandle | undefined,
-  kind: 'source' | 'synthetic',
+  kind: ProjectPreviewKind,
   id: string
 ): Promise<string | undefined> => {
   if (!root) {
@@ -377,15 +397,19 @@ const readProjectPreviewUrl = async (
   }
 
   try {
-    return URL.createObjectURL(await readBlobFileAtPath(root, getPreviewCachePath(kind, id)));
+    const preview = await readBlobFileAtPath(root, getPreviewCachePath(kind, id));
+    if (!(await canLoadImageBlob(preview))) {
+      return undefined;
+    }
+    return URL.createObjectURL(preview);
   } catch {
     return undefined;
   }
 };
 
-const getOrCreateProjectPreviewUrl = async (
+export const getOrCreateProjectPreviewUrl = async (
   root: ProjectDirectoryHandle | undefined,
-  kind: 'source' | 'synthetic',
+  kind: ProjectPreviewKind,
   id: string,
   blob: Blob
 ): Promise<string | undefined> => {
@@ -407,9 +431,9 @@ const getOrCreateProjectPreviewUrl = async (
   }
 };
 
-const writeProjectPreview = async (
+export const writeProjectPreview = async (
   root: ProjectDirectoryHandle,
-  kind: 'source' | 'synthetic',
+  kind: ProjectPreviewKind,
   id: string,
   blob: Blob
 ): Promise<void> => {
@@ -422,7 +446,7 @@ const writeProjectPreview = async (
 
 const removeProjectPreview = async (
   root: ProjectDirectoryHandle,
-  kind: 'source' | 'synthetic',
+  kind: ProjectPreviewKind,
   id: string
 ): Promise<void> => {
   try {
@@ -437,13 +461,22 @@ const getNormalizedAssetManifestPath = (
   assetFileName: string,
   fallbackPath: string
 ): string => {
-  if (!currentPath) {
+  const reusablePath = getReusableProjectPath(currentPath);
+  if (!reusablePath) {
     return fallbackPath;
   }
-  const relativePath = toProjectRelativePath(currentPath);
-  return getFileName(relativePath) === PROJECT_DIRECTORY_MANIFEST
-    ? joinPath(getParentPath(relativePath), getAssetManifestName(assetFileName))
-    : relativePath;
+  return getFileName(reusablePath) === PROJECT_DIRECTORY_MANIFEST
+    ? joinPath(getParentPath(reusablePath), getAssetManifestName(assetFileName))
+    : reusablePath;
+};
+
+const getReusableProjectPath = (path: string | undefined): string | undefined => {
+  if (!path) {
+    return undefined;
+  }
+
+  const relativePath = toProjectRelativePath(path);
+  return isLegacyProjectRootPath(relativePath) ? undefined : relativePath;
 };
 
 const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): Promise<string> => {
@@ -507,14 +540,10 @@ const writeSourceChanges = async (
 const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage): Promise<string> => {
   const defaultImageFileName = 'image.png';
   const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultSyntheticManifestPath(item));
-  const imageDataPath = item.imageDataPath
-    ? toProjectRelativePath(item.imageDataPath)
-    : joinPath(getParentPath(manifestPath), defaultImageFileName);
+  const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), defaultImageFileName);
   const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
-    ? item.psdDataPath
-      ? toProjectRelativePath(item.psdDataPath)
-      : joinPath(getParentPath(manifestPath), 'image.psd')
+    ? getReusableProjectPath(item.psdDataPath) ?? joinPath(getParentPath(manifestPath), 'image.psd')
     : undefined;
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   await writeBlobFileAtPath(root, imageDataPath, item.imageData);
@@ -545,18 +574,14 @@ const writeSyntheticChanges = async (
     getDefaultSyntheticManifestPath(item)
   );
   const imageDataPath =
-    item.imageDataPath
-      ? toProjectRelativePath(item.imageDataPath)
-      : previousItem?.imageDataPath
-        ? toProjectRelativePath(previousItem.imageDataPath)
-        : joinPath(getParentPath(manifestPath), defaultImageFileName);
+    getReusableProjectPath(item.imageDataPath) ??
+    getReusableProjectPath(previousItem?.imageDataPath) ??
+    joinPath(getParentPath(manifestPath), defaultImageFileName);
   const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
-    ? item.psdDataPath
-      ? toProjectRelativePath(item.psdDataPath)
-      : previousItem?.psdDataPath
-        ? toProjectRelativePath(previousItem.psdDataPath)
-        : joinPath(getParentPath(manifestPath), 'image.psd')
+    ? getReusableProjectPath(item.psdDataPath) ??
+      getReusableProjectPath(previousItem?.psdDataPath) ??
+      joinPath(getParentPath(manifestPath), 'image.psd')
     : undefined;
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   if (!previousItem || item.imageData !== previousItem.imageData) {
@@ -711,8 +736,9 @@ export const writeProjectDirectoryChanges = async (
       : sourceImageManifests[source.id] ?? getDefaultSourceManifestPath(source);
   }
   for (const item of Object.values(project.datasetItems)) {
-    syntheticImageManifests[item.id] = item.manifestPath
-      ? toProjectRelativePath(item.manifestPath)
+    const reusableManifestPath = getReusableProjectPath(item.manifestPath);
+    syntheticImageManifests[item.id] = reusableManifestPath
+      ? reusableManifestPath
       : syntheticImageManifests[item.id] ?? getDefaultSyntheticManifestPath(item);
   }
   await writeTextFile(
@@ -889,6 +915,9 @@ export const readProjectDirectory = async (
   const defaults = createProject(manifest.project.name);
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
+  const supportedSyntheticManifestPaths = syntheticManifestPaths
+    ? Object.values(syntheticManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
+    : undefined;
   const [sourceResults, syntheticResults] = await Promise.all([
     sourceManifestPaths
       ? Promise.all(
@@ -901,9 +930,9 @@ export const readProjectDirectory = async (
           })
         )
       : readOptionalProjectChildren(directory, 'sources', (entry) => readSource(entry)),
-    syntheticManifestPaths
+    supportedSyntheticManifestPaths
       ? Promise.all(
-          Object.values(syntheticManifestPaths).map(async (manifestPath) => {
+          supportedSyntheticManifestPaths.map(async (manifestPath) => {
             try {
               return await readSynthetic(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
             } catch {
@@ -911,7 +940,7 @@ export const readProjectDirectory = async (
             }
           })
         )
-      : readOptionalProjectChildren(directory, 'synthetic', (entry) => readSynthetic(entry)),
+      : readOptionalProjectChildren(directory, 'generated', (entry) => readSynthetic(entry)),
   ]);
   const sources = sourceResults.filter((source): source is SourceImage => Boolean(source));
   const synthetic = syntheticResults.filter((item): item is SyntheticImage => Boolean(item));

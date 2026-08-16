@@ -1,6 +1,7 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
 import { getAssetManifestName, isAssetManifestName, isProjectManifestName } from './assetManifestService';
 import { resolveProjectAssetKind } from './assetTypeService';
+import { snapshotFile } from './fileSnapshotService';
 
 export type ExplorerEntryKind = 'folder' | 'file';
 
@@ -102,7 +103,7 @@ export const readExplorerFile = async (
     throw new Error('Project metadata files cannot be opened from Explorer.');
   }
   try {
-    return await directory.getFileHandle(name).then((handle) => handle.getFile());
+    return await directory.getFileHandle(name).then((handle) => handle.getFile()).then(snapshotFile);
   } catch (error) {
     throw new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to read file.'));
   }
@@ -290,7 +291,7 @@ const copyDirectoryContents = async (
       const childDestination = await destination.getDirectoryHandle(entryName, { create: true });
       await copyDirectoryContents(entry, childDestination);
     } else {
-      await writeFile(destination, entryName, await entry.getFile());
+      await writeFile(destination, entryName, await snapshotFile(await entry.getFile()));
     }
   }
 };

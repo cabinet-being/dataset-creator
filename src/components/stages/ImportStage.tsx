@@ -167,7 +167,7 @@ export const ImportStage = () => {
 
   const handleRemoveImage = (id: string) => {
     removeSourceImage(id);
-    addNotification('info', 'Source and related Synthetic images removed');
+    addNotification('info', 'Image and related generated assets removed');
   };
 
   const handleRestoreImage = (id: string) => {
@@ -260,10 +260,10 @@ export const ImportStage = () => {
             getEstimate={(image) => image.height / Math.max(1, image.width)}
             renderItem={(image) => (
               <div
-                className={`gallery-masonry-item rounded-lg overflow-hidden ${getWorkspaceKindFrameClass('source')} ${
+                className={`gallery-masonry-item rounded-lg overflow-hidden ${getWorkspaceKindFrameClass('image')} ${
                   image.hidden ? 'opacity-60' : ''
                 }`}
-                style={getWorkspaceKindFrameStyle('source')}
+                style={getWorkspaceKindFrameStyle('image')}
               >
                 <div className="group relative bg-secondary transition-colors">
                   <MasonryImageFrame
@@ -275,7 +275,7 @@ export const ImportStage = () => {
                   >
                   <div
                     className={getWorkspaceKindFrameOverlayClass()}
-                    style={getWorkspaceKindFrameOverlayStyle('source')}
+                    style={getWorkspaceKindFrameOverlayStyle('image')}
                   />
 
                 <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
@@ -306,7 +306,7 @@ export const ImportStage = () => {
                         {image.width} × {image.height}
                       </p>
                     </div>
-                    <span className={getWorkspaceKindBadgeClass('source')}>Source</span>
+                    <span className={getWorkspaceKindBadgeClass('image')}>Image</span>
                   </div>
                   {image.hidden && (
                     <p className="mt-1 text-[11px] font-medium text-yellow-300">Hidden from tools</p>

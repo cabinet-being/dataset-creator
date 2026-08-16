@@ -94,7 +94,7 @@ export const ToolHub = () => {
               <p className="mt-2 text-2xl font-semibold">{sourceCount}</p>
             </div>
             <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Synthetic</p>
+              <p className="text-xs font-medium text-muted-foreground">Generated</p>
               <p className="mt-2 text-2xl font-semibold">{syntheticCount}</p>
             </div>
             <div className="rounded-md border border-border bg-background p-4">
@@ -124,7 +124,7 @@ export const ToolHub = () => {
               <span className="font-mono text-xs font-medium">{datasetTriggerWord || 'Not set'}</span>
             </div>
             <div className="rounded-md bg-secondary p-3 text-xs text-muted-foreground">
-              Source and Synthetic images are backed by IndexedDB and stay
+              Workspace images are backed by IndexedDB and stay
               available while switching tools.
             </div>
             <button

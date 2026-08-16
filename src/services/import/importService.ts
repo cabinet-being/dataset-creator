@@ -4,6 +4,7 @@ import { createThumbnail, getImageDimensions } from '../image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../image/embeddingService';
 import { createOperationLogger, shouldLogProgress, type OperationLogger } from '../logging/applicationLog';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
+import { snapshotFile } from '../project/fileSnapshotService';
 import {
   getAssetManifestName,
   getAssetManifestPath,
@@ -16,6 +17,7 @@ import {
   isSupportedProjectAsset,
   resolveProjectAssetKind,
 } from '../project/assetTypeService';
+import { isLegacyProjectRootPath } from '../project/projectPathFilters';
 
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
 export const SUPPORTED_IMPORT_FILE_FORMATS = [
@@ -95,7 +97,7 @@ const getArchiveFileStem = (path: string): string => getArchiveFileName(path).re
 const getArchiveExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
 const INTERNAL_IMPORT_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
 const isInternalImportPath = (path: string): boolean =>
-  path.split('/').some((part) => INTERNAL_IMPORT_DIRECTORY_NAMES.has(part));
+  path.split('/').some((part) => INTERNAL_IMPORT_DIRECTORY_NAMES.has(part)) || isLegacyProjectRootPath(path);
 
 export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
@@ -354,13 +356,15 @@ const writeProjectAsset = async (
 };
 
 const processImportedFile = async (
-  file: File,
+  inputFile: File,
   relativePath: string | undefined,
   tags: string[],
   destination: ImportDestination | undefined,
   logger: OperationLogger,
   reservedNamesByDirectory: Map<string, Set<string>>
 ): Promise<{ sourceImage: SourceImage | null; asset: ImportedProjectAsset | null }> => {
+  const file = await snapshotFile(inputFile);
+
   if (isInternalImportFileName(file.name)) {
     logger.warning(`skipped internal project metadata file ${file.name}`);
     return { sourceImage: null, asset: null };

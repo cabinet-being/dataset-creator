@@ -4,6 +4,7 @@ type PreviewItem = {
   id: string;
   imageData: Blob;
   previewUrl?: string;
+  allowGeneratedPreviewUrl?: boolean;
 };
 
 type CachedPreviewUrl = {
@@ -63,13 +64,23 @@ export const useWorkspacePreviewUrls = (items: PreviewItem[]): Record<string, st
     const nextPreviewUrls: Record<string, string> = {};
 
     for (const item of items) {
-      nextPreviewUrls[item.id] = item.previewUrl ?? getCachedPreviewUrl(item.id, item.imageData);
+      if (item.previewUrl) {
+        nextPreviewUrls[item.id] = item.previewUrl;
+        continue;
+      }
+
+      if (item.allowGeneratedPreviewUrl !== false) {
+        nextPreviewUrls[item.id] = getCachedPreviewUrl(item.id, item.imageData);
+      }
     }
 
     return nextPreviewUrls;
   }, [items]);
 
-  const activeIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
+  const activeIds = useMemo(
+    () => new Set(items.filter((item) => item.allowGeneratedPreviewUrl !== false && !item.previewUrl).map((item) => item.id)),
+    [items]
+  );
 
   previewUrlConsumers.set(consumerId, activeIds);
 

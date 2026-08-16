@@ -1,5 +1,6 @@
 import { createDataset, type Dataset } from '../../types';
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
+import { filterLegacyProjectAssetPaths } from './projectPathFilters';
 
 export const DATASET_FILE_SUFFIX = '.dataset.json';
 export const DATASET_FILE_FORMAT = 'dataset-creator-dataset';
@@ -11,6 +12,7 @@ type DatasetFileManifest = {
   name: string;
   triggerWord: string;
   assetIds: string[];
+  assetPaths?: string[];
   psdAssetPaths?: string[];
   overwriteCaptions?: boolean;
   captionOverrides?: Record<string, string[]>;
@@ -59,7 +61,8 @@ export const serializeDatasetFile = (dataset: Dataset): string =>
       name: dataset.name,
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
-      psdAssetPaths: dataset.psdAssetPaths,
+      assetPaths: filterLegacyProjectAssetPaths(dataset.assetPaths),
+      psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths),
       overwriteCaptions: dataset.overwriteCaptions,
       captionOverrides: dataset.captionOverrides,
       createdAt: dataset.createdAt.toISOString(),
@@ -87,7 +90,8 @@ export const readDatasetFile = async (
     filePath: path,
     triggerWord: manifest.triggerWord ?? '',
     assetIds: manifest.assetIds ?? [],
-    psdAssetPaths: [...new Set(manifest.psdAssetPaths ?? [])],
+    assetPaths: filterLegacyProjectAssetPaths([...new Set([...(manifest.assetPaths ?? []), ...(manifest.psdAssetPaths ?? [])])]),
+    psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(manifest.psdAssetPaths ?? [])]),
     overwriteCaptions: manifest.overwriteCaptions ?? false,
     captionOverrides: manifest.captionOverrides ?? {},
     createdAt: new Date(manifest.createdAt),

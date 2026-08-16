@@ -5,6 +5,7 @@ import {
   type SyntheticImage,
   type WorkspaceImageKind,
 } from '../types';
+import type { ExplorerFileKind } from '../services/project/explorerFileService';
 
 type CleanupWorkingEdit = {
   blob: Blob;
@@ -18,15 +19,18 @@ export type WorkspaceImage = {
   sourceImageId: string;
   syntheticImageId?: string;
   kind: WorkspaceImageKind;
-  label: 'Source' | 'Synthetic';
+  label: 'Image' | 'Generated' | 'Video' | 'PSD';
   displayIdentity: string;
   fileName: string;
   originalFileName?: string;
+  assetPath?: string;
   imageData: Blob;
   psdData?: Blob;
   width: number;
   height: number;
   previewUrl?: string;
+  previewStatus?: 'queued' | 'generating' | 'failed';
+  allowGeneratedPreviewUrl?: boolean;
   tags?: string[];
   aspectRatio: AspectRatio;
   syntheticType?: SyntheticImage['type'];
@@ -36,29 +40,56 @@ export type WorkspaceImage = {
   hidden?: boolean;
 };
 
+export type WorkspaceFileAsset = {
+  id: string;
+  path: string;
+  fileName: string;
+  kind: Extract<ExplorerFileKind, 'video' | 'psd'>;
+  file: Blob;
+  previewUrl?: string;
+  previewStatus?: 'queued' | 'generating' | 'failed';
+  width?: number;
+  height?: number;
+  tags?: string[];
+};
+
 export const WORKSPACE_KIND_STYLES: Record<
   WorkspaceImageKind,
   {
-    label: 'Source' | 'Synthetic';
+    label: 'Image' | 'Generated' | 'Video' | 'PSD';
     borderClass: string;
     selectedBorderClass: string;
     badgeClass: string;
     ringStyle: string;
   }
 > = {
-  source: {
-    label: 'Source',
+  image: {
+    label: 'Image',
     borderClass: 'border-emerald-500/70',
     selectedBorderClass: 'border-emerald-400',
     badgeClass: 'bg-emerald-500/90 text-white',
     ringStyle: '0 0 0 2px rgba(16, 185, 129, 0.7) inset',
   },
   synthetic: {
-    label: 'Synthetic',
+    label: 'Generated',
     borderClass: 'border-sky-500/70',
     selectedBorderClass: 'border-sky-400',
     badgeClass: 'bg-sky-500/90 text-white',
     ringStyle: '0 0 0 2px rgba(14, 165, 233, 0.7) inset',
+  },
+  video: {
+    label: 'Video',
+    borderClass: 'border-violet-500/70',
+    selectedBorderClass: 'border-violet-400',
+    badgeClass: 'bg-violet-500/90 text-white',
+    ringStyle: '0 0 0 2px rgba(139, 92, 246, 0.7) inset',
+  },
+  psd: {
+    label: 'PSD',
+    borderClass: 'border-cyan-500/70',
+    selectedBorderClass: 'border-cyan-400',
+    badgeClass: 'bg-cyan-500/90 text-white',
+    ringStyle: '0 0 0 2px rgba(6, 182, 212, 0.7) inset',
   },
 };
 
@@ -88,7 +119,7 @@ export const getWorkspaceKindFrameOverlayClass = (): string =>
 export const getWorkspaceKindBadgeClass = (kind: WorkspaceImageKind): string =>
   `inline-flex items-center rounded-full px-2 py-1 text-[10px] font-medium ${WORKSPACE_KIND_STYLES[kind].badgeClass}`;
 
-const inferAspectRatio = (width: number, height: number): AspectRatio => {
+export const inferWorkspaceAspectRatio = (width: number, height: number): AspectRatio => {
   const ratio = width / height;
   const targets: Array<{ value: AspectRatio; ratio: number }> = [
     { value: '2:3', ratio: 2 / 3 },
@@ -115,8 +146,8 @@ export const toWorkspaceImages = (
     return {
       id: workspaceId,
       sourceImageId: image.id,
-      kind: 'source',
-      label: 'Source',
+      kind: 'image',
+      label: 'Image',
       displayIdentity: `${index + 1}`,
       fileName: createStandardImageFileName(image.id, image.fileName, image.mimeType),
       originalFileName: image.originalFileName,
@@ -127,7 +158,7 @@ export const toWorkspaceImages = (
       tags: image.tags,
       hidden: image.hidden,
       excludedFromDataset: image.excludedFromDataset,
-      aspectRatio: inferAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
+      aspectRatio: inferWorkspaceAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
     };
   });
 
@@ -146,7 +177,7 @@ export const toWorkspaceImages = (
         sourceImageId: image.sourceImageId,
         syntheticImageId: image.id,
         kind: 'synthetic',
-        label: 'Synthetic',
+        label: 'Generated',
         displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
         fileName: `${image.id}.png`,
         imageData: workingEdit?.blob ?? image.imageData,
@@ -167,4 +198,31 @@ export const toWorkspaceImages = (
 };
 
 export const getWorkspaceImageAspectRatio = (image: WorkspaceImage): AspectRatio =>
-  inferAspectRatio(image.width, image.height);
+  inferWorkspaceAspectRatio(image.width, image.height);
+
+export const toWorkspaceReviewAssets = (
+  sourceImages: SourceImage[],
+  fileAssets: WorkspaceFileAsset[],
+  workingEdits: Record<string, CleanupWorkingEdit> = {}
+): WorkspaceImage[] => {
+  const imageItems = toWorkspaceImages(sourceImages, [], workingEdits).filter((item) => item.kind === 'image');
+  const fileItems: WorkspaceImage[] = fileAssets.map((asset, index) => ({
+    id: asset.id,
+    sourceImageId: '',
+    kind: asset.kind,
+    label: WORKSPACE_KIND_STYLES[asset.kind].label,
+    displayIdentity: `${imageItems.length + index + 1}`,
+    fileName: asset.fileName,
+    assetPath: asset.path,
+    imageData: asset.file,
+    previewUrl: asset.previewUrl,
+    previewStatus: asset.previewStatus,
+    allowGeneratedPreviewUrl: asset.kind !== 'psd',
+    width: asset.width ?? 1,
+    height: asset.height ?? 1,
+    tags: asset.tags,
+    aspectRatio: inferWorkspaceAspectRatio(asset.width ?? 1, asset.height ?? 1),
+  }));
+
+  return [...imageItems, ...fileItems];
+};

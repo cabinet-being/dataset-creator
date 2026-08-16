@@ -10,6 +10,7 @@ import type {
   WorkspaceSettings,
 } from '../../types';
 import { getAssetManifestName, PROJECT_MANIFEST_NAME } from './assetManifestService';
+import { isLegacyProjectRootPath } from './projectPathFilters';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -81,6 +82,7 @@ type DatasetManifest = {
   parentPath?: string;
   triggerWord: string;
   assetIds: string[];
+  assetPaths?: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -145,17 +147,27 @@ const getDefaultSourceManifestPath = (source: SourceImage): string =>
 const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
   `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
 
+const getReusableProjectPath = (path: string | undefined): string | undefined => {
+  if (!path) {
+    return undefined;
+  }
+
+  const relativePath = path.replace(/^Project\//, '');
+  return isLegacyProjectRootPath(relativePath) ? undefined : relativePath;
+};
+
 const getNormalizedAssetManifestPath = (
   currentPath: string | undefined,
   assetFileName: string,
   fallbackPath: string
 ): string => {
-  if (!currentPath) {
+  const reusablePath = getReusableProjectPath(currentPath);
+  if (!reusablePath) {
     return fallbackPath;
   }
-  return getPathParts(currentPath).slice(-1)[0] === PROJECT_MANIFEST_NAME
-    ? joinPath(getParentPath(currentPath), getAssetManifestName(assetFileName))
-    : currentPath;
+  return getPathParts(reusablePath).slice(-1)[0] === PROJECT_MANIFEST_NAME
+    ? joinPath(getParentPath(reusablePath), getAssetManifestName(assetFileName))
+    : reusablePath;
 };
 
 const toIsoString = (value: Date | string | number | undefined, fallback = new Date()): string => {
@@ -267,9 +279,9 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
 
   for (const item of Object.values(project.datasetItems).filter((entry) => !entry.deleted)) {
     const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, 'image.png', getDefaultSyntheticManifestPath(item));
-    const imageDataPath = item.imageDataPath ?? joinPath(getParentPath(manifestPath), 'image.png');
+    const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), 'image.png');
     const psdDataPath = item.psdData
-      ? item.psdDataPath ?? joinPath(getParentPath(manifestPath), 'image.psd')
+      ? getReusableProjectPath(item.psdDataPath) ?? joinPath(getParentPath(manifestPath), 'image.psd')
       : undefined;
     zip.file(imageDataPath, item.imageData);
     if (item.psdData && psdDataPath) {
@@ -404,12 +416,15 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
       )
     : Object.values(manifest.project.sourceImages ?? {}).map((source) => ({ manifest: source }));
   const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
+  const supportedSyntheticManifestPaths = syntheticManifestPaths
+    ? Object.values(syntheticManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
+    : undefined;
   const syntheticManifestEntries: Array<{
     manifestPath?: string;
     manifest: SyntheticImageManifest | LegacySyntheticImageManifest;
-  }> = syntheticManifestPaths
+  }> = supportedSyntheticManifestPaths
     ? await Promise.all(
-        Object.values(syntheticManifestPaths).map(
+        supportedSyntheticManifestPaths.map(
           async (path) => ({
             manifestPath: path,
             manifest: await readJsonFile<SyntheticImageManifest | LegacySyntheticImageManifest>(zip, path),

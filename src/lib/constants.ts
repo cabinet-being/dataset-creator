@@ -59,9 +59,9 @@ export const STAGE_LABELS: Record<string, string> = {
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
   import: 'Load Source image files or folders into the shared workspace.',
   select: 'Find duplicate and near-duplicate source images before editing.',
-  clean: 'Open Source and Synthetic images in Photopea from the browser workspace.',
-  analysis: 'Analyze Source and Synthetic images with relationship maps and similarity groups.',
-  review: 'Preview Source and Synthetic images before captioning.',
+  clean: 'Open workspace images in Photopea from the browser workspace.',
+  analysis: 'Analyze workspace images with relationship maps and similarity groups.',
+  review: 'Preview workspace image, video, and PSD assets before captioning.',
   tagging: 'Edit captions manually, in bulk, or with a local ONNX tagger.',
   export: 'Save PNG and TXT training pairs as a folder or ZIP archive.',
 };

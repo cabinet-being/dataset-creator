@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowUpDown,
@@ -21,13 +21,17 @@ import {
   getWorkspaceKindFrameOverlayClass,
   getWorkspaceKindFrameOverlayStyle,
   getWorkspaceKindFrameStyle,
-  toWorkspaceImages,
+  toWorkspaceReviewAssets,
+  type WorkspaceFileAsset,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
+import { appLog } from '../../services/logging/applicationLog';
+import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { BrickMasonry } from '../ui/BrickMasonry';
-import { MasonryImageFrame } from '../ui/MasonryImageFrame';
+import { WorkspaceAssetFrame } from '../ui/WorkspaceAssetFrame';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { AspectRatio, Dataset, StageName, WorkspaceImageKind } from '../../types';
 
@@ -51,10 +55,18 @@ type ReviewCardProps = {
   onQuickAction?: (item: WorkspaceImage) => void;
 };
 
-const KIND_LABELS: Record<WorkspaceImageKind, string> = {
-  source: 'Source',
-  synthetic: 'Synthetic',
+type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'video' | 'psd'>;
+
+const KIND_LABELS: Record<ReviewKind, string> = {
+  image: 'Image',
+  video: 'Video',
+  psd: 'PSD',
 };
+
+const REVIEW_KINDS = ['image', 'video', 'psd'] as const satisfies ReviewKind[];
+const isReviewKind = (kind: WorkspaceImageKind): kind is ReviewKind =>
+  (REVIEW_KINDS as readonly WorkspaceImageKind[]).includes(kind);
+const isString = (value: string | undefined): value is string => Boolean(value);
 
 const STATUS_LABELS: Record<ExportStatus, string> = {
   active: 'Active',
@@ -106,11 +118,10 @@ const ReviewCard = memo(
         item.excludedFromDataset ? 'border-muted opacity-75' : getWorkspaceKindFrameClass(item.kind)
       }`}
     >
-      <MasonryImageFrame
-        src={previewUrl}
+      <WorkspaceAssetFrame
+        item={item}
+        previewUrl={previewUrl}
         alt={item.fileName}
-        width={item.width}
-        height={item.height}
         className="rounded-lg"
         imageClassName={item.excludedFromDataset ? 'grayscale' : ''}
         placeholder="Preview unavailable"
@@ -145,7 +156,7 @@ const ReviewCard = memo(
           <>
             <button
               type="button"
-              aria-label="Close image menu"
+              aria-label="Close asset menu"
               className="fixed inset-0 z-[900] cursor-default"
               onClick={onCloseMenu}
             />
@@ -228,7 +239,7 @@ const ReviewCard = memo(
             </span>
           </div>
         </div>
-      </MasonryImageFrame>
+      </WorkspaceAssetFrame>
     </div>
   );
   }
@@ -240,7 +251,7 @@ type FinalReviewStageProps = {
   datasetId?: string;
   mode?: 'review' | 'select';
   onUpdateDataset?: (
-    updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => void | Promise<void>;
   onOpenTool?: (stage: StageName) => void;
 };
@@ -252,7 +263,6 @@ export const FinalReviewStage = ({
   onOpenTool,
 }: FinalReviewStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
   const cleanupStageState = useProjectStore(
     (state) =>
@@ -260,17 +270,17 @@ export const FinalReviewStage = ({
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
-  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
-  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const addNotification = useUIStore((state) => state.addNotification);
+  const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
 
   const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<AspectRatio>>(
     new Set(ASPECT_RATIOS)
   );
-  const [selectedKinds, setSelectedKinds] = useState<Set<WorkspaceImageKind>>(
-    new Set(['source', 'synthetic'])
+  const [selectedKinds, setSelectedKinds] = useState<Set<ReviewKind>>(
+    new Set(REVIEW_KINDS)
   );
   const [selectedStatuses, setSelectedStatuses] = useState<Set<ExportStatus>>(
     new Set(['active', 'inactive'])
@@ -278,8 +288,14 @@ export const FinalReviewStage = ({
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
   const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
+  const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const psdDiagnosticsKeyRef = useRef('');
 
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
+  const datasetAssetPaths = useMemo(
+    () => new Set([...(dataset?.assetPaths ?? []), ...(dataset?.psdAssetPaths ?? [])]),
+    [dataset?.assetPaths, dataset?.psdAssetPaths]
+  );
   const sourceImages = useMemo(() => {
     const allSources = Object.values(sourceImagesById);
     if (!datasetId) {
@@ -290,18 +306,98 @@ export const FinalReviewStage = ({
     }
     return allSources.filter((image) => datasetAssetIds.has(image.id));
   }, [datasetAssetIds, datasetId, mode, sourceImagesById]);
-  const syntheticImages = useMemo(
-    () =>
-      Object.values(syntheticImagesById).filter(
-        (item) => !item.deleted && (!datasetId || (mode !== 'select' && datasetAssetIds.has(item.sourceImageId)))
-      ),
-    [datasetAssetIds, datasetId, mode, syntheticImagesById]
-  );
   const items = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
-    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
+    () => toWorkspaceReviewAssets(sourceImages, fileAssets, cleanupStageState.workingEdits),
+    [cleanupStageState.workingEdits, fileAssets, sourceImages]
   );
   const previewUrls = useWorkspacePreviewUrls(items);
+  const psdDiagnostics = useMemo(() => {
+    const psdAssets = fileAssets.filter((asset) => asset.kind === 'psd');
+    const counts = {
+      total: psdAssets.length,
+      ready: psdAssets.filter((asset) => Boolean(asset.previewUrl)).length,
+      queued: psdAssets.filter((asset) => asset.previewStatus === 'queued').length,
+      generating: psdAssets.filter((asset) => asset.previewStatus === 'generating').length,
+      failed: psdAssets.filter((asset) => asset.previewStatus === 'failed').length,
+      missing: psdAssets.filter((asset) => !asset.previewUrl).length,
+      firstMissingPath: psdAssets.find((asset) => !asset.previewUrl)?.path,
+    };
+    return counts;
+  }, [fileAssets]);
+
+  useEffect(() => {
+    const key = [
+      psdDiagnostics.total,
+      psdDiagnostics.ready,
+      psdDiagnostics.queued,
+      psdDiagnostics.generating,
+      psdDiagnostics.failed,
+      psdDiagnostics.firstMissingPath ?? '',
+    ].join('|');
+    if (key === psdDiagnosticsKeyRef.current) {
+      return;
+    }
+    psdDiagnosticsKeyRef.current = key;
+    if (psdDiagnostics.total === 0) {
+      appLog.info('Review: no PSD assets in current view');
+      return;
+    }
+    appLog.info(
+      `Review PSD assets: total ${psdDiagnostics.total}, ready ${psdDiagnostics.ready}, queued ${psdDiagnostics.queued}, generating ${psdDiagnostics.generating}, failed ${psdDiagnostics.failed}`
+    );
+    if (psdDiagnostics.firstMissingPath) {
+      appLog.info(`Review PSD first missing preview: ${psdDiagnostics.firstMissingPath}`);
+    }
+  }, [psdDiagnostics]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    if (!projectDirectoryHandle) {
+      setFileAssets([]);
+      return;
+    }
+
+    const loadFileAssets = async () => {
+      try {
+        const assets = await collectWorkspaceFileAssets(
+          projectDirectoryHandle,
+          datasetId && mode !== 'select' ? [...datasetAssetPaths] : undefined
+        );
+        const nextAssets =
+          datasetId && mode === 'select'
+            ? assets.filter((asset) => !datasetAssetPaths.has(asset.path))
+            : assets;
+        const pendingAssets = nextAssets.map((asset) =>
+          asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
+        );
+        if (!canceled) {
+          setFileAssets(pendingAssets);
+          void generateMissingWorkspacePsdPreviews(
+            projectDirectoryHandle,
+            pendingAssets,
+            (path, update) => {
+              setFileAssets((currentAssets) =>
+                currentAssets.map((asset) => (asset.path === path ? { ...asset, ...update } : asset))
+              );
+            },
+            () => canceled
+          );
+        }
+      } catch (error) {
+        if (!canceled) {
+          setFileAssets([]);
+          addNotification('warning', error instanceof Error ? error.message : 'Unable to read project file assets');
+        }
+      }
+    };
+
+    void loadFileAssets();
+
+    return () => {
+      canceled = true;
+    };
+  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, mode, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!openMenu) {
@@ -345,10 +441,10 @@ export const FinalReviewStage = ({
   );
 
   const kindCounts = useMemo(
-    () => ({
-      source: items.filter((item) => item.kind === 'source').length,
-      synthetic: items.filter((item) => item.kind === 'synthetic').length,
-    }),
+    () =>
+      Object.fromEntries(
+        REVIEW_KINDS.map((kind) => [kind, items.filter((item) => item.kind === kind).length])
+      ) as Record<(typeof REVIEW_KINDS)[number], number>,
     [items]
   );
 
@@ -369,6 +465,7 @@ export const FinalReviewStage = ({
       items.filter(
         (item) =>
           selectedAspectRatios.has(item.aspectRatio) &&
+          isReviewKind(item.kind) &&
           selectedKinds.has(item.kind) &&
           selectedStatuses.has(item.excludedFromDataset ? 'inactive' : 'active')
       ),
@@ -410,7 +507,7 @@ export const FinalReviewStage = ({
     });
   };
 
-  const toggleKind = (kind: WorkspaceImageKind) => {
+  const toggleKind = (kind: ReviewKind) => {
     setSelectedKinds((previous) => {
       const next = new Set(previous);
       if (next.has(kind)) {
@@ -437,52 +534,72 @@ export const FinalReviewStage = ({
   const handleDeleteItem = useCallback((item: WorkspaceImage) => {
     if (dataset && onUpdateDataset) {
       if (mode === 'select') {
-        void onUpdateDataset({ assetIds: [...new Set([...dataset.assetIds, item.sourceImageId])] });
+        if (item.kind === 'image') {
+          void onUpdateDataset({ assetIds: [...new Set([...dataset.assetIds, item.sourceImageId])] });
+        } else if (item.assetPath) {
+          const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), item.assetPath])]);
+          const nextPsdAssetPaths =
+            item.kind === 'psd'
+              ? filterLegacyProjectAssetPaths([...new Set([...(dataset.psdAssetPaths ?? []), item.assetPath])])
+              : filterLegacyProjectAssetPaths(dataset.psdAssetPaths);
+          void onUpdateDataset({ assetPaths: nextAssetPaths, psdAssetPaths: nextPsdAssetPaths });
+        }
         addNotification('success', 'Asset added to Dataset');
         return;
       }
-      void onUpdateDataset({ assetIds: dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId) });
+      if (item.kind === 'image') {
+        void onUpdateDataset({ assetIds: dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId) });
+      } else if (item.assetPath) {
+        void onUpdateDataset({
+          assetPaths: filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
+          psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
+        });
+      }
       addNotification('info', 'Asset removed from Dataset');
       return;
     }
 
-    if (item.kind === 'source' && item.sourceImageId) {
+    if (item.kind === 'image' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { hidden: true });
-    } else if (item.syntheticImageId) {
-      softDeleteDatasetItem(item.syntheticImageId);
     }
-    addNotification('info', 'Image removed from review');
-  }, [addNotification, dataset, mode, onUpdateDataset, softDeleteDatasetItem, updateSourceImage]);
+    addNotification('info', 'Asset removed from review');
+  }, [addNotification, dataset, mode, onUpdateDataset, updateSourceImage]);
 
   const addItemsToDataset = useCallback((nextItems: WorkspaceImage[]) => {
     if (!dataset || !onUpdateDataset) {
       return;
     }
 
-    const sourceImageIds = nextItems.map((item) => item.sourceImageId).filter(Boolean);
-    if (sourceImageIds.length === 0) {
+    const imageIds = nextItems.filter((item) => item.kind === 'image').map((item) => item.sourceImageId).filter(Boolean);
+    const assetPaths = filterLegacyProjectAssetPaths(nextItems.filter((item) => item.kind !== 'image').map((item) => item.assetPath).filter(isString));
+    const psdAssetPaths = filterLegacyProjectAssetPaths(nextItems.filter((item) => item.kind === 'psd').map((item) => item.assetPath).filter(isString));
+    if (imageIds.length === 0 && assetPaths.length === 0) {
       return;
     }
 
-    const nextAssetIds = [...new Set([...dataset.assetIds, ...sourceImageIds])];
-    const addedCount = nextAssetIds.length - dataset.assetIds.length;
+    const nextAssetIds = [...new Set([...dataset.assetIds, ...imageIds])];
+    const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...assetPaths])]);
+    const nextPsdAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.psdAssetPaths ?? []), ...psdAssetPaths])]);
+    const addedCount =
+      nextAssetIds.length -
+      dataset.assetIds.length +
+      nextAssetPaths.length -
+      filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).length;
     if (addedCount === 0) {
       return;
     }
 
-    void onUpdateDataset({ assetIds: nextAssetIds });
+    void onUpdateDataset({ assetIds: nextAssetIds, assetPaths: nextAssetPaths, psdAssetPaths: nextPsdAssetPaths });
     addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to Dataset`);
   }, [addNotification, dataset, onUpdateDataset]);
 
   const handleToggleActive = useCallback((item: WorkspaceImage) => {
     const excludedFromDataset = !item.excludedFromDataset;
-    if (item.kind === 'source' && item.sourceImageId) {
+    if (item.kind === 'image' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { excludedFromDataset });
-    } else if (item.syntheticImageId) {
-      updateDatasetItem(item.syntheticImageId, { excludedFromDataset });
     }
-    addNotification('info', excludedFromDataset ? 'Image deactivated' : 'Image activated');
-  }, [addNotification, updateDatasetItem, updateSourceImage]);
+    addNotification('info', excludedFromDataset ? 'Asset deactivated' : 'Asset activated');
+  }, [addNotification, updateSourceImage]);
 
   const handleOpenTool = useCallback((stage: StageName) => {
     setOpenItemMenuId(null);
@@ -510,7 +627,7 @@ export const FinalReviewStage = ({
       <div className="text-center py-12">
         <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
         <p className="text-muted-foreground">
-          {mode === 'select' ? 'No project assets available to add.' : 'No Source or Synthetic images to review.'}
+          {mode === 'select' ? 'No project assets available to add.' : 'No assets to review.'}
         </p>
       </div>
     );
@@ -570,12 +687,12 @@ export const FinalReviewStage = ({
               }`}
             >
               Type
-              <span className="font-mono text-xs text-muted-foreground">{selectedKinds.size}/2</span>
+              <span className="font-mono text-xs text-muted-foreground">{selectedKinds.size}/{REVIEW_KINDS.length}</span>
               <ChevronDown className="h-4 w-4" />
             </button>
             {openMenu === 'kind' && (
               <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {(['source', 'synthetic'] as const).map((kind) => (
+                {REVIEW_KINDS.map((kind) => (
                   <button
                     key={kind}
                     type="button"
@@ -674,6 +791,17 @@ export const FinalReviewStage = ({
           <div className={`${showSelectActions && sortedItems.length > 0 ? '' : 'ml-auto'} rounded-md border border-border bg-background px-3 py-2 text-sm`}>
             <span className="text-muted-foreground">Visible</span>
             <span className="ml-2 font-mono font-medium">{sortedItems.length}</span>
+            {psdDiagnostics.total > 0 ? (
+              <span className="ml-3 text-muted-foreground">
+                PSD <span className="font-mono text-foreground">{psdDiagnostics.ready}/{psdDiagnostics.total}</span>
+                {psdDiagnostics.generating > 0 ? (
+                  <span className="ml-2">Generating <span className="font-mono text-foreground">{psdDiagnostics.generating}</span></span>
+                ) : null}
+                {psdDiagnostics.failed > 0 ? (
+                  <span className="ml-2">Failed <span className="font-mono text-foreground">{psdDiagnostics.failed}</span></span>
+                ) : null}
+              </span>
+            ) : null}
             {inactiveCount > 0 && (
               <span className="ml-3 text-muted-foreground">
                 Inactive <span className="font-mono text-foreground">{inactiveCount}</span>

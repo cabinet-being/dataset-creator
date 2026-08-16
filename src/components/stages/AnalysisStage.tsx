@@ -1677,7 +1677,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
     return (
       <div className="text-center py-12">
         <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No Source or Synthetic images to analyze.</p>
+        <p className="text-muted-foreground">No workspace images to analyze.</p>
       </div>
     );
   }
@@ -2192,7 +2192,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
       <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-4">
         <p className="text-sm text-blue-600">
           Analyze thumbnails and the similarity map here. Caption and export use this same shared
-          Source/Synthetic workspace directly.
+          workspace images directly.
         </p>
       </div>
     </div>

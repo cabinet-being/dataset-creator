@@ -14,6 +14,8 @@ import {
 } from '../types';
 import { OBJECT_STORES } from '../lib/constants';
 import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
+import { snapshotFileIfNeeded } from '../services/project/fileSnapshotService';
+import { filterLegacyProjectAssetPaths, isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 
 const revokePreviewUrl = (previewUrl: string | undefined) => {
   if (!previewUrl) {
@@ -31,6 +33,14 @@ const stripSyntheticPreviewUrl = (item: SyntheticImage): SyntheticImage => ({
   ...item,
   previewUrl: undefined,
 });
+
+const isLegacyDatasetItem = (item: SyntheticImage): boolean =>
+  [item.manifestPath, item.imageDataPath, item.psdDataPath]
+    .filter((path): path is string => Boolean(path))
+    .some((path) => isLegacyProjectRootPath(path));
+
+const getPsdAssetPaths = (assetPaths: string[]): string[] =>
+  filterLegacyProjectAssetPaths(assetPaths).filter((path) => path.toLowerCase().endsWith('.psd'));
 
 interface ProjectStore extends ProjectState {
   // Project management
@@ -50,7 +60,7 @@ interface ProjectStore extends ProjectState {
   // Datasets
   createDataset: (name?: string) => Dataset;
   upsertDataset: (dataset: Dataset) => void;
-  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) => void;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) => void;
   removeDataset: (id: string) => void;
   addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
@@ -105,17 +115,27 @@ export const useProjectStore = create<ProjectStore>()(
             }
 
             const defaults = createProject(project.name);
+            const supportedDatasetItems = Object.fromEntries(
+              Object.entries(project.datasetItems ?? {}).filter(([, item]) => !isLegacyDatasetItem(item))
+            );
+            for (const [id, item] of Object.entries(project.datasetItems ?? {})) {
+              if (isLegacyDatasetItem(item)) {
+                void dbDelete(OBJECT_STORES.DATASET_ITEMS, id);
+              }
+            }
 
             return {
               ...defaults,
               ...project,
+              datasetItems: supportedDatasetItems,
               datasets: Object.fromEntries(
                 Object.entries(project.datasets ?? {}).map(([id, dataset]) => [
                   id,
                   {
                     ...dataset,
                     assetIds: [...new Set(dataset.assetIds ?? [])],
-                    psdAssetPaths: [...new Set(dataset.psdAssetPaths ?? [])],
+                    assetPaths: filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]),
+                    psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(dataset.psdAssetPaths ?? [])]),
                     overwriteCaptions: dataset.overwriteCaptions ?? false,
                     captionOverrides: dataset.captionOverrides ?? {},
                   },
@@ -184,10 +204,16 @@ export const useProjectStore = create<ProjectStore>()(
             return;
           }
 
-          const hydratedImages = storedImages.map((image) => ({
-            ...image,
-            previewUrl: URL.createObjectURL(image.originalFile),
-          }));
+          const hydratedImages = await Promise.all(
+            storedImages.map(async (image) => {
+              const originalFile = await snapshotFileIfNeeded(image.originalFile);
+              return {
+                ...image,
+                originalFile,
+                previewUrl: URL.createObjectURL(originalFile),
+              };
+            })
+          );
 
           set((state) => ({
             ...state,
@@ -294,7 +320,8 @@ export const useProjectStore = create<ProjectStore>()(
               [dataset.id]: {
                 ...dataset,
                 assetIds: [...new Set(dataset.assetIds)],
-                psdAssetPaths: [...new Set(dataset.psdAssetPaths ?? [])],
+                assetPaths: filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]),
+                psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(dataset.psdAssetPaths ?? [])]),
                 overwriteCaptions: dataset.overwriteCaptions ?? false,
                 captionOverrides: dataset.captionOverrides ?? {},
               },
@@ -317,7 +344,14 @@ export const useProjectStore = create<ProjectStore>()(
                   ...dataset,
                   ...updates,
                   assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
-                  psdAssetPaths: updates.psdAssetPaths ? [...new Set(updates.psdAssetPaths)] : dataset.psdAssetPaths,
+                  assetPaths: updates.assetPaths
+                    ? filterLegacyProjectAssetPaths([...new Set(updates.assetPaths)])
+                    : filterLegacyProjectAssetPaths(dataset.assetPaths),
+                  psdAssetPaths: updates.psdAssetPaths
+                    ? filterLegacyProjectAssetPaths([...new Set(updates.psdAssetPaths)])
+                    : updates.assetPaths
+                      ? getPsdAssetPaths(updates.assetPaths)
+                      : filterLegacyProjectAssetPaths(dataset.psdAssetPaths),
                   overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
                   captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
                   updatedAt: new Date(),
@@ -377,8 +411,17 @@ export const useProjectStore = create<ProjectStore>()(
 
         hydrateDatasetItems: async () => {
           const storedItems = await dbGetAll<SyntheticImage>(OBJECT_STORES.DATASET_ITEMS);
+          const currentSourceIds = new Set(Object.keys(get().sourceImages));
+          const supportedItems = storedItems.filter(
+            (item) => !isLegacyDatasetItem(item) && currentSourceIds.has(item.sourceImageId)
+          );
+          await Promise.all(
+            storedItems
+              .filter((item) => !supportedItems.includes(item))
+              .map((item) => dbDelete(OBJECT_STORES.DATASET_ITEMS, item.id))
+          );
 
-          if (storedItems.length === 0) {
+          if (supportedItems.length === 0) {
             return;
           }
 
@@ -386,7 +429,7 @@ export const useProjectStore = create<ProjectStore>()(
             ...state,
             datasetItems: {
               ...state.datasetItems,
-              ...Object.fromEntries(storedItems.map((item) => [item.id, stripSyntheticPreviewUrl(item)])),
+              ...Object.fromEntries(supportedItems.map((item) => [item.id, stripSyntheticPreviewUrl(item)])),
             },
             lastModified: new Date(),
           }));

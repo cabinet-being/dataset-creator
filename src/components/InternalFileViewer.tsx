@@ -10,7 +10,7 @@ type InternalFileViewerProps = {
   fileKind: ExplorerFileKind;
   active?: boolean;
   onContextMenu?: (event: MouseEvent) => void;
-  onSavePsd?: (buffer: ArrayBuffer, saveCopy: boolean) => void | Promise<void>;
+  onSavePsd?: (payload: { psd: ArrayBuffer; preview?: ArrayBuffer }, saveCopy: boolean) => void | Promise<void>;
 };
 
 const useObjectUrl = (file: Blob | null) => {
