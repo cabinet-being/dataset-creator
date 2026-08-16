@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 type MasonryImageFrameProps = {
   src?: string;
@@ -21,15 +21,31 @@ export const MasonryImageFrame = ({
   placeholder,
   children,
 }: MasonryImageFrameProps) => {
-  const [loaded, setLoaded] = useState(false);
-  const [errored, setErrored] = useState(false);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [erroredSrc, setErroredSrc] = useState<string | null>(null);
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
-  const placeholderContent = !src || errored ? placeholder ?? `${safeWidth} x ${safeHeight}` : null;
+  const loaded = Boolean(src && loadedSrc === src);
+  const errored = Boolean(src && erroredSrc === src);
+  const placeholderContent = !src || !loaded || errored ? placeholder ?? `${safeWidth} x ${safeHeight}` : null;
 
   useEffect(() => {
-    setLoaded(false);
-    setErrored(false);
+    if (!src) {
+      setLoadedSrc(null);
+      setErroredSrc(null);
+      return;
+    }
+
+    setErroredSrc((current) => (current === src ? null : current));
+    const image = imageRef.current;
+    if (image?.complete) {
+      if (image.naturalWidth > 0) {
+        setLoadedSrc(src);
+      } else {
+        setErroredSrc(src);
+      }
+    }
   }, [src]);
 
   return (
@@ -49,6 +65,7 @@ export const MasonryImageFrame = ({
         <img
           src={src}
           alt={alt}
+          ref={imageRef}
           className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${
             loaded ? 'opacity-100' : 'opacity-0'
           } ${imageClassName}`.trim()}
@@ -56,12 +73,12 @@ export const MasonryImageFrame = ({
           decoding="async"
           draggable={false}
           onLoad={() => {
-            setLoaded(true);
-            setErrored(false);
+            setLoadedSrc(src);
+            setErroredSrc((current) => (current === src ? null : current));
           }}
           onError={() => {
-            setLoaded(false);
-            setErrored(true);
+            setLoadedSrc((current) => (current === src ? null : current));
+            setErroredSrc(src);
           }}
         />
       ) : null}
