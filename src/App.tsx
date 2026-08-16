@@ -85,6 +85,7 @@ import {
 } from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { BrickMasonry } from './components/ui/BrickMasonry';
+import { InspectorSection } from './components/ui/InspectorSection';
 import { WorkspacePreviewCard } from './components/ui/WorkspacePreviewCard';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
 import { FinalReviewStage } from './components/stages/FinalReviewStage';
@@ -111,8 +112,8 @@ import { type BrickColumnCount, type Dataset, type StageName } from './types';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
-const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
 const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
+type InspectorSectionId = 'file' | 'dataset' | 'photopea' | 'psd' | 'caption';
 
 type FilePickerWindow = Window &
   typeof globalThis & {
@@ -156,9 +157,15 @@ type ToolWorkspaceTab = {
   id: string;
   kind: 'tool';
   stage: StageName;
+  nested?: ToolNestedView;
 };
 
 type DatasetToolStage = Extract<StageName, 'select' | 'analysis' | 'review' | 'tagging'>;
+
+type ToolNestedView = {
+  kind: 'file';
+  itemId: string;
+};
 
 const DATASET_TOOL_LABELS: Record<DatasetToolStage, string> = {
   select: 'Select',
@@ -172,6 +179,7 @@ type DatasetToolWorkspaceTab = {
   kind: 'dataset-tool';
   datasetId: string;
   stage: DatasetToolStage;
+  nested?: ToolNestedView;
 };
 
 type FileWorkspaceTab = {
@@ -391,7 +399,9 @@ type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElem
 const renderTool = (
   currentStage: StageName,
   projectDirectoryHandle?: ProjectDirectoryHandle | null,
-  onOpenAssetContextMenu?: AssetContextMenuHandler
+  onOpenAssetContextMenu?: AssetContextMenuHandler,
+  nested?: ToolNestedView,
+  onOpenNestedFile?: (itemId: string) => void
 ) => {
   switch (currentStage) {
     case 'hub':
@@ -401,13 +411,25 @@ const renderTool = (
     case 'select':
       return <SimilarityReviewStage />;
     case 'clean':
-      return <CleanupStageComponent projectDirectoryHandle={projectDirectoryHandle} />;
+      return (
+        <CleanupStageComponent
+          selectedImageId={nested?.itemId ?? null}
+          onSelectImage={onOpenNestedFile}
+          projectDirectoryHandle={projectDirectoryHandle}
+        />
+      );
     case 'analysis':
       return <AnalysisStage />;
     case 'review':
       return <FinalReviewStage onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'tagging':
-      return <TaggingStageComponent onOpenAssetContextMenu={onOpenAssetContextMenu} />;
+      return (
+        <TaggingStageComponent
+          selectedItemId={nested?.itemId ?? null}
+          onOpenItem={onOpenNestedFile}
+          onOpenAssetContextMenu={onOpenAssetContextMenu}
+        />
+      );
     case 'export':
       return <ExportStage />;
     default:
@@ -1033,6 +1055,13 @@ function App() {
   } | null>(null);
   const [inspectorRenameValue, setInspectorRenameValue] = useState('');
   const [inspectorRenaming, setInspectorRenaming] = useState(false);
+  const [inspectorSectionsOpen, setInspectorSectionsOpen] = useState<Record<InspectorSectionId, boolean>>({
+    file: true,
+    dataset: true,
+    photopea: true,
+    psd: true,
+    caption: true,
+  });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
   const [datasetWorkspaceFileAssets, setDatasetWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
@@ -1053,6 +1082,12 @@ function App() {
 
   const focusFloatingPanel = (panel: 'project' | 'inspector') => {
     setFloatingPanelOrder((order) => [...order.filter((item) => item !== panel), panel]);
+  };
+
+  const setInspectorSectionOpen = (section: InspectorSectionId, open: boolean) => {
+    setInspectorSectionsOpen((sections) =>
+      sections[section] === open ? sections : { ...sections, [section]: open }
+    );
   };
 
   useEffect(() => {
@@ -1276,6 +1311,32 @@ function App() {
   const activeFileSource = activeTab && isFileBackedTab(activeTab) && activeTab.workspaceImageId
     ? sourceImagesById[activeTab.workspaceImageId]
     : null;
+  const activeToolNestedView =
+    activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.nested : undefined;
+
+  const setToolTabNestedView = (tabId: string, nested: ToolNestedView | undefined) => {
+    setOpenTabs((tabs) =>
+      tabs.map((tab) =>
+        tab.id === tabId && (tab.kind === 'tool' || tab.kind === 'dataset-tool')
+          ? { ...tab, nested }
+          : tab
+      )
+    );
+  };
+
+  const openActiveToolNestedFile = (itemId: string) => {
+    if (!activeTab || (activeTab.kind !== 'tool' && activeTab.kind !== 'dataset-tool')) {
+      return;
+    }
+    setToolTabNestedView(activeTab.id, { kind: 'file', itemId });
+  };
+
+  const closeActiveToolNestedView = () => {
+    if (!activeTab || (activeTab.kind !== 'tool' && activeTab.kind !== 'dataset-tool')) {
+      return;
+    }
+    setToolTabNestedView(activeTab.id, undefined);
+  };
 
   useEffect(() => {
     setInspectorRenaming(false);
@@ -1387,7 +1448,6 @@ function App() {
   const showEditToolbar = (activeStage === 'clean' || activeTab?.kind === 'file-edit') && editToolbar.visible;
   const showHeaderEditToolbar = activeStage === 'clean' && editToolbar.visible;
   const showTaggingToolbar = activeStage === 'tagging' || activeTab?.kind === 'file-caption';
-  const showTaggingBackButton = showTaggingToolbar && taggingToolbar.visible;
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
@@ -2217,6 +2277,8 @@ function App() {
           <TaggingStageComponent
             datasetId={dataset.id}
             onUpdateDataset={updateDataset}
+            selectedItemId={tab.nested?.itemId ?? null}
+            onOpenItem={(itemId) => setToolTabNestedView(tab.id, { kind: 'file', itemId })}
             onOpenAssetContextMenu={openAssetExplorerContextMenu}
           />
         );
@@ -2491,8 +2553,8 @@ function App() {
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
 
     return (
-      <div className="space-y-4 text-xs">
-        <div className="flex items-start gap-2">
+      <div className="text-xs">
+        <div className="mb-3 flex items-start gap-2">
           <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 flex-1">
             {inspectorRenaming && canRename ? (
@@ -2538,9 +2600,16 @@ function App() {
         </div>
 
         {activeTab && isFileBackedTab(activeTab) && fileInspectorMetadata ? (
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">File</p>
+          <InspectorSection
+            title="File"
+            open={inspectorSectionsOpen.file}
+            onOpenChange={(open) => setInspectorSectionOpen('file', open)}
+          >
             <div className="space-y-2">
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Filename</span>
+                <span className="min-w-0 truncate font-medium">{activeTab.name}</span>
+              </div>
               <div className="flex justify-between gap-3">
                 <span className="text-muted-foreground">Format</span>
                 <span className="font-medium">{fileInspectorMetadata.format}</span>
@@ -2565,25 +2634,16 @@ function App() {
                   </div>
                 </>
               ) : null}
-              {fileInspectorMetadata.tags?.length ? (
-                <div>
-                  <p className="mb-1 text-muted-foreground">Tags</p>
-                  <div className="flex flex-wrap gap-1">
-                    {fileInspectorMetadata.tags.map((tag) => (
-                      <span key={tag} className="rounded bg-secondary px-2 py-1">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </div>
-          </div>
+          </InspectorSection>
         ) : null}
 
         {activeDataset ? (
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dataset</p>
+          <InspectorSection
+            title="Dataset"
+            open={inspectorSectionsOpen.dataset}
+            onOpenChange={(open) => setInspectorSectionOpen('dataset', open)}
+          >
             <div className="space-y-3">
               <div>
                 <label className="mb-1 block text-muted-foreground">Trigger Word</label>
@@ -2611,17 +2671,16 @@ function App() {
                 <span>Overwrite Caption</span>
               </label>
             </div>
-          </div>
+          </InspectorSection>
         ) : null}
 
         {activeTab?.kind === 'file-edit' ? (
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Photopea</p>
+          <InspectorSection
+            title="Photopea"
+            open={inspectorSectionsOpen.photopea}
+            onOpenChange={(open) => setInspectorSectionOpen('photopea', open)}
+          >
             <div className="grid gap-2">
-              <button type="button" onClick={() => runEditCommand('back')} disabled={editToolbar.isProcessing} className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
-                <ArrowLeft className="h-3.5 w-3.5" />
-                Back
-              </button>
               <a href="https://www.photopea.com" target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary">
                 <ExternalLink className="h-3.5 w-3.5" />
                 Photopea
@@ -2636,12 +2695,15 @@ function App() {
                 Cancel
               </button>
             </div>
-          </div>
+          </InspectorSection>
         ) : null}
 
         {activeTab && isFileBackedTab(activeTab) && activeTab.fileKind === 'psd' ? (
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">PSD</p>
+          <InspectorSection
+            title="PSD"
+            open={inspectorSectionsOpen.psd}
+            onOpenChange={(open) => setInspectorSectionOpen('psd', open)}
+          >
             <div className="grid gap-2">
               <button
                 type="button"
@@ -2658,20 +2720,29 @@ function App() {
                 Save Copy
               </button>
             </div>
-          </div>
+          </InspectorSection>
         ) : null}
 
         {activeTab?.kind === 'file-caption' || activeStage === 'tagging' ? (
-          <div className="border-t border-border pt-3">
-            <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Caption</p>
-            {showTaggingBackButton ? (
-              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent(TAGGING_TOOL_COMMAND_EVENT, { detail: 'back' }))} className="mb-3 flex w-full items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary">
-                <ArrowLeft className="h-3.5 w-3.5" />
-                Back
-              </button>
+          <InspectorSection
+            title="Caption"
+            open={inspectorSectionsOpen.caption}
+            onOpenChange={(open) => setInspectorSectionOpen('caption', open)}
+          >
+            {fileInspectorMetadata?.tags?.length ? (
+              <div>
+                <p className="mb-1 text-muted-foreground">Tags</p>
+                <div className="flex flex-wrap gap-1">
+                  {fileInspectorMetadata.tags.map((tag) => (
+                    <span key={tag} className="rounded bg-secondary px-2 py-1">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
             ) : null}
             <div id="dataset-tags-inspector-root" />
-          </div>
+          </InspectorSection>
         ) : null}
 
       </div>
@@ -4563,15 +4634,6 @@ function App() {
           </div>
           {showHeaderEditToolbar && (
             <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
-              <button
-                type="button"
-                onClick={() => runEditCommand('back')}
-                disabled={editToolbar.isProcessing}
-                className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
-                title="Back"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-              </button>
               <a
                 href="https://www.photopea.com"
                 target="_blank"
@@ -4834,10 +4896,21 @@ function App() {
             <div
               className={
                 showEditToolbar || showFullscreenTagging || (activeTab && isFileBackedTab(activeTab))
-                  ? 'h-full min-h-0'
-                  : 'p-4 md:p-6'
+                  ? 'relative h-full min-h-0'
+                  : 'relative p-4 md:p-6'
               }
             >
+              {activeToolNestedView ? (
+                <button
+                  type="button"
+                  onClick={closeActiveToolNestedView}
+                  className="absolute left-3 top-3 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card/95 text-muted-foreground shadow hover:bg-secondary hover:text-foreground"
+                  title="Back"
+                  aria-label="Back to tool"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              ) : null}
               <Suspense
                 fallback={
                   <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
@@ -4891,7 +4964,13 @@ function App() {
                 ) : activeTab && isDatasetToolTab(activeTab) ? (
                   renderDatasetTool(activeTab)
                 ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
-                  renderTool(activeStage, projectDirectoryHandle, openAssetExplorerContextMenu)
+                  renderTool(
+                    activeStage,
+                    projectDirectoryHandle,
+                    openAssetExplorerContextMenu,
+                    activeToolNestedView,
+                    openActiveToolNestedFile
+                  )
                 ) : (
                   <EmptyWorkspacePlaceholder />
                 )}

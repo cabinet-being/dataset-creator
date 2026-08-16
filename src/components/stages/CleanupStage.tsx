@@ -65,10 +65,11 @@ const postImageBufferToPhotopea = (photopeaWindow: Window, buffer: ArrayBuffer) 
 };
 
 type CleanupStageProps = {
-  selectedImageId?: string;
+  selectedImageId?: string | null;
   singleFileMode?: boolean;
   active?: boolean;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
+  onSelectImage?: (imageId: string) => void;
 };
 
 export const CleanupStage = ({
@@ -76,6 +77,7 @@ export const CleanupStage = ({
   singleFileMode = false,
   active = true,
   projectDirectoryHandle = null,
+  onSelectImage,
 }: CleanupStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
@@ -147,6 +149,16 @@ export const CleanupStage = ({
   );
 
   useEffect(() => {
+    if (selectedImageId !== undefined) {
+      if (selectedImageId) {
+        setSelectedImageKey(selectedImageId);
+        setHasPhotopeaMounted(true);
+      } else {
+        setSelectedImageKey(null);
+      }
+      return;
+    }
+
     const nextSelectedImageId = selectedImageId ?? initialSelectedImageId;
     if (nextSelectedImageId && nextSelectedImageId !== selectedImageKey) {
       setSelectedImageKey(nextSelectedImageId);
@@ -556,7 +568,13 @@ export const CleanupStage = ({
           getEstimate={(image) => image.height / Math.max(1, image.width)}
           renderItem={(image) => (
             <button
-              onClick={() => selectImageForEditing(image.id)}
+              onClick={() => {
+                if (onSelectImage) {
+                  onSelectImage(image.id);
+                  return;
+                }
+                selectImageForEditing(image.id);
+              }}
               className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-secondary ${getWorkspaceKindFrameClass(image.kind)} hover:border-primary transition-colors text-left`}
               style={getWorkspaceKindFrameStyle(image.kind)}
             >

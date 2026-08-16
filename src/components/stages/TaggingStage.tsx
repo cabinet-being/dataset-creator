@@ -29,8 +29,6 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import type { Dataset } from '../../types';
 
-const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
-
 type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
 
@@ -449,13 +447,14 @@ const TaggingCard = memo(
 TaggingCard.displayName = 'TaggingCard';
 
 type TaggingStageProps = {
-  selectedItemId?: string;
+  selectedItemId?: string | null;
   singleFileMode?: boolean;
   active?: boolean;
   datasetId?: string;
   onUpdateDataset?: (
     updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => void | Promise<void>;
+  onOpenItem?: (itemId: string) => void;
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
@@ -465,6 +464,7 @@ export const TaggingStage = ({
   active = true,
   datasetId,
   onUpdateDataset,
+  onOpenItem,
   onOpenAssetContextMenu,
 }: TaggingStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -609,26 +609,18 @@ export const TaggingStage = ({
   }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, projectDirectoryHandle]);
 
   useEffect(() => {
+    if (selectedItemIdProp !== undefined) {
+      setSelectedItemId(selectedItemIdProp);
+      setSelectedTagInput('');
+      return;
+    }
+
     const nextSelectedItemId = selectedItemIdProp ?? initialSelectedItemId;
     if (nextSelectedItemId && nextSelectedItemId !== selectedItemId) {
       setSelectedItemId(nextSelectedItemId);
       setSelectedTagInput('');
     }
   }, [initialSelectedItemId, selectedItemId, selectedItemIdProp]);
-
-  useEffect(() => {
-    const handleTaggingCommand = (event: Event) => {
-      if ((event as CustomEvent<'back'>).detail !== 'back') {
-        return;
-      }
-
-      setSelectedItemId(null);
-      setSelectedTagInput('');
-    };
-
-    window.addEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
-    return () => window.removeEventListener(TAGGING_TOOL_COMMAND_EVENT, handleTaggingCommand);
-  }, []);
 
   useEffect(() => {
     if (!active) {
@@ -1750,7 +1742,7 @@ export const TaggingStage = ({
               <TaggingCard
                 item={item}
                 previewUrl={previewUrls[item.id]}
-                onOpen={setSelectedItemId}
+                onOpen={onOpenItem ?? setSelectedItemId}
                 onSubmit={applyTagsToItem}
                 onRemoveTag={handleRemoveTag}
                 suggestions={manualTagSuggestions}
