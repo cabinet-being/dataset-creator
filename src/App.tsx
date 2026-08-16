@@ -1,7 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, ComponentType, DragEvent, ReactNode } from 'react';
+import type { ChangeEvent, ComponentType, DragEvent, MouseEvent, ReactNode } from 'react';
 import {
   AlertCircle,
   Archive,
@@ -46,7 +46,7 @@ import {
   TOOL_DESCRIPTIONS,
   URL_STAGE_ALIASES,
 } from './lib/constants';
-import { toWorkspaceImages } from './lib/workspaceImages';
+import { toWorkspaceImages, type WorkspaceImage } from './lib/workspaceImages';
 import { useWorkspacePreviewUrls } from './lib/previewUrlCache';
 import {
   createProjectDirectory,
@@ -383,7 +383,13 @@ const getAspectRatioLabel = (width: number, height: number): string => {
   return `${Math.round(width / value)}:${Math.round(height / value)}`;
 };
 
-const renderTool = (currentStage: StageName, projectDirectoryHandle?: ProjectDirectoryHandle | null) => {
+type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
+
+const renderTool = (
+  currentStage: StageName,
+  projectDirectoryHandle?: ProjectDirectoryHandle | null,
+  onOpenAssetContextMenu?: AssetContextMenuHandler
+) => {
   switch (currentStage) {
     case 'hub':
       return <ToolHub />;
@@ -396,9 +402,9 @@ const renderTool = (currentStage: StageName, projectDirectoryHandle?: ProjectDir
     case 'analysis':
       return <AnalysisStage />;
     case 'review':
-      return <FinalReviewStage />;
+      return <FinalReviewStage onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'tagging':
-      return <TaggingStageComponent />;
+      return <TaggingStageComponent onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'export':
       return <ExportStage />;
     default:
@@ -1801,6 +1807,29 @@ function App() {
     return source?.id ?? null;
   };
 
+  const openAssetExplorerContextMenu: AssetContextMenuHandler = (item, event) => {
+    const assetPath = item.assetPath;
+    if (!assetPath) {
+      addNotification('warning', 'This preview item is not linked to an Explorer file.');
+      return;
+    }
+
+    const path = assetPath.startsWith('Project/') ? assetPath : `Project/${assetPath}`;
+    const node = findExplorerNodeByPath(path) ?? {
+      name: item.fileName,
+      path,
+      kind: 'file' as const,
+    };
+    setActiveExplorerNode(node);
+    setSelectedExplorerPaths(new Set([node.path]));
+    setSelectionAnchorPath(node.path);
+    setExplorerContextMenu({
+      node,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
   const collectDatasetAssetIdsFromExplorerEntries = (entries: ExplorerItemEntry[]): string[] => {
     const assetIds = new Set<string>();
     const nodes = getAllExplorerNodes();
@@ -2099,14 +2128,6 @@ function App() {
 
     const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) =>
       updateDatasetFileBackedState(dataset, updates);
-    const openScopedTool = (stage: StageName) => {
-      if (stage === 'select' || stage === 'analysis' || stage === 'review' || stage === 'tagging') {
-        openDatasetToolTab(dataset.id, stage);
-        return;
-      }
-      navigateToStage(stage);
-    };
-
     switch (tab.stage) {
       case 'select':
         return (
@@ -2114,7 +2135,7 @@ function App() {
             datasetId={dataset.id}
             mode="select"
             onUpdateDataset={updateDataset}
-            onOpenTool={openScopedTool}
+            onOpenAssetContextMenu={openAssetExplorerContextMenu}
           />
         );
       case 'review':
@@ -2123,13 +2144,19 @@ function App() {
             datasetId={dataset.id}
             mode="review"
             onUpdateDataset={updateDataset}
-            onOpenTool={openScopedTool}
+            onOpenAssetContextMenu={openAssetExplorerContextMenu}
           />
         );
       case 'analysis':
         return <AnalysisStage datasetId={dataset.id} onUpdateDataset={updateDataset} />;
       case 'tagging':
-        return <TaggingStageComponent datasetId={dataset.id} onUpdateDataset={updateDataset} />;
+        return (
+          <TaggingStageComponent
+            datasetId={dataset.id}
+            onUpdateDataset={updateDataset}
+            onOpenAssetContextMenu={openAssetExplorerContextMenu}
+          />
+        );
       default:
         return null;
     }
@@ -4820,7 +4847,7 @@ function App() {
                 ) : activeTab && isDatasetToolTab(activeTab) ? (
                   renderDatasetTool(activeTab)
                 ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
-                  renderTool(activeStage, projectDirectoryHandle)
+                  renderTool(activeStage, projectDirectoryHandle, openAssetExplorerContextMenu)
                 ) : (
                   <EmptyWorkspacePlaceholder />
                 )}

@@ -14,6 +14,22 @@ type CleanupWorkingEdit = {
   height: number;
 };
 
+const withProjectRoot = (path: string | undefined): string | undefined => {
+  if (!path) {
+    return undefined;
+  }
+  return path.startsWith('Project/') ? path : `Project/${path}`;
+};
+
+const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
+  const extension = fileName.split('.').pop()?.toLowerCase();
+  if (extension && extension !== fileName.toLowerCase()) {
+    return extension.replace(/[^a-z0-9]/g, '') || 'bin';
+  }
+
+  return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
+};
+
 export type WorkspaceImage = {
   id: string;
   sourceImageId: string;
@@ -151,6 +167,10 @@ export const toWorkspaceImages = (
       displayIdentity: `${index + 1}`,
       fileName: createStandardImageFileName(image.id, image.fileName, image.mimeType),
       originalFileName: image.originalFileName,
+      assetPath: withProjectRoot(
+        image.originalFilePath ??
+          `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`
+      ),
       imageData: workingEdit?.blob ?? image.originalFile,
       previewUrl: workingEdit?.previewUrl ?? image.previewUrl,
       width: workingEdit?.width ?? image.width,
@@ -180,6 +200,7 @@ export const toWorkspaceImages = (
         label: 'Generated',
         displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
         fileName: `${image.id}.png`,
+        assetPath: withProjectRoot(image.imageDataPath ?? `.dataset-creator-data/generated-images/${image.id}/image.png`),
         imageData: workingEdit?.blob ?? image.imageData,
         psdData: image.psdData,
         previewUrl: workingEdit?.previewUrl ?? image.previewUrl,

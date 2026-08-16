@@ -1,5 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertCircle, Plus, Plug, Sparkles, Upload, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
@@ -18,10 +19,6 @@ import {
 } from '../../services/tagging/localTaggerFileSettings';
 import {
   getWorkspaceKindBadgeClass,
-  getWorkspaceKindFrameClass,
-  getWorkspaceKindFrameOverlayClass,
-  getWorkspaceKindFrameOverlayStyle,
-  getWorkspaceKindFrameStyle,
   toWorkspaceReviewAssets,
   type WorkspaceFileAsset,
   type WorkspaceImage,
@@ -29,7 +26,7 @@ import {
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
-import { WorkspaceAssetFrame } from '../ui/WorkspaceAssetFrame';
+import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import type { Dataset } from '../../types';
 
 const TAGGING_TOOL_COMMAND_EVENT = 'dataset-creator-tagging-command';
@@ -132,6 +129,7 @@ type TaggingCardProps = {
   onSubmit: (itemId: string, value: string) => boolean;
   onRemoveTag: (itemId: string, tag: string) => void;
   suggestions: string[];
+  onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
 const TaggingCard = memo(
@@ -142,6 +140,7 @@ const TaggingCard = memo(
     onSubmit,
     onRemoveTag,
     suggestions,
+    onOpenContextMenu,
   }: TaggingCardProps) => {
     const inputRef = useRef<HTMLInputElement | null>(null);
     const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -277,27 +276,13 @@ const TaggingCard = memo(
     };
 
     return (
-      <div
-        className={`gallery-masonry-item rounded-lg overflow-hidden bg-card ${getWorkspaceKindFrameClass(item.kind)}`}
-        style={getWorkspaceKindFrameStyle(item.kind)}
-      >
-        <button
-          type="button"
+      <div className="overflow-hidden rounded-lg bg-card">
+        <WorkspacePreviewCard
+          item={item}
+          previewUrl={previewUrl}
           onClick={() => onOpen(item.id)}
-          className="block w-full text-left"
-          aria-label={`Open ${item.fileName} caption editor`}
-        >
-          <WorkspaceAssetFrame
-            item={item}
-            previewUrl={previewUrl}
-            alt={item.fileName}
-            placeholder="Preview unavailable"
-          >
-            <div
-              className={getWorkspaceKindFrameOverlayClass()}
-              style={getWorkspaceKindFrameOverlayStyle(item.kind)}
-            />
-
+          onOpenContextMenu={onOpenContextMenu}
+          footer={
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
               <div className="flex items-end justify-between gap-2">
                 <p className="min-w-0 truncate text-sm font-medium text-white">{item.fileName}</p>
@@ -306,8 +291,8 @@ const TaggingCard = memo(
                 </span>
               </div>
             </div>
-          </WorkspaceAssetFrame>
-        </button>
+          }
+        />
 
         <div className="p-3 space-y-3">
           <div className="rounded-md border border-border bg-secondary/40 p-2 h-20 overflow-y-auto">
@@ -470,6 +455,7 @@ type TaggingStageProps = {
   onUpdateDataset?: (
     updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => void | Promise<void>;
+  onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
 export const TaggingStage = ({
@@ -478,6 +464,7 @@ export const TaggingStage = ({
   active = true,
   datasetId,
   onUpdateDataset,
+  onOpenAssetContextMenu,
 }: TaggingStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
@@ -1766,6 +1753,7 @@ export const TaggingStage = ({
                 onSubmit={applyTagsToItem}
                 onRemoveTag={handleRemoveTag}
                 suggestions={manualTagSuggestions}
+                onOpenContextMenu={onOpenAssetContextMenu}
               />
             )}
           />

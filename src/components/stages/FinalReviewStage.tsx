@@ -1,26 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import {
   AlertCircle,
   ArrowUpDown,
-  BarChart3,
   Check,
   ChevronDown,
-  Edit3,
-  EyeOff,
-  Tags,
-  MoreVertical,
   Plus,
-  Trash2,
-  Undo2,
   X,
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
 import {
-  getWorkspaceKindBadgeClass,
-  getWorkspaceKindFrameClass,
-  getWorkspaceKindFrameOverlayClass,
-  getWorkspaceKindFrameOverlayStyle,
-  getWorkspaceKindFrameStyle,
   toWorkspaceReviewAssets,
   type WorkspaceFileAsset,
   type WorkspaceImage,
@@ -31,9 +20,9 @@ import { filterLegacyProjectAssetPaths } from '../../services/project/projectPat
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { BrickMasonry } from '../ui/BrickMasonry';
-import { WorkspaceAssetFrame } from '../ui/WorkspaceAssetFrame';
+import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
-import type { AspectRatio, Dataset, StageName, WorkspaceImageKind } from '../../types';
+import type { AspectRatio, Dataset, WorkspaceImageKind } from '../../types';
 
 type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | null;
 type SortMode = 'identity-asc' | 'identity-desc' | 'kind' | 'aspect' | 'size-desc' | 'size-asc';
@@ -42,17 +31,10 @@ type ExportStatus = 'active' | 'inactive';
 type ReviewCardProps = {
   item: WorkspaceImage;
   previewUrl?: string;
-  menuOpen: boolean;
-  onToggleMenu: (id: string) => void;
-  onCloseMenu: () => void;
-  onDelete: (item: WorkspaceImage) => void;
-  onToggleActive: (item: WorkspaceImage) => void;
-  onOpenTool: (stage: StageName) => void;
-  deleteLabel?: string;
-  showActiveToggle?: boolean;
   quickActionLabel?: string;
   quickActionVariant?: 'add' | 'remove';
   onQuickAction?: (item: WorkspaceImage) => void;
+  onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
 type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'video' | 'psd'>;
@@ -94,17 +76,10 @@ const ReviewCard = memo(
   ({
     item,
     previewUrl,
-    menuOpen,
-    onToggleMenu,
-    onCloseMenu,
-    onDelete,
-    onToggleActive,
-    onOpenTool,
-    deleteLabel = 'Delete',
-    showActiveToggle = true,
     quickActionLabel,
     quickActionVariant = 'add',
     onQuickAction,
+    onOpenContextMenu,
   }: ReviewCardProps) => {
   const QuickActionIcon = quickActionVariant === 'remove' ? X : Plus;
   const quickActionClass =
@@ -113,134 +88,30 @@ const ReviewCard = memo(
       : 'bg-primary text-primary-foreground hover:bg-primary/90';
 
   return (
-    <div
-      className={`gallery-masonry-item group relative overflow-visible rounded-lg ${
-        item.excludedFromDataset ? 'border-muted opacity-75' : getWorkspaceKindFrameClass(item.kind)
-      }`}
+    <WorkspacePreviewCard
+      item={item}
+      previewUrl={previewUrl}
+      imageClassName={item.excludedFromDataset ? 'grayscale' : ''}
+      onOpenContextMenu={onOpenContextMenu}
     >
-      <WorkspaceAssetFrame
-        item={item}
-        previewUrl={previewUrl}
-        alt={item.fileName}
-        className="rounded-lg"
-        imageClassName={item.excludedFromDataset ? 'grayscale' : ''}
-        placeholder="Preview unavailable"
-      >
-        <div
-          className={getWorkspaceKindFrameOverlayClass()}
-          style={getWorkspaceKindFrameOverlayStyle(item.kind)}
-        />
-
-        {quickActionLabel && onQuickAction ? (
-          <button
-            type="button"
-            onClick={() => onQuickAction(item)}
-            className={`absolute left-1/2 top-1/2 z-20 inline-flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md shadow-lg transition-colors ${quickActionClass}`}
-            aria-label={quickActionLabel}
-            title={quickActionLabel}
-          >
-            <QuickActionIcon className="h-6 w-6" />
-          </button>
-        ) : null}
-
+      {quickActionLabel && onQuickAction ? (
         <button
           type="button"
-          onClick={() => onToggleMenu(item.id)}
-          className="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md bg-black/65 text-white opacity-0 transition-opacity hover:bg-black/85 group-hover:opacity-100 focus:opacity-100"
-          title="Image actions"
+          onClick={() => onQuickAction(item)}
+          className={`absolute left-1/2 top-1/2 z-20 inline-flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md shadow-lg transition-colors ${quickActionClass}`}
+          aria-label={quickActionLabel}
+          title={quickActionLabel}
         >
-          <MoreVertical size={16} />
+          <QuickActionIcon className="h-6 w-6" />
         </button>
+      ) : null}
 
-        {menuOpen && (
-          <>
-            <button
-              type="button"
-              aria-label="Close asset menu"
-              className="fixed inset-0 z-[900] cursor-default"
-              onClick={onCloseMenu}
-            />
-            <div className="absolute right-2 top-11 z-[1000] w-56 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
-              {showActiveToggle ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onToggleActive(item);
-                      onCloseMenu();
-                    }}
-                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                  >
-                    {item.excludedFromDataset ? <Undo2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-                    <span>{item.excludedFromDataset ? 'Activate' : 'Deactivate'}</span>
-                  </button>
-                  <div className="my-1 h-px bg-border" />
-                </>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => onOpenTool('clean')}
-                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-              >
-                <Edit3 className="h-4 w-4" />
-                <span>Photopea</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onOpenTool('analysis')}
-                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-              >
-                <BarChart3 className="h-4 w-4" />
-                <span>Analysis</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onOpenTool('tagging')}
-                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-              >
-                <Tags className="h-4 w-4" />
-                <span>Caption</span>
-              </button>
-              <div className="my-1 h-px bg-border" />
-              <button
-                type="button"
-                onClick={() => {
-                  onDelete(item);
-                  onCloseMenu();
-                }}
-                className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="h-4 w-4" />
-                <span>{deleteLabel}</span>
-              </button>
-            </div>
-          </>
-        )}
-
-        {item.excludedFromDataset && !quickActionLabel && (
-          <div className="absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white">
-            Inactive
-          </div>
-        )}
-
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-          <div className="flex items-end justify-between gap-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
-              <p className="text-xs text-gray-300">
-                {ASPECT_RATIO_LABELS[item.aspectRatio]} · {item.width} x {item.height}
-              </p>
-            </div>
-            <span
-              className={getWorkspaceKindBadgeClass(item.kind)}
-              style={getWorkspaceKindFrameStyle(item.kind)}
-            >
-              {item.label}
-            </span>
-          </div>
+      {item.excludedFromDataset && !quickActionLabel && (
+        <div className="absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white">
+          Inactive
         </div>
-      </WorkspaceAssetFrame>
-    </div>
+      )}
+    </WorkspacePreviewCard>
   );
   }
 );
@@ -253,14 +124,14 @@ type FinalReviewStageProps = {
   onUpdateDataset?: (
     updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => void | Promise<void>;
-  onOpenTool?: (stage: StageName) => void;
+  onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
 export const FinalReviewStage = ({
   datasetId,
   mode = 'review',
   onUpdateDataset,
-  onOpenTool,
+  onOpenAssetContextMenu,
 }: FinalReviewStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
@@ -271,7 +142,6 @@ export const FinalReviewStage = ({
         | undefined) ?? {}
   );
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const addNotification = useUIStore((state) => state.addNotification);
   const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
@@ -286,7 +156,6 @@ export const FinalReviewStage = ({
     new Set(['active', 'inactive'])
   );
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
-  const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
   const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const psdDiagnosticsKeyRef = useRef('');
@@ -413,21 +282,6 @@ export const FinalReviewStage = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [openMenu]);
-
-  useEffect(() => {
-    if (!openItemMenuId) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpenItemMenuId(null);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [openItemMenuId]);
 
   const aspectRatioCounts = useMemo(
     () =>
@@ -593,34 +447,8 @@ export const FinalReviewStage = ({
     addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to Dataset`);
   }, [addNotification, dataset, onUpdateDataset]);
 
-  const handleToggleActive = useCallback((item: WorkspaceImage) => {
-    const excludedFromDataset = !item.excludedFromDataset;
-    if (item.kind === 'image' && item.sourceImageId) {
-      updateSourceImage(item.sourceImageId, { excludedFromDataset });
-    }
-    addNotification('info', excludedFromDataset ? 'Asset deactivated' : 'Asset activated');
-  }, [addNotification, updateSourceImage]);
-
-  const handleOpenTool = useCallback((stage: StageName) => {
-    setOpenItemMenuId(null);
-    if (onOpenTool) {
-      onOpenTool(stage);
-      return;
-    }
-    setCurrentStage(stage);
-  }, [onOpenTool, setCurrentStage]);
-
-  const handleToggleItemMenu = useCallback((id: string) => {
-    setOpenMenu(null);
-    setOpenItemMenuId((current) => (current === id ? null : id));
-  }, []);
-
   const showSelectActions = Boolean(dataset && onUpdateDataset && mode === 'select');
   const showReviewRemoveActions = Boolean(dataset && onUpdateDataset && mode === 'review');
-
-  const handleCloseItemMenu = useCallback(() => {
-    setOpenItemMenuId(null);
-  }, []);
 
   if (items.length === 0) {
     return (
@@ -820,14 +648,6 @@ export const FinalReviewStage = ({
             <ReviewCard
               item={item}
               previewUrl={previewUrls[item.id]}
-              menuOpen={openItemMenuId === item.id}
-              onToggleMenu={handleToggleItemMenu}
-              onCloseMenu={handleCloseItemMenu}
-              onDelete={handleDeleteItem}
-              onToggleActive={handleToggleActive}
-              onOpenTool={handleOpenTool}
-              deleteLabel={mode === 'select' ? 'Add to Dataset' : datasetId ? 'Remove from Dataset' : 'Delete'}
-              showActiveToggle={!datasetId}
               quickActionLabel={
                 showSelectActions ? 'Add to Dataset' : showReviewRemoveActions ? 'Remove from Dataset' : undefined
               }
@@ -839,6 +659,7 @@ export const FinalReviewStage = ({
                     ? handleDeleteItem
                     : undefined
               }
+              onOpenContextMenu={onOpenAssetContextMenu}
             />
           )}
         />
