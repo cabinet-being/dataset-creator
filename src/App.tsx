@@ -113,7 +113,7 @@ import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
-type InspectorSectionId = 'file' | 'dataset' | 'photopea' | 'psd' | 'caption';
+type InspectorSectionId = 'file' | 'dataset' | 'photopea' | 'caption';
 
 type FilePickerWindow = Window &
   typeof globalThis & {
@@ -138,6 +138,8 @@ type FileInspectorMetadata = {
   size: string;
   tags?: string[];
 };
+
+type InspectorContext = 'empty' | 'tool' | 'dataset' | 'review' | 'caption' | 'photopea';
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
@@ -215,6 +217,30 @@ const isToolTab = (tab: WorkspaceTab): tab is ToolWorkspaceTab => tab.kind === '
 const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
   tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption';
+
+const getInspectorContext = (tab: WorkspaceTab | null, activeStage: StageName | null): InspectorContext => {
+  if (!tab) {
+    return 'empty';
+  }
+
+  if (tab.kind === 'dataset') {
+    return 'dataset';
+  }
+
+  if (tab.kind === 'file-caption' || activeStage === 'tagging') {
+    return 'caption';
+  }
+
+  if (tab.kind === 'file-edit' || (tab.kind === 'file-view' && tab.fileKind === 'psd')) {
+    return 'photopea';
+  }
+
+  if (tab.kind === 'file-view') {
+    return 'review';
+  }
+
+  return activeStage ? 'tool' : 'empty';
+};
 
 type WorkspaceLayout = {
   openTabs: StageName[];
@@ -1059,7 +1085,6 @@ function App() {
     file: true,
     dataset: true,
     photopea: true,
-    psd: true,
     caption: true,
   });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
@@ -1313,6 +1338,15 @@ function App() {
     : null;
   const activeToolNestedView =
     activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.nested : undefined;
+  const activeInspectorContext = getInspectorContext(activeTab, activeStage);
+  const showFileReviewInspector = activeInspectorContext === 'review' && activeTab && isFileBackedTab(activeTab);
+  const showDatasetInspector = activeInspectorContext === 'dataset' && Boolean(activeDataset);
+  const showCaptionInspector = activeInspectorContext === 'caption';
+  const showPhotopeaInspector =
+    activeInspectorContext === 'photopea' &&
+    activeTab &&
+    isFileBackedTab(activeTab) &&
+    (activeTab.kind === 'file-edit' || activeTab.fileKind === 'psd');
 
   const setToolTabNestedView = (tabId: string, nested: ToolNestedView | undefined) => {
     setOpenTabs((tabs) =>
@@ -2599,7 +2633,7 @@ function App() {
           </div>
         </div>
 
-        {activeTab && isFileBackedTab(activeTab) && fileInspectorMetadata ? (
+        {showFileReviewInspector && fileInspectorMetadata ? (
           <InspectorSection
             title="File"
             open={inspectorSectionsOpen.file}
@@ -2638,7 +2672,7 @@ function App() {
           </InspectorSection>
         ) : null}
 
-        {activeDataset ? (
+        {showDatasetInspector && activeDataset ? (
           <InspectorSection
             title="Dataset"
             open={inspectorSectionsOpen.dataset}
@@ -2674,7 +2708,7 @@ function App() {
           </InspectorSection>
         ) : null}
 
-        {activeTab?.kind === 'file-edit' ? (
+        {showPhotopeaInspector ? (
           <InspectorSection
             title="Photopea"
             open={inspectorSectionsOpen.photopea}
@@ -2685,45 +2719,41 @@ function App() {
                 <ExternalLink className="h-3.5 w-3.5" />
                 Photopea
               </a>
-              <button type="button" onClick={() => runEditCommand('save')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-                Save
-              </button>
-              <button type="button" onClick={() => runEditCommand('saveCopy')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
-                Save Copy
-              </button>
-              <button type="button" onClick={() => runEditCommand('cancel')} disabled={editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
-                Cancel
-              </button>
+              {activeTab?.kind === 'file-edit' ? (
+                <>
+                  <button type="button" onClick={() => runEditCommand('save')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
+                    Save
+                  </button>
+                  <button type="button" onClick={() => runEditCommand('saveCopy')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
+                    Save Copy
+                  </button>
+                  <button type="button" onClick={() => runEditCommand('cancel')} disabled={editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => runPsdCommand('save')}
+                    className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runPsdCommand('saveCopy')}
+                    className="rounded border border-border px-2 py-2 text-left hover:bg-secondary"
+                  >
+                    Save Copy
+                  </button>
+                </>
+              )}
             </div>
           </InspectorSection>
         ) : null}
 
-        {activeTab && isFileBackedTab(activeTab) && activeTab.fileKind === 'psd' ? (
-          <InspectorSection
-            title="PSD"
-            open={inspectorSectionsOpen.psd}
-            onOpenChange={(open) => setInspectorSectionOpen('psd', open)}
-          >
-            <div className="grid gap-2">
-              <button
-                type="button"
-                onClick={() => runPsdCommand('save')}
-                className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90"
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                onClick={() => runPsdCommand('saveCopy')}
-                className="rounded border border-border px-2 py-2 text-left hover:bg-secondary"
-              >
-                Save Copy
-              </button>
-            </div>
-          </InspectorSection>
-        ) : null}
-
-        {activeTab?.kind === 'file-caption' || activeStage === 'tagging' ? (
+        {showCaptionInspector ? (
           <InspectorSection
             title="Caption"
             open={inspectorSectionsOpen.caption}
