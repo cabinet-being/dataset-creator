@@ -8,33 +8,36 @@
 <p align="center">
   <img src="https://img.shields.io/badge/react-18-61DAFB?logo=react">
   <img src="https://img.shields.io/badge/typescript-5-3178C6?logo=typescript&logoColor=white">
-  <img src="https://img.shields.io/badge/vite-5-9135FF?logo=vite">
+  <img src="https://img.shields.io/badge/vite-8-9135FF?logo=vite">
   <img src="https://img.shields.io/badge/tailwindcss-3-06B6D4?logo=tailwindcss">
   <img src="https://img.shields.io/badge/zustand-state-443E38">
   <img src="https://img.shields.io/badge/ONNX%20Runtime-Web-005CED">
   <img src="https://img.shields.io/badge/local--first-browser-2EA44F">
 </p>
 
-DatasetCreator is a local-first web app for preparing image datasets for Stable Diffusion training. It guides images through import, duplicate review, cleanup, cropping, augmentation, tagging, and export into ready-to-train PNG and TXT pairs.
+DatasetCreator is a local-first web app for preparing image datasets for Stable Diffusion training. It provides a browser workspace for importing assets, reviewing duplicates and similarity, editing images with Photopea, captioning with manual or local ONNX tags, and exporting ready-to-train PNG and TXT pairs.
 
 ## Overview
 
-The project is built around an eight-stage dataset workflow that keeps image processing in the browser. Users can import image files or folders, inspect similarity groups, clean and crop source images, generate augmentation variants, review the final set, add manual or local ONNX tags, and export a complete training dataset without a required backend.
+The project is built around a shared image workspace instead of a required backend. Users can import files, folders, or ZIP archives; organize assets in an Explorer; open tools and files in tabs; create dataset manifests; review image, video, and PSD assets; caption the final set; and export training files from the browser.
 
-DatasetCreator uses React 18, TypeScript, Vite, Tailwind CSS, Zustand, JSZip, Lucide React, and ONNX Runtime Web. Project state is browser-first, with IndexedDB-backed persistence where supported and local object URLs for previews.
+DatasetCreator uses React 18, TypeScript, Vite, Tailwind CSS, Zustand, JSZip, Lucide React, Radix UI, Photopea integration, and ONNX Runtime Web. Project state is browser-first, with IndexedDB-backed persistence and File System Access API support where available.
 
 ## Features
 
-- Image and folder import for building a dataset from local files.
+- File, folder, drag-and-drop, and ZIP import for local project assets.
+- Supported assets: BMP, GIF, JPEG/JPG, PNG, WebP, TXT, JSON, PSD, MP4, and WebM.
+- Workspace shell with Explorer, Inspector, Output panel, draggable tabs, and floating inspector.
+- Project directory support with `manifest.json`, cached previews, and auto-save.
+- Dataset manifests stored as `*.dataset.json` files.
 - Similarity review for finding duplicate or near-duplicate images.
-- Browser-based cleanup tools with brush, erase, zoom, undo, and redo support.
-- Multi-aspect crop workflow with aspect ratio locks.
-- Dataset augmentation with flips, color variants, and rotations.
-- Final review stage for inspecting generated dataset relationships.
-- Manual and bulk tag editing before export.
-- Local Danbooru-style ONNX auto-tagging from a user-selected model folder.
+- Analysis views for image relationships, pairs, clusters, and graph layout.
+- Photopea-based editing for workspace images and PSD files.
+- Review stage for image, video, and PSD assets with active/inactive export status.
+- Manual and bulk caption editing before export.
+- Local Danbooru-style ONNX auto-tagging from user-selected model files.
 - Training-ready export as matching PNG and TXT file pairs.
-- Local-first workflow with no required backend for the main pipeline.
+- ZIP export plus direct directory export in browsers that support `showDirectoryPicker`.
 - Static build suitable for GitHub Pages and other static hosts.
 
 ## Screenshots
@@ -49,7 +52,7 @@ docs/screenshots/tagging.png
 ## Installation
 
 1. Install the required tooling:
-   - Node.js 16 or newer;
+   - Node.js 20 is recommended;
    - npm;
    - a modern desktop browser.
 
@@ -83,28 +86,28 @@ npm run dev
 Open the local Vite URL in a browser, usually:
 
 ```text
-http://localhost:5173
+http://localhost:5173/dataset-creator/
 ```
 
-Use the stages in order:
+Use the workspace tools in order:
 
-1. Import images from files or folders.
+1. Import images and project assets from files, folders, or ZIP archives.
 2. Review duplicate and similarity groups.
-3. Clean images with browser-based editing tools.
-4. Create training crops with the required aspect ratios.
-5. Generate augmentation variants.
-6. Inspect the final dataset.
-7. Add manual, bulk, or local ONNX-generated tags.
-8. Export PNG images with matching TXT prompts.
+3. Edit images or PSD files through the Photopea tool.
+4. Analyze image relationships when needed.
+5. Review the final dataset assets.
+6. Create or open `*.dataset.json` files and add assets to them.
+7. Add manual, bulk, or local ONNX-generated captions.
+8. Export PNG images with matching TXT prompts as a ZIP or into a directory.
 
-For the local auto-tagger, select a folder that contains:
+For the local auto-tagger, select files or a folder that contains:
 
 ```text
 model.onnx
 selected_tags.csv
 ```
 
-Compatible tagger models include `wd-vit-tagger-v3`, `wd-convnext-tagger-v3`, `wd-swinv2-tagger-v3`, and `wd-vit-large-tagger-v3` from SmilingWolf on Hugging Face. Model access is session-based in the browser, so reconnecting the folder may be required after a reload.
+Compatible tagger models should use the WD/Danbooru-style `selected_tags.csv` format used by SmilingWolf tagger models. Model access is session-based unless the browser can persist file handles, so reconnecting the files may be required after a reload.
 
 Preview a production build locally:
 
@@ -137,25 +140,30 @@ dataset-creator/
     App.tsx
     main.tsx
     components/
-      stages/ ## dataset workflow screens
+      ToolHub.tsx
+      InternalFileViewer.tsx
+      photopea/ ## Photopea iframe integration
+      stages/ ## workspace tools
         import
-        similarity review
-        cleanup
-        crop
-        augmentation
-        final review
+        remove duplicates
+        Photopea editing
+        analysis
+        review
         tagging
         export
-    lib/
-    services/ ## workflow and browser processing logic
+      ui/
+    lib/ ## workspace asset and preview helpers
+    services/ ## browser workflow logic
       cleanup/
-      similarity/
-      crop/
-      augmentation/
-      tagging/
       export/
-      image processing
-      persistence
+      image/
+      import/
+      logging/
+      persistence/
+      project/
+      psd/
+      similarity/
+      tagging/
     stores/ ## Zustand state stores
       project state
       UI state
@@ -167,11 +175,19 @@ dataset-creator/
 
 DatasetCreator is a static client-side application. The main workflow does not require a backend or server-side configuration.
 
-The Vite configuration lives in `vite.config.ts`. Styling is configured through `tailwind.config.ts`, `postcss.config.js`, `src/index.css`, and `src/App.css`. UI component metadata is kept in `components.json`.
+The Vite configuration lives in `vite.config.ts`. The current base path is:
 
-Browser storage is handled by the persistence service under `src/services/persistence`. Image files and model files are selected by the user through browser file APIs. For reliable local folder access and model loading, use `localhost` during development or HTTPS in hosted environments.
+```ts
+base: '/dataset-creator/'
+```
 
-The local auto-tagger expects a user-selected folder containing `model.onnx` and `selected_tags.csv`. WebGPU is used when available, with ONNX Runtime WebAssembly as a fallback.
+Styling is configured through `tailwind.config.ts`, `postcss.config.js`, `src/index.css`, and `src/App.css`. UI component metadata is kept in `components.json`.
+
+Browser storage is handled by the persistence service under `src/services/persistence`. Project directory reads and writes use the File System Access API where supported. For reliable local folder access and model loading, use `localhost` during development or HTTPS in hosted environments.
+
+Project directories are stored with a `manifest.json`, app-managed cache data, imported assets, and optional `*.dataset.json` files. Dataset exports write matching `.png` and `.txt` files, with the dataset trigger word inserted at export time.
+
+The local auto-tagger expects `model.onnx` and `selected_tags.csv`. ONNX Runtime Web is used for local inference.
 
 ## Development
 
@@ -179,35 +195,37 @@ The local auto-tagger expects a user-selected folder containing `model.onnx` and
 - Frontend: React 18 with TypeScript.
 - Styling: Tailwind CSS 3 with local CSS layers.
 - State: Zustand stores for project, UI, and local tagger state.
-- Image workflow: dedicated services for cleanup, similarity, cropping, augmentation, and export.
-- Persistence: IndexedDB-backed browser storage where supported.
+- Image workflow: dedicated services for import, similarity, editing, review, tagging, project files, and export.
+- Persistence: IndexedDB-backed browser storage and project-directory snapshots where supported.
 - Tagging: ONNX Runtime Web for local model inference.
 
 Recommended development flow:
 
 1. Start the Vite dev server.
-2. Work on one pipeline stage at a time under `src/components/stages`.
-3. Keep image-processing behavior inside the relevant service folder.
+2. Work on one workspace tool at a time under `src/components/stages`.
+3. Keep browser-processing behavior inside the relevant service folder.
 4. Keep shared project state changes in the Zustand stores.
-5. Run linting and a production build before publishing.
+5. Run a production build before publishing.
 
 Useful commands:
 
 ```bash
 npm run dev
-npm run lint
 npm run build
 npm run preview
 ```
+
+`package.json` also defines `npm run lint`, but the repository currently has no ESLint configuration, so linting is not an active validation gate yet.
 
 ## Roadmap
 
 ```mermaid
 timeline
-    Import workflow : file and folder intake
+    Import workflow : file, folder, ZIP, and project directory intake
     Review workflow : duplicate and similarity inspection
-    Editing workflow : cleanup, crop, and augmentation
-    Tagging workflow : manual, bulk, and local ONNX tags
+    Editing workflow : Photopea image and PSD editing
+    Dataset workflow : dataset manifests and asset selection
+    Tagging workflow : manual, bulk, and local ONNX captions
     Export workflow : PNG and TXT training pairs
 ```
 
@@ -242,9 +260,7 @@ Before making large changes, please open an issue first to discuss the idea.
 
 ## License
 
-The previous project documentation identifies this project as MIT licensed.
-
-Add a `LICENSE` file to the repository to make the license terms explicit for package registries, GitHub, and contributors.
+MIT. See [LICENSE](LICENSE).
 
 ## Credits
 
