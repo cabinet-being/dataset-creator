@@ -46,7 +46,13 @@ import {
   TOOL_DESCRIPTIONS,
   URL_STAGE_ALIASES,
 } from './lib/constants';
-import { toWorkspaceImages, toWorkspaceReviewAssets, type WorkspaceFileAsset, type WorkspaceImage } from './lib/workspaceImages';
+import {
+  createWorkspaceFileAssetId,
+  toWorkspaceImages,
+  toWorkspaceReviewAssets,
+  type WorkspaceFileAsset,
+  type WorkspaceImage,
+} from './lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
 import { useWorkspacePreviewUrls } from './lib/previewUrlCache';
 import {
@@ -1948,6 +1954,10 @@ function App() {
     );
     if (synthetic) {
       return `synthetic:${synthetic.id}`;
+    }
+
+    if (getExplorerFileKind(path.split('/').pop() ?? path) === 'psd') {
+      return createWorkspaceFileAssetId(path);
     }
 
     return null;
@@ -3891,109 +3901,122 @@ function App() {
     setWindowsMenuOpen(false);
   };
 
-  const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
-    <>
-      {getContextEntries(node).length === 1 && canOpenExplorerFile(getExplorerFileKind(node.name)) && (
-        <button
-          type="button"
-          onClick={() => {
-            void openExplorerFile(node);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <File className="h-3.5 w-3.5" />
-          <span>Open</span>
-        </button>
-      )}
-      {getContextEntries(node).length === 1 && isExplorerImageFileName(node.name) && Boolean(findWorkspaceImageIdForPath(node.path)) && (
-        <>
-          <div className="my-1 h-px bg-border" />
+  const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode => {
+    const isSingleFileSelection = getContextEntries(node).length === 1;
+    const fileKind = getExplorerFileKind(node.name);
+    const workspaceImageId = findWorkspaceImageIdForPath(node.path);
+    const canOpenFileInTab = isSingleFileSelection && canOpenExplorerFile(fileKind);
+    const canOpenInPhotopea = isSingleFileSelection && isExplorerImageFileName(node.name) && Boolean(workspaceImageId);
+    const canOpenInCaption = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
+
+    return (
+      <>
+        {canOpenFileInTab && (
           <button
             type="button"
             onClick={() => {
-              void openFileModeTab(node, 'edit');
+              void openExplorerFile(node);
               setExplorerContextMenu(null);
             }}
             className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
           >
-            <Edit3 className="h-3.5 w-3.5" />
-            <span>Photopea</span>
+            <File className="h-3.5 w-3.5" />
+            <span>Open</span>
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              void openFileModeTab(node, 'caption');
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <Tags className="h-3.5 w-3.5" />
-            <span>Caption</span>
-          </button>
-        </>
-      )}
-      <div className="my-1 h-px bg-border" />
-      <button
-        type="button"
-        onClick={() => {
-          setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Copy className="h-3.5 w-3.5" />
-        <span>Cut</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Copy className="h-3.5 w-3.5" />
-        <span>Copy</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void handleExplorerDuplicate(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Copy className="h-3.5 w-3.5" />
-        <span>Duplicate</span>
-      </button>
-      <div className="my-1 h-px bg-border" />
-      {getContextEntries(node).length === 1 && (
+        )}
+        {(canOpenInPhotopea || canOpenInCaption) && (
+          <>
+            <div className="my-1 h-px bg-border" />
+            {canOpenInPhotopea && (
+              <button
+                type="button"
+                onClick={() => {
+                  void openFileModeTab(node, 'edit');
+                  setExplorerContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+              >
+                <Edit3 className="h-3.5 w-3.5" />
+                <span>Photopea</span>
+              </button>
+            )}
+            {canOpenInCaption && (
+              <button
+                type="button"
+                onClick={() => {
+                  void openFileModeTab(node, 'caption');
+                  setExplorerContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+              >
+                <Tags className="h-3.5 w-3.5" />
+                <span>Caption</span>
+              </button>
+            )}
+          </>
+        )}
+        <div className="my-1 h-px bg-border" />
         <button
           type="button"
           onClick={() => {
-            void handleExplorerRename(node);
+            setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
             setExplorerContextMenu(null);
           }}
           className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
         >
-          <Pencil className="h-3.5 w-3.5" />
-          <span>Rename</span>
+          <Copy className="h-3.5 w-3.5" />
+          <span>Cut</span>
         </button>
-      )}
-      <button
-        type="button"
-        onClick={() => {
-          void handleExplorerDelete(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-        <span>Delete</span>
-      </button>
-    </>
-  );
+        <button
+          type="button"
+          onClick={() => {
+            setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          <span>Copy</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void handleExplorerDuplicate(node);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          <span>Duplicate</span>
+        </button>
+        <div className="my-1 h-px bg-border" />
+        {getContextEntries(node).length === 1 && (
+          <button
+            type="button"
+            onClick={() => {
+              void handleExplorerRename(node);
+              setExplorerContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            <span>Rename</span>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            void handleExplorerDelete(node);
+            setExplorerContextMenu(null);
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          <span>Delete</span>
+        </button>
+      </>
+    );
+  };
 
   const renderDatasetContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
     <>

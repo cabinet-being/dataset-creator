@@ -21,6 +21,12 @@ const withProjectRoot = (path: string | undefined): string | undefined => {
   return path.startsWith('Project/') ? path : `Project/${path}`;
 };
 
+export const normalizeWorkspaceAssetPath = (path: string): string =>
+  path.startsWith('Project/') ? path : `Project/${path}`;
+
+export const createWorkspaceFileAssetId = (path: string): string =>
+  `asset:${normalizeWorkspaceAssetPath(path)}`;
+
 const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
   const extension = fileName.split('.').pop()?.toLowerCase();
   if (extension && extension !== fileName.toLowerCase()) {

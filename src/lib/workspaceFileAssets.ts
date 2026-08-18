@@ -8,7 +8,7 @@ import {
 import { requestPhotopeaPsdPreview } from '../services/psd/photopeaPreviewQueue';
 import { createPsdPreview } from '../services/psd/psdPreviewService';
 import { filterLegacyProjectAssetPaths, LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from '../services/project/projectPathFilters';
-import type { WorkspaceFileAsset } from './workspaceImages';
+import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspaceImages';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
 
@@ -148,7 +148,7 @@ export const collectWorkspaceFileAssets = async (
       const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
 
       assets.push({
-        id: `asset:${path}`,
+        id: createWorkspaceFileAssetId(path),
         path,
         fileName,
         kind: kind as WorkspaceFileAssetKind,
