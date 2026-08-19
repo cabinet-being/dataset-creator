@@ -2769,7 +2769,7 @@ function App() {
             open={inspectorSectionsOpen.caption}
             onOpenChange={(open) => setInspectorSectionOpen('caption', open)}
           >
-            {fileInspectorMetadata?.tags?.length ? (
+            {activeTab?.kind !== 'file-caption' && fileInspectorMetadata?.tags?.length ? (
               <div>
                 <p className="mb-1 text-muted-foreground">Tags</p>
                 <div className="flex flex-wrap gap-1">
@@ -2781,7 +2781,7 @@ function App() {
                 </div>
               </div>
             ) : null}
-            <div id="dataset-tags-inspector-root" />
+            <div id="caption-inspector-root" />
           </InspectorSection>
         ) : null}
 

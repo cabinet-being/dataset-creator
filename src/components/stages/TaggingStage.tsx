@@ -119,6 +119,10 @@ const INSERT_MODE_LABELS: Record<InsertMode, string> = {
   overwrite: 'Overwrite',
 };
 
+const getCaptionTagClassName = (highlightUnknown: boolean): string =>
+  highlightUnknown
+    ? 'inline-flex items-center gap-1 rounded border border-amber-500/70 bg-amber-500/20 px-2 py-1 text-xs text-amber-950 dark:text-amber-100'
+    : 'inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground';
 
 type TaggingCardProps = {
   item: WorkspaceImage;
@@ -127,6 +131,7 @@ type TaggingCardProps = {
   onSubmit: (itemId: string, value: string) => boolean;
   onRemoveTag: (itemId: string, tag: string) => void;
   suggestions: string[];
+  knownTags: Set<string>;
   onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
@@ -138,6 +143,7 @@ const TaggingCard = memo(
     onSubmit,
     onRemoveTag,
     suggestions,
+    knownTags,
     onOpenContextMenu,
   }: TaggingCardProps) => {
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -300,7 +306,7 @@ const TaggingCard = memo(
                 displayTags.map((tag) => (
                   <span
                     key={tag}
-                    className="inline-flex items-center gap-1 px-2 py-1 bg-primary text-primary-foreground rounded text-xs"
+                    className={getCaptionTagClassName(knownTags.size > 0 && !knownTags.has(tag))}
                   >
                     {tag}
                     <button
@@ -445,6 +451,121 @@ const TaggingCard = memo(
 );
 
 TaggingCard.displayName = 'TaggingCard';
+
+type SelectedTaggingControlsProps = {
+  item: WorkspaceImage;
+  tags: string[];
+  tagInput: string;
+  suggestions: string[];
+  knownTags: Set<string>;
+  threshold: number;
+  maxTags: number;
+  autoTaggingDisabled: boolean;
+  autoTaggingBusy: boolean;
+  autoTaggingTitle: string;
+  autoTaggingAriaLabel: string;
+  onTagInputChange: (value: string) => void;
+  onSubmitTags: () => void;
+  onRunAutoTagging: () => void;
+  onRemoveTag: (itemId: string, tag: string) => void;
+};
+
+const SelectedTaggingControls = ({
+  item,
+  tags,
+  tagInput,
+  suggestions,
+  knownTags,
+  threshold,
+  maxTags,
+  autoTaggingDisabled,
+  autoTaggingBusy,
+  autoTaggingTitle,
+  autoTaggingAriaLabel,
+  onTagInputChange,
+  onSubmitTags,
+  onRunAutoTagging,
+  onRemoveTag,
+}: SelectedTaggingControlsProps) => (
+  <>
+    <div className="mb-4">
+      <label className="mb-2 block text-xs text-muted-foreground">Add tags</label>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmitTags();
+        }}
+        className="flex gap-2"
+      >
+        <input
+          type="text"
+          value={tagInput}
+          onChange={(event) => onTagInputChange(event.target.value)}
+          placeholder="tag1, tag2"
+          list="selected-tag-suggestions"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+        />
+        <button
+          type="submit"
+          disabled={!tagInput.trim()}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          title="Add tags"
+          aria-label="Add tags"
+        >
+          <Plus size={16} />
+        </button>
+        <button
+          type="button"
+          onClick={onRunAutoTagging}
+          disabled={autoTaggingDisabled}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          title={autoTaggingTitle}
+          aria-label={autoTaggingAriaLabel}
+          aria-busy={autoTaggingBusy}
+        >
+          <Sparkles size={16} />
+        </button>
+      </form>
+      <datalist id="selected-tag-suggestions">
+        {suggestions.slice(0, 200).map((tag) => (
+          <option key={tag} value={tag} />
+        ))}
+      </datalist>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Auto-tag uses current threshold {threshold.toFixed(2)} and max {maxTags}.
+      </p>
+    </div>
+
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold">Tags</h4>
+        <span className="text-xs text-muted-foreground">{tags.length}</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {tags.length > 0 ? (
+          tags.map((tag) => (
+            <span
+              key={tag}
+              className={getCaptionTagClassName(knownTags.size > 0 && !knownTags.has(tag))}
+            >
+              {tag}
+              <button
+                type="button"
+                onClick={() => onRemoveTag(item.id, tag)}
+                className="hover:opacity-70"
+                aria-label={`Remove tag ${tag}`}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))
+        ) : (
+          <span className="text-sm text-muted-foreground">No tags yet</span>
+        )}
+      </div>
+    </div>
+  </>
+);
 
 type TaggingStageProps = {
   selectedItemId?: string | null;
@@ -650,6 +771,7 @@ export const TaggingStage = ({
 
     return normalizeUniqueTags(suggestionTags).filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
   }, [suggestionTags, taggingConfig.blacklist, datasetTriggerWord]);
+  const knownSuggestionTags = useMemo(() => new Set(normalizeUniqueTags(suggestionTags)), [suggestionTags]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -1317,107 +1439,61 @@ export const TaggingStage = ({
 
   const selectedTags = normalizeUniqueTags(selectedItem?.tags ?? []);
   const selectedPreviewUrl = selectedItem ? previewUrls[selectedItem.id] : undefined;
+  const selectedAutoTaggingDisabled =
+    !selectedItem ||
+    selectedItem.kind !== 'image' ||
+    !localTagger ||
+    localTaggerStatus !== 'ready' ||
+    isSelectedAutoTagging;
+  const selectedAutoTaggingTitle = !selectedItem || selectedItem.kind !== 'image'
+    ? 'Auto-tagging is only available for image assets'
+    : isSelectedAutoTagging
+      ? 'Auto-tagging...'
+      : 'Auto-tag image';
+  const selectedTaggingControls = selectedItem ? (
+    <SelectedTaggingControls
+      item={selectedItem}
+      tags={selectedTags}
+      tagInput={selectedTagInput}
+      suggestions={manualTagSuggestions}
+      knownTags={knownSuggestionTags}
+      threshold={taggingConfig.threshold}
+      maxTags={taggingConfig.maxTags}
+      autoTaggingDisabled={selectedAutoTaggingDisabled}
+      autoTaggingBusy={isSelectedAutoTagging}
+      autoTaggingTitle={selectedAutoTaggingTitle}
+      autoTaggingAriaLabel={selectedAutoTaggingTitle}
+      onTagInputChange={setSelectedTagInput}
+      onSubmitTags={handleSubmitSelectedTags}
+      onRunAutoTagging={() => void handleRunSelectedAutoTagging()}
+      onRemoveTag={handleRemoveTag}
+    />
+  ) : null;
   const selectedView = selectedItem ? (
-
-    (
-      <div className="flex h-full min-h-0 flex-col gap-4">
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="h-full min-h-0 overflow-hidden rounded-lg bg-black">
-            {selectedPreviewUrl ? (
-              <img
-                src={selectedPreviewUrl}
-                alt={selectedItem.fileName}
-                className="h-full w-full object-contain"
-                draggable={false}
-              />
-            ) : (
-              <div className="flex h-full min-h-0 items-center justify-center text-sm text-muted-foreground">
-                Preview unavailable
-              </div>
-            )}
-          </div>
-
-          <aside className="flex min-h-0 flex-col rounded-lg border border-border bg-card p-4">
-            <div className="mb-4">
-              <label className="mb-2 block text-xs text-muted-foreground">Add tags</label>
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  handleSubmitSelectedTags();
-                }}
-                className="flex gap-2"
-              >
-                <input
-                  type="text"
-                  value={selectedTagInput}
-                  onChange={(event) => setSelectedTagInput(event.target.value)}
-                  placeholder="tag1, tag2"
-                  list="selected-tag-suggestions"
-                  className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
-                />
-                <button
-                  type="submit"
-                  disabled={!selectedTagInput.trim()}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="Add tags"
-                  aria-label="Add tags"
-                >
-                  <Plus size={16} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRunSelectedAutoTagging()}
-                  disabled={selectedItem.kind !== 'image' || !localTagger || localTaggerStatus !== 'ready' || isSelectedAutoTagging}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-                  title={selectedItem.kind !== 'image' ? 'Auto-tagging is only available for image assets' : isSelectedAutoTagging ? 'Auto-tagging...' : 'Auto-tag image'}
-                  aria-label={selectedItem.kind !== 'image' ? 'Auto-tagging unavailable' : isSelectedAutoTagging ? 'Auto-tagging' : 'Auto-tag image'}
-                  aria-busy={isSelectedAutoTagging}
-                >
-                  <Sparkles size={16} />
-                </button>
-              </form>
-              <datalist id="selected-tag-suggestions">
-                {manualTagSuggestions.slice(0, 200).map((tag) => (
-                  <option key={tag} value={tag} />
-                ))}
-              </datalist>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Auto-tag uses current threshold {taggingConfig.threshold.toFixed(2)} and max {taggingConfig.maxTags}.
-              </p>
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className={singleFileMode ? 'min-h-0 flex-1' : 'grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]'}>
+        <div className="h-full min-h-0 overflow-hidden rounded-lg bg-black">
+          {selectedPreviewUrl ? (
+            <img
+              src={selectedPreviewUrl}
+              alt={selectedItem.fileName}
+              className="h-full w-full object-contain"
+              draggable={false}
+            />
+          ) : (
+            <div className="flex h-full min-h-0 items-center justify-center text-sm text-muted-foreground">
+              Preview unavailable
             </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-sm font-semibold">Tags</h4>
-                <span className="text-xs text-muted-foreground">{selectedTags.length}</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {selectedTags.length > 0 ? (
-                  selectedTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground"
-                    >
-                      {tag}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveTag(selectedItem.id, tag)}
-                        className="hover:opacity-70"
-                        aria-label={`Remove tag ${tag}`}
-                      >
-                        <X size={12} />
-                      </button>
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-sm text-muted-foreground">No tags yet</span>
-                )}
-              </div>
-            </div>
-          </aside>
+          )}
         </div>
+
+        {!singleFileMode ? (
+          <aside className="flex min-h-0 flex-col rounded-lg border border-border bg-card p-4">
+            {selectedTaggingControls}
+          </aside>
+        ) : null}
       </div>
-    )
+    </div>
   ) : null;
 
   const datasetTagsControls = (
@@ -1488,18 +1564,19 @@ export const TaggingStage = ({
     </div>
   );
 
-  const datasetTagsInspectorRoot =
+  const captionInspectorControls = singleFileMode ? selectedTaggingControls : datasetTagsControls;
+  const captionInspectorRoot =
     active && typeof document !== 'undefined'
-      ? document.getElementById('dataset-tags-inspector-root')
+      ? document.getElementById('caption-inspector-root')
       : null;
-  const datasetTagsInspector = datasetTagsInspectorRoot
-    ? createPortal(datasetTagsControls, datasetTagsInspectorRoot)
+  const captionInspectorPortal = captionInspectorRoot && captionInspectorControls
+    ? createPortal(captionInspectorControls, captionInspectorRoot)
     : null;
 
   return (
     <div className="h-full min-h-0">
       {selectedView}
-      {datasetTagsInspector}
+      {captionInspectorPortal}
 
       <Dialog.Root
         open={taggingModals.settings}
@@ -1746,6 +1823,7 @@ export const TaggingStage = ({
                 onSubmit={applyTagsToItem}
                 onRemoveTag={handleRemoveTag}
                 suggestions={manualTagSuggestions}
+                knownTags={knownSuggestionTags}
                 onOpenContextMenu={onOpenAssetContextMenu}
               />
             )}
