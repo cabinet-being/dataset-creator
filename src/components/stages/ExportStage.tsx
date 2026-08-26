@@ -5,7 +5,7 @@ import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import {
   exportAsZip,
   downloadZipFile,
-  getExportBasename,
+  createExportFilePlan,
   saveDirectoryViaFilesystemAPI,
 } from '../../services/export/exportService';
 import { createOperationLogger } from '../../services/logging/applicationLog';
@@ -49,6 +49,10 @@ export const ExportStage = () => {
   const totalSize = useMemo(
     () => exportItems.reduce((sum, item) => sum + item.imageData.size, 0),
     [exportItems]
+  );
+  const exportFilePlan = useMemo(
+    () => createExportFilePlan({ datasetKeyword: datasetTriggerWord, items: exportItems }),
+    [datasetTriggerWord, exportItems]
   );
 
   useEffect(() => {
@@ -199,12 +203,12 @@ export const ExportStage = () => {
       <div className="rounded-lg border border-border bg-card p-6 space-y-4">
         <h3 className="text-lg font-semibold">Preview</h3>
         <div className="space-y-2 max-h-64 overflow-y-auto">
-          {exportItems.slice(0, 5).map((item) => {
-            const basename = getExportBasename(item);
+          {exportFilePlan.workspaceItems.slice(0, 5).map((filePlan) => {
+            const item = filePlan.item;
             return (
             <div key={item.id} className="p-2 bg-secondary/50 rounded text-sm font-mono text-xs">
               <div className="flex items-center gap-2 font-semibold">
-                <span>{basename}.png / {basename}.txt</span>
+                <span>{filePlan.imageFileName} / {filePlan.textFileName}</span>
                 <span className={getWorkspaceKindBadgeClass(item.kind)}>
                   {item.label}
                 </span>

@@ -29,6 +29,7 @@ export const initializeDB = async (): Promise<IDBDatabase> => {
         OBJECT_STORES.CLEANUP_OVERLAYS,
         OBJECT_STORES.EMBEDDINGS,
         OBJECT_STORES.SIMILARITY_CACHE,
+        OBJECT_STORES.TAGGER_FILE_HANDLES,
       ];
 
       stores.forEach((store) => {

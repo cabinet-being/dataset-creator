@@ -86,7 +86,7 @@ npm run dev
 Open the local Vite URL in a browser, usually:
 
 ```text
-http://localhost:5173/dataset-creator/
+http://localhost:5173/DatasetCreator/
 ```
 
 Use the workspace tools in order:
@@ -178,7 +178,7 @@ DatasetCreator is a static client-side application. The main workflow does not r
 The Vite configuration lives in `vite.config.ts`. The current base path is:
 
 ```ts
-base: '/dataset-creator/'
+base: '/DatasetCreator/'
 ```
 
 Styling is configured through `tailwind.config.ts`, `postcss.config.js`, `src/index.css`, and `src/App.css`. UI component metadata is kept in `components.json`.
