@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
-import { AlertCircle, Minus, Plus } from 'lucide-react';
+import { AlertCircle, FileImage, FileJson, FileText, Minus, Plus, Video } from 'lucide-react';
 import type { ExplorerFileKind } from '../services/project/explorerFileService';
 import { PhotopeaBlobViewer } from './photopea/PhotopeaFrame';
 
@@ -170,6 +170,40 @@ const ViewerError = ({ message }: { message: string }) => (
   </div>
 );
 
+const getFileKindLabel = (fileKind: ExplorerFileKind): string => {
+  switch (fileKind) {
+    case 'image':
+      return 'Image file';
+    case 'psd':
+      return 'PSD file';
+    case 'video':
+      return 'Video file';
+    case 'json':
+      return 'JSON file';
+    case 'text':
+      return 'Text file';
+    default:
+      return 'File';
+  }
+};
+
+const getFileKindIcon = (fileKind: ExplorerFileKind) => {
+  switch (fileKind) {
+    case 'image':
+      return FileImage;
+    case 'psd':
+      return FileImage;
+    case 'video':
+      return Video;
+    case 'json':
+      return FileJson;
+    case 'text':
+      return FileText;
+    default:
+      return FileText;
+  }
+};
+
 export const InternalFileViewer = ({
   file,
   fileName,
@@ -178,7 +212,13 @@ export const InternalFileViewer = ({
   onContextMenu,
   onSavePsd,
 }: InternalFileViewerProps) => {
-  switch (fileKind) {
+  if (fileKind === 'psd') {
+    return <PhotopeaBlobViewer file={file} fileName={fileName} active={active} onSavePsd={onSavePsd} />;
+  }
+
+  const FileKindIcon = getFileKindIcon(fileKind);
+  const content = (() => {
+    switch (fileKind) {
     case 'image':
       return <ImageFileViewer file={file} fileName={fileName} onContextMenu={onContextMenu} />;
     case 'text':
@@ -187,9 +227,23 @@ export const InternalFileViewer = ({
       return <TextFileViewer file={file} json onContextMenu={onContextMenu} />;
     case 'video':
       return <VideoFileViewer file={file} onContextMenu={onContextMenu} />;
-    case 'psd':
-      return <PhotopeaBlobViewer file={file} fileName={fileName} active={active} onSavePsd={onSavePsd} />;
     default:
       return <ViewerError message="This file type does not have a viewer." />;
-  }
+    }
+  })();
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <FileKindIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm font-medium">{fileName}</span>
+        </div>
+        <span className="shrink-0 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground">
+          {getFileKindLabel(fileKind)}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1">{content}</div>
+    </div>
+  );
 };

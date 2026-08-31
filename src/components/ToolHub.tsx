@@ -10,13 +10,13 @@ import {
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { useMemo } from 'react';
-import { HUB_TOOL_CARDS, STAGE_LABELS, TOOL_DESCRIPTIONS, TOOL_REQUIREMENTS } from '../lib/constants';
+import { HUB_TOOL_CARDS, STAGE_LABELS, TOOL_REQUIREMENTS } from '../lib/constants';
 import { toWorkspaceImages } from '../lib/workspaceImages';
 import { useProjectStore } from '../stores/useProjectStore';
 import { type StageName } from '../types';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent } from './ui/card';
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Upload,
@@ -44,15 +44,15 @@ const getRequirementLabel = (
   return workspaceCount > 0 ? 'Ready' : 'Needs images';
 };
 
-export const ToolHub = () => {
+type ToolHubProps = {
+  onOpenTool?: (stage: StageName) => void;
+};
+
+export const ToolHub = ({ onOpenTool }: ToolHubProps = {}) => {
   const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
-  const datasetTriggerWord = useMemo(
-    () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
-    [datasetsById]
-  );
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
     () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
@@ -66,79 +66,64 @@ export const ToolHub = () => {
     [sourceImages, syntheticImages]
   );
   const workspaceCount = workspaceImages.length;
-  const taggedCount = workspaceImages.filter((item) => item.tags && item.tags.length > 0).length;
+  const datasetCount = Object.keys(datasetsById).length;
   const totalSourceSize = sourceImages.reduce((sum, image) => {
     return sum + (image.originalFile instanceof Blob ? image.originalFile.size : 0);
   }, 0);
+  const openTool = (stage: StageName) => {
+    if (onOpenTool) {
+      onOpenTool(stage);
+      return;
+    }
+    setCurrentStage(stage);
+  };
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-      <section className="grid gap-4 md:grid-cols-[1.35fr_0.65fr]">
-        <div className="rounded-lg border border-border bg-card p-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <Badge variant="secondary" className="mb-3">
-                Shared workspace
-              </Badge>
-              <h1 className="text-3xl font-semibold tracking-normal">Image tools</h1>
-              <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                Import images once, keep them in the browser workspace, and move between tools
-                without restarting the preparation flow.
-              </p>
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
+      <section className="rounded-md border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Archive className="h-4 w-4 text-muted-foreground" />
+              <h1 className="text-base font-semibold">Image Workspace</h1>
+              <Badge variant="secondary">Project scope</Badge>
             </div>
+            <p className="mt-1 truncate text-xs text-muted-foreground">Shared browser workspace</p>
           </div>
-
-          <div className="mt-6 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Source</p>
-              <p className="mt-2 text-2xl font-semibold">{sourceCount}</p>
-            </div>
-            <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Generated</p>
-              <p className="mt-2 text-2xl font-semibold">{syntheticCount}</p>
-            </div>
-            <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-xs font-medium text-muted-foreground">Captioned</p>
-              <p className="mt-2 text-2xl font-semibold">
-                {taggedCount}/{workspaceCount}
-              </p>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => openTool('review')}
+            className="rounded border border-border px-3 py-2 text-sm font-medium hover:bg-secondary"
+          >
+            Open Project Review
+          </button>
         </div>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Workspace</CardTitle>
-              <Archive className="h-5 w-5 text-muted-foreground" />
-            </div>
-            <CardDescription>Shared browser workspace data.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Source size</span>
-              <span className="font-medium">{(totalSourceSize / 1024 / 1024).toFixed(1)} MB</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Trigger Word</span>
-              <span className="font-mono text-xs font-medium">{datasetTriggerWord || 'Not set'}</span>
-            </div>
-            <div className="rounded-md bg-secondary p-3 text-xs text-muted-foreground">
-              Workspace images are backed by IndexedDB and stay
-              available while switching tools.
-            </div>
-            <button
-              type="button"
-              onClick={() => setCurrentStage('review')}
-              className="text-left text-sm font-medium text-primary underline underline-offset-4 transition-opacity hover:opacity-80"
-            >
-              Open Review
-            </button>
-          </CardContent>
-        </Card>
+        <div className="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-5">
+          <div className="bg-card p-4">
+            <p className="text-xs font-medium text-muted-foreground">Source</p>
+            <p className="mt-1 text-2xl font-semibold">{sourceCount}</p>
+          </div>
+          <div className="bg-card p-4">
+            <p className="text-xs font-medium text-muted-foreground">Generated</p>
+            <p className="mt-1 text-2xl font-semibold">{syntheticCount}</p>
+          </div>
+          <div className="bg-card p-4">
+            <p className="text-xs font-medium text-muted-foreground">Datasets</p>
+            <p className="mt-1 text-2xl font-semibold">{datasetCount}</p>
+          </div>
+          <div className="bg-card p-4">
+            <p className="text-xs font-medium text-muted-foreground">Workspace assets</p>
+            <p className="mt-1 text-2xl font-semibold">{workspaceCount}</p>
+          </div>
+          <div className="bg-card p-4">
+            <p className="text-xs font-medium text-muted-foreground">Source size</p>
+            <p className="mt-1 text-2xl font-semibold">{(totalSourceSize / 1024 / 1024).toFixed(1)} MB</p>
+          </div>
+        </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {HUB_TOOL_CARDS.map((tool, index) => {
           const Icon = toolIcons[tool];
           const requirement = TOOL_REQUIREMENTS[tool];
@@ -148,32 +133,33 @@ export const ToolHub = () => {
             (requirement === 'workspaceImages' && workspaceCount > 0);
 
           return (
-            <Card key={tool} className="flex min-h-[220px] flex-col">
-              <CardHeader>
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-secondary">
-                    <Icon className="h-5 w-5" />
-                  </div>
-                  <Badge
-                    variant={ready ? 'secondary' : 'outline'}
-                    className={!ready ? 'bg-background text-muted-foreground' : undefined}
-                  >
-                    {getRequirementLabel(requirement, sourceCount, workspaceCount)}
-                  </Badge>
+            <Card key={tool}>
+              <CardContent className="flex items-center gap-3 p-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-secondary">
+                  <Icon className="h-5 w-5" />
                 </div>
-                <CardTitle className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">{index + 1}.</span>
-                  {STAGE_LABELS[tool]}
-                </CardTitle>
-                <CardDescription>{TOOL_DESCRIPTIONS[tool]}</CardDescription>
-              </CardHeader>
-              <CardContent className="mt-auto">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{index + 1}.</span>
+                    <h2 className="truncate text-sm font-semibold">{STAGE_LABELS[tool]}</h2>
+                  </div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <Badge
+                      variant={ready ? 'secondary' : 'outline'}
+                      className={!ready ? 'bg-background text-muted-foreground' : undefined}
+                    >
+                      {getRequirementLabel(requirement, sourceCount, workspaceCount)}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">Project scope</span>
+                  </div>
+                </div>
                 <Button
                   variant={ready ? 'default' : 'outline'}
-                  className="w-full"
-                  onClick={() => setCurrentStage(tool as StageName)}
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => openTool(tool as StageName)}
                 >
-                  Open tool
+                  Open
                 </Button>
               </CardContent>
             </Card>

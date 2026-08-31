@@ -91,6 +91,7 @@ import {
 } from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { BrickMasonry } from './components/ui/BrickMasonry';
+import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
 import { WorkspacePreviewCard } from './components/ui/WorkspacePreviewCard';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
@@ -119,7 +120,7 @@ import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
-type InspectorSectionId = 'file' | 'dataset' | 'photopea' | 'caption';
+type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'caption';
 
 type FilePickerWindow = Window &
   typeof globalThis & {
@@ -433,11 +434,12 @@ const renderTool = (
   projectDirectoryHandle?: ProjectDirectoryHandle | null,
   onOpenAssetContextMenu?: AssetContextMenuHandler,
   nested?: ToolNestedView,
-  onOpenNestedFile?: (itemId: string) => void
+  onOpenNestedFile?: (itemId: string) => void,
+  onOpenTool?: (stage: StageName) => void
 ) => {
   switch (currentStage) {
     case 'hub':
-      return <ToolHub />;
+      return <ToolHub onOpenTool={onOpenTool} />;
     case 'import':
       return <ImportStage />;
     case 'select':
@@ -465,7 +467,7 @@ const renderTool = (
     case 'export':
       return <ExportStage />;
     default:
-      return <ToolHub />;
+      return <ToolHub onOpenTool={onOpenTool} />;
   }
 };
 
@@ -1088,6 +1090,8 @@ function App() {
   const [inspectorRenameValue, setInspectorRenameValue] = useState('');
   const [inspectorRenaming, setInspectorRenaming] = useState(false);
   const [inspectorSectionsOpen, setInspectorSectionsOpen] = useState<Record<InspectorSectionId, boolean>>({
+    object: true,
+    actions: true,
     file: true,
     dataset: true,
     photopea: true,
@@ -1316,14 +1320,21 @@ function App() {
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
       ? datasetsById[activeTab.datasetId]
       : null;
-  const activeDatasetWorkspaceAssetPaths = useMemo(
+  const activeDatasetFileAssetPaths = useMemo(
     () =>
-      activeTab?.kind === 'dataset' && activeDataset
+      activeDataset
         ? filterLegacyProjectAssetPaths([
             ...new Set([...(activeDataset.assetPaths ?? []), ...(activeDataset.psdAssetPaths ?? [])]),
           ])
         : [],
-    [activeDataset, activeTab]
+    [activeDataset]
+  );
+  const activeDatasetWorkspaceAssetPaths = useMemo(
+    () =>
+      activeTab?.kind === 'dataset' && activeDataset
+        ? activeDatasetFileAssetPaths
+        : [],
+    [activeDataset, activeDatasetFileAssetPaths, activeTab]
   );
   const activeDatasetSourceImages = useMemo(
     () =>
@@ -1339,14 +1350,74 @@ function App() {
     [activeDatasetSourceImages, datasetWorkspaceFileAssets]
   );
   const activeDatasetPreviewUrls = useWorkspacePreviewUrls(activeDatasetPreviewItems);
+  const activeDatasetSummary = useMemo(() => {
+    if (!activeDataset) {
+      return null;
+    }
+
+    const sourceAssetIds = [...new Set(activeDataset.assetIds ?? [])];
+    const sourceItems = workspaceImages.filter((item) => sourceAssetIds.includes(item.sourceImageId));
+    const sourceCaptionedCount = sourceItems.filter((item) => {
+      const overrideTags = activeDataset.overwriteCaptions ? activeDataset.captionOverrides[item.id] : undefined;
+      return (overrideTags ?? item.tags ?? []).length > 0;
+    }).length;
+    const fileCaptionedCount = activeDatasetFileAssetPaths.filter((path) => {
+      const tags = activeDataset.captionOverrides[createWorkspaceFileAssetId(path)];
+      return tags && tags.length > 0;
+    }).length;
+
+    return {
+      sourceRefs: sourceAssetIds.length,
+      availableSourceRefs: sourceAssetIds.filter((id) => Boolean(sourceImagesById[id])).length,
+      fileAssets: activeDatasetFileAssetPaths.length,
+      captioned: sourceCaptionedCount + fileCaptionedCount,
+      captionable: sourceItems.length + activeDatasetFileAssetPaths.length,
+      triggerWordSet: Boolean(activeDataset.triggerWord.trim()),
+    };
+  }, [activeDataset, activeDatasetFileAssetPaths, sourceImagesById, workspaceImages]);
   const activeFileSource = activeTab && isFileBackedTab(activeTab) && activeTab.workspaceImageId
     ? sourceImagesById[activeTab.workspaceImageId]
     : null;
   const activeToolNestedView =
     activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.nested : undefined;
+  const getWorkspaceTabChrome = (tab: WorkspaceTab) => {
+    const Icon =
+      tab.kind === 'tool'
+        ? tab.stage === 'hub'
+          ? Archive
+          : toolIcons[tab.stage]
+        : tab.kind === 'dataset-tool'
+          ? toolIcons[tab.stage]
+        : tab.kind === 'dataset'
+          ? Layers3
+          : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
+    const label =
+      tab.kind === 'tool'
+        ? STAGE_LABELS[tab.stage]
+        : tab.kind === 'dataset-tool'
+          ? `${DATASET_TOOL_LABELS[tab.stage]}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
+        : tab.kind === 'dataset'
+          ? `Dataset: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
+        : tab.kind === 'file-edit'
+          ? `Photopea: ${tab.name}`
+          : tab.kind === 'file-caption'
+            ? `Caption: ${tab.name}`
+            : tab.name;
+    const scope =
+      tab.kind === 'tool'
+        ? 'Project scope'
+        : tab.kind === 'dataset-tool'
+          ? 'Dataset scope'
+          : tab.kind === 'dataset'
+            ? 'Dataset object'
+            : 'File scope';
+    const title = `${label} - ${scope}`;
+
+    return { Icon, label, scope, title };
+  };
   const activeInspectorContext = getInspectorContext(activeTab, activeStage);
-  const showFileReviewInspector = activeInspectorContext === 'review' && activeTab && isFileBackedTab(activeTab);
-  const showDatasetInspector = activeInspectorContext === 'dataset' && Boolean(activeDataset);
+  const showFileInspector = Boolean(activeTab && isFileBackedTab(activeTab));
+  const showDatasetInspector = Boolean(activeDataset);
   const showCaptionInspector = activeInspectorContext === 'caption';
   const showPhotopeaInspector =
     activeInspectorContext === 'photopea' &&
@@ -2473,6 +2544,17 @@ function App() {
         </div>
       );
     }
+    const datasetNode = dataset.filePath ? findExplorerNodeByPath(dataset.filePath) : null;
+    const datasetToolbarActionIds = new Set(['select', 'review', 'caption', 'analysis', 'export']);
+    const datasetToolbarActions = datasetNode
+      ? getDatasetContextActionGroups(datasetNode)
+          .map((group) =>
+            group
+              .filter((action) => datasetToolbarActionIds.has(action.id))
+              .map((action) => (action.id === 'export' ? { ...action, variant: 'primary' as const } : action))
+          )
+          .filter((group) => group.length > 0)
+      : [];
 
     return (
       <div
@@ -2544,12 +2626,51 @@ function App() {
           })();
         }}
       >
-        <div className="mx-auto max-w-3xl space-y-4">
-          <div className="flex min-h-28 items-center justify-center rounded border border-dashed border-border bg-card text-sm text-muted-foreground">
-            Drop project assets here
+        <div className="mx-auto flex max-w-5xl flex-col gap-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Dataset object</p>
+              <h2 className="mt-1 truncate text-xl font-semibold">{dataset.name}</h2>
+              <p className="mt-1 truncate text-sm text-muted-foreground">{dataset.filePath ?? 'Unsaved Dataset'}</p>
+            </div>
+            {datasetToolbarActions.length > 0 ? (
+              <ContextActionGroups groups={datasetToolbarActions} mode="toolbar" />
+            ) : null}
           </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-md border border-border bg-card p-3">
+              <p className="text-xs text-muted-foreground">Source refs</p>
+              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.sourceRefs ?? 0}</p>
+            </div>
+            <div className="rounded-md border border-border bg-card p-3">
+              <p className="text-xs text-muted-foreground">File assets</p>
+              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.fileAssets ?? 0}</p>
+            </div>
+            <div className="rounded-md border border-border bg-card p-3">
+              <p className="text-xs text-muted-foreground">Captioned</p>
+              <p className="mt-1 text-2xl font-semibold">
+                {activeDatasetSummary?.captioned ?? 0}/{activeDatasetSummary?.captionable ?? 0}
+              </p>
+            </div>
+            <div className="rounded-md border border-border bg-card p-3">
+              <p className="text-xs text-muted-foreground">Trigger</p>
+              <p className="mt-1 truncate text-2xl font-semibold">
+                {dataset.triggerWord.trim() || 'Missing'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex min-h-28 items-center justify-center rounded border border-dashed border-border bg-card px-4 py-6 text-center text-sm text-muted-foreground">
+            Drop project assets here to add them to this Dataset.
+          </div>
+
           {activeDatasetPreviewItems.length > 0 ? (
             <div className="min-h-40 rounded border border-border bg-card">
+              <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+                <p className="text-sm font-medium">Dataset contents</p>
+                <p className="text-xs text-muted-foreground">{activeDatasetPreviewItems.length} assets</p>
+              </div>
               <BrickMasonry
                 items={activeDatasetPreviewItems}
                 getKey={(item) => item.id}
@@ -2565,10 +2686,43 @@ function App() {
                 )}
               />
             </div>
-          ) : null}
-	        </div>
-	      </div>
-	    );
+          ) : (
+            <div className="rounded border border-border bg-card px-4 py-8 text-center">
+              <p className="text-sm font-medium">This Dataset has no assets yet.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Add files from Explorer or drop supported project assets into this view.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const getInspectorActionGroups = (): ContextActionGroup[] => {
+    if (activeTab && isFileBackedTab(activeTab)) {
+      const node = findExplorerNodeByPath(activeTab.path);
+      if (!node) {
+        return [];
+      }
+      const primaryActionIds = new Set(['open', 'photopea', 'caption']);
+      return getFileContextActionGroups(node)
+        .map((group) => group.filter((action) => primaryActionIds.has(action.id)))
+        .filter((group) => group.length > 0);
+    }
+
+    if ((activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool') && activeDataset?.filePath) {
+      const node = findExplorerNodeByPath(activeDataset.filePath);
+      if (!node) {
+        return [];
+      }
+      const primaryActionIds = new Set(['review', 'caption', 'analysis', 'export']);
+      return getDatasetContextActionGroups(node)
+        .map((group) => group.filter((action) => primaryActionIds.has(action.id)))
+        .filter((group) => group.length > 0);
+    }
+
+    return [];
   };
 
   const renderInspectorContent = () => {
@@ -2595,6 +2749,60 @@ function App() {
             ? STAGE_LABELS[activeStage]
             : 'No tab active';
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
+    const inspectorActionGroups = getInspectorActionGroups();
+    const objectDetails = (() => {
+      if (!activeTab) {
+        return [
+          { label: 'Object', value: 'None' },
+          { label: 'Scope', value: 'Workspace' },
+          { label: 'State', value: 'No active tab' },
+        ];
+      }
+
+      if (isFileBackedTab(activeTab)) {
+        const fileType =
+          activeTab.fileKind === 'psd'
+            ? 'PSD file'
+            : activeTab.fileKind === 'video'
+              ? 'Video file'
+              : activeTab.fileKind === 'json'
+                ? 'JSON file'
+                : activeTab.fileKind === 'image'
+                  ? 'Image file'
+                  : 'File';
+        const mode =
+          activeTab.kind === 'file-edit'
+            ? 'Photopea'
+            : activeTab.kind === 'file-caption'
+              ? 'Caption'
+              : 'Open file';
+
+        return [
+          { label: 'Object', value: fileType },
+          { label: 'Mode', value: mode },
+          { label: 'Scope', value: 'File' },
+          { label: 'Path', value: activeTab.path },
+        ];
+      }
+
+      if (activeTab.kind === 'dataset' || activeTab.kind === 'dataset-tool') {
+        return [
+          { label: 'Object', value: 'Dataset' },
+          {
+            label: 'Mode',
+            value: activeTab.kind === 'dataset-tool' ? DATASET_TOOL_LABELS[activeTab.stage] : 'Dataset view',
+          },
+          { label: 'Scope', value: 'Dataset contents' },
+          { label: 'Path', value: activeDataset?.filePath ?? 'Dataset' },
+        ];
+      }
+
+      return [
+        { label: 'Object', value: STAGE_LABELS[activeTab.stage] },
+        { label: 'Mode', value: activeTab.nested ? 'Nested item' : 'Project tool' },
+        { label: 'Scope', value: 'Project' },
+      ];
+    })();
 
     return (
       <div className="text-xs">
@@ -2643,7 +2851,34 @@ function App() {
           </div>
         </div>
 
-        {showFileReviewInspector && fileInspectorMetadata ? (
+        <InspectorSection
+          title="Object"
+          open={inspectorSectionsOpen.object}
+          onOpenChange={(open) => setInspectorSectionOpen('object', open)}
+        >
+          <div className="space-y-2">
+            {objectDetails.map((detail) => (
+              <div key={detail.label} className="flex justify-between gap-3">
+                <span className="shrink-0 text-muted-foreground">{detail.label}</span>
+                <span className="min-w-0 truncate text-right font-medium" title={detail.value}>
+                  {detail.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </InspectorSection>
+
+        {inspectorActionGroups.length > 0 ? (
+          <InspectorSection
+            title="Actions"
+            open={inspectorSectionsOpen.actions}
+            onOpenChange={(open) => setInspectorSectionOpen('actions', open)}
+          >
+            <ContextActionGroups groups={inspectorActionGroups} mode="inspector" />
+          </InspectorSection>
+        ) : null}
+
+        {showFileInspector && fileInspectorMetadata && activeTab && isFileBackedTab(activeTab) ? (
           <InspectorSection
             title="File"
             open={inspectorSectionsOpen.file}
@@ -2689,6 +2924,42 @@ function App() {
             onOpenChange={(open) => setInspectorSectionOpen('dataset', open)}
           >
             <div className="space-y-3">
+              <div className="rounded-md border border-border bg-background p-2">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Context</span>
+                  <span className="font-medium">
+                    {activeTab?.kind === 'dataset-tool' ? `${DATASET_TOOL_LABELS[activeTab.stage]} scope` : 'Dataset object'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded bg-secondary/60 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Sources</p>
+                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.sourceRefs ?? 0}</p>
+                  </div>
+                  <div className="rounded bg-secondary/60 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Files</p>
+                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.fileAssets ?? 0}</p>
+                  </div>
+                  <div className="rounded bg-secondary/60 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Captioned</p>
+                    <p className="mt-1 text-sm font-semibold">
+                      {activeDatasetSummary?.captioned ?? 0}/{activeDatasetSummary?.captionable ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded bg-secondary/60 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Trigger</p>
+                    <p className="mt-1 text-sm font-semibold">
+                      {activeDatasetSummary?.triggerWordSet ? 'Set' : 'Missing'}
+                    </p>
+                  </div>
+                </div>
+                {activeDatasetSummary && activeDatasetSummary.sourceRefs > activeDatasetSummary.availableSourceRefs ? (
+                  <p className="mt-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-yellow-700">
+                    {activeDatasetSummary.sourceRefs - activeDatasetSummary.availableSourceRefs} source reference
+                    {activeDatasetSummary.sourceRefs - activeDatasetSummary.availableSourceRefs !== 1 ? 's' : ''} not loaded in workspace.
+                  </p>
+                ) : null}
+              </div>
               <div>
                 <label className="mb-1 block text-muted-foreground">Trigger Word</label>
                 <input
@@ -2696,12 +2967,6 @@ function App() {
                   onChange={(event) => void updateDatasetFileBackedState(activeDataset, { triggerWord: event.target.value })}
                   className="w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-sm"
                 />
-              </div>
-              <div className="flex justify-between gap-3">
-                <span className="text-muted-foreground">Assets</span>
-                <span className="font-medium">
-                  {activeDataset.assetIds.length + filterLegacyProjectAssetPaths(activeDataset.assetPaths ?? activeDataset.psdAssetPaths ?? []).length}
-                </span>
               </div>
               <label className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
                 <input
@@ -3901,398 +4166,141 @@ function App() {
     setWindowsMenuOpen(false);
   };
 
-  const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode => {
-    const isSingleFileSelection = getContextEntries(node).length === 1;
+  const closeExplorerContextMenu = () => setExplorerContextMenu(null);
+
+  const createExplorerAction = (
+    action: Omit<ContextAction, 'onSelect'> & { onSelect: (event: MouseEvent<HTMLButtonElement>) => void | Promise<void> }
+  ): ContextAction => ({
+    ...action,
+    onSelect: (event) => {
+      void action.onSelect(event);
+      closeExplorerContextMenu();
+    },
+  });
+
+  const getFileContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
+    const contextEntries = getContextEntries(node);
+    const isSingleFileSelection = contextEntries.length === 1;
     const fileKind = getExplorerFileKind(node.name);
     const workspaceImageId = findWorkspaceImageIdForPath(node.path);
     const canOpenFileInTab = isSingleFileSelection && canOpenExplorerFile(fileKind);
     const canOpenInPhotopea = isSingleFileSelection && isExplorerImageFileName(node.name) && Boolean(workspaceImageId);
     const canOpenInCaption = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
 
-    return (
-      <>
-        {canOpenFileInTab && (
-          <button
-            type="button"
-            onClick={() => {
-              void openExplorerFile(node);
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <File className="h-3.5 w-3.5" />
-            <span>Open</span>
-          </button>
-        )}
-        {(canOpenInPhotopea || canOpenInCaption) && (
-          <>
-            <div className="my-1 h-px bg-border" />
-            {canOpenInPhotopea && (
-              <button
-                type="button"
-                onClick={() => {
-                  void openFileModeTab(node, 'edit');
-                  setExplorerContextMenu(null);
-                }}
-                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-              >
-                <Edit3 className="h-3.5 w-3.5" />
-                <span>Photopea</span>
-              </button>
-            )}
-            {canOpenInCaption && (
-              <button
-                type="button"
-                onClick={() => {
-                  void openFileModeTab(node, 'caption');
-                  setExplorerContextMenu(null);
-                }}
-                className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-              >
-                <Tags className="h-3.5 w-3.5" />
-                <span>Caption</span>
-              </button>
-            )}
-          </>
-        )}
-        <div className="my-1 h-px bg-border" />
-        <button
-          type="button"
-          onClick={() => {
-            setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          <span>Cut</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          <span>Copy</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            void handleExplorerDuplicate(node);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          <span>Duplicate</span>
-        </button>
-        <div className="my-1 h-px bg-border" />
-        {getContextEntries(node).length === 1 && (
-          <button
-            type="button"
-            onClick={() => {
-              void handleExplorerRename(node);
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            <span>Rename</span>
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            void handleExplorerDelete(node);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          <span>Delete</span>
-        </button>
-      </>
-    );
+    return [
+      [
+        canOpenFileInTab
+          ? createExplorerAction({ id: 'open', label: 'Open', icon: File, onSelect: () => openExplorerFile(node) })
+          : null,
+      ].filter((action): action is ContextAction => Boolean(action)),
+      [
+        canOpenInPhotopea
+          ? createExplorerAction({ id: 'photopea', label: 'Photopea', icon: Edit3, onSelect: () => openFileModeTab(node, 'edit') })
+          : null,
+        canOpenInCaption
+          ? createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openFileModeTab(node, 'caption') })
+          : null,
+      ].filter((action): action is ContextAction => Boolean(action)),
+      [
+        createExplorerAction({ id: 'cut', label: 'Cut', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
+        createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
+        createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
+      ],
+      [
+        isSingleFileSelection
+          ? createExplorerAction({ id: 'rename', label: 'Rename', icon: Pencil, onSelect: () => handleExplorerRename(node) })
+          : null,
+        createExplorerAction({ id: 'delete', label: 'Delete', icon: Trash2, variant: 'destructive', onSelect: () => handleExplorerDelete(node) }),
+      ].filter((action): action is ContextAction => Boolean(action)),
+    ].filter((group) => group.length > 0);
   };
 
-  const renderDatasetContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          void openExplorerFile(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Layers3 className="h-3.5 w-3.5" />
-        <span>Open</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void openDatasetToolFromExplorer(node, 'select');
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <ScanSearch className="h-3.5 w-3.5" />
-        <span>Select</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void openDatasetToolFromExplorer(node, 'review');
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Layers3 className="h-3.5 w-3.5" />
-        <span>Review</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void openDatasetToolFromExplorer(node, 'tagging');
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Tags className="h-3.5 w-3.5" />
-        <span>Caption</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void openDatasetToolFromExplorer(node, 'analysis');
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <BarChart3 className="h-3.5 w-3.5" />
-        <span>Analysis</span>
-      </button>
-      <div className="my-1 h-px bg-border" />
-      <button
-        type="button"
-        onClick={() => {
-          setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Copy className="h-3.5 w-3.5" />
-        <span>Cut</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Copy className="h-3.5 w-3.5" />
-        <span>Copy</span>
-      </button>
-      {explorerClipboard && (
-        <button
-          type="button"
-          onClick={() => {
-            void handleExplorerPaste({ name: projectName || 'Project', path: 'Project', kind: 'folder' });
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          <span>Paste</span>
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={() => {
-          void handleExplorerDuplicate(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Copy className="h-3.5 w-3.5" />
-        <span>Duplicate</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void handleDatasetExport(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Download className="h-3.5 w-3.5" />
-        <span>Export</span>
-      </button>
-      <div className="my-1 h-px bg-border" />
-      <button
-        type="button"
-        onClick={() => {
-          void handleExplorerRename(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-      >
-        <Pencil className="h-3.5 w-3.5" />
-        <span>Rename</span>
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void handleExplorerDelete(node);
-          setExplorerContextMenu(null);
-        }}
-        className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-        <span>Delete</span>
-      </button>
-    </>
-  );
+  const getDatasetContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
+    const contextEntries = getContextEntries(node);
+    return [
+      [
+        createExplorerAction({ id: 'open', label: 'Open', icon: Layers3, onSelect: () => openExplorerFile(node) }),
+      ],
+      [
+        createExplorerAction({ id: 'select', label: 'Select', icon: ScanSearch, onSelect: () => openDatasetToolFromExplorer(node, 'select') }),
+        createExplorerAction({ id: 'review', label: 'Review', icon: Layers3, onSelect: () => openDatasetToolFromExplorer(node, 'review') }),
+        createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openDatasetToolFromExplorer(node, 'tagging') }),
+        createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openDatasetToolFromExplorer(node, 'analysis') }),
+        createExplorerAction({ id: 'export', label: 'Export', icon: Download, onSelect: () => handleDatasetExport(node) }),
+      ],
+      [
+        createExplorerAction({ id: 'cut', label: 'Cut', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
+        createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
+        explorerClipboard
+          ? createExplorerAction({
+              id: 'paste',
+              label: 'Paste',
+              icon: Copy,
+              onSelect: () => handleExplorerPaste({ name: projectName || 'Project', path: 'Project', kind: 'folder' }),
+            })
+          : null,
+        createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
+      ].filter((action): action is ContextAction => Boolean(action)),
+      [
+        createExplorerAction({ id: 'rename', label: 'Rename', icon: Pencil, onSelect: () => handleExplorerRename(node) }),
+        createExplorerAction({ id: 'delete', label: 'Delete', icon: Trash2, variant: 'destructive', onSelect: () => handleExplorerDelete(node) }),
+      ],
+    ];
+  };
 
-  const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode => (
-    <>
-      {node.kind === 'folder' && (
-        <button
-          type="button"
-          onClick={() => {
-            void handleExplorerNewFolder(node);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <FilePlus className="h-3.5 w-3.5" />
-          <span>New Folder</span>
-        </button>
-      )}
-      {node.kind === 'folder' && (
-        <button
-          type="button"
-          onClick={() => {
-            handleExplorerNewDataset(node.path);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Layers3 className="h-3.5 w-3.5" />
-          <span>New Dataset</span>
-        </button>
-      )}
-      {node.kind === 'folder' && (
-        <button
-          type="button"
-          title="Shift-click to import a folder"
-          onClick={(event) => {
-            void handleExplorerImport(node.path, event.shiftKey);
-            setExplorerContextMenu(null);
-          }}
-          className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-        >
-          <Upload className="h-3.5 w-3.5" />
-          <span>Import</span>
-        </button>
-      )}
-      {(node.path !== 'Project' || explorerClipboard) && <div className="my-1 h-px bg-border" />}
-      {node.path === 'Project' ? (
-        explorerClipboard && (
-          <button
-            type="button"
-            onClick={() => {
-              void handleExplorerPaste(node);
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            <span>Paste</span>
-          </button>
-        )
-      ) : (
-        <>
-          <button
-            type="button"
-            onClick={() => {
-              setExplorerClipboard({ mode: 'cut', entries: getContextEntries(node) });
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            <span>Cut</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setExplorerClipboard({ mode: 'copy', entries: getContextEntries(node) });
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            <span>Copy</span>
-          </button>
-          {explorerClipboard && (
-            <button
-              type="button"
-              onClick={() => {
-                void handleExplorerPaste(node);
-                setExplorerContextMenu(null);
-              }}
-              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-            >
-              <Copy className="h-3.5 w-3.5" />
-              <span>Paste</span>
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              void handleExplorerDuplicate(node);
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-          >
-            <Copy className="h-3.5 w-3.5" />
-            <span>Duplicate</span>
-          </button>
-          <div className="my-1 h-px bg-border" />
-          {getContextEntries(node).length === 1 && (
-            <button
-              type="button"
-              onClick={() => {
-                void handleExplorerRename(node);
-                setExplorerContextMenu(null);
-              }}
-              className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-secondary"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              <span>Rename</span>
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              void handleExplorerDelete(node);
-              setExplorerContextMenu(null);
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            <span>Delete</span>
-          </button>
-        </>
-      )}
-    </>
-  );
+  const getDirectoryContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
+    const contextEntries = getContextEntries(node);
+    const creationActions: ContextActionGroup =
+      node.kind === 'folder'
+        ? [
+            createExplorerAction({ id: 'new-folder', label: 'New Folder', icon: FilePlus, onSelect: () => handleExplorerNewFolder(node) }),
+            createExplorerAction({ id: 'new-dataset', label: 'New Dataset', icon: Layers3, onSelect: () => handleExplorerNewDataset(node.path) }),
+            createExplorerAction({
+              id: 'import',
+              label: 'Import',
+              icon: Upload,
+              title: 'Shift-click to import a folder',
+              onSelect: (event) => handleExplorerImport(node.path, event.shiftKey),
+            }),
+          ]
+        : [];
+
+    if (node.path === 'Project') {
+      return [
+        creationActions,
+        explorerClipboard
+          ? [createExplorerAction({ id: 'paste', label: 'Paste', icon: Copy, onSelect: () => handleExplorerPaste(node) })]
+          : [],
+      ].filter((group) => group.length > 0);
+    }
+
+    return [
+      creationActions,
+      [
+        createExplorerAction({ id: 'cut', label: 'Cut', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
+        createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
+        explorerClipboard
+          ? createExplorerAction({ id: 'paste', label: 'Paste', icon: Copy, onSelect: () => handleExplorerPaste(node) })
+          : null,
+        createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
+      ].filter((action): action is ContextAction => Boolean(action)),
+      [
+        contextEntries.length === 1
+          ? createExplorerAction({ id: 'rename', label: 'Rename', icon: Pencil, onSelect: () => handleExplorerRename(node) })
+          : null,
+        createExplorerAction({ id: 'delete', label: 'Delete', icon: Trash2, variant: 'destructive', onSelect: () => handleExplorerDelete(node) }),
+      ].filter((action): action is ContextAction => Boolean(action)),
+    ].filter((group) => group.length > 0);
+  };
+
+  const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
+    <ContextActionGroups groups={getFileContextActionGroups(node)} />;
+
+  const renderDatasetContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
+    <ContextActionGroups groups={getDatasetContextActionGroups(node)} />;
+
+  const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
+    <ContextActionGroups groups={getDirectoryContextActionGroups(node)} />;
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -4411,7 +4419,7 @@ function App() {
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
                 {TOOLS_MENU_STAGES.map((stage) => {
                   const Icon = stage === 'hub' ? Archive : toolIcons[stage];
-                  const active = activeStage === stage;
+                  const active = activeTab?.kind === 'tool' && activeStage === stage;
                   return (
                     <button
                       type="button"
@@ -4523,29 +4531,8 @@ function App() {
         <div className="workspace-tab-strip relative flex h-9 shrink-0 items-stretch border-b border-border bg-background">
           <div className="workspace-tab-scroll flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
             {openTabs.map((tab) => {
-              const Icon =
-                tab.kind === 'tool'
-                  ? tab.stage === 'hub'
-                    ? Archive
-                    : toolIcons[tab.stage]
-                  : tab.kind === 'dataset-tool'
-                    ? toolIcons[tab.stage]
-                  : tab.kind === 'dataset'
-                    ? Layers3
-                    : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
+              const { Icon, label, title } = getWorkspaceTabChrome(tab);
               const active = activeTabId === tab.id;
-              const label =
-                tab.kind === 'tool'
-                  ? STAGE_LABELS[tab.stage]
-                  : tab.kind === 'dataset-tool'
-                    ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - ${DATASET_TOOL_LABELS[tab.stage]}`
-                  : tab.kind === 'dataset'
-                    ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - Dataset`
-                  : tab.kind === 'file-edit'
-                    ? `${tab.name} - Photopea`
-                    : tab.kind === 'file-caption'
-                      ? `${tab.name} - Caption`
-                      : tab.name;
               return (
                 <div
                   key={tab.id}
@@ -4610,7 +4597,7 @@ function App() {
                   className={`group flex min-w-[7rem] max-w-52 shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
                     active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
                   } ${dragOverTab === tab.id ? 'border-l-2 border-l-primary' : ''}`}
-                  title={`Open ${label}`}
+                  title={title}
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -4641,8 +4628,8 @@ function App() {
                 <button
                   type="button"
                   className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                  title="Open Photopea"
-                  aria-label="Open Photopea"
+                  title="Open tool"
+                  aria-label="Open tool"
                 >
                   <Plus className="h-4 w-4" />
                 </button>
@@ -4654,7 +4641,7 @@ function App() {
                   className="z-[100] w-52 rounded-md border border-border bg-popover p-1 shadow-xl"
                 >
                   <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                    Open Photopea
+                    Open tool
                   </p>
                   {STAGES.map((stage) => {
                     const Icon = stage === 'hub' ? Archive : toolIcons[stage];
@@ -5022,7 +5009,8 @@ function App() {
                     projectDirectoryHandle,
                     openAssetExplorerContextMenu,
                     activeToolNestedView,
-                    openActiveToolNestedFile
+                    openActiveToolNestedFile,
+                    navigateToStage
                   )
                 ) : (
                   <EmptyWorkspacePlaceholder />
@@ -5213,35 +5201,20 @@ function App() {
                     <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
                   )}
                   {openTabs.map((tab) => {
-                    const Icon =
-                      tab.kind === 'tool'
-                        ? tab.stage === 'hub'
-                          ? Archive
-                          : toolIcons[tab.stage]
-                        : tab.kind === 'dataset-tool'
-                          ? toolIcons[tab.stage]
-                        : tab.kind === 'dataset'
-                          ? Layers3
-                          : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
-                    const label =
-                      tab.kind === 'tool'
-                        ? STAGE_LABELS[tab.stage]
-                        : tab.kind === 'dataset-tool'
-                          ? `${datasetsById[tab.datasetId]?.name ?? 'Dataset'} - ${DATASET_TOOL_LABELS[tab.stage]}`
-                        : tab.kind === 'dataset'
-                          ? datasetsById[tab.datasetId]?.name ?? 'Dataset'
-                          : tab.name;
+                    const { Icon, label, scope, title } = getWorkspaceTabChrome(tab);
                     return (
                       <button
                         type="button"
                         key={tab.id}
                         onClick={() => activateTab(tab)}
+                        title={title}
                         className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
                           activeTabId === tab.id ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
                         }`}
                       >
                         <Icon className="h-3.5 w-3.5" />
-                        <span className="truncate">{label}</span>
+                        <span className="min-w-0 flex-1 truncate">{label}</span>
+                        <span className="shrink-0 text-[10px] opacity-70">{scope}</span>
                       </button>
                     );
                   })}
