@@ -20,7 +20,7 @@ import {
   type ImportInputFile,
 } from '../../services/import/importService';
 
-import { Upload, Trash2 } from 'lucide-react';
+import { FolderOpen, ImageIcon, RotateCcw, Trash2, Upload } from 'lucide-react';
 
 export const ImportStage = () => {
   const {
@@ -41,6 +41,17 @@ export const ImportStage = () => {
     [images]
   );
   const previewUrls = useWorkspacePreviewUrls(previewItems);
+  const visibleImages = useMemo(() => images.filter((image) => !image.hidden), [images]);
+  const hiddenImages = images.length - visibleImages.length;
+  const totalSourceSizeMb = useMemo(
+    () =>
+      images.reduce((sum, img) => {
+        return sum + (img.originalFile instanceof Blob ? img.originalFile.size : 0);
+      }, 0) /
+      1024 /
+      1024,
+    [images]
+  );
 
   const { addNotification } = useUIStore();
   
@@ -50,9 +61,9 @@ export const ImportStage = () => {
   const folderInputRef = useRef<HTMLInputElement>(null);
   const importLogger = useRef(createOperationLogger('Import'));
 
-  const logDev = useCallback((scope: string, message: string, value: number) => {
+  const logDev = useCallback((area: string, message: string, value: number) => {
     if (import.meta.env.DEV) {
-      console.log(`[${scope}] ${message}: ${value}`);
+      console.log(`[${area}] ${message}: ${value}`);
     }
   }, []);
 
@@ -176,49 +187,54 @@ export const ImportStage = () => {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Upload Section */}
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <div 
-        className={`rounded-lg border-2 border-dashed transition-colors ${
+        className={`rounded-md border border-dashed transition-colors ${
           isDragOver 
-            ? 'border-primary bg-primary/5' 
-            : 'border-border bg-card hover:border-primary/50'
-        } p-8`}
+            ? 'border-primary bg-primary/5'
+            : 'border-border bg-card/80 hover:border-primary/50'
+        } p-4`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className="text-center">
-          <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-          <h3 className="text-lg font-semibold mb-2">Import</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-            Select individual files or an entire folder to begin
-          </p>
-          
-          <div className="flex gap-4 justify-center mb-4">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+              <Upload className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold">Import sources</h3>
+              <p className="truncate text-xs text-muted-foreground">
+                Drop files here, or choose image files and folders.
+              </p>
+              {isDragOver && (
+                <p className="mt-1 text-xs font-medium text-primary">
+                  Release to import selected files.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isLoading}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              {isLoading ? 'Processing...' : 'Select File'}
+              <ImageIcon size={15} />
+              {isLoading ? 'Processing...' : 'Files'}
             </button>
             
             <button
               onClick={() => folderInputRef.current?.click()}
               disabled={isLoading}
-              className="px-4 py-2 bg-secondary text-foreground rounded-md hover:bg-muted disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-secondary px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
             >
-              {isLoading ? 'Processing...' : 'Select Folder'}
+              <FolderOpen size={15} />
+              {isLoading ? 'Processing...' : 'Folder'}
             </button>
-
           </div>
-
-          {isDragOver && (
-            <p className="text-sm text-primary font-medium mb-4">
-              Drop files here to import
-            </p>
-          )}
 
           <input
             ref={fileInputRef}
@@ -242,18 +258,32 @@ export const ImportStage = () => {
         </div>
       </div>
 
-      {/* Gallery */}
-      {images.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">
-              Source ({images.length})
-            </h3>
-            <span className="text-sm text-muted-foreground">
-              Embeddings generated • Source only
-            </span>
+      <div className="flex min-h-0 flex-1 flex-col rounded-md border border-border bg-card/70">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold">Source files</h3>
+            <p className="text-xs text-muted-foreground">
+              {images.length > 0
+                ? `${visibleImages.length} active / ${images.length} total`
+                : 'No imported sources yet'}
+            </p>
           </div>
+          {images.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="rounded-md border border-border bg-background px-2 py-1">
+                {totalSourceSizeMb.toFixed(1)} MB
+              </span>
+              {hiddenImages > 0 && (
+                <span className="rounded-md border border-border bg-background px-2 py-1">
+                  {hiddenImages} hidden
+                </span>
+              )}
+            </div>
+          )}
+        </div>
 
+        {images.length > 0 ? (
+          <div className="min-h-0 flex-1 overflow-auto p-4">
           <BrickMasonry
             items={images}
             getKey={(image) => image.id}
@@ -278,18 +308,19 @@ export const ImportStage = () => {
                     style={getWorkspaceKindFrameOverlayStyle('image')}
                   />
 
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
                   {image.hidden && (
                     <button
                       onClick={() => handleRestoreImage(image.id)}
-                      className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity text-sm font-medium"
+                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
                     >
+                      <RotateCcw size={14} />
                       Restore
                     </button>
                   )}
                   <button
                     onClick={() => handleRemoveImage(image.id)}
-                    className="p-2 bg-destructive text-destructive-foreground rounded-md hover:opacity-90 transition-opacity"
+                    className="rounded-md bg-destructive p-2 text-destructive-foreground transition-opacity hover:opacity-90"
                     title="Remove image"
                   >
                     <Trash2 size={16} />
@@ -317,25 +348,19 @@ export const ImportStage = () => {
               </div>
             )}
           />
-
-          <div className="mt-4 p-4 rounded-lg bg-secondary/50 border border-border">
-            <p className="text-sm text-muted-foreground">
-              <strong>{images.length}</strong> images ready •{' '}
-              <strong>{(
-                images.reduce((sum, img) => {
-                  return sum + (img.originalFile instanceof Blob ? img.originalFile.size : 0);
-                }, 0) / 1024 / 1024
-              ).toFixed(1)} MB</strong> total
-            </p>
           </div>
-        </div>
-      )}
-
-      {images.length === 0 && !isLoading && (
-        <div className="text-center py-12">
-          <p className="text-muted-foreground">No images imported yet</p>
-        </div>
-      )}
+        ) : (
+          <div className="flex min-h-[260px] flex-1 items-center justify-center px-4 text-center">
+            <div className="max-w-sm">
+              <ImageIcon className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+              <p className="text-sm font-medium">No source files</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Import remains available as a fallback, but day-to-day file intake can happen from Explorer.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

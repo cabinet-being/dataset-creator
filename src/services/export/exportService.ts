@@ -12,12 +12,23 @@ interface ExportConfig {
   datasetKeyword: string;
   items: WorkspaceImage[];
   psdAssets?: ExportPsdAsset[];
+  orderedAssets?: ExportAsset[];
 }
 
 export type ExportPsdAsset = {
   fileName: string;
   file: Blob;
 };
+
+export type ExportAsset =
+  | {
+      kind: 'workspace';
+      item: WorkspaceImage;
+    }
+  | {
+      kind: 'psd';
+      asset: ExportPsdAsset;
+    };
 
 type WorkspaceExportPlan = {
   kind: 'workspace';
@@ -38,9 +49,12 @@ type PsdExportPlan = {
 };
 
 export type ExportFilePlan = {
+  items: ExportPlanItem[];
   workspaceItems: WorkspaceExportPlan[];
   psdItems: PsdExportPlan[];
 };
+
+type ExportPlanItem = WorkspaceExportPlan | PsdExportPlan;
 
 const PHOTOPEA_ORIGIN = 'https://www.photopea.com';
 const PHOTOPEA_EXPORT_TIMEOUT_MS = 45000;
@@ -67,26 +81,31 @@ const getUniqueExportBasename = (preferredBasename: string, usedBasenames: Set<s
 
 export const createExportFilePlan = (config: ExportConfig): ExportFilePlan => {
   const usedBasenames = new Set<string>();
+  const sourceAssets: ExportAsset[] =
+    config.orderedAssets ?? [
+      ...config.items.map((item): ExportAsset => ({ kind: 'workspace', item })),
+      ...(config.psdAssets ?? []).map((asset): ExportAsset => ({ kind: 'psd', asset })),
+    ];
 
-  const workspaceItems = config.items.map((item): WorkspaceExportPlan => {
-    const originalBasename = getExportBasename(item);
-    const basename = getUniqueExportBasename(originalBasename, usedBasenames);
-    return {
-      kind: 'workspace',
-      item,
-      basename,
-      originalBasename,
-      imageFileName: `${basename}.png`,
-      textFileName: `${basename}.txt`,
-    };
-  });
+  const items = sourceAssets.map((asset): ExportPlanItem => {
+    if (asset.kind === 'workspace') {
+      const originalBasename = getExportBasename(asset.item);
+      const basename = getUniqueExportBasename(originalBasename, usedBasenames);
+      return {
+        kind: 'workspace',
+        item: asset.item,
+        basename,
+        originalBasename,
+        imageFileName: `${basename}.png`,
+        textFileName: `${basename}.txt`,
+      };
+    }
 
-  const psdItems = (config.psdAssets ?? []).map((asset): PsdExportPlan => {
-    const originalBasename = getPsdExportBasename(asset);
+    const originalBasename = getPsdExportBasename(asset.asset);
     const basename = getUniqueExportBasename(originalBasename, usedBasenames);
     return {
       kind: 'psd',
-      asset,
+      asset: asset.asset,
       basename,
       originalBasename,
       imageFileName: `${basename}.png`,
@@ -94,7 +113,9 @@ export const createExportFilePlan = (config: ExportConfig): ExportFilePlan => {
     };
   });
 
-  return { workspaceItems, psdItems };
+  const workspaceItems = items.filter((item): item is WorkspaceExportPlan => item.kind === 'workspace');
+  const psdItems = items.filter((item): item is PsdExportPlan => item.kind === 'psd');
+  return { items, workspaceItems, psdItems };
 };
 
 const createPhotopeaExportUrl = () => {
@@ -233,22 +254,24 @@ export const exportAsZip = async (
 ): Promise<Blob> => {
   const zip = new JSZip();
   const plan = createExportFilePlan(config);
+  let psdIndex = 0;
 
-  for (let i = 0; i < plan.workspaceItems.length; i++) {
-    const filePlan = plan.workspaceItems[i];
-    zip.file(filePlan.imageFileName, filePlan.item.imageData);
-    zip.file(filePlan.textFileName, generateTagString(filePlan.item, config.datasetKeyword, blacklist) + '\n');
+  for (let i = 0; i < plan.items.length; i++) {
+    const filePlan = plan.items[i];
 
     const current = i + 1;
-    if (logger && shouldLogProgress(current, plan.workspaceItems.length)) {
-      logger.progress({ current, total: plan.workspaceItems.length, label: 'prepared files' });
+    if (filePlan.kind === 'workspace') {
+      zip.file(filePlan.imageFileName, filePlan.item.imageData);
+      zip.file(filePlan.textFileName, generateTagString(filePlan.item, config.datasetKeyword, blacklist) + '\n');
+
+      if (logger && shouldLogProgress(current, plan.items.length)) {
+        logger.progress({ current, total: plan.items.length, label: 'prepared files' });
+      }
+      continue;
     }
-  }
 
-  for (let i = 0; i < plan.psdItems.length; i++) {
-    const filePlan = plan.psdItems[i];
-    const current = i + 1;
-    logger?.progress({ current, total: plan.psdItems.length, label: `converting PSD ${current}/${plan.psdItems.length}` });
+    psdIndex += 1;
+    logger?.progress({ current, total: plan.items.length, label: `converting PSD ${psdIndex}/${plan.psdItems.length}` });
     const png = await convertPsdToPng(filePlan.asset, logger);
     zip.file(filePlan.imageFileName, png);
     zip.file(
@@ -279,30 +302,33 @@ export const saveDirectoryViaFilesystemAPI = async (
   try {
     const dirHandle = await (window as any).showDirectoryPicker();
     const plan = createExportFilePlan(config);
+    let psdIndex = 0;
 
-    for (let i = 0; i < plan.workspaceItems.length; i++) {
-      const filePlan = plan.workspaceItems[i];
-      const pngHandle = await dirHandle.getFileHandle(filePlan.imageFileName, { create: true });
-      const pngWriter = await pngHandle.createWritable();
-      await pngWriter.write(filePlan.item.imageData);
-      await pngWriter.close();
+    for (let i = 0; i < plan.items.length; i++) {
+      const filePlan = plan.items[i];
 
-      const tagString = generateTagString(filePlan.item, config.datasetKeyword, blacklist);
-      const txtHandle = await dirHandle.getFileHandle(filePlan.textFileName, { create: true });
-      const txtWriter = await txtHandle.createWritable();
-      await txtWriter.write(tagString + '\n');
-      await txtWriter.close();
+      if (filePlan.kind === 'workspace') {
+        const pngHandle = await dirHandle.getFileHandle(filePlan.imageFileName, { create: true });
+        const pngWriter = await pngHandle.createWritable();
+        await pngWriter.write(filePlan.item.imageData);
+        await pngWriter.close();
 
-      const current = i + 1;
-      if (logger && shouldLogProgress(current, plan.workspaceItems.length)) {
-        logger.progress({ current, total: plan.workspaceItems.length, label: 'wrote images' });
+        const tagString = generateTagString(filePlan.item, config.datasetKeyword, blacklist);
+        const txtHandle = await dirHandle.getFileHandle(filePlan.textFileName, { create: true });
+        const txtWriter = await txtHandle.createWritable();
+        await txtWriter.write(tagString + '\n');
+        await txtWriter.close();
+
+        const current = i + 1;
+        if (logger && shouldLogProgress(current, plan.items.length)) {
+          logger.progress({ current, total: plan.items.length, label: 'wrote images' });
+        }
+        continue;
       }
-    }
 
-    for (let i = 0; i < plan.psdItems.length; i++) {
-      const filePlan = plan.psdItems[i];
       const current = i + 1;
-      logger?.progress({ current, total: plan.psdItems.length, label: `converting PSD ${current}/${plan.psdItems.length}` });
+      psdIndex += 1;
+      logger?.progress({ current, total: plan.items.length, label: `converting PSD ${psdIndex}/${plan.psdItems.length}` });
       const png = await convertPsdToPng(filePlan.asset, logger);
       const pngHandle = await dirHandle.getFileHandle(filePlan.imageFileName, { create: true });
       const pngWriter = await pngHandle.createWritable();

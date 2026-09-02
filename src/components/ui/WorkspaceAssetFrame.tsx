@@ -53,7 +53,7 @@ export const WorkspaceAssetFrame = ({
       {item.kind === 'video' && previewUrl ? (
         <video
           src={previewUrl}
-          className={`h-full w-full object-cover ${imageClassName ?? ''}`}
+          className={`h-full w-full bg-black object-contain ${imageClassName ?? ''}`}
           muted
           playsInline
           preload="metadata"

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
+import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
 import {
   exportAsZip,
   downloadZipFile,
@@ -10,9 +12,13 @@ import {
 } from '../../services/export/exportService';
 import { createOperationLogger } from '../../services/logging/applicationLog';
 import { toWorkspaceImages, getWorkspaceKindBadgeClass } from '../../lib/workspaceImages';
-import { AlertCircle, Download, FolderOpen } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, FolderOpen } from 'lucide-react';
 
-export const ExportStage = () => {
+type ExportStageProps = {
+  active?: boolean;
+};
+
+export const ExportStage = ({ active = true }: ExportStageProps = {}) => {
   const { taggingConfig } = useProjectStore();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
@@ -32,6 +38,7 @@ export const ExportStage = () => {
 
   const [isExporting, setIsExporting] = useState(false);
   const [exportMethod, setExportMethod] = useState<'zip' | 'directory'>('zip');
+  const exportInspectorRoot = useInspectorPortalRoot('export-inspector-root', active);
 
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const syntheticImages = useMemo(
@@ -50,6 +57,11 @@ export const ExportStage = () => {
     () => exportItems.reduce((sum, item) => sum + item.imageData.size, 0),
     [exportItems]
   );
+  const taggedCount = useMemo(
+    () => exportItems.filter((item) => item.tags && item.tags.length > 0).length,
+    [exportItems]
+  );
+  const inactiveCount = items.length - exportItems.length;
   const exportFilePlan = useMemo(
     () => createExportFilePlan({ datasetKeyword: datasetTriggerWord, items: exportItems }),
     [datasetTriggerWord, exportItems]
@@ -120,135 +132,143 @@ export const ExportStage = () => {
     }
   };
 
+  const exportControls = (
+    <div className="space-y-3 text-xs">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-muted-foreground">Assets</p>
+          <p className="mt-1 text-lg font-semibold">{exportItems.length}</p>
+        </div>
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-muted-foreground">Size</p>
+          <p className="mt-1 text-lg font-semibold">{(totalSize / 1024 / 1024).toFixed(1)} MB</p>
+        </div>
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-muted-foreground">Tagged</p>
+          <p className="mt-1 text-lg font-semibold">{taggedCount}/{exportItems.length}</p>
+        </div>
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-muted-foreground">Inactive</p>
+          <p className="mt-1 text-lg font-semibold">{inactiveCount}</p>
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-2 text-muted-foreground">Method</p>
+        <div className="grid gap-2">
+          <button
+            type="button"
+            onClick={() => setExportMethod('directory')}
+            className={`flex items-center justify-between rounded border px-2 py-2 text-left font-medium ${
+              exportMethod === 'directory'
+                ? 'border-primary bg-primary/10 text-foreground'
+                : 'border-border bg-background hover:bg-secondary'
+            }`}
+          >
+            <span className="inline-flex items-center gap-2">
+              <FolderOpen className="h-3.5 w-3.5" />
+              Directory
+            </span>
+            {exportMethod === 'directory' ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => setExportMethod('zip')}
+            className={`flex items-center justify-between rounded border px-2 py-2 text-left font-medium ${
+              exportMethod === 'zip'
+                ? 'border-primary bg-primary/10 text-foreground'
+                : 'border-border bg-background hover:bg-secondary'
+            }`}
+          >
+            <span className="inline-flex items-center gap-2">
+              <Download className="h-3.5 w-3.5" />
+              ZIP
+            </span>
+            {exportMethod === 'zip' ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded border border-border bg-background p-2">
+        <div className="flex justify-between gap-3">
+          <span className="text-muted-foreground">Trigger Word</span>
+          <span className="min-w-0 truncate text-right font-mono font-medium">{datasetTriggerWord || 'None'}</span>
+        </div>
+        <div className="mt-2 flex justify-between gap-3">
+          <span className="text-muted-foreground">TXT format</span>
+          <span className="font-medium">Comma tags</span>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={handleExport}
+        disabled={isExporting || exportItems.length === 0}
+        className="flex w-full items-center justify-center gap-2 rounded bg-primary px-3 py-2 font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Download className="h-3.5 w-3.5" />
+        {isExporting ? 'Exporting...' : `Export ${exportItems.length}`}
+      </button>
+    </div>
+  );
+  const exportInspectorPortal = exportInspectorRoot ? createPortal(exportControls, exportInspectorRoot) : null;
+  const inlineExportControls = exportInspectorPortal ? null : (
+    <aside className="rounded-md border border-border bg-card p-3">
+      {exportControls}
+    </aside>
+  );
+
   if (items.length === 0) {
     return (
-      <div className="text-center py-12">
-        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No images to export.</p>
+      <div className="space-y-4">
+        {exportInspectorPortal}
+        {inlineExportControls}
+        <div className="text-center py-12">
+          <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+          <p className="text-muted-foreground">No images to export.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Export Summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Total Images</p>
-          <p className="text-2xl font-bold">{exportItems.length}</p>
-          {items.length !== exportItems.length && (
-            <p className="mt-1 text-xs text-muted-foreground">{items.length - exportItems.length} inactive</p>
-          )}
-        </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Total Size</p>
-          <p className="text-2xl font-bold">{(totalSize / 1024 / 1024).toFixed(1)} MB</p>
-        </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Tagged</p>
-          <p className="text-2xl font-bold">
-            {exportItems.filter((i) => i.tags && i.tags.length > 0).length}/{exportItems.length}
-          </p>
-        </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Trigger Word</p>
-          <p className="text-sm font-mono font-bold">{datasetTriggerWord}</p>
-        </div>
-      </div>
+    <div className="space-y-4">
+      {exportInspectorPortal}
+      {inlineExportControls}
 
-      {/* Export Format Selection */}
-      <div className="rounded-lg border border-border bg-card p-6 space-y-4">
-        <h3 className="text-lg font-semibold">Export Format</h3>
-
-        <div className="space-y-3">
-          <label className="flex items-center gap-3 p-4 rounded-lg border-2 border-border hover:border-primary cursor-pointer transition-colors" onClick={() => setExportMethod('directory')}>
-            <input
-              type="radio"
-              name="export-method"
-              value="directory"
-              checked={exportMethod === 'directory'}
-              onChange={() => setExportMethod('directory')}
-              className="w-4 h-4"
-            />
-            <div>
-              <p className="font-medium">Save to Directory (Recommended)</p>
-              <p className="text-sm text-muted-foreground">
-                Uses File System Access API to save files directly
-              </p>
-            </div>
-            <FolderOpen className="ml-auto text-muted-foreground" />
-          </label>
-
-          <label className="flex items-center gap-3 p-4 rounded-lg border-2 border-border hover:border-primary cursor-pointer transition-colors" onClick={() => setExportMethod('zip')}>
-            <input
-              type="radio"
-              name="export-method"
-              value="zip"
-              checked={exportMethod === 'zip'}
-              onChange={() => setExportMethod('zip')}
-              className="w-4 h-4"
-            />
-            <div>
-              <p className="font-medium">Download as ZIP</p>
-              <p className="text-sm text-muted-foreground">
-                Creates a ZIP file with all images and tag files
-              </p>
-            </div>
-            <Download className="ml-auto text-muted-foreground" />
-          </label>
+      <div className="rounded-md border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold">Project Export</h3>
+            <p className="mt-1 text-xs text-muted-foreground">PNG/TXT output plan</p>
+          </div>
+          <span className="rounded bg-secondary px-2 py-1 text-xs text-muted-foreground">
+            {exportFilePlan.workspaceItems.length} asset rows
+          </span>
         </div>
-      </div>
-
-      {/* Export Preview */}
-      <div className="rounded-lg border border-border bg-card p-6 space-y-4">
-        <h3 className="text-lg font-semibold">Preview</h3>
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {exportFilePlan.workspaceItems.slice(0, 5).map((filePlan) => {
+        <div className="max-h-[34rem] overflow-auto">
+          {exportFilePlan.workspaceItems.map((filePlan) => {
             const item = filePlan.item;
             return (
-            <div key={item.id} className="p-2 bg-secondary/50 rounded text-sm font-mono text-xs">
-              <div className="flex items-center gap-2 font-semibold">
-                <span>{filePlan.imageFileName} / {filePlan.textFileName}</span>
-                <span className={getWorkspaceKindBadgeClass(item.kind)}>
-                  {item.label}
+              <div key={item.id} className="grid gap-2 border-b border-border px-4 py-2 text-xs last:border-b-0 md:grid-cols-[minmax(0,1fr)_7rem_minmax(0,1.25fr)] md:items-center">
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-mono font-medium">{filePlan.imageFileName}</span>
+                    <span className={getWorkspaceKindBadgeClass(item.kind)}>{item.label}</span>
+                  </div>
+                  <p className="mt-0.5 truncate font-mono text-muted-foreground">{filePlan.textFileName}</p>
+                </div>
+                <span className="font-mono text-muted-foreground">
+                  {(item.imageData.size / 1024 / 1024).toFixed(1)} MB
                 </span>
+                <div className="min-w-0 truncate text-muted-foreground">
+                  {datasetTriggerWord ? `${datasetTriggerWord}, ` : ''}
+                  {item.tags && item.tags.length > 0 ? item.tags.join(', ') : '(no tags)'}
+                </div>
               </div>
-              <div className="text-muted-foreground">
-                {datasetTriggerWord}
-                {item.tags && item.tags.length > 0
-                  ? ', ' + item.tags.join(', ')
-                  : ' (no tags)'}
-              </div>
-            </div>
             );
           })}
-          {exportItems.length > 5 && (
-            <div className="p-2 text-xs text-muted-foreground">
-              ... and {exportItems.length - 5} more files
-            </div>
-          )}
         </div>
-      </div>
-
-      {/* Export Button */}
-      <button
-        onClick={handleExport}
-        disabled={isExporting}
-        className="w-full px-6 py-4 bg-primary text-primary-foreground rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity font-semibold text-lg"
-      >
-        {isExporting ? 'Exporting...' : `Export ${exportItems.length} Images`}
-      </button>
-
-      {/* Notes */}
-      <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4 space-y-2">
-        <p className="text-sm font-medium text-yellow-700">Export Notes:</p>
-        <ul className="text-sm text-yellow-600 space-y-1 ml-4">
-          <li>• Files use each image UID as the standardized basename</li>
-          <li>• Each PNG has matching TXT file with tags</li>
-          <li>• Export keyword always first tag</li>
-          <li>• Tags separated by comma + space</li>
-          <li>• Blacklisted tags automatically removed</li>
-        </ul>
       </div>
     </div>
   );

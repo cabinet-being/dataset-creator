@@ -70,6 +70,7 @@ type DatasetManifest = {
   triggerWord: string;
   assetIds: string[];
   assetPaths?: string[];
+  assetOrder?: string[];
   createdAt: string;
   updatedAt: string;
 };

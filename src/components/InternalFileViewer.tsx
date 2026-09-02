@@ -41,10 +41,13 @@ const TextFileViewer = ({
 }) => {
   const [content, setContent] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let canceled = false;
+    setContent('');
     setError(null);
+    setLoading(true);
     file
       .text()
       .then((text) => {
@@ -58,11 +61,13 @@ const TextFileViewer = ({
           } else {
             setContent(text);
           }
+          setLoading(false);
         }
       })
       .catch((readError) => {
         if (!canceled) {
           setError(readError instanceof Error ? readError.message : 'Unable to read file.');
+          setLoading(false);
         }
       });
 
@@ -73,6 +78,14 @@ const TextFileViewer = ({
 
   if (error) {
     return <ViewerError message={error} />;
+  }
+
+  if (loading) {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-6 text-sm text-muted-foreground">
+        Loading file...
+      </div>
+    );
   }
 
   return (
@@ -109,6 +122,7 @@ const ImageFileViewer = ({
           onClick={() => setZoom((value) => Math.max(0.1, value - 0.25))}
           className="rounded p-1.5 hover:bg-secondary"
           title="Zoom out"
+          aria-label="Zoom out"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
@@ -117,6 +131,7 @@ const ImageFileViewer = ({
           onClick={() => setZoom(1)}
           className="min-w-14 rounded px-2 py-1 text-xs hover:bg-secondary"
           title="Reset zoom"
+          aria-label="Reset zoom"
         >
           {Math.round(zoom * 100)}%
         </button>
@@ -125,17 +140,26 @@ const ImageFileViewer = ({
           onClick={() => setZoom((value) => Math.min(6, value + 0.25))}
           className="rounded p-1.5 hover:bg-secondary"
           title="Zoom in"
+          aria-label="Zoom in"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
-      <img
-        src={url}
-        alt={fileName}
-        onContextMenu={onContextMenu}
-        className="block max-h-full max-w-full object-contain"
-        style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
-      />
+      <div
+        className="flex shrink-0 items-center justify-center p-6"
+        style={{
+          minWidth: `${zoom * 100}%`,
+          minHeight: `${zoom * 100}%`,
+        }}
+      >
+        <img
+          src={url}
+          alt={fileName}
+          onContextMenu={onContextMenu}
+          className="block max-h-full max-w-full object-contain"
+          style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
+        />
+      </div>
     </div>
   );
 };
@@ -219,16 +243,16 @@ export const InternalFileViewer = ({
   const FileKindIcon = getFileKindIcon(fileKind);
   const content = (() => {
     switch (fileKind) {
-    case 'image':
-      return <ImageFileViewer file={file} fileName={fileName} onContextMenu={onContextMenu} />;
-    case 'text':
-      return <TextFileViewer file={file} onContextMenu={onContextMenu} />;
-    case 'json':
-      return <TextFileViewer file={file} json onContextMenu={onContextMenu} />;
-    case 'video':
-      return <VideoFileViewer file={file} onContextMenu={onContextMenu} />;
-    default:
-      return <ViewerError message="This file type does not have a viewer." />;
+      case 'image':
+        return <ImageFileViewer file={file} fileName={fileName} onContextMenu={onContextMenu} />;
+      case 'text':
+        return <TextFileViewer file={file} onContextMenu={onContextMenu} />;
+      case 'json':
+        return <TextFileViewer file={file} json onContextMenu={onContextMenu} />;
+      case 'video':
+        return <VideoFileViewer file={file} onContextMenu={onContextMenu} />;
+      default:
+        return <ViewerError message="This file type does not have a viewer." />;
     }
   })();
 

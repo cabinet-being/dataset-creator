@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowUpDown,
@@ -10,11 +11,18 @@ import {
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
 import {
+  createDatasetFileAssetKey,
+  createDatasetImageAssetKey,
+  normalizeDatasetAssetOrder,
+  orderWorkspaceItemsByDatasetOrder,
+} from '../../lib/datasetAssets';
+import {
   toWorkspaceReviewAssets,
   type WorkspaceFileAsset,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
+import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
 import { appLog } from '../../services/logging/applicationLog';
 import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
 import { useProjectStore } from '../../stores/useProjectStore';
@@ -37,18 +45,36 @@ type ReviewCardProps = {
   onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
-type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'video' | 'psd'>;
+type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'synthetic' | 'video' | 'psd'>;
 
 const KIND_LABELS: Record<ReviewKind, string> = {
   image: 'Image',
+  synthetic: 'Generated',
   video: 'Video',
   psd: 'PSD',
 };
 
-const REVIEW_KINDS = ['image', 'video', 'psd'] as const satisfies ReviewKind[];
+const REVIEW_KINDS = ['image', 'synthetic', 'video', 'psd'] as const satisfies ReviewKind[];
 const isReviewKind = (kind: WorkspaceImageKind): kind is ReviewKind =>
   (REVIEW_KINDS as readonly WorkspaceImageKind[]).includes(kind);
 const isString = (value: string | undefined): value is string => Boolean(value);
+const getDatasetAssetKey = (item: WorkspaceImage): string | null => {
+  if (item.kind === 'image' || item.kind === 'synthetic') {
+    return createDatasetImageAssetKey(item.sourceImageId);
+  }
+  return item.assetPath ? createDatasetFileAssetKey(item.assetPath) : null;
+};
+
+const getDatasetQuickActionLabel = (
+  item: WorkspaceImage,
+  mode: 'add' | 'remove'
+): string => {
+  const action = mode === 'add' ? 'Add' : 'Remove';
+  if (item.kind === 'image' || item.kind === 'synthetic') {
+    return `${action} source group ${mode === 'add' ? 'to' : 'from'} Dataset`;
+  }
+  return `${action} ${mode === 'add' ? 'to' : 'from'} Dataset`;
+};
 
 const STATUS_LABELS: Record<ExportStatus, string> = {
   active: 'Active',
@@ -122,8 +148,11 @@ ReviewCard.displayName = 'ReviewCard';
 type FinalReviewStageProps = {
   datasetId?: string;
   mode?: 'review' | 'select';
+  active?: boolean;
   onUpdateDataset?: (
-    updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<
+      Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>
+    >
   ) => void | Promise<void>;
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
@@ -131,10 +160,12 @@ type FinalReviewStageProps = {
 export const FinalReviewStage = ({
   datasetId,
   mode = 'review',
+  active = true,
   onUpdateDataset,
   onOpenAssetContextMenu,
 }: FinalReviewStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
   const cleanupStageState = useProjectStore(
     (state) =>
@@ -143,6 +174,7 @@ export const FinalReviewStage = ({
         | undefined) ?? {}
   );
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const addNotification = useUIStore((state) => state.addNotification);
   const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
@@ -159,6 +191,7 @@ export const FinalReviewStage = ({
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
   const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const reviewInspectorRoot = useInspectorPortalRoot('review-inspector-root', active);
   const psdDiagnosticsKeyRef = useRef('');
 
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
@@ -176,10 +209,24 @@ export const FinalReviewStage = ({
     }
     return allSources.filter((image) => datasetAssetIds.has(image.id));
   }, [datasetAssetIds, datasetId, mode, sourceImagesById]);
-  const items = useMemo(
-    () => toWorkspaceReviewAssets(sourceImages, fileAssets, cleanupStageState.workingEdits),
-    [cleanupStageState.workingEdits, fileAssets, sourceImages]
+  const syntheticImages = useMemo(
+    () =>
+      Object.values(syntheticImagesById).filter(
+        (image) => !image.deleted && (!datasetId || datasetAssetIds.has(image.sourceImageId))
+      ),
+    [datasetAssetIds, datasetId, syntheticImagesById]
   );
+  const items = useMemo(() => {
+    const nextItems = toWorkspaceReviewAssets(
+      sourceImages,
+      fileAssets,
+      cleanupStageState.workingEdits,
+      syntheticImages
+    );
+    return dataset && mode !== 'select'
+      ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder, dataset.assetIds)
+      : nextItems;
+  }, [cleanupStageState.workingEdits, dataset, fileAssets, mode, sourceImages, syntheticImages]);
   const previewUrls = useWorkspacePreviewUrls(items);
   const psdDiagnostics = useMemo(() => {
     const psdAssets = fileAssets.filter((asset) => asset.kind === 'psd');
@@ -389,25 +436,49 @@ export const FinalReviewStage = ({
   const handleDeleteItem = useCallback((item: WorkspaceImage) => {
     if (dataset && onUpdateDataset) {
       if (mode === 'select') {
-        if (item.kind === 'image') {
-          void onUpdateDataset({ assetIds: [...new Set([...dataset.assetIds, item.sourceImageId])] });
+        const assetKey = getDatasetAssetKey(item);
+        if (item.kind === 'image' || item.kind === 'synthetic') {
+          const nextAssetIds = [...new Set([...dataset.assetIds, item.sourceImageId])];
+          void onUpdateDataset({
+            assetIds: nextAssetIds,
+            assetOrder: normalizeDatasetAssetOrder(
+              assetKey ? [...(dataset.assetOrder ?? []), assetKey] : dataset.assetOrder,
+              nextAssetIds,
+              dataset.assetPaths
+            ),
+          });
         } else if (item.assetPath) {
           const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), item.assetPath])]);
           const nextPsdAssetPaths =
             item.kind === 'psd'
               ? filterLegacyProjectAssetPaths([...new Set([...(dataset.psdAssetPaths ?? []), item.assetPath])])
               : filterLegacyProjectAssetPaths(dataset.psdAssetPaths);
-          void onUpdateDataset({ assetPaths: nextAssetPaths, psdAssetPaths: nextPsdAssetPaths });
+          void onUpdateDataset({
+            assetPaths: nextAssetPaths,
+            psdAssetPaths: nextPsdAssetPaths,
+            assetOrder: normalizeDatasetAssetOrder(
+              assetKey ? [...(dataset.assetOrder ?? []), assetKey] : dataset.assetOrder,
+              dataset.assetIds,
+              nextAssetPaths
+            ),
+          });
         }
         addNotification('success', 'Asset added to Dataset');
         return;
       }
-      if (item.kind === 'image') {
-        void onUpdateDataset({ assetIds: dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId) });
-      } else if (item.assetPath) {
+      const nextAssetOrder = (dataset.assetOrder ?? []).filter((key) => key !== getDatasetAssetKey(item));
+      if (item.kind === 'image' || item.kind === 'synthetic') {
+        const nextAssetIds = dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId);
         void onUpdateDataset({
-          assetPaths: filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
+          assetIds: nextAssetIds,
+          assetOrder: normalizeDatasetAssetOrder(nextAssetOrder, nextAssetIds, dataset.assetPaths),
+        });
+      } else if (item.assetPath) {
+        const nextAssetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath);
+        void onUpdateDataset({
+          assetPaths: nextAssetPaths,
           psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
+          assetOrder: normalizeDatasetAssetOrder(nextAssetOrder, dataset.assetIds, nextAssetPaths),
         });
       }
       addNotification('info', 'Asset removed from Dataset');
@@ -416,17 +487,27 @@ export const FinalReviewStage = ({
 
     if (item.kind === 'image' && item.sourceImageId) {
       updateSourceImage(item.sourceImageId, { hidden: true });
+    } else if (item.kind === 'synthetic' && item.syntheticImageId) {
+      updateDatasetItem(item.syntheticImageId, { excludedFromDataset: true });
     }
     addNotification('info', 'Asset removed from review');
-  }, [addNotification, dataset, mode, onUpdateDataset, updateSourceImage]);
+  }, [addNotification, dataset, mode, onUpdateDataset, updateDatasetItem, updateSourceImage]);
 
   const addItemsToDataset = useCallback((nextItems: WorkspaceImage[]) => {
     if (!dataset || !onUpdateDataset) {
       return;
     }
 
-    const imageIds = nextItems.filter((item) => item.kind === 'image').map((item) => item.sourceImageId).filter(Boolean);
-    const assetPaths = filterLegacyProjectAssetPaths(nextItems.filter((item) => item.kind !== 'image').map((item) => item.assetPath).filter(isString));
+    const imageIds = nextItems
+      .filter((item) => item.kind === 'image' || item.kind === 'synthetic')
+      .map((item) => item.sourceImageId)
+      .filter(Boolean);
+    const assetPaths = filterLegacyProjectAssetPaths(
+      nextItems
+        .filter((item) => item.kind !== 'image' && item.kind !== 'synthetic')
+        .map((item) => item.assetPath)
+        .filter(isString)
+    );
     const psdAssetPaths = filterLegacyProjectAssetPaths(nextItems.filter((item) => item.kind === 'psd').map((item) => item.assetPath).filter(isString));
     if (imageIds.length === 0 && assetPaths.length === 0) {
       return;
@@ -435,6 +516,15 @@ export const FinalReviewStage = ({
     const nextAssetIds = [...new Set([...dataset.assetIds, ...imageIds])];
     const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...assetPaths])]);
     const nextPsdAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.psdAssetPaths ?? []), ...psdAssetPaths])]);
+    const nextAssetOrder = normalizeDatasetAssetOrder(
+      [
+        ...(dataset.assetOrder ?? []),
+        ...imageIds.map(createDatasetImageAssetKey),
+        ...assetPaths.map(createDatasetFileAssetKey),
+      ],
+      nextAssetIds,
+      nextAssetPaths
+    );
     const addedCount =
       nextAssetIds.length -
       dataset.assetIds.length +
@@ -444,201 +534,220 @@ export const FinalReviewStage = ({
       return;
     }
 
-    void onUpdateDataset({ assetIds: nextAssetIds, assetPaths: nextAssetPaths, psdAssetPaths: nextPsdAssetPaths });
+    void onUpdateDataset({
+      assetIds: nextAssetIds,
+      assetPaths: nextAssetPaths,
+      psdAssetPaths: nextPsdAssetPaths,
+      assetOrder: nextAssetOrder,
+    });
     addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to Dataset`);
   }, [addNotification, dataset, onUpdateDataset]);
 
   const showSelectActions = Boolean(dataset && onUpdateDataset && mode === 'select');
   const showReviewRemoveActions = Boolean(dataset && onUpdateDataset && mode === 'review');
+  const reviewControls = (
+    <div className="relative z-50 rounded-md border border-border bg-card px-3 py-2">
+      {openMenu && (
+        <button
+          type="button"
+          aria-label="Close review menu"
+          className="fixed inset-0 z-[900] cursor-default"
+          onClick={() => setOpenMenu(null)}
+        />
+      )}
+
+      <div className="relative z-[1000] flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu((menu) => (menu === 'aspect' ? null : 'aspect'))}
+            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              openMenu === 'aspect' ? 'bg-secondary' : 'hover:bg-secondary'
+            }`}
+          >
+            Aspect
+            <span className="font-mono text-xs text-muted-foreground">{selectedAspectRatios.size}/3</span>
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          {openMenu === 'aspect' && (
+            <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+              {ASPECT_RATIOS.map((ratio) => (
+                <button
+                  key={ratio}
+                  type="button"
+                  onClick={() => toggleAspectRatio(ratio)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
+                >
+                  <span className="flex h-4 w-4 items-center justify-center">
+                    {selectedAspectRatios.has(ratio) && <Check className="h-4 w-4" />}
+                  </span>
+                  <span className="flex-1">{ASPECT_RATIO_LABELS[ratio]}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{aspectRatioCounts[ratio] ?? 0}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu((menu) => (menu === 'kind' ? null : 'kind'))}
+            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              openMenu === 'kind' ? 'bg-secondary' : 'hover:bg-secondary'
+            }`}
+          >
+            Type
+            <span className="font-mono text-xs text-muted-foreground">{selectedKinds.size}/{REVIEW_KINDS.length}</span>
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          {openMenu === 'kind' && (
+            <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+              {REVIEW_KINDS.map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => toggleKind(kind)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
+                >
+                  <span className="flex h-4 w-4 items-center justify-center">
+                    {selectedKinds.has(kind) && <Check className="h-4 w-4" />}
+                  </span>
+                  <span className="flex-1">{KIND_LABELS[kind]}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{kindCounts[kind]}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu((menu) => (menu === 'status' ? null : 'status'))}
+            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              openMenu === 'status' ? 'bg-secondary' : 'hover:bg-secondary'
+            }`}
+          >
+            Status
+            <span className="font-mono text-xs text-muted-foreground">{selectedStatuses.size}/2</span>
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          {openMenu === 'status' && (
+            <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+              {(['active', 'inactive'] as const).map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  onClick={() => toggleStatus(status)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
+                >
+                  <span className="flex h-4 w-4 items-center justify-center">
+                    {selectedStatuses.has(status) && <Check className="h-4 w-4" />}
+                  </span>
+                  <span className="flex-1">{STATUS_LABELS[status]}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{statusCounts[status]}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu((menu) => (menu === 'sort' ? null : 'sort'))}
+            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              openMenu === 'sort' ? 'bg-secondary' : 'hover:bg-secondary'
+            }`}
+          >
+            <ArrowUpDown className="h-4 w-4" />
+            Sort
+            <span className="max-w-36 truncate text-muted-foreground">{SORT_LABELS[sortMode]}</span>
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          {openMenu === 'sort' && (
+            <div className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
+              {SORT_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => {
+                    setSortMode(option);
+                    setOpenMenu(null);
+                  }}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
+                >
+                  <span className="flex h-4 w-4 items-center justify-center">
+                    {sortMode === option && <Check className="h-4 w-4" />}
+                  </span>
+                  <span className="flex-1">{SORT_LABELS[option]}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {showSelectActions && sortedItems.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => addItemsToDataset(sortedItems)}
+            className="ml-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Add Visible</span>
+          </button>
+        ) : null}
+
+        <div className={`${showSelectActions && sortedItems.length > 0 ? '' : 'ml-auto'} rounded-md border border-border bg-background px-3 py-2 text-sm`}>
+          <span className="text-muted-foreground">Visible</span>
+          <span className="ml-2 font-mono font-medium">{sortedItems.length}</span>
+          {psdDiagnostics.total > 0 ? (
+            <span className="ml-3 text-muted-foreground">
+              PSD <span className="font-mono text-foreground">{psdDiagnostics.ready}/{psdDiagnostics.total}</span>
+              {psdDiagnostics.generating > 0 ? (
+                <span className="ml-2">Generating <span className="font-mono text-foreground">{psdDiagnostics.generating}</span></span>
+              ) : null}
+              {psdDiagnostics.failed > 0 ? (
+                <span className="ml-2">Failed <span className="font-mono text-foreground">{psdDiagnostics.failed}</span></span>
+              ) : null}
+            </span>
+          ) : null}
+          {inactiveCount > 0 && (
+            <span className="ml-3 text-muted-foreground">
+              Inactive <span className="font-mono text-foreground">{inactiveCount}</span>
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+  const reviewInspectorPortal = reviewInspectorRoot ? createPortal(reviewControls, reviewInspectorRoot) : null;
 
   if (items.length === 0) {
     return (
-      <div className="text-center py-12">
-        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">
-          {mode === 'select' ? 'No project assets available to add.' : 'No assets to review.'}
-        </p>
+      <div className="space-y-6">
+        {reviewInspectorPortal}
+        {reviewInspectorPortal ? null : reviewControls}
+        <div className="flex min-h-[320px] items-center justify-center px-4 text-center">
+          <div className="max-w-sm">
+            <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+            <p className="text-sm font-medium">
+            {mode === 'select' ? 'No project assets available to add.' : 'No assets to review.'}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Use Explorer or a Dataset tab to choose the assets for this view.
+            </p>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div className="relative z-50 rounded-lg border border-border bg-card px-3 py-2">
-        {openMenu && (
-          <button
-            type="button"
-            aria-label="Close review menu"
-            className="fixed inset-0 z-[900] cursor-default"
-            onClick={() => setOpenMenu(null)}
-          />
-        )}
-
-        <div className="relative z-[1000] flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpenMenu((menu) => (menu === 'aspect' ? null : 'aspect'))}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                openMenu === 'aspect' ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-            >
-              Aspect
-              <span className="font-mono text-xs text-muted-foreground">{selectedAspectRatios.size}/3</span>
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {openMenu === 'aspect' && (
-              <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {ASPECT_RATIOS.map((ratio) => (
-                  <button
-                    key={ratio}
-                    type="button"
-                    onClick={() => toggleAspectRatio(ratio)}
-                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                  >
-                    <span className="flex h-4 w-4 items-center justify-center">
-                      {selectedAspectRatios.has(ratio) && <Check className="h-4 w-4" />}
-                    </span>
-                    <span className="flex-1">{ASPECT_RATIO_LABELS[ratio]}</span>
-                    <span className="font-mono text-xs text-muted-foreground">{aspectRatioCounts[ratio] ?? 0}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpenMenu((menu) => (menu === 'kind' ? null : 'kind'))}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                openMenu === 'kind' ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-            >
-              Type
-              <span className="font-mono text-xs text-muted-foreground">{selectedKinds.size}/{REVIEW_KINDS.length}</span>
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {openMenu === 'kind' && (
-              <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {REVIEW_KINDS.map((kind) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    onClick={() => toggleKind(kind)}
-                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                  >
-                    <span className="flex h-4 w-4 items-center justify-center">
-                      {selectedKinds.has(kind) && <Check className="h-4 w-4" />}
-                    </span>
-                    <span className="flex-1">{KIND_LABELS[kind]}</span>
-                    <span className="font-mono text-xs text-muted-foreground">{kindCounts[kind]}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpenMenu((menu) => (menu === 'status' ? null : 'status'))}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                openMenu === 'status' ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-            >
-              Status
-              <span className="font-mono text-xs text-muted-foreground">{selectedStatuses.size}/2</span>
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {openMenu === 'status' && (
-              <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {(['active', 'inactive'] as const).map((status) => (
-                  <button
-                    key={status}
-                    type="button"
-                    onClick={() => toggleStatus(status)}
-                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                  >
-                    <span className="flex h-4 w-4 items-center justify-center">
-                      {selectedStatuses.has(status) && <Check className="h-4 w-4" />}
-                    </span>
-                    <span className="flex-1">{STATUS_LABELS[status]}</span>
-                    <span className="font-mono text-xs text-muted-foreground">{statusCounts[status]}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpenMenu((menu) => (menu === 'sort' ? null : 'sort'))}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                openMenu === 'sort' ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-            >
-              <ArrowUpDown className="h-4 w-4" />
-              Sort
-              <span className="max-w-36 truncate text-muted-foreground">{SORT_LABELS[sortMode]}</span>
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {openMenu === 'sort' && (
-              <div className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {SORT_OPTIONS.map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => {
-                      setSortMode(option);
-                      setOpenMenu(null);
-                    }}
-                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                  >
-                    <span className="flex h-4 w-4 items-center justify-center">
-                      {sortMode === option && <Check className="h-4 w-4" />}
-                    </span>
-                    <span className="flex-1">{SORT_LABELS[option]}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {showSelectActions && sortedItems.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => addItemsToDataset(sortedItems)}
-              className="ml-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Add Visible</span>
-            </button>
-          ) : null}
-
-          <div className={`${showSelectActions && sortedItems.length > 0 ? '' : 'ml-auto'} rounded-md border border-border bg-background px-3 py-2 text-sm`}>
-            <span className="text-muted-foreground">Visible</span>
-            <span className="ml-2 font-mono font-medium">{sortedItems.length}</span>
-            {psdDiagnostics.total > 0 ? (
-              <span className="ml-3 text-muted-foreground">
-                PSD <span className="font-mono text-foreground">{psdDiagnostics.ready}/{psdDiagnostics.total}</span>
-                {psdDiagnostics.generating > 0 ? (
-                  <span className="ml-2">Generating <span className="font-mono text-foreground">{psdDiagnostics.generating}</span></span>
-                ) : null}
-                {psdDiagnostics.failed > 0 ? (
-                  <span className="ml-2">Failed <span className="font-mono text-foreground">{psdDiagnostics.failed}</span></span>
-                ) : null}
-              </span>
-            ) : null}
-            {inactiveCount > 0 && (
-              <span className="ml-3 text-muted-foreground">
-                Inactive <span className="font-mono text-foreground">{inactiveCount}</span>
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
+      {reviewInspectorPortal}
+      {reviewInspectorPortal ? null : reviewControls}
 
       {sortedItems.length > 0 ? (
         <BrickMasonry
@@ -650,7 +759,11 @@ export const FinalReviewStage = ({
               item={item}
               previewUrl={previewUrls[item.id]}
               quickActionLabel={
-                showSelectActions ? 'Add to Dataset' : showReviewRemoveActions ? 'Remove from Dataset' : undefined
+                showSelectActions
+                  ? getDatasetQuickActionLabel(item, 'add')
+                  : showReviewRemoveActions
+                    ? getDatasetQuickActionLabel(item, 'remove')
+                    : undefined
               }
               quickActionVariant={showReviewRemoveActions ? 'remove' : 'add'}
               onQuickAction={
@@ -665,8 +778,11 @@ export const FinalReviewStage = ({
           )}
         />
       ) : (
-        <div className="text-center py-12 rounded-lg bg-secondary/50 border border-dashed border-border">
-          <p className="text-muted-foreground">No items match the selected filters.</p>
+        <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">No items match the selected filters</p>
+            <p className="mt-1 text-xs text-muted-foreground">Adjust the filters to bring assets back into view.</p>
+          </div>
         </div>
       )}
     </div>

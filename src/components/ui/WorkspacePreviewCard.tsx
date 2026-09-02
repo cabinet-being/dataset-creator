@@ -73,7 +73,7 @@ export const WorkspacePreviewCard = ({
           type="button"
           onClick={handleMenuClick}
           className="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md bg-black/65 text-white opacity-0 transition-opacity hover:bg-black/85 group-hover:opacity-100 focus:opacity-100"
-          title="File actions"
+          title="Asset actions"
           aria-label={`Open actions for ${item.fileName}`}
         >
           <MoreVertical size={16} />

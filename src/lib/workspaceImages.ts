@@ -230,9 +230,12 @@ export const getWorkspaceImageAspectRatio = (image: WorkspaceImage): AspectRatio
 export const toWorkspaceReviewAssets = (
   sourceImages: SourceImage[],
   fileAssets: WorkspaceFileAsset[],
-  workingEdits: Record<string, CleanupWorkingEdit> = {}
+  workingEdits: Record<string, CleanupWorkingEdit> = {},
+  syntheticImages: SyntheticImage[] = []
 ): WorkspaceImage[] => {
-  const imageItems = toWorkspaceImages(sourceImages, [], workingEdits).filter((item) => item.kind === 'image');
+  const imageItems = toWorkspaceImages(sourceImages, syntheticImages, workingEdits).filter(
+    (item) => item.kind === 'image' || item.kind === 'synthetic'
+  );
   const fileItems: WorkspaceImage[] = fileAssets.map((asset, index) => ({
     id: asset.id,
     sourceImageId: '',

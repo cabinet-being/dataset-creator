@@ -7,6 +7,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   Boxes,
@@ -16,6 +17,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
+import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
 import { generateEmbedding } from '../../services/image/embeddingService';
 import {
   computeDistanceMatrix,
@@ -27,6 +29,7 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import {
   toWorkspaceImages,
+  createWorkspaceFileAssetId,
   getWorkspaceKindBadgeClass,
   getWorkspaceKindFrameClass,
   getWorkspaceKindFrameOverlayClass,
@@ -34,6 +37,8 @@ import {
   getWorkspaceKindFrameStyle,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
+import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
+import { getExplorerFileKind } from '../../services/project/explorerFileService';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
@@ -873,10 +878,11 @@ type ReviewCardProps = {
   item: WorkspaceImage;
   previewUrl?: string;
   onDelete: (id: string) => void;
+  deleteLabel: string;
   highlighted?: boolean;
 };
 
-const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: ReviewCardProps) => {
+const ReviewCard = memo(({ item, previewUrl, onDelete, deleteLabel, highlighted = false }: ReviewCardProps) => {
   return (
     <div
       className={`gallery-masonry-item group relative rounded-lg overflow-hidden border bg-card ${
@@ -900,7 +906,10 @@ const ReviewCard = memo(({ item, previewUrl, onDelete, highlighted = false }: Re
 
         <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
           <button
+            type="button"
             onClick={() => onDelete(item.id)}
+            title={deleteLabel}
+            aria-label={`${deleteLabel}: ${item.fileName}`}
             className="p-2 bg-destructive text-destructive-foreground rounded-md hover:opacity-90"
           >
             <Trash2 size={16} />
@@ -929,12 +938,15 @@ ReviewCard.displayName = 'ReviewCard';
 
 type AnalysisStageProps = {
   datasetId?: string;
+  active?: boolean;
   onUpdateDataset?: (
-    updates: Partial<Pick<Dataset, 'assetIds' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<
+      Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>
+    >
   ) => void | Promise<void>;
 };
 
-export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps = {}) => {
+export const AnalysisStage = ({ datasetId, active = true, onUpdateDataset }: AnalysisStageProps = {}) => {
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
@@ -948,6 +960,29 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const { addNotification } = useUIStore();
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
+  const datasetFileAssetPaths = useMemo(
+    () =>
+      dataset
+        ? filterLegacyProjectAssetPaths([
+            ...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])]),
+          ])
+        : [],
+    [dataset]
+  );
+  const datasetFileAssetSummary = useMemo(() => {
+    const entries = datasetFileAssetPaths.map((path) => ({
+      path,
+      id: createWorkspaceFileAssetId(path),
+      kind: getExplorerFileKind(path.split('/').pop() ?? path),
+    }));
+
+    return {
+      total: entries.length,
+      psd: entries.filter((entry) => entry.kind === 'psd').length,
+      video: entries.filter((entry) => entry.kind === 'video').length,
+      captioned: entries.filter((entry) => (dataset?.captionOverrides[entry.id] ?? []).length > 0).length,
+    };
+  }, [dataset, datasetFileAssetPaths]);
   const syntheticImages = useMemo(
     () =>
       Object.values(syntheticImagesById).filter(
@@ -980,6 +1015,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
   const [previewItemIds, setPreviewItemIds] = useState<string[] | null>(null);
   const [graphViewport, setGraphViewport] = useState({ scale: 1, x: 0, y: 0 });
   const [simulatedGraphNodes, setSimulatedGraphNodes] = useState<GraphNode[] | null>(null);
+  const analysisInspectorRoot = useInspectorPortalRoot('analysis-inspector-root', active);
   const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
   const reviewViewContainerRef = useRef<HTMLDivElement | null>(null);
   const graphInteractionRef = useRef<HTMLDivElement | null>(null);
@@ -1209,7 +1245,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
       console.log('[review] Review graph data exists: true');
       console.log(`[review] graph items included: ${reviewVisibleItems.length}`);
       console.log(
-        `[review] graph/review similarity scope: ${reviewVisibleItems.length}/${filteredItems.length} filtered items`
+        `[review] graph/review similarity view: ${reviewVisibleItems.length}/${filteredItems.length} filtered items`
       );
       console.log(`[review] dataset items filtered/truncated for graph: ${filteredItems.length > reviewVisibleItems.length}`);
       console.log(`[review] graph image node count: ${graphImageNodeCount}`);
@@ -1533,6 +1569,16 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
     [addNotification, dataset, items, onUpdateDataset, softDeleteDatasetItem, updateSourceImage]
   );
 
+  const showGraph = useCallback(() => {
+    setActiveSimilarityView('graph');
+    setSelectedPairKey(null);
+    setSelectedClusterId(null);
+    setPreviewItemIds(null);
+    if (import.meta.env.DEV) {
+      console.log('[review] graph UI clicked');
+    }
+  }, []);
+
   const showPairs = useCallback(() => {
     setActiveSimilarityView('pairs');
     setSelectedClusterId(null);
@@ -1646,6 +1692,14 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
     return filteredItems;
   }, [filteredItems, previewItemIds]);
 
+  const analysisViewLabel = useMemo(() => {
+    if (!datasetId || datasetFileAssetSummary.total === 0) {
+      return `${filteredItems.length} image items`;
+    }
+
+    return `${filteredItems.length} image items, ${datasetFileAssetSummary.total} file assets`;
+  }, [datasetFileAssetSummary.total, datasetId, filteredItems.length]);
+
   const previewTitle = useMemo(() => {
     if (activeSimilarityView === 'pairs' && selectedPairKey && reviewData) {
       const pair = reviewData.similarPairs.find(
@@ -1663,9 +1717,10 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
       }
     }
 
-    return `Analysis Preview (${filteredItems.length} items)`;
+    return `Analysis Preview (${analysisViewLabel})`;
   }, [
     activeSimilarityView,
+    analysisViewLabel,
     filteredItems.length,
     getReviewItemName,
     reviewData,
@@ -1673,156 +1728,171 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
     selectedPairKey,
   ]);
 
+  const analysisControls = (
+    <div className="space-y-3">
+      <div>
+        <p className="mb-2 text-muted-foreground">Aspect Ratio</p>
+        <div className="grid gap-1.5">
+          {ASPECT_RATIOS.map((ratio) => (
+            <button
+              key={ratio}
+              type="button"
+              onClick={() => toggleAspectRatio(ratio)}
+              className={`flex items-center justify-between rounded border px-2 py-1.5 text-left text-xs font-medium transition-colors ${
+                selectedAspectRatios.has(ratio)
+                  ? 'border-primary bg-primary/10 text-foreground'
+                  : 'border-border bg-background hover:bg-secondary'
+              }`}
+            >
+              <span>{ASPECT_RATIO_LABELS[ratio]}</span>
+              <span className="font-mono text-muted-foreground">{aspectRatioCounts[ratio] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-2 text-muted-foreground">View</p>
+        <div className="grid grid-cols-3 gap-1.5">
+          <button
+            type="button"
+            onClick={showGraph}
+            className={`inline-flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-xs transition-colors ${
+              activeSimilarityView === 'graph'
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-background hover:bg-secondary'
+            }`}
+          >
+            <Network size={13} />
+            Graph
+          </button>
+          <button
+            type="button"
+            onClick={showPairs}
+            className={`inline-flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-xs transition-colors ${
+              activeSimilarityView === 'pairs'
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-background hover:bg-secondary'
+            }`}
+          >
+            <GitCompareArrows size={13} />
+            Pairs
+          </button>
+          <button
+            type="button"
+            onClick={showClusters}
+            className={`inline-flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-xs transition-colors ${
+              activeSimilarityView === 'clusters'
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-background hover:bg-secondary'
+            }`}
+          >
+            <Boxes size={13} />
+            Clusters
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded border border-border bg-background p-2">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-muted-foreground">Threshold</span>
+          <span className="font-mono font-medium">{uiThreshold.toFixed(2)} {'->'} {similarityThreshold.toFixed(3)}</span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={uiThreshold}
+          onChange={(event) => handleThresholdChange(parseFloat(event.target.value))}
+          className="w-full"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Visible</p>
+          <p className="mt-1 text-sm font-semibold">{filteredItems.length}</p>
+        </div>
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Analyzed</p>
+          <p className="mt-1 text-sm font-semibold">{reviewData?.items.length ?? 0}/{filteredItems.length}</p>
+        </div>
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Pairs</p>
+          <p className="mt-1 text-sm font-semibold">{reviewData?.similarPairs.length ?? 0}</p>
+        </div>
+        <div className="rounded border border-border bg-background p-2">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Clusters</p>
+          <p className="mt-1 text-sm font-semibold">{reviewData?.clusters.length ?? 0}</p>
+        </div>
+      </div>
+
+      {datasetFileAssetSummary.total > 0 ? (
+        <div className="rounded border border-border bg-background p-2 text-xs text-muted-foreground">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span>Dataset file assets</span>
+            <span className="font-mono text-foreground">{datasetFileAssetSummary.total}</span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-1.5">
+            <span className="rounded bg-secondary px-2 py-1">PSD {datasetFileAssetSummary.psd}</span>
+            <span className="rounded bg-secondary px-2 py-1">Video {datasetFileAssetSummary.video}</span>
+            <span className="rounded bg-secondary px-2 py-1">Tagged {datasetFileAssetSummary.captioned}</span>
+          </div>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={resetGraphViewport}
+        className="flex w-full items-center justify-center rounded border border-border bg-background px-2 py-2 text-xs font-medium hover:bg-secondary"
+      >
+        Reset graph view
+      </button>
+    </div>
+  );
+  const analysisInspectorPortal = analysisInspectorRoot ? createPortal(analysisControls, analysisInspectorRoot) : null;
+
   if (items.length === 0) {
     return (
-      <div className="text-center py-12">
-        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No workspace images to analyze.</p>
+      <div className="space-y-6">
+        {analysisInspectorPortal}
+        {analysisInspectorPortal ? null : analysisControls}
+        <div className="text-center py-12">
+          <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+          <p className="text-muted-foreground">No workspace images to analyze.</p>
+          {datasetFileAssetSummary.total > 0 ? (
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+              {datasetFileAssetSummary.total} Dataset file asset
+              {datasetFileAssetSummary.total === 1 ? '' : 's'} outside the image embedding graph.
+            </p>
+          ) : null}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border border-border bg-card p-4">
-        <label className="text-sm font-medium block mb-3">Filter by Aspect Ratio</label>
-        <div className="flex gap-2 flex-wrap">
-          {ASPECT_RATIOS.map((ratio) => (
-            <button
-              key={ratio}
-              onClick={() => toggleAspectRatio(ratio)}
-              className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                selectedAspectRatios.has(ratio)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-foreground hover:bg-muted'
-              }`}
-            >
-              {ASPECT_RATIO_LABELS[ratio]}
-              <span className="ml-1 font-mono">{aspectRatioCounts[ratio] ?? 0}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Visible Items</p>
-          <p className="text-2xl font-bold">{filteredItems.length}</p>
-        </div>
-        <button
-          onClick={showPairs}
-          className={`rounded-lg border bg-card p-4 text-left transition-colors ${
-            activeSimilarityView === 'pairs' ? 'border-primary bg-primary/5' : 'border-border'
-          }`}
-        >
-          <p className="mb-1 inline-flex items-center gap-2 text-xs text-muted-foreground">
-            <GitCompareArrows size={14} />
-            Similar Pairs
-          </p>
-          <p className="text-2xl font-bold">{reviewData?.similarPairs.length ?? 0}</p>
-        </button>
-        <button
-          onClick={showClusters}
-          className={`rounded-lg border bg-card p-4 text-left transition-colors ${
-            activeSimilarityView === 'clusters' ? 'border-primary bg-primary/5' : 'border-border'
-          }`}
-        >
-          <p className="mb-1 inline-flex items-center gap-2 text-xs text-muted-foreground">
-            <Boxes size={14} />
-            Clusters
-          </p>
-          <p className="text-2xl font-bold">{reviewData?.clusters.length ?? 0}</p>
-        </button>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Threshold</p>
-          <p className="text-2xl font-bold">{uiThreshold.toFixed(2)}</p>
-        </div>
-      </div>
+      {analysisInspectorPortal}
+      {analysisInspectorPortal ? null : analysisControls}
 
       <div className="rounded-lg border border-border bg-card p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-lg font-semibold">Similarity Graph</h3>
-            <p className="text-sm text-muted-foreground">
-              Analysis uses a much more sensitive similarity threshold than Remove Duplicates.
-            </p>
+            <p className="text-sm text-muted-foreground">Image embeddings</p>
           </div>
           {reviewData && (
             <div className="text-right text-sm text-muted-foreground">
-              <p>Similarity scope: {reviewData.items.length}/{filteredItems.length}</p>
+              <p>Analyzed images: {reviewData.items.length}/{filteredItems.length}</p>
+              {datasetFileAssetSummary.total > 0 ? (
+                <p>File assets in Dataset: {datasetFileAssetSummary.total}</p>
+              ) : null}
               <p>Pairs: {reviewData.similarPairs.length}</p>
               <p>Clusters: {reviewData.clusters.length}</p>
             </div>
           )}
-        </div>
-
-        <div className="rounded-md border border-border bg-secondary/20 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Shared Similarity Threshold</label>
-              <p className="text-xs text-muted-foreground">
-                Drives the graph, similar pairs, and clusters together.
-              </p>
-            </div>
-            <div className="w-48">
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={uiThreshold}
-                onChange={(event) => handleThresholdChange(parseFloat(event.target.value))}
-                className="w-full"
-              />
-              <div className="text-right text-xs font-mono mt-1">
-                {uiThreshold.toFixed(2)} {'->'} {similarityThreshold.toFixed(3)}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => {
-              setActiveSimilarityView('graph');
-              setSelectedPairKey(null);
-              setSelectedClusterId(null);
-              setPreviewItemIds(null);
-              if (import.meta.env.DEV) {
-                console.log('[review] graph UI clicked');
-              }
-            }}
-            className={`inline-flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeSimilarityView === 'graph'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-secondary hover:bg-muted'
-            }`}
-          >
-            <Network size={14} />
-            Graph
-          </button>
-          <button
-            onClick={showPairs}
-            className={`inline-flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeSimilarityView === 'pairs'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-secondary hover:bg-muted'
-            }`}
-          >
-            <GitCompareArrows size={14} />
-            Similar Pairs
-          </button>
-          <button
-            onClick={showClusters}
-            className={`inline-flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-              activeSimilarityView === 'clusters'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-secondary hover:bg-muted'
-            }`}
-          >
-            <Boxes size={14} />
-            Clusters
-          </button>
         </div>
 
         <div
@@ -2066,6 +2136,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
                         return (
                           <button
                             key={pairKey}
+                            type="button"
                             onClick={() => {
                               setSelectedPairKey(pairKey);
                               setSelectedClusterId(null);
@@ -2095,7 +2166,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      No strong similarity pairs in the current graph review scope.
+                      No strong similarity pairs in the current graph view.
                     </p>
                   )}
                 </div>
@@ -2108,6 +2179,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
                       {reviewData.clusters.map((cluster: SimilarityCluster) => (
                         <button
                           key={cluster.id}
+                          type="button"
                           onClick={() => {
                             setSelectedClusterId(cluster.id);
                             setSelectedPairKey(null);
@@ -2162,7 +2234,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
                   ? 'Showing only the selected similar pair.'
                   : activeSimilarityView === 'clusters' && selectedClusterId
                     ? 'Showing only the selected similarity cluster.'
-                    : 'Inspecting the selected analysis scope.'}
+                    : 'Inspecting the selected analysis view.'}
               </p>
             </div>
           </div>
@@ -2176,6 +2248,7 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
                 item={item}
                 previewUrl={previewUrls[item.id]}
                 onDelete={handleDeleteItem}
+                deleteLabel={dataset ? 'Remove source group from Dataset' : 'Remove from review'}
                 highlighted={highlightedIds.has(item.id)}
               />
             )}
@@ -2184,17 +2257,13 @@ export const AnalysisStage = ({ datasetId, onUpdateDataset }: AnalysisStageProps
       )}
 
       {filteredItems.length === 0 && (
-        <div className="text-center py-12 rounded-lg bg-secondary/50 border border-dashed border-border">
-          <p className="text-muted-foreground">No items matching selected aspect ratios</p>
+        <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">No items match the selected aspect ratios</p>
+            <p className="mt-1 text-xs text-muted-foreground">Change the aspect filters to continue analysis.</p>
+          </div>
         </div>
       )}
-
-      <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-4">
-        <p className="text-sm text-blue-600">
-          Analyze thumbnails and the similarity map here. Caption and export use this same shared
-          workspace images directly.
-        </p>
-      </div>
     </div>
   );
 };

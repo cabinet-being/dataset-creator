@@ -550,11 +550,18 @@ export const CleanupStage = ({
 
   if (workspaceImages.length === 0 || (singleFileMode && !selectedImage)) {
     return (
-      <div className="text-center py-12">
-        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">
-          {singleFileMode ? 'Selected image is no longer available.' : 'No images to edit. Import images first.'}
-        </p>
+      <div className="flex h-full min-h-[320px] items-center justify-center px-4 text-center">
+        <div className="max-w-sm">
+          <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">
+            {singleFileMode ? 'Selected image is no longer available.' : 'No editable images'}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {singleFileMode
+              ? 'Open another image or PSD from Explorer.'
+              : 'Add image assets from Explorer, or open Photopea from a specific file.'}
+          </p>
+        </div>
       </div>
     );
   }

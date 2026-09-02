@@ -15,7 +15,7 @@ import {
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
-import { AlertCircle, ChevronDown, Trash2 } from 'lucide-react';
+import { AlertCircle, ChevronDown, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 export const SimilarityReviewStage = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -126,25 +126,39 @@ export const SimilarityReviewStage = () => {
 
   if (images.length === 0) {
     return (
-      <div className="text-center py-12">
-        <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">No images to analyze. Import images first.</p>
+      <div className="flex h-full min-h-[320px] items-center justify-center px-4 text-center">
+        <div className="max-w-sm">
+          <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">No comparable images</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Add image assets from Explorer or open a Dataset with source images.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Similarity Threshold</label>
-            <p className="text-xs text-muted-foreground">
-              Lower = more duplicate groups, Higher = fewer duplicate groups
-            </p>
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="rounded-md border border-border bg-card/80">
+        <div className="flex flex-col gap-4 px-4 py-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+              <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold">Remove Duplicates</h3>
+              <p className="truncate text-xs text-muted-foreground">
+                Review visually similar source and generated images.
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="similarity-threshold">
+              Threshold
+            </label>
             <input
+              id="similarity-threshold"
               type="range"
               min="0"
               max="1"
@@ -153,44 +167,44 @@ export const SimilarityReviewStage = () => {
               onChange={(event) => setUiThreshold(parseFloat(event.target.value))}
               className="w-32"
             />
-            <span className="text-sm font-mono w-12 text-right">
+            <span className="w-12 text-right font-mono text-xs">
               {uiThreshold.toFixed(2)}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Current Images</p>
-          <p className="text-2xl font-bold">{images.length}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-md border border-border bg-card/70 px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Images</p>
+          <p className="mt-1 text-lg font-semibold">{images.length}</p>
         </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Duplicate Groups</p>
-          <p className="text-2xl font-bold">{duplicateGroups.length}</p>
+        <div className="rounded-md border border-border bg-card/70 px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Groups</p>
+          <p className="mt-1 text-lg font-semibold">{duplicateGroups.length}</p>
         </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-xs text-muted-foreground mb-1">Cleanup Input</p>
-          <p className="text-sm font-medium">{cleanupInputReason}</p>
+        <div className="rounded-md border border-border bg-card/70 px-3 py-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Input</p>
+          <p className="mt-1 truncate text-sm font-medium">{cleanupInputReason}</p>
         </div>
       </div>
 
       {duplicateGroups.length > 0 && (
-        <div>
-          <div className="mb-4">
-            <h3 className="text-lg font-semibold">
-              Duplicate Groups ({duplicateGroups.length})
+        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card/70">
+          <div className="border-b border-border px-4 py-3">
+            <h3 className="text-sm font-semibold">
+              Duplicate groups ({duplicateGroups.length})
             </h3>
-            <p className="text-sm text-muted-foreground">
-              Review similar images and remove redundant ones
+            <p className="text-xs text-muted-foreground">
+              Expand a group to compare assets before removing redundant variants.
             </p>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-3 p-3">
             {duplicateGroups.map((cluster) => (
               <div
                 key={cluster.id}
-                className="rounded-lg border border-border bg-card overflow-hidden"
+                className="overflow-hidden rounded-md border border-border bg-background"
               >
                 <button
                   onClick={() =>
@@ -198,14 +212,14 @@ export const SimilarityReviewStage = () => {
                       selectedClusterId === cluster.id ? null : cluster.id
                     )
                   }
-                  className="w-full px-4 py-3 flex items-center justify-between hover:bg-secondary transition-colors"
+                  className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-secondary"
                 >
                   <div className="text-left">
-                    <p className="font-medium">
+                    <p className="text-sm font-medium">
                       Group with {cluster.imageIds.length} image
                       {cluster.imageIds.length !== 1 ? 's' : ''}
                     </p>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-xs text-muted-foreground">
                       Average similarity: {(cluster.avgSimilarity * 100).toFixed(1)}%
                     </p>
                   </div>
@@ -218,7 +232,7 @@ export const SimilarityReviewStage = () => {
                 </button>
 
                 {selectedClusterId === cluster.id && (
-                  <div className="border-t border-border p-4 bg-secondary/30">
+                  <div className="border-t border-border bg-secondary/30 p-4">
                     <BrickMasonry
                       className="mb-4"
                       items={cluster.imageIds
@@ -228,7 +242,7 @@ export const SimilarityReviewStage = () => {
                       getEstimate={(image) => image.height / Math.max(1, image.width)}
                       renderItem={(image) => (
                           <div
-                            className={`gallery-masonry-item group relative rounded-lg overflow-hidden bg-black ${getWorkspaceKindFrameClass(image.kind)}`}
+                            className={`gallery-masonry-item group relative overflow-hidden rounded-md bg-black ${getWorkspaceKindFrameClass(image.kind)}`}
                             style={getWorkspaceKindFrameStyle(image.kind)}
                           >
                             <MasonryImageFrame
@@ -244,17 +258,18 @@ export const SimilarityReviewStage = () => {
                               />
                             </MasonryImageFrame>
 
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
                               <button
                                 onClick={() => handleRemoveImage(image.id)}
-                                className="p-2 bg-destructive text-destructive-foreground rounded-md hover:opacity-90"
+                                className="rounded-md bg-destructive p-2 text-destructive-foreground hover:opacity-90"
+                                title="Remove image"
                               >
                                 <Trash2 size={16} />
                               </button>
                             </div>
 
                             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
-                              <p className="text-xs text-white truncate">
+                              <p className="truncate text-xs text-white">
                                 {image.fileName}
                               </p>
                               <span className={`mt-1 ${getWorkspaceKindBadgeClass(image.kind)}`}>
@@ -267,9 +282,9 @@ export const SimilarityReviewStage = () => {
 
                     <button
                       onClick={() => handleRemoveCluster(cluster.imageIds)}
-                      className="w-full px-4 py-2 bg-destructive/20 text-destructive hover:bg-destructive/30 rounded-md transition-colors text-sm font-medium"
+                      className="w-full rounded-md bg-destructive/20 px-4 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/30"
                     >
-                      Keep 1, Remove {cluster.imageIds.length - 1} Duplicates
+                      Keep 1, remove {cluster.imageIds.length - 1} duplicate{cluster.imageIds.length - 1 !== 1 ? 's' : ''}
                     </button>
                   </div>
                 )}
@@ -280,11 +295,13 @@ export const SimilarityReviewStage = () => {
       )}
 
       {duplicateGroups.length === 0 && (
-        <div className="text-center py-12 rounded-lg bg-secondary/50 border border-dashed border-border">
-          <p className="text-muted-foreground">No duplicate groups found at this threshold</p>
-          <p className="text-xs text-muted-foreground mt-2">
-            Try lowering the similarity threshold to find more duplicate groups
-          </p>
+        <div className="flex min-h-[260px] flex-1 items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">No duplicate groups at this threshold</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Lower the threshold to widen the match set.
+            </p>
+          </div>
         </div>
       )}
 

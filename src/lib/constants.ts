@@ -46,7 +46,7 @@ export const URL_STAGE_ALIASES: Record<string, (typeof STAGES)[number]> = {
 };
 
 export const STAGE_LABELS: Record<string, string> = {
-  hub: 'Image Workspace',
+  hub: 'Project Workspace',
   import: 'Import',
   select: 'Remove Duplicates',
   clean: 'Photopea',
@@ -57,9 +57,9 @@ export const STAGE_LABELS: Record<string, string> = {
 };
 
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  import: 'Load Source image files or folders into the shared workspace.',
+  import: 'Load source image files or folders into the project workspace.',
   select: 'Find duplicate and near-duplicate source images before editing.',
-  clean: 'Open workspace images in Photopea from the browser workspace.',
+  clean: 'Open image and PSD assets in Photopea.',
   analysis: 'Analyze workspace images with relationship maps and similarity groups.',
   review: 'Preview workspace image, video, and PSD assets before captioning.',
   tagging: 'Edit captions manually, in bulk, or with a local ONNX tagger.',

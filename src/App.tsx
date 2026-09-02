@@ -28,8 +28,11 @@ import {
   PanelLeft,
   PanelRight,
   Pencil,
+  Pin,
   Plus,
+  RotateCcw,
   ScanSearch,
+  Scissors,
   Sun,
   Tags,
   Trash2,
@@ -80,7 +83,7 @@ import {
   isLegacyProjectRootPath,
   LEGACY_PROJECT_ROOT_DIRECTORY_NAMES,
 } from './services/project/projectPathFilters';
-import { downloadZipFile, exportAsZip } from './services/export/exportService';
+import { downloadZipFile, exportAsZip, type ExportAsset } from './services/export/exportService';
 import {
   createDatasetForFile,
   getDatasetDisplayName,
@@ -94,6 +97,15 @@ import { BrickMasonry } from './components/ui/BrickMasonry';
 import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
 import { WorkspacePreviewCard } from './components/ui/WorkspacePreviewCard';
+import {
+  applyCaptionOverridePathMoves,
+  applyExplorerPathMoves,
+  applyFileAssetOrderPathMoves,
+  createDatasetFileAssetKey,
+  createDatasetImageAssetKey,
+  normalizeDatasetAssetOrder,
+  type ExplorerPathMove,
+} from './lib/datasetAssets';
 import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
 import { FinalReviewStage } from './components/stages/FinalReviewStage';
 import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
@@ -119,8 +131,10 @@ import { type BrickColumnCount, type Dataset, type StageName } from './types';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
+const DATASET_BOARD_DRAG_TYPE = 'application/x-dataset-creator-dataset-board-asset';
+const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
 const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
-type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'caption';
+type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'review' | 'analysis' | 'caption';
 
 type FilePickerWindow = Window &
   typeof globalThis & {
@@ -143,10 +157,11 @@ type FileInspectorMetadata = {
   dimensions?: { width: number; height: number };
   format: string;
   size: string;
+  captionEntries: { label: string; tags: string[] }[];
   tags?: string[];
 };
 
-type InspectorContext = 'empty' | 'tool' | 'dataset' | 'review' | 'caption' | 'photopea';
+type InspectorContext = 'empty' | 'tool' | 'dataset' | 'file' | 'review' | 'analysis' | 'caption' | 'photopea';
 
 const parseBrickColumnCount = (value: string): BrickColumnCount =>
   value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
@@ -162,14 +177,55 @@ const selectFileNameStem = (input: HTMLInputElement) => {
 
 const WORKSPACE_LAYOUT_STORAGE_KEY = 'dataset-creator-workspace-layout';
 
+type WorkspaceTabState = {
+  pinned?: boolean;
+  dirty?: boolean;
+};
+
 type ToolWorkspaceTab = {
   id: string;
   kind: 'tool';
   stage: StageName;
   nested?: ToolNestedView;
-};
+} & WorkspaceTabState;
 
 type DatasetToolStage = Extract<StageName, 'select' | 'analysis' | 'review' | 'tagging'>;
+type DatasetBoardSortMode = 'manual' | 'name' | 'type' | 'captioned' | 'aspect';
+const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; label: string }> = [
+  { value: 'manual', label: 'Manual order' },
+  { value: 'name', label: 'Name' },
+  { value: 'type', label: 'Type' },
+  { value: 'captioned', label: 'Captioned' },
+  { value: 'aspect', label: 'Aspect ratio' },
+];
+
+const getDatasetBoardAssetKey = (item: WorkspaceImage): string =>
+  item.kind === 'image'
+    ? createDatasetImageAssetKey(item.sourceImageId)
+    : createDatasetFileAssetKey(item.assetPath ?? item.id);
+
+const orderDatasetBoardItems = (
+  items: WorkspaceImage[],
+  assetOrder: string[] | undefined,
+  assetIds: string[] = []
+): WorkspaceImage[] => {
+  const itemByKey = new Map(items.map((item) => [getDatasetBoardAssetKey(item), item]));
+  const assetPaths = items.map((item) => item.assetPath).filter((path): path is string => Boolean(path));
+  const orderedKeys = normalizeDatasetAssetOrder(assetOrder, assetIds, assetPaths);
+  const seenKeys = new Set<string>();
+  const orderedItems = orderedKeys
+    .map((key) => itemByKey.get(key))
+    .filter((item): item is WorkspaceImage => Boolean(item))
+    .filter((item) => {
+      const key = getDatasetBoardAssetKey(item);
+      if (seenKeys.has(key)) {
+        return false;
+      }
+      seenKeys.add(key);
+      return true;
+    });
+  return [...orderedItems, ...items.filter((item) => !seenKeys.has(getDatasetBoardAssetKey(item)))];
+};
 
 type ToolNestedView = {
   kind: 'file';
@@ -177,7 +233,7 @@ type ToolNestedView = {
 };
 
 const DATASET_TOOL_LABELS: Record<DatasetToolStage, string> = {
-  select: 'Select',
+  select: 'Remove Duplicates',
   analysis: 'Analysis',
   review: 'Review',
   tagging: 'Caption',
@@ -189,7 +245,7 @@ type DatasetToolWorkspaceTab = {
   datasetId: string;
   stage: DatasetToolStage;
   nested?: ToolNestedView;
-};
+} & WorkspaceTabState;
 
 type FileWorkspaceTab = {
   id: string;
@@ -199,15 +255,33 @@ type FileWorkspaceTab = {
   fileKind: ExplorerFileKind;
   file: File | Blob;
   workspaceImageId?: string;
-};
+} & WorkspaceTabState;
 
 type DatasetWorkspaceTab = {
   id: string;
   kind: 'dataset';
   datasetId: string;
-};
+} & WorkspaceTabState;
 
 type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab;
+
+type PersistedWorkspaceTab =
+  | {
+      kind: 'tool';
+      stage: StageName;
+      pinned?: boolean;
+    }
+  | {
+      kind: 'dataset';
+      datasetId: string;
+      pinned?: boolean;
+    }
+  | {
+      kind: 'dataset-tool';
+      datasetId: string;
+      stage: DatasetToolStage;
+      pinned?: boolean;
+    };
 
 const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
   id: `tool:${stage}`,
@@ -220,7 +294,54 @@ const createFileModeTabId = (mode: 'edit' | 'caption', path: string): string => 
 const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
 const createDatasetToolTabId = (datasetId: string, stage: DatasetToolStage): string => `dataset:${datasetId}:${stage}`;
 
-const isToolTab = (tab: WorkspaceTab): tab is ToolWorkspaceTab => tab.kind === 'tool';
+const isDatasetToolStage = (stage: unknown): stage is DatasetToolStage =>
+  stage === 'select' || stage === 'analysis' || stage === 'review' || stage === 'tagging';
+
+const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceTab => {
+  if (tab.kind === 'tool') {
+    return { ...createToolTab(tab.stage), pinned: tab.pinned };
+  }
+  if (tab.kind === 'dataset') {
+    return {
+      id: createDatasetTabId(tab.datasetId),
+      kind: 'dataset',
+      datasetId: tab.datasetId,
+      pinned: tab.pinned,
+    };
+  }
+  return {
+    id: createDatasetToolTabId(tab.datasetId, tab.stage),
+    kind: 'dataset-tool',
+    datasetId: tab.datasetId,
+    stage: tab.stage,
+    pinned: tab.pinned,
+  };
+};
+
+const persistWorkspaceTab = (tab: WorkspaceTab): PersistedWorkspaceTab | null => {
+  if (tab.kind === 'tool') {
+    return { kind: 'tool', stage: tab.stage, pinned: tab.pinned };
+  }
+  if (tab.kind === 'dataset') {
+    return { kind: 'dataset', datasetId: tab.datasetId, pinned: tab.pinned };
+  }
+  if (tab.kind === 'dataset-tool') {
+    return { kind: 'dataset-tool', datasetId: tab.datasetId, stage: tab.stage, pinned: tab.pinned };
+  }
+  return null;
+};
+
+const dedupeWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => {
+  const seenIds = new Set<string>();
+  return tabs.filter((tab) => {
+    if (seenIds.has(tab.id)) {
+      return false;
+    }
+    seenIds.add(tab.id);
+    return true;
+  });
+};
+
 const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
   tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption';
@@ -243,14 +364,24 @@ const getInspectorContext = (tab: WorkspaceTab | null, activeStage: StageName | 
   }
 
   if (tab.kind === 'file-view') {
+    return 'file';
+  }
+
+  if ((tab.kind === 'tool' && tab.stage === 'review') || (tab.kind === 'dataset-tool' && (tab.stage === 'select' || tab.stage === 'review'))) {
     return 'review';
+  }
+
+  if ((tab.kind === 'tool' && tab.stage === 'analysis') || (tab.kind === 'dataset-tool' && tab.stage === 'analysis')) {
+    return 'analysis';
   }
 
   return activeStage ? 'tool' : 'empty';
 };
 
 type WorkspaceLayout = {
-  openTabs: StageName[];
+  openTabs: PersistedWorkspaceTab[];
+  projectId?: string | null;
+  activeTabId?: string | null;
   leftPanelOpen: boolean;
   rightPanelOpen: boolean;
   bottomPanelOpen: boolean;
@@ -266,6 +397,16 @@ type WorkspaceLayout = {
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
+const getRestorableWorkspaceTabs = (
+  layout: Partial<WorkspaceLayout>,
+  projectId?: string | null
+): WorkspaceTab[] => {
+  const restoreProjectTabs = Boolean(projectId && layout.projectId === projectId);
+  return (layout.openTabs ?? [])
+    .filter((tab) => tab.kind === 'tool' || restoreProjectTabs)
+    .map(createWorkspaceTabFromPersisted);
+};
+
 const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
   if (typeof window === 'undefined') {
     return {};
@@ -280,21 +421,27 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
     const value = parsed as Record<string, unknown>;
     const openTabs = Array.isArray(value.openTabs)
       ? value.openTabs
-          .map((tab): StageName | null => {
+          .map((tab): PersistedWorkspaceTab | null => {
             if (typeof tab === 'string' && isStageName(tab)) {
-              return tab;
+              return { kind: 'tool', stage: tab };
             }
-            if (
-              tab &&
-              typeof tab === 'object' &&
-              (tab as { kind?: unknown }).kind === 'tool' &&
-              isStageName((tab as { stage?: string }).stage ?? null)
-            ) {
-              return (tab as { stage: StageName }).stage;
+            if (!tab || typeof tab !== 'object') {
+              return null;
+            }
+            const entry = tab as { kind?: unknown; stage?: unknown; datasetId?: unknown; pinned?: unknown };
+            const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
+            if (entry.kind === 'tool' && typeof entry.stage === 'string' && isStageName(entry.stage)) {
+              return { kind: 'tool', stage: entry.stage, pinned };
+            }
+            if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
+              return { kind: 'dataset', datasetId: entry.datasetId, pinned };
+            }
+            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolStage(entry.stage)) {
+              return { kind: 'dataset-tool', datasetId: entry.datasetId, stage: entry.stage, pinned };
             }
             return null;
           })
-          .filter((tab): tab is StageName => Boolean(tab))
+          .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab))
       : undefined;
     const readPanel = (panel: unknown, fallback: FloatingPanelState): FloatingPanelState => {
       if (!panel || typeof panel !== 'object') {
@@ -311,7 +458,30 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
     };
 
     return {
-      openTabs: openTabs ? Array.from(new Set(openTabs)) : undefined,
+      openTabs: openTabs
+        ? openTabs.filter(
+            (tab, index, tabs) =>
+              tabs.findIndex((entry) => {
+                if (entry.kind !== tab.kind) {
+                  return false;
+                }
+                if (entry.kind === 'tool' && tab.kind === 'tool') {
+                  return entry.stage === tab.stage;
+                }
+                if (entry.kind === 'dataset' && tab.kind === 'dataset') {
+                  return entry.datasetId === tab.datasetId;
+                }
+                return (
+                  entry.kind === 'dataset-tool' &&
+                  tab.kind === 'dataset-tool' &&
+                  entry.datasetId === tab.datasetId &&
+                  entry.stage === tab.stage
+                );
+              }) === index
+          )
+        : undefined,
+      projectId: typeof value.projectId === 'string' ? value.projectId : null,
+      activeTabId: typeof value.activeTabId === 'string' ? value.activeTabId : null,
       leftPanelOpen: typeof value.leftPanelOpen === 'boolean' ? value.leftPanelOpen : undefined,
       rightPanelOpen: typeof value.rightPanelOpen === 'boolean' ? value.rightPanelOpen : undefined,
       bottomPanelOpen: typeof value.bottomPanelOpen === 'boolean' ? value.bottomPanelOpen : undefined,
@@ -429,17 +599,42 @@ const getAspectRatioLabel = (width: number, height: number): string => {
 
 type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 
-const renderTool = (
-  currentStage: StageName,
-  projectDirectoryHandle?: ProjectDirectoryHandle | null,
-  onOpenAssetContextMenu?: AssetContextMenuHandler,
-  nested?: ToolNestedView,
-  onOpenNestedFile?: (itemId: string) => void,
-  onOpenTool?: (stage: StageName) => void
-) => {
+type RenderToolOptions = {
+  currentStage: StageName;
+  projectDirectoryHandle?: ProjectDirectoryHandle | null;
+  onOpenAssetContextMenu?: AssetContextMenuHandler;
+  nested?: ToolNestedView;
+  onOpenNestedFile?: (itemId: string) => void;
+  onOpenTool?: (stage: StageName) => void;
+  onOpenDataset?: (datasetId: string) => void;
+  onOpenDatasetTool?: (datasetId: string, stage: DatasetToolStage) => void;
+  onCreateDataset?: () => void;
+  onExportDataset?: (datasetId: string) => void;
+};
+
+const renderTool = ({
+  currentStage,
+  projectDirectoryHandle,
+  onOpenAssetContextMenu,
+  nested,
+  onOpenNestedFile,
+  onOpenTool,
+  onOpenDataset,
+  onOpenDatasetTool,
+  onCreateDataset,
+  onExportDataset,
+}: RenderToolOptions) => {
   switch (currentStage) {
     case 'hub':
-      return <ToolHub onOpenTool={onOpenTool} />;
+      return (
+        <ToolHub
+          onOpenTool={onOpenTool}
+          onOpenDataset={onOpenDataset}
+          onOpenDatasetTool={onOpenDatasetTool}
+          onCreateDataset={onCreateDataset}
+          onExportDataset={onExportDataset}
+        />
+      );
     case 'import':
       return <ImportStage />;
     case 'select':
@@ -453,9 +648,9 @@ const renderTool = (
         />
       );
     case 'analysis':
-      return <AnalysisStage />;
+      return <AnalysisStage active />;
     case 'review':
-      return <FinalReviewStage onOpenAssetContextMenu={onOpenAssetContextMenu} />;
+      return <FinalReviewStage active onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'tagging':
       return (
         <TaggingStageComponent
@@ -467,7 +662,15 @@ const renderTool = (
     case 'export':
       return <ExportStage />;
     default:
-      return <ToolHub onOpenTool={onOpenTool} />;
+      return (
+        <ToolHub
+          onOpenTool={onOpenTool}
+          onOpenDataset={onOpenDataset}
+          onOpenDatasetTool={onOpenDatasetTool}
+          onCreateDataset={onCreateDataset}
+          onExportDataset={onExportDataset}
+        />
+      );
   }
 };
 
@@ -507,6 +710,27 @@ const FloatingWorkspacePanel = ({
     originWidth: number;
     originHeight: number;
   } | null>(null);
+  const panelHeight = panel.minimized ? 38 : panel.height;
+
+  useEffect(() => {
+    const clampPanelToViewport = () => {
+      const width = Math.max(240, Math.min(panel.width, Math.max(240, window.innerWidth - 16)));
+      const height = panel.minimized
+        ? panel.height
+        : Math.max(150, Math.min(panel.height, Math.max(150, window.innerHeight - 16)));
+      const visibleHeight = panel.minimized ? 38 : height;
+      const x = Math.max(8, Math.min(Math.max(8, window.innerWidth - width - 8), panel.x));
+      const y = Math.max(8, Math.min(Math.max(8, window.innerHeight - visibleHeight - 8), panel.y));
+
+      if (x !== panel.x || y !== panel.y || width !== panel.width || height !== panel.height) {
+        onChange({ ...panel, x, y, width, height });
+      }
+    };
+
+    clampPanelToViewport();
+    window.addEventListener('resize', clampPanelToViewport);
+    return () => window.removeEventListener('resize', clampPanelToViewport);
+  }, [onChange, panel]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -524,7 +748,7 @@ const FloatingWorkspacePanel = ({
           y: Math.max(
             8,
             Math.min(
-              Math.max(8, window.innerHeight - (panel.minimized ? 38 : panel.height) - 8),
+              Math.max(8, window.innerHeight - panelHeight - 8),
               drag.originY + event.clientY - drag.startY
             )
           ),
@@ -573,11 +797,11 @@ const FloatingWorkspacePanel = ({
       className="workspace-floating-panel fixed z-[1200] flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-2xl"
       style={{
         left: panel.x,
-        top: panel.y,
-        width: panel.width,
-        height: panel.minimized ? 38 : panel.height,
-        zIndex,
-      }}
+      top: panel.y,
+      width: panel.width,
+      height: panelHeight,
+      zIndex,
+    }}
       onPointerDown={onFocus}
     >
       <header
@@ -966,17 +1190,42 @@ const ExplorerTree = ({
   );
 };
 
-const EmptyWorkspacePlaceholder = () => (
+const EmptyWorkspacePlaceholder = ({
+  onOpenTool,
+  onOpenProject,
+}: {
+  onOpenTool: () => void;
+  onOpenProject: () => void;
+}) => (
   <div className="flex h-full min-h-[20rem] items-center justify-center text-center">
-    <div className="text-muted-foreground">
+    <div className="max-w-sm px-6 text-muted-foreground">
       <Archive className="mx-auto mb-3 h-8 w-8 opacity-60" />
-      <p className="text-sm font-medium text-foreground">No tool is open</p>
-      <p className="mt-1 text-xs">Open one from the Tools menu</p>
+      <p className="text-sm font-medium text-foreground">Workspace is ready</p>
+      <p className="mt-1 text-xs">Open a tool, Dataset, or file when you need it.</p>
+      <div className="mt-4 flex justify-center gap-2">
+        <button
+          type="button"
+          onClick={onOpenTool}
+          className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Open Tool
+        </button>
+        <button
+          type="button"
+          onClick={onOpenProject}
+          className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          Open Project
+        </button>
+      </div>
     </div>
   </div>
 );
 
 function App() {
+  const projectId = useProjectStore((state) => state.id);
   const projectName = useProjectStore((state) => state.name);
   const currentStage = useProjectStore((state) => state.currentStage);
   const initializeProject = useProjectStore((state) => state.initializeProject);
@@ -1026,8 +1275,15 @@ function App() {
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [isUrlStageReady, setIsUrlStageReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
-  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(openTabs[0]?.id ?? null);
+  const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
+    getRestorableWorkspaceTabs(storedWorkspaceLayout)
+  );
+  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(initialWorkspaceTabs);
+  const [activeTabId, setActiveTabId] = useState<string | null>(() =>
+    initialWorkspaceTabs.some((tab) => tab.id === storedWorkspaceLayout.activeTabId)
+      ? storedWorkspaceLayout.activeTabId ?? null
+      : initialWorkspaceTabs[0]?.id ?? null
+  );
   const [leftPanelOpen, setLeftPanelOpen] = useState(storedWorkspaceLayout.leftPanelOpen ?? true);
   const [rightPanelOpen, setRightPanelOpen] = useState(storedWorkspaceLayout.rightPanelOpen ?? true);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(storedWorkspaceLayout.bottomPanelOpen ?? false);
@@ -1062,6 +1318,8 @@ function App() {
     storedWorkspaceLayout.inspectorWindowOpen ?? false
   );
   const [tabMenuOpen, setTabMenuOpen] = useState(false);
+  const [tabContextMenu, setTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
+  const [closedTabs, setClosedTabs] = useState<WorkspaceTab[]>([]);
   const [dragOverTab, setDragOverTab] = useState<string | null>(null);
   const [floatingPanelOrder, setFloatingPanelOrder] = useState<Array<'project' | 'inspector'>>([
     'project',
@@ -1095,10 +1353,16 @@ function App() {
     file: true,
     dataset: true,
     photopea: true,
+    review: true,
+    analysis: true,
     caption: true,
   });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
   const [datasetWorkspaceFileAssets, setDatasetWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const [datasetBoardSortMode, setDatasetBoardSortMode] = useState<DatasetBoardSortMode>('manual');
+  const [draggedDatasetAssetId, setDraggedDatasetAssetId] = useState<string | null>(null);
+  const [datasetDropTargetAssetId, setDatasetDropTargetAssetId] = useState<string | null>(null);
+  const [datasetDropActive, setDatasetDropActive] = useState(false);
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
@@ -1117,6 +1381,11 @@ function App() {
 
   const focusFloatingPanel = (panel: 'project' | 'inspector') => {
     setFloatingPanelOrder((order) => [...order.filter((item) => item !== panel), panel]);
+  };
+
+  const openFloatingInspector = () => {
+    setInspectorWindowOpen(true);
+    focusFloatingPanel('inspector');
   };
 
   const setInspectorSectionOpen = (section: InspectorSectionId, open: boolean) => {
@@ -1278,7 +1547,7 @@ function App() {
   }, [currentStage, setCurrentStage]);
 
   useEffect(() => {
-    if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen) {
+    if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen && !tabContextMenu) {
       return;
     }
 
@@ -1289,12 +1558,13 @@ function App() {
         setToolsMenuOpen(false);
         setWindowsMenuOpen(false);
         setTabMenuOpen(false);
+        setTabContextMenu(null);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fileMenuOpen, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
+  }, [fileMenuOpen, tabContextMenu, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
 
   useEffect(() => {
     if (!explorerContextMenu) {
@@ -1315,6 +1585,14 @@ function App() {
   }, [explorerContextMenu]);
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
+  const tabContextMenuTab = tabContextMenu
+    ? openTabs.find((tab) => tab.id === tabContextMenu.tabId) ?? null
+    : null;
+  const tabContextMenuDataset =
+    tabContextMenuTab?.kind === 'dataset' || tabContextMenuTab?.kind === 'dataset-tool'
+      ? datasetsById[tabContextMenuTab.datasetId]
+      : null;
+  const tabContextMenuDatasetFilePath = tabContextMenuDataset?.filePath;
   const activeStage = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.stage : null;
   const activeDataset =
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
@@ -1346,8 +1624,15 @@ function App() {
     [activeDataset, activeTab, sourceImagesById]
   );
   const activeDatasetPreviewItems = useMemo(
-    () => toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets),
-    [activeDatasetSourceImages, datasetWorkspaceFileAssets]
+    () =>
+      activeDataset
+        ? orderDatasetBoardItems(
+            toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets),
+            activeDataset.assetOrder,
+            activeDataset.assetIds
+          )
+        : [],
+    [activeDataset, activeDatasetSourceImages, datasetWorkspaceFileAssets]
   );
   const activeDatasetPreviewUrls = useWorkspacePreviewUrls(activeDatasetPreviewItems);
   const activeDatasetSummary = useMemo(() => {
@@ -1375,9 +1660,58 @@ function App() {
       triggerWordSet: Boolean(activeDataset.triggerWord.trim()),
     };
   }, [activeDataset, activeDatasetFileAssetPaths, sourceImagesById, workspaceImages]);
-  const activeFileSource = activeTab && isFileBackedTab(activeTab) && activeTab.workspaceImageId
-    ? sourceImagesById[activeTab.workspaceImageId]
-    : null;
+  const activeFileWorkspaceItem = useMemo(() => {
+    if (!activeTab || !isFileBackedTab(activeTab)) {
+      return null;
+    }
+
+    const candidates = [...workspaceImages, ...activeDatasetPreviewItems];
+    return candidates.find((item) => {
+      if (activeTab.workspaceImageId && item.id === activeTab.workspaceImageId) {
+        return true;
+      }
+      return item.assetPath === activeTab.path;
+    }) ?? null;
+  }, [activeDatasetPreviewItems, activeTab, workspaceImages]);
+  const activeFileCaptionEntries = useMemo(() => {
+    if (!activeTab || !isFileBackedTab(activeTab)) {
+      return [];
+    }
+
+    const captionEntries: { label: string; tags: string[] }[] = [];
+    const captionKeys = [
+      activeFileWorkspaceItem?.id,
+      activeTab.workspaceImageId,
+      createWorkspaceFileAssetId(activeTab.path),
+    ].filter((key): key is string => Boolean(key));
+    const orderedDatasets = [
+      ...(activeDataset ? [activeDataset] : []),
+      ...Object.values(datasetsById).filter((dataset) => dataset.id !== activeDataset?.id),
+    ];
+
+    for (const dataset of orderedDatasets) {
+      const overrideTags = captionKeys.map((key) => dataset.captionOverrides[key]).find((tags) => tags?.length);
+      if (overrideTags?.length) {
+        captionEntries.push({
+          label: `Dataset: ${dataset.name}`,
+          tags: overrideTags,
+        });
+      }
+    }
+
+    const baseTags = activeFileWorkspaceItem?.tags;
+    if (baseTags?.length) {
+      const alreadyShown = captionEntries.some((entry) => entry.tags.join('\n') === baseTags.join('\n'));
+      if (!alreadyShown) {
+        captionEntries.unshift({
+          label: 'Caption',
+          tags: baseTags,
+        });
+      }
+    }
+
+    return captionEntries;
+  }, [activeDataset, activeFileWorkspaceItem, activeTab, datasetsById]);
   const activeToolNestedView =
     activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.nested : undefined;
   const getWorkspaceTabChrome = (tab: WorkspaceTab) => {
@@ -1403,22 +1737,27 @@ function App() {
           : tab.kind === 'file-caption'
             ? `Caption: ${tab.name}`
             : tab.name;
-    const scope =
+    const target =
       tab.kind === 'tool'
-        ? 'Project scope'
+        ? 'Project tool'
         : tab.kind === 'dataset-tool'
-          ? 'Dataset scope'
+          ? 'Applied to Dataset'
           : tab.kind === 'dataset'
             ? 'Dataset object'
-            : 'File scope';
-    const title = `${label} - ${scope}`;
+            : 'File';
+    const title = `${label} - ${target}`;
 
-    return { Icon, label, scope, title };
+    return { Icon, label, target, title };
   };
   const activeInspectorContext = getInspectorContext(activeTab, activeStage);
   const showFileInspector = Boolean(activeTab && isFileBackedTab(activeTab));
   const showDatasetInspector = Boolean(activeDataset);
   const showCaptionInspector = activeInspectorContext === 'caption';
+  const showReviewInspector =
+    (activeTab?.kind === 'tool' && activeTab.stage === 'review') ||
+    (activeTab?.kind === 'dataset-tool' && (activeTab.stage === 'select' || activeTab.stage === 'review'));
+  const showAnalysisInspector = activeInspectorContext === 'analysis';
+  const floatingInspectorOwnsContent = inspectorWindowOpen && !inspectorWindow.minimized;
   const showPhotopeaInspector =
     activeInspectorContext === 'photopea' &&
     activeTab &&
@@ -1514,10 +1853,11 @@ function App() {
     }
 
     const format = activeTab.name.split('.').pop()?.toUpperCase() || activeTab.fileKind.toUpperCase();
-    const tags = activeFileSource?.tags;
+    const tags = activeFileCaptionEntries[0]?.tags;
     const metadata: FileInspectorMetadata = {
       format,
       size: 'size' in activeTab.file ? formatFileSize(activeTab.file.size) : 'Unknown',
+      captionEntries: activeFileCaptionEntries,
       tags,
     };
     setFileInspectorMetadata(metadata);
@@ -1548,7 +1888,7 @@ function App() {
       canceled = true;
       URL.revokeObjectURL(url);
     };
-  }, [activeFileSource?.tags, activeTab]);
+  }, [activeFileCaptionEntries, activeTab]);
 
   useEffect(() => {
     if (activeTabId && openTabs.some((tab) => tab.id === activeTabId)) {
@@ -1560,6 +1900,22 @@ function App() {
   const showHeaderEditToolbar = activeStage === 'clean' && editToolbar.visible;
   const showTaggingToolbar = activeStage === 'tagging' || activeTab?.kind === 'file-caption';
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
+
+  useEffect(() => {
+    if (!activeTab || activeTab.kind !== 'file-edit') {
+      return;
+    }
+    setOpenTabs((tabs) =>
+      tabs.map((tab) =>
+        tab.id === activeTab.id && tab.kind === 'file-edit'
+          ? tab.dirty === editToolbar.canSave
+            ? tab
+            : { ...tab, dirty: editToolbar.canSave }
+          : tab
+      )
+    );
+  }, [activeTab, editToolbar.canSave]);
+
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
   };
@@ -1590,13 +1946,32 @@ function App() {
     setToolsMenuOpen(false);
     setWindowsMenuOpen(false);
     setTabMenuOpen(false);
+    setTabContextMenu(null);
   };
 
-  const closeTab = (tabId: string) => {
+  const pushClosedTabs = (tabs: WorkspaceTab[]) => {
+    if (tabs.length === 0) {
+      return;
+    }
+    setClosedTabs((current) => [...tabs, ...current.filter((tab) => !tabs.some((closedTab) => closedTab.id === tab.id))].slice(0, 12));
+  };
+
+  const closeTab = (tabId: string, keepHistory = true) => {
     const tabIndex = openTabs.findIndex((tab) => tab.id === tabId);
+    const closedTab = openTabs[tabIndex];
+    if (!closedTab) {
+      return;
+    }
+    if (!confirmClosingTabs([closedTab])) {
+      return;
+    }
     const nextTabs = openTabs.filter((tab) => tab.id !== tabId);
     const nextTab = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? null;
+    if (keepHistory) {
+      pushClosedTabs([closedTab]);
+    }
     setOpenTabs(nextTabs);
+    setTabContextMenu(null);
 
     if (activeTabId === tabId) {
       if (nextTab) {
@@ -1605,6 +1980,95 @@ function App() {
         setActiveTabId(null);
       }
     }
+  };
+
+  const closeOtherTabs = (tabId: string) => {
+    const targetTab = openTabs.find((tab) => tab.id === tabId);
+    if (!targetTab) {
+      return;
+    }
+    const nextTabs = openTabs.filter((tab) => tab.id === tabId || tab.pinned);
+    const closed = openTabs.filter((tab) => tab.id !== tabId && !tab.pinned);
+    if (!confirmClosingTabs(closed)) {
+      setTabContextMenu(null);
+      return;
+    }
+    pushClosedTabs(closed);
+    setOpenTabs(nextTabs);
+    setActiveTabId(tabId);
+    setTabContextMenu(null);
+  };
+
+  const toggleTabPinned = (tabId: string) => {
+    setOpenTabs((tabs) => tabs.map((tab) => (tab.id === tabId ? { ...tab, pinned: !tab.pinned } : tab)));
+    setTabContextMenu(null);
+  };
+
+  const reopenClosedTab = () => {
+    const [tabToRestore, ...remainingTabs] = closedTabs;
+    if (!tabToRestore) {
+      return;
+    }
+    setClosedTabs(remainingTabs);
+    setOpenTabs((tabs) => {
+      if (tabs.some((tab) => tab.id === tabToRestore.id)) {
+        return tabs;
+      }
+      return [...tabs, tabToRestore];
+    });
+    setActiveTabId(tabToRestore.id);
+    setTabContextMenu(null);
+  };
+
+  const isTabDirty = (tab: WorkspaceTab): boolean =>
+    Boolean(tab.dirty || (activeTabId === tab.id && tab.kind === 'file-edit' && editToolbar.canSave));
+
+  const applyWorkspaceTabsForProject = (nextProjectId: string) => {
+    const layout = readWorkspaceLayout();
+    const datasets = useProjectStore.getState().datasets;
+    const restoredTabs = getRestorableWorkspaceTabs(layout, nextProjectId).filter((tab) => {
+      if (tab.kind === 'tool') {
+        return true;
+      }
+      if (tab.kind === 'dataset') {
+        return Boolean(datasets[tab.datasetId]);
+      }
+      if (tab.kind === 'dataset-tool') {
+        return Boolean(datasets[tab.datasetId]);
+      }
+      return false;
+    });
+
+    const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool');
+    const restoredToolTabs = restoredTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool');
+    const nextTabs = dedupeWorkspaceTabs([
+      ...(restoredToolTabs.length > 0 ? restoredToolTabs : currentToolTabs),
+      ...restoredTabs.filter((tab) => tab.kind !== 'tool'),
+    ]);
+    setOpenTabs(nextTabs);
+
+    const restoredActiveTab = nextTabs.find((tab) => tab.id === layout.activeTabId);
+    if (restoredActiveTab) {
+      setActiveTabId(restoredActiveTab.id);
+      return;
+    }
+
+    setActiveTabId((current) => {
+      if (current && nextTabs.some((tab) => tab.id === current)) {
+        return current;
+      }
+      return nextTabs[0]?.id ?? null;
+    });
+  };
+
+  const confirmClosingTabs = (tabs: WorkspaceTab[]): boolean => {
+    const dirtyCount = tabs.filter(isTabDirty).length;
+    if (dirtyCount === 0) {
+      return true;
+    }
+    return window.confirm(
+      `Close ${dirtyCount === 1 ? '1 tab' : `${dirtyCount} tabs`} with unsaved changes?`
+    );
   };
 
   const commitInspectorRename = async () => {
@@ -1658,10 +2122,27 @@ function App() {
 
   useEffect(() => {
     try {
+      const persistableActiveTab = openTabs.find((tab) => tab.id === activeTabId);
+      const persistedActiveTab = persistableActiveTab ? persistWorkspaceTab(persistableActiveTab) : null;
+      const persistedOpenTabs = openTabs
+        .map(persistWorkspaceTab)
+        .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab));
+      const nextOpenTabs = projectDirectoryHandle
+        ? persistedOpenTabs
+        : [
+            ...persistedOpenTabs.filter((tab) => tab.kind === 'tool'),
+            ...(storedWorkspaceLayout.openTabs ?? []).filter((tab) => tab.kind !== 'tool'),
+          ];
       window.localStorage.setItem(
         WORKSPACE_LAYOUT_STORAGE_KEY,
         JSON.stringify({
-          openTabs: openTabs.filter(isToolTab).map((tab) => tab.stage),
+          openTabs: nextOpenTabs,
+          activeTabId: persistedActiveTab
+            ? persistableActiveTab?.id ?? null
+            : projectDirectoryHandle
+              ? null
+              : storedWorkspaceLayout.activeTabId ?? null,
+          projectId: projectDirectoryHandle ? projectId : storedWorkspaceLayout.projectId ?? null,
           leftPanelOpen,
           rightPanelOpen,
           bottomPanelOpen,
@@ -1682,9 +2163,12 @@ function App() {
     bottomPanelOpen,
     inspectorWindow,
     inspectorWindowOpen,
+    activeTabId,
     leftPanelOpen,
     leftPanelWidth,
     openTabs,
+    projectDirectoryHandle,
+    projectId,
     projectWindow,
     projectWindowOpen,
     rightPanelOpen,
@@ -2248,7 +2732,7 @@ function App() {
   const createDatasetFileInDirectory = async (
     parentPath: string,
     name: string,
-    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>
+    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>
   ): Promise<Dataset> => {
     const directory = requireProjectDirectory();
     if (!directory) {
@@ -2257,12 +2741,15 @@ function App() {
     const parentDirectory = await getDirectoryAtExplorerPath(directory, parentPath);
     const fileName = await getUniqueExplorerName(parentDirectory, getDatasetFileName(name));
     const filePath = `${parentPath}/${fileName}`;
+    const assetIds = [...new Set(source?.assetIds ?? [])];
+    const assetPaths = filterLegacyProjectAssetPaths([...new Set([...(source?.assetPaths ?? []), ...(source?.psdAssetPaths ?? [])])]);
     const dataset = {
       ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
       triggerWord: source?.triggerWord ?? '',
-      assetIds: [...new Set(source?.assetIds ?? [])],
-      assetPaths: filterLegacyProjectAssetPaths([...new Set([...(source?.assetPaths ?? []), ...(source?.psdAssetPaths ?? [])])]),
+      assetIds,
+      assetPaths,
       psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(source?.psdAssetPaths ?? [])]),
+      assetOrder: normalizeDatasetAssetOrder(source?.assetOrder, assetIds, assetPaths),
       overwriteCaptions: source?.overwriteCaptions ?? false,
       captionOverrides: source?.captionOverrides ?? {},
     };
@@ -2280,6 +2767,7 @@ function App() {
       assetIds: dataset.assetIds,
       assetPaths: dataset.assetPaths,
       psdAssetPaths: dataset.psdAssetPaths,
+      assetOrder: dataset.assetOrder,
       overwriteCaptions: dataset.overwriteCaptions,
       captionOverrides: dataset.captionOverrides,
     });
@@ -2318,6 +2806,20 @@ function App() {
     setActiveTabId(tab.id);
   };
 
+  const refreshOpenDatasetTabs = (datasetId: string) => {
+    setOpenTabs((tabs) =>
+      tabs.map((tab) => {
+        if (tab.kind === 'dataset' && tab.datasetId === datasetId) {
+          return { ...tab, id: createDatasetTabId(datasetId) };
+        }
+        if (tab.kind === 'dataset-tool' && tab.datasetId === datasetId) {
+          return { ...tab, id: createDatasetToolTabId(datasetId, tab.stage) };
+        }
+        return tab;
+      })
+    );
+  };
+
   const openDatasetToolFromExplorer = async (node: ExplorerTreeNode, stage: DatasetToolStage) => {
     try {
       const dataset = await readDatasetEntry(node);
@@ -2329,20 +2831,27 @@ function App() {
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => {
+    const assetIds = updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds;
+    const assetPaths = 'assetPaths' in updates
+      ? filterLegacyProjectAssetPaths([...new Set(updates.assetPaths ?? [])])
+      : filterLegacyProjectAssetPaths(dataset.assetPaths);
+    const psdAssetPaths = updates.psdAssetPaths
+      ? filterLegacyProjectAssetPaths([...new Set(updates.psdAssetPaths)])
+      : 'assetPaths' in updates
+        ? collectDatasetPsdPathsFromAssetPaths(filterLegacyProjectAssetPaths(updates.assetPaths ?? []))
+        : filterLegacyProjectAssetPaths(dataset.psdAssetPaths);
+    const normalizedPsdAssetPaths = filterLegacyProjectAssetPaths([
+      ...new Set([...psdAssetPaths, ...collectDatasetPsdPathsFromAssetPaths(assetPaths)]),
+    ]);
     const nextDataset = {
       ...dataset,
       ...updates,
-      assetIds: updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds,
-      assetPaths: 'assetPaths' in updates
-        ? filterLegacyProjectAssetPaths([...new Set(updates.assetPaths ?? [])])
-        : filterLegacyProjectAssetPaths(dataset.assetPaths),
-      psdAssetPaths: updates.psdAssetPaths
-        ? filterLegacyProjectAssetPaths([...new Set(updates.psdAssetPaths)])
-        : 'assetPaths' in updates
-          ? collectDatasetPsdPathsFromAssetPaths(filterLegacyProjectAssetPaths(updates.assetPaths ?? []))
-          : filterLegacyProjectAssetPaths(dataset.psdAssetPaths),
+      assetIds,
+      assetPaths,
+      psdAssetPaths: normalizedPsdAssetPaths,
+      assetOrder: normalizeDatasetAssetOrder(updates.assetOrder ?? dataset.assetOrder, assetIds, assetPaths),
       overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
       captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
       updatedAt: new Date(),
@@ -2352,6 +2861,126 @@ function App() {
     if (directory && nextDataset.filePath) {
       await writeDatasetFile(directory, nextDataset);
     }
+  };
+
+  const getDatasetBoardCaptionCount = (dataset: Dataset, item: WorkspaceImage): number => {
+    const tags =
+      item.kind === 'image'
+        ? dataset.overwriteCaptions
+          ? dataset.captionOverrides[item.id]
+          : item.tags
+        : item.assetPath
+          ? dataset.captionOverrides[createWorkspaceFileAssetId(item.assetPath)]
+          : item.tags;
+    return tags?.length ?? 0;
+  };
+
+  const sortDatasetBoardItems = (
+    items: WorkspaceImage[],
+    dataset: Dataset,
+    sortMode: DatasetBoardSortMode
+  ): WorkspaceImage[] => {
+    if (sortMode === 'manual') {
+      return items;
+    }
+
+    return [...items].sort((left, right) => {
+      if (sortMode === 'name') {
+        return left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' });
+      }
+      if (sortMode === 'type') {
+        return (
+          left.kind.localeCompare(right.kind) ||
+          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
+        );
+      }
+      if (sortMode === 'captioned') {
+        return (
+          getDatasetBoardCaptionCount(dataset, right) -
+            getDatasetBoardCaptionCount(dataset, left) ||
+          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
+        );
+      }
+      return (
+        left.aspectRatio.localeCompare(right.aspectRatio) ||
+        left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
+      );
+    });
+  };
+
+  const removeDatasetBoardAsset = async (dataset: Dataset, item: WorkspaceImage) => {
+    const assetOrder = (dataset.assetOrder ?? []).filter((key) => key !== getDatasetBoardAssetKey(item));
+    if (item.kind === 'image') {
+      await updateDatasetFileBackedState(dataset, {
+        assetIds: dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId),
+        assetOrder,
+      });
+    } else if (item.assetPath) {
+      await updateDatasetFileBackedState(dataset, {
+        assetPaths: filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
+        psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
+        assetOrder,
+      });
+    } else {
+      return;
+    }
+    addNotification('info', 'Asset removed from Dataset');
+  };
+
+  const saveDatasetBoardOrder = async (
+    dataset: Dataset,
+    items: WorkspaceImage[],
+    options: { notify?: boolean } = {}
+  ) => {
+    const orderedImageIds = items
+      .filter((item) => item.kind === 'image' && item.sourceImageId)
+      .map((item) => item.sourceImageId);
+    const orderedAssetPaths = items
+      .filter((item) => item.kind !== 'image' && item.assetPath)
+      .map((item) => item.assetPath as string);
+    const orderedKeys = items.map(getDatasetBoardAssetKey);
+    const nextAssetIds = [
+      ...orderedImageIds,
+      ...dataset.assetIds.filter((assetId) => !orderedImageIds.includes(assetId)),
+    ];
+    const nextAssetPaths = filterLegacyProjectAssetPaths([
+      ...orderedAssetPaths,
+      ...filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => !orderedAssetPaths.includes(assetPath)),
+    ]);
+
+    await updateDatasetFileBackedState(dataset, {
+      assetIds: nextAssetIds,
+      assetPaths: nextAssetPaths,
+      psdAssetPaths: collectDatasetPsdPathsFromAssetPaths(nextAssetPaths),
+      assetOrder: normalizeDatasetAssetOrder(orderedKeys, nextAssetIds, nextAssetPaths),
+    });
+
+    if (options.notify) {
+      addNotification('success', 'Dataset order updated');
+    }
+  };
+
+  const reorderDatasetBoardAsset = async (
+    dataset: Dataset,
+    items: WorkspaceImage[],
+    sourceKey: string,
+    targetKey: string
+  ) => {
+    if (sourceKey === targetKey) {
+      return;
+    }
+
+    const sourceIndex = items.findIndex((item) => getDatasetBoardAssetKey(item) === sourceKey);
+    const targetIndex = items.findIndex((item) => getDatasetBoardAssetKey(item) === targetKey);
+    if (sourceIndex < 0 || targetIndex < 0) {
+      return;
+    }
+
+    const nextItems = [...items];
+    const [movedItem] = nextItems.splice(sourceIndex, 1);
+    nextItems.splice(targetIndex, 0, movedItem);
+
+    await saveDatasetBoardOrder(dataset, nextItems);
   };
 
   const renderDatasetTool = (tab: DatasetToolWorkspaceTab) => {
@@ -2364,7 +2993,7 @@ function App() {
       );
     }
 
-    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'overwriteCaptions' | 'captionOverrides'>>) =>
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>) =>
       updateDatasetFileBackedState(dataset, updates);
     switch (tab.stage) {
       case 'select':
@@ -2372,6 +3001,7 @@ function App() {
           <FinalReviewStage
             datasetId={dataset.id}
             mode="select"
+            active={activeTabId === tab.id}
             onUpdateDataset={updateDataset}
             onOpenAssetContextMenu={openAssetExplorerContextMenu}
           />
@@ -2381,16 +3011,18 @@ function App() {
           <FinalReviewStage
             datasetId={dataset.id}
             mode="review"
+            active={activeTabId === tab.id}
             onUpdateDataset={updateDataset}
             onOpenAssetContextMenu={openAssetExplorerContextMenu}
           />
         );
       case 'analysis':
-        return <AnalysisStage datasetId={dataset.id} onUpdateDataset={updateDataset} />;
+        return <AnalysisStage datasetId={dataset.id} active={activeTabId === tab.id} onUpdateDataset={updateDataset} />;
       case 'tagging':
         return (
           <TaggingStageComponent
             datasetId={dataset.id}
+            active={activeTabId === tab.id}
             onUpdateDataset={updateDataset}
             selectedItemId={tab.nested?.itemId ?? null}
             onOpenItem={(itemId) => setToolTabNestedView(tab.id, { kind: 'file', itemId })}
@@ -2442,6 +3074,7 @@ function App() {
         name: node.name,
         fileKind,
         file,
+        workspaceImageId: findWorkspaceImageIdForPath(node.path) ?? undefined,
       };
 
       setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
@@ -2555,11 +3188,16 @@ function App() {
           )
           .filter((group) => group.length > 0)
       : [];
+    const datasetBoardItems = sortDatasetBoardItems(activeDatasetPreviewItems, dataset, datasetBoardSortMode);
+    const canReorderDatasetBoard = datasetBoardSortMode === 'manual';
 
     return (
       <div
         className="h-full min-h-0 overflow-auto p-6"
         onDragOver={(event) => {
+          if (event.dataTransfer.types.includes(DATASET_BOARD_DRAG_TYPE) || event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
+            return;
+          }
           if (
             draggedExplorerEntriesRef.current?.length ||
             draggedExplorerEntries?.length ||
@@ -2570,7 +3208,29 @@ function App() {
             event.dataTransfer.dropEffect = 'copy';
           }
         }}
+        onDragEnter={(event) => {
+          if (event.dataTransfer.types.includes(DATASET_BOARD_DRAG_TYPE) || event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
+            return;
+          }
+          if (
+            draggedExplorerEntriesRef.current?.length ||
+            draggedExplorerEntries?.length ||
+            event.dataTransfer.types.includes('text/plain') ||
+            event.dataTransfer.types.includes('Files')
+          ) {
+            setDatasetDropActive(true);
+          }
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setDatasetDropActive(false);
+          }
+        }}
         onDrop={(event) => {
+          setDatasetDropActive(false);
+          if (event.dataTransfer.types.includes(DATASET_BOARD_DRAG_TYPE) || event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
+            return;
+          }
           const transferPath = event.dataTransfer.getData('text/plain');
           const droppedEntries =
             draggedExplorerEntriesRef.current ??
@@ -2611,10 +3271,20 @@ function App() {
                 nextAssetPaths.length -
                 (currentDataset.assetPaths ?? []).length;
               if (addedCount > 0) {
+                const nextAssetOrder = normalizeDatasetAssetOrder(
+                  [
+                    ...(currentDataset.assetOrder ?? []),
+                    ...assetIds.map(createDatasetImageAssetKey),
+                    ...assetPaths.map(createDatasetFileAssetKey),
+                  ],
+                  nextAssetIds,
+                  nextAssetPaths
+                );
                 await updateDatasetFileBackedState(currentDataset, {
                   assetIds: nextAssetIds,
                   assetPaths: nextAssetPaths,
                   psdAssetPaths: nextPsdAssetPaths,
+                  assetOrder: nextAssetOrder,
                 });
                 addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
               } else {
@@ -2661,37 +3331,150 @@ function App() {
             </div>
           </div>
 
-          <div className="flex min-h-28 items-center justify-center rounded border border-dashed border-border bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-            Drop project assets here to add them to this Dataset.
+          <div
+            className={`flex min-h-24 items-center justify-between gap-4 rounded border border-dashed px-4 py-4 transition-colors ${
+              datasetDropActive ? 'border-primary bg-primary/10' : 'border-border bg-card'
+            }`}
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Dataset intake</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {datasetDropActive ? 'Release to link assets' : `${activeDatasetPreviewItems.length} assets linked`}
+              </p>
+            </div>
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded ${datasetDropActive ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>
+              <Plus className="h-4 w-4" />
+            </div>
           </div>
 
           {activeDatasetPreviewItems.length > 0 ? (
             <div className="min-h-40 rounded border border-border bg-card">
-              <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
-                <p className="text-sm font-medium">Dataset contents</p>
-                <p className="text-xs text-muted-foreground">{activeDatasetPreviewItems.length} assets</p>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">Dataset contents</p>
+                  <p className="text-xs text-muted-foreground">
+                    {canReorderDatasetBoard ? `${activeDatasetPreviewItems.length} assets · manual order` : `${activeDatasetPreviewItems.length} assets · sorted preview`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-secondary px-2 py-1 text-xs text-muted-foreground">
+                    {datasetBoardSortMode === 'manual' ? 'Manual' : 'Preview'}
+                  </span>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    Sort
+                    <select
+                      value={datasetBoardSortMode}
+                      onChange={(event) => setDatasetBoardSortMode(event.target.value as DatasetBoardSortMode)}
+                      className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+                    >
+                      {DATASET_BOARD_SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
               <BrickMasonry
-                items={activeDatasetPreviewItems}
+                items={datasetBoardItems}
                 getKey={(item) => item.id}
                 getEstimate={(item) => item.height / Math.max(1, item.width)}
                 className="p-3"
                 renderItem={(item) => (
-                  <WorkspacePreviewCard
-                    item={item}
-                    previewUrl={activeDatasetPreviewUrls[item.id]}
-                    className="gallery-masonry-item"
-                    onOpenContextMenu={openAssetExplorerContextMenu}
-                  />
+                  <div
+                    draggable={canReorderDatasetBoard}
+                    onDragStart={(event) => {
+                      if (!canReorderDatasetBoard) {
+                        return;
+                      }
+                      const key = getDatasetBoardAssetKey(item);
+                      setDraggedDatasetAssetId(key);
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData(DATASET_BOARD_DRAG_TYPE, key);
+                      event.dataTransfer.setData('text/plain', key);
+                    }}
+                    onDragOver={(event) => {
+                      if (!canReorderDatasetBoard || !draggedDatasetAssetId) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      setDatasetDropTargetAssetId(getDatasetBoardAssetKey(item));
+                    }}
+                    onDrop={(event) => {
+                      if (!canReorderDatasetBoard) {
+                        return;
+                      }
+                      event.preventDefault();
+                      const sourceKey =
+                        draggedDatasetAssetId ||
+                        event.dataTransfer.getData(DATASET_BOARD_DRAG_TYPE) ||
+                        event.dataTransfer.getData('text/plain');
+                      setDraggedDatasetAssetId(null);
+                      setDatasetDropTargetAssetId(null);
+                      void reorderDatasetBoardAsset(dataset, datasetBoardItems, sourceKey, getDatasetBoardAssetKey(item));
+                    }}
+                    onDragEnd={() => {
+                      setDraggedDatasetAssetId(null);
+                      setDatasetDropTargetAssetId(null);
+                    }}
+                  >
+                    <WorkspacePreviewCard
+                      item={item}
+                      previewUrl={activeDatasetPreviewUrls[item.id]}
+                      className={`gallery-masonry-item ${
+                        draggedDatasetAssetId === getDatasetBoardAssetKey(item)
+                          ? 'opacity-50'
+                          : datasetDropTargetAssetId === getDatasetBoardAssetKey(item)
+                            ? 'ring-2 ring-primary'
+                            : ''
+                      }`}
+                      onOpenContextMenu={openAssetExplorerContextMenu}
+                      footer={
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+                          <div className="flex items-end justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
+                              <p className="text-xs text-gray-300">
+                                {item.label} · {item.width} x {item.height}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              {canReorderDatasetBoard ? (
+                                <span
+                                  className="flex h-8 w-8 items-center justify-center rounded-md bg-black/55 text-white"
+                                  title="Drag to reorder"
+                                >
+                                  <Grip className="h-4 w-4" />
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void removeDatasetBoardAsset(dataset, item);
+                                }}
+                                className="flex h-8 w-8 items-center justify-center rounded-md bg-black/55 text-white hover:bg-destructive"
+                                title="Remove from Dataset"
+                                aria-label={`Remove ${item.fileName} from Dataset`}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      }
+                    />
+                  </div>
                 )}
               />
             </div>
           ) : (
             <div className="rounded border border-border bg-card px-4 py-8 text-center">
-              <p className="text-sm font-medium">This Dataset has no assets yet.</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Add files from Explorer or drop supported project assets into this view.
-              </p>
+              <p className="text-sm font-medium">Empty Dataset</p>
+              <p className="mt-1 text-sm text-muted-foreground">0 assets linked</p>
             </div>
           )}
         </div>
@@ -2705,7 +3488,10 @@ function App() {
       if (!node) {
         return [];
       }
-      const primaryActionIds = new Set(['open', 'photopea', 'caption']);
+      const primaryActionIds =
+        activeTab.kind === 'file-view'
+          ? new Set(['photopea', 'caption'])
+          : new Set(['open', 'photopea', 'caption']);
       return getFileContextActionGroups(node)
         .map((group) => group.filter((action) => primaryActionIds.has(action.id)))
         .filter((group) => group.length > 0);
@@ -2716,7 +3502,10 @@ function App() {
       if (!node) {
         return [];
       }
-      const primaryActionIds = new Set(['review', 'caption', 'analysis', 'export']);
+      const primaryActionIds =
+        activeTab.kind === 'dataset'
+          ? new Set(['select', 'review', 'caption', 'analysis', 'export'])
+          : new Set(['open', 'select', 'review', 'caption', 'analysis', 'export']);
       return getDatasetContextActionGroups(node)
         .map((group) => group.filter((action) => primaryActionIds.has(action.id)))
         .filter((group) => group.length > 0);
@@ -2726,6 +3515,10 @@ function App() {
   };
 
   const renderInspectorContent = () => {
+    const activeDatasetBoardItems =
+      activeDataset && activeDatasetPreviewItems.length > 0
+        ? sortDatasetBoardItems(activeDatasetPreviewItems, activeDataset, datasetBoardSortMode)
+        : [];
     const Icon =
       activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
         ? Layers3
@@ -2747,15 +3540,15 @@ function App() {
           ? activeTab.name
           : activeStage
             ? STAGE_LABELS[activeStage]
-            : 'No tab active';
+            : 'Workspace';
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
     const inspectorActionGroups = getInspectorActionGroups();
     const objectDetails = (() => {
       if (!activeTab) {
         return [
-          { label: 'Object', value: 'None' },
-          { label: 'Scope', value: 'Workspace' },
-          { label: 'State', value: 'No active tab' },
+          { label: 'Object', value: 'Workspace' },
+          { label: 'Target', value: 'Workspace' },
+          { label: 'State', value: 'No active editor' },
         ];
       }
 
@@ -2780,7 +3573,7 @@ function App() {
         return [
           { label: 'Object', value: fileType },
           { label: 'Mode', value: mode },
-          { label: 'Scope', value: 'File' },
+          { label: 'Target', value: 'File' },
           { label: 'Path', value: activeTab.path },
         ];
       }
@@ -2792,7 +3585,7 @@ function App() {
             label: 'Mode',
             value: activeTab.kind === 'dataset-tool' ? DATASET_TOOL_LABELS[activeTab.stage] : 'Dataset view',
           },
-          { label: 'Scope', value: 'Dataset contents' },
+          { label: 'Target', value: 'Dataset contents' },
           { label: 'Path', value: activeDataset?.filePath ?? 'Dataset' },
         ];
       }
@@ -2800,7 +3593,7 @@ function App() {
       return [
         { label: 'Object', value: STAGE_LABELS[activeTab.stage] },
         { label: 'Mode', value: activeTab.nested ? 'Nested item' : 'Project tool' },
-        { label: 'Scope', value: 'Project' },
+        { label: 'Target', value: 'Project' },
       ];
     })();
 
@@ -2868,6 +3661,34 @@ function App() {
           </div>
         </InspectorSection>
 
+        {!activeTab ? (
+          <InspectorSection
+            title="Actions"
+            open={inspectorSectionsOpen.actions}
+            onOpenChange={(open) => setInspectorSectionOpen('actions', open)}
+          >
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => setTabMenuOpen(true)}
+                className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Open tool</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleOpenProject()}
+                disabled={isProjectDirectoryBusy}
+                className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                <span>Open project</span>
+              </button>
+            </div>
+          </InspectorSection>
+        ) : null}
+
         {inspectorActionGroups.length > 0 ? (
           <InspectorSection
             title="Actions"
@@ -2894,6 +3715,10 @@ function App() {
                 <span className="font-medium">{fileInspectorMetadata.format}</span>
               </div>
               <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Workspace asset</span>
+                <span className="font-medium">{activeTab.workspaceImageId ? 'Linked' : 'External'}</span>
+              </div>
+              <div className="flex justify-between gap-3">
                 <span className="text-muted-foreground">Size</span>
                 <span className="font-medium">{fileInspectorMetadata.size}</span>
               </div>
@@ -2913,6 +3738,38 @@ function App() {
                   </div>
                 </>
               ) : null}
+              {fileInspectorMetadata.captionEntries.length > 0 ? (
+                <div className="border-t border-border pt-2.5">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Caption</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {fileInspectorMetadata.captionEntries.reduce((count, entry) => count + entry.tags.length, 0)} tags
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {fileInspectorMetadata.captionEntries.map((entry) => (
+                      <div key={entry.label} className="space-y-1">
+                        {fileInspectorMetadata.captionEntries.length > 1 ? (
+                          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+                            {entry.label}
+                          </p>
+                        ) : null}
+                        <div className="flex flex-wrap gap-1.5">
+                          {entry.tags.map((tag, index) => (
+                            <span
+                              key={`${entry.label}-${tag}-${index}`}
+                              className="max-w-full truncate rounded-sm border border-border bg-secondary/70 px-1.5 py-0.5 font-mono text-[11px] leading-5 text-foreground"
+                              title={tag}
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </InspectorSection>
         ) : null}
@@ -2928,7 +3785,7 @@ function App() {
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">Context</span>
                   <span className="font-medium">
-                    {activeTab?.kind === 'dataset-tool' ? `${DATASET_TOOL_LABELS[activeTab.stage]} scope` : 'Dataset object'}
+                    {activeTab?.kind === 'dataset-tool' ? `${DATASET_TOOL_LABELS[activeTab.stage]} applied` : 'Dataset object'}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -2939,18 +3796,6 @@ function App() {
                   <div className="rounded bg-secondary/60 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Files</p>
                     <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.fileAssets ?? 0}</p>
-                  </div>
-                  <div className="rounded bg-secondary/60 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Captioned</p>
-                    <p className="mt-1 text-sm font-semibold">
-                      {activeDatasetSummary?.captioned ?? 0}/{activeDatasetSummary?.captionable ?? 0}
-                    </p>
-                  </div>
-                  <div className="rounded bg-secondary/60 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Trigger</p>
-                    <p className="mt-1 text-sm font-semibold">
-                      {activeDatasetSummary?.triggerWordSet ? 'Set' : 'Missing'}
-                    </p>
                   </div>
                 </div>
                 {activeDatasetSummary && activeDatasetSummary.sourceRefs > activeDatasetSummary.availableSourceRefs ? (
@@ -2977,8 +3822,44 @@ function App() {
                   }
                   className="h-4 w-4"
                 />
-                <span>Overwrite Caption</span>
+                <span>Overwrite captions</span>
               </label>
+              {activeTab?.kind === 'dataset' ? (
+                <div className="rounded-md border border-border bg-background p-2">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Board</span>
+                    <span className="font-medium">
+                      {datasetBoardSortMode === 'manual' ? 'Manual order' : 'Sorted preview'}
+                    </span>
+                  </div>
+                  <label className="block">
+                    <span className="mb-1 block text-muted-foreground">Sort</span>
+                    <select
+                      value={datasetBoardSortMode}
+                      onChange={(event) => setDatasetBoardSortMode(event.target.value as DatasetBoardSortMode)}
+                      className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+                    >
+                      {DATASET_BOARD_SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={datasetBoardSortMode === 'manual' || activeDatasetBoardItems.length === 0}
+                    onClick={() => {
+                      void saveDatasetBoardOrder(activeDataset, activeDatasetBoardItems, { notify: true });
+                      setDatasetBoardSortMode('manual');
+                    }}
+                    className="mt-2 flex w-full items-center justify-center gap-2 rounded border border-border px-2 py-2 font-medium hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Grip className="h-3.5 w-3.5" />
+                    Apply as manual order
+                  </button>
+                </div>
+              ) : null}
             </div>
           </InspectorSection>
         ) : null}
@@ -3028,6 +3909,26 @@ function App() {
           </InspectorSection>
         ) : null}
 
+        {showReviewInspector ? (
+          <InspectorSection
+            title="Review"
+            open={inspectorSectionsOpen.review}
+            onOpenChange={(open) => setInspectorSectionOpen('review', open)}
+          >
+            <div id="review-inspector-root" />
+          </InspectorSection>
+        ) : null}
+
+        {showAnalysisInspector ? (
+          <InspectorSection
+            title="Analysis"
+            open={inspectorSectionsOpen.analysis}
+            onOpenChange={(open) => setInspectorSectionOpen('analysis', open)}
+          >
+            <div id="analysis-inspector-root" />
+          </InspectorSection>
+        ) : null}
+
         {showCaptionInspector ? (
           <InspectorSection
             title="Caption"
@@ -3063,15 +3964,6 @@ function App() {
   };
 
   const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
-
-  const applyExplorerPathMoves = (path: string, moves: Array<{ from: string; to: string }>): string => {
-    for (const move of moves) {
-      if (path === move.from || path.startsWith(`${move.from}/`)) {
-        return path === move.from ? move.to : `${move.to}/${path.slice(move.from.length + 1)}`;
-      }
-    }
-    return path;
-  };
 
   const getFileTabIdForPath = (tab: FileWorkspaceTab, path: string): string => {
     const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
@@ -3144,7 +4036,7 @@ function App() {
 
   const applyProjectRelativePathMoves = (
     path: string | undefined,
-    moves: Array<{ from: string; to: string }>
+    moves: ExplorerPathMove[]
   ): string | undefined => {
     if (!path) {
       return path;
@@ -3159,7 +4051,7 @@ function App() {
     return path;
   };
 
-  const updateWorkspacePathsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
+  const updateWorkspacePathsForPathMoves = async (moves: ExplorerPathMove[]) => {
     for (const source of Object.values(sourceImagesById)) {
       const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
       const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves);
@@ -3191,8 +4083,36 @@ function App() {
     for (const dataset of Object.values(datasetsById)) {
       const parentPath = applyExplorerPathMoves(dataset.parentPath || 'Project', moves);
       const filePath = dataset.filePath ? applyExplorerPathMoves(dataset.filePath, moves) : dataset.filePath;
-      if (parentPath !== (dataset.parentPath || 'Project') || filePath !== dataset.filePath) {
-        updateProjectDataset(dataset.id, { parentPath, filePath });
+      const assetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).map((path) =>
+        applyExplorerPathMoves(path, moves)
+      );
+      const psdAssetPaths = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).map((path) =>
+        applyExplorerPathMoves(path, moves)
+      );
+      const assetOrder = applyFileAssetOrderPathMoves(dataset.assetOrder, moves);
+      const captionOverrides = applyCaptionOverridePathMoves(dataset.captionOverrides, moves);
+      const nextDataset = {
+        ...dataset,
+        parentPath,
+        filePath,
+        assetPaths,
+        psdAssetPaths,
+        assetOrder: normalizeDatasetAssetOrder(assetOrder, dataset.assetIds, assetPaths),
+        captionOverrides,
+        updatedAt: new Date(),
+      };
+      if (
+        parentPath !== (dataset.parentPath || 'Project') ||
+        filePath !== dataset.filePath ||
+        assetPaths.some((path, index) => path !== (dataset.assetPaths ?? [])[index]) ||
+        psdAssetPaths.some((path, index) => path !== (dataset.psdAssetPaths ?? [])[index]) ||
+        nextDataset.assetOrder.some((key, index) => key !== (dataset.assetOrder ?? [])[index]) ||
+        Object.keys(captionOverrides).some((key) => captionOverrides[key] !== dataset.captionOverrides[key])
+      ) {
+        updateProjectDataset(dataset.id, nextDataset);
+        if (projectDirectoryHandle && nextDataset.filePath) {
+          await writeDatasetFile(projectDirectoryHandle, nextDataset);
+        }
       }
     }
   };
@@ -3215,7 +4135,7 @@ function App() {
     const moves = [{ from: path, to: nextPath }];
 
     updateFileTabsForPathMoves(moves);
-    updateWorkspacePathsForPathMoves(moves);
+    await updateWorkspacePathsForPathMoves(moves);
     updateExplorerClipboardForPathMoves(moves);
 
     if (kind === 'dataset') {
@@ -3229,13 +4149,7 @@ function App() {
       };
       await writeDatasetFile(directory, updatedDataset);
       upsertProjectDataset(updatedDataset);
-      setOpenTabs((tabs) =>
-        tabs.map((tab) =>
-          tab.kind === 'dataset' && tab.datasetId === updatedDataset.id
-            ? { ...tab, id: createDatasetTabId(updatedDataset.id) }
-            : tab
-        )
-      );
+      refreshOpenDatasetTabs(updatedDataset.id);
     }
 
     await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
@@ -3243,21 +4157,74 @@ function App() {
     return nextPath;
   };
 
-  const removeWorkspaceSourcesForDeletedEntries = (entries: ExplorerClipboardEntry[]) => {
+  const removeWorkspaceReferencesForDeletedEntries = async (entries: ExplorerClipboardEntry[]) => {
     const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
+    const datasetsBeforeSourceRemoval = useProjectStore.getState().datasets;
+    const sourceAffectedDatasetIds = new Set<string>();
+    const removedSourceIds: string[] = [];
     for (const source of Object.values(useProjectStore.getState().sourceImages)) {
       const sourcePath = source.originalFilePath;
       if (
         sourcePath &&
         deletedPaths.some((deletedPath) => sourcePath === deletedPath || sourcePath.startsWith(`${deletedPath}/`))
       ) {
+        Object.values(datasetsBeforeSourceRemoval).forEach((dataset) => {
+          if (dataset.assetIds.includes(source.id)) {
+            sourceAffectedDatasetIds.add(dataset.id);
+          }
+        });
         removeSourceImage(source.id);
+        removedSourceIds.push(source.id);
       }
     }
     for (const dataset of Object.values(useProjectStore.getState().datasets)) {
       const parentPath = dataset.parentPath || 'Project';
       if (deletedPaths.some((deletedPath) => parentPath === `Project/${deletedPath}` || parentPath.startsWith(`Project/${deletedPath}/`))) {
         removeProjectDataset(dataset.id);
+        continue;
+      }
+
+      const deletedExplorerPaths = entries.map((entry) => entry.path);
+      const isDeletedPath = (path: string) =>
+        deletedExplorerPaths.some((deletedPath) => path === deletedPath || path.startsWith(`${deletedPath}/`));
+      const assetIds = dataset.assetIds.filter((assetId) => !removedSourceIds.includes(assetId));
+      const assetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((path) => !isDeletedPath(path));
+      const psdAssetPaths = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((path) => !isDeletedPath(path));
+      const captionOverrides = Object.fromEntries(
+        Object.entries(dataset.captionOverrides ?? {}).filter(([key]) => {
+          if (!key.startsWith('asset:')) {
+            return true;
+          }
+          return !isDeletedPath(key.slice('asset:'.length));
+        })
+      );
+      const assetOrder = normalizeDatasetAssetOrder(
+        (dataset.assetOrder ?? []).filter((key) => !key.startsWith('file:') || !isDeletedPath(key.slice('file:'.length))),
+        assetIds,
+        assetPaths
+      );
+
+      if (
+        sourceAffectedDatasetIds.has(dataset.id) ||
+        assetIds.length !== dataset.assetIds.length ||
+        assetPaths.length !== (dataset.assetPaths ?? []).length ||
+        psdAssetPaths.length !== (dataset.psdAssetPaths ?? []).length ||
+        assetOrder.length !== (dataset.assetOrder ?? []).length ||
+        Object.keys(captionOverrides).length !== Object.keys(dataset.captionOverrides ?? {}).length
+      ) {
+        const nextDataset = {
+          ...dataset,
+          assetIds,
+          assetPaths,
+          psdAssetPaths,
+          assetOrder,
+          captionOverrides,
+          updatedAt: new Date(),
+        };
+        updateProjectDataset(dataset.id, nextDataset);
+        if (projectDirectoryHandle && nextDataset.filePath) {
+          await writeDatasetFile(projectDirectoryHandle, nextDataset);
+        }
       }
     }
   };
@@ -3298,7 +4265,7 @@ function App() {
           deletedDatasetIds.push(dataset.id);
         }
       }
-      removeWorkspaceSourcesForDeletedEntries(filesystemEntries);
+      await removeWorkspaceReferencesForDeletedEntries(filesystemEntries);
       setOpenTabs((tabs) =>
         tabs.filter(
           (tab) =>
@@ -3354,6 +4321,18 @@ function App() {
     });
   };
 
+  const createDatasetFromHub = async () => {
+    try {
+      const dataset = await createDatasetFileInDirectory('Project', getUniqueDatasetName('New Dataset', 'Project'));
+      setExpandedExplorerPaths((paths) => new Set([...paths, 'Project']));
+      refreshExplorer();
+      openDatasetTab(dataset.id);
+      addNotification('success', 'Dataset created');
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to create Dataset');
+    }
+  };
+
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
     if (node.kind !== 'folder' || !explorerClipboard) {
       return;
@@ -3373,7 +4352,7 @@ function App() {
             : await copyExplorerEntries(directory, filesystemEntries, node.path);
         if (explorerClipboard.mode === 'cut') {
           updateFileTabsForPathMoves(moves);
-          updateWorkspacePathsForPathMoves(moves);
+          await updateWorkspacePathsForPathMoves(moves);
           updateExplorerClipboardForPathMoves(moves);
         }
       }
@@ -3405,9 +4384,10 @@ function App() {
             filePath: move.to,
             updatedAt: new Date(),
           };
-          await writeDatasetFile(directory, updatedDataset);
-          upsertProjectDataset(updatedDataset);
-          movedPaths.push(move.to);
+        await writeDatasetFile(directory, updatedDataset);
+        upsertProjectDataset(updatedDataset);
+        refreshOpenDatasetTabs(updatedDataset.id);
+        movedPaths.push(move.to);
         }
         updateExplorerClipboardForPathMoves(datasetMoves);
         setSelectedExplorerPaths(new Set(movedPaths));
@@ -3526,7 +4506,7 @@ function App() {
         : [];
       if (moves.length > 0) {
         updateFileTabsForPathMoves(moves);
-        updateWorkspacePathsForPathMoves(moves);
+        await updateWorkspacePathsForPathMoves(moves);
         updateExplorerClipboardForPathMoves(moves);
       }
       const datasetMoves = datasetEntries.length > 0
@@ -3547,6 +4527,7 @@ function App() {
         };
         await writeDatasetFile(directory!, updatedDataset);
         upsertProjectDataset(updatedDataset);
+        refreshOpenDatasetTabs(updatedDataset.id);
         movedDatasetPaths.push(move.to);
       }
       if (datasetMoves.length > 0) {
@@ -3682,43 +4663,86 @@ function App() {
     try {
       const dataset = await readDatasetEntry(node);
       const assetIds = new Set(dataset.assetIds);
+      const fileAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]);
+      const exportOrderIndex = new Map(
+        normalizeDatasetAssetOrder(dataset.assetOrder, dataset.assetIds, fileAssetPaths).map((key, index) => [key, index])
+      );
+      const getExportOrder = (key: string): number => exportOrderIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
       const exportItems = workspaceImages.filter(
         (item) => assetIds.has(item.sourceImageId) && !item.excludedFromDataset
+      ).sort(
+        (left, right) =>
+          getExportOrder(createDatasetImageAssetKey(left.sourceImageId)) -
+            getExportOrder(createDatasetImageAssetKey(right.sourceImageId)) ||
+          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
       );
       const directory = requireProjectDirectory();
       if (!directory) {
         return;
       }
-      const fileAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]);
       const fileAssets = (await Promise.all(
-        fileAssetPaths.map(async (path): Promise<{ file: File; fileName: string } | null> => {
+        fileAssetPaths.map(async (path): Promise<{ file: File; fileName: string; kind: ExplorerFileKind; path: string } | null> => {
           try {
             const file = await readExplorerFile(directory, path);
             return {
               file,
               fileName: path.split('/').pop() ?? file.name,
+              kind: getExplorerFileKind(path.split('/').pop() ?? file.name, file.type),
+              path,
             };
           } catch (error) {
             addNotification('warning', error instanceof Error ? error.message : `Unable to read "${path}"`);
             return null;
           }
         })
-      )).filter((asset): asset is { file: File; fileName: string } => Boolean(asset));
+      )).filter((asset): asset is { file: File; fileName: string; kind: ExplorerFileKind; path: string } => Boolean(asset));
+      const psdAssets = fileAssets
+        .filter((asset) => asset.kind === 'psd')
+        .sort(
+          (left, right) =>
+            getExportOrder(createDatasetFileAssetKey(left.path)) -
+              getExportOrder(createDatasetFileAssetKey(right.path)) ||
+            left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
+        )
+        .map(({ file, fileName }) => ({ file, fileName }));
+      const skippedFileAssetCount = fileAssets.length - psdAssets.length;
+      const workspaceExportsByKey = new Map(
+        exportItems.map((item): [string, ExportAsset] => [
+          createDatasetImageAssetKey(item.sourceImageId),
+          { kind: 'workspace', item },
+        ])
+      );
+      const psdExportsByKey = new Map(
+        fileAssets
+          .filter((asset) => asset.kind === 'psd')
+          .map((asset): [string, ExportAsset] => [
+            createDatasetFileAssetKey(asset.path),
+            { kind: 'psd', asset: { file: asset.file, fileName: asset.fileName } },
+          ])
+      );
+      const orderedAssets = normalizeDatasetAssetOrder(dataset.assetOrder, dataset.assetIds, fileAssetPaths)
+        .map((key) => workspaceExportsByKey.get(key) ?? psdExportsByKey.get(key))
+        .filter((asset): asset is ExportAsset => Boolean(asset));
 
-      if (exportItems.length === 0 && fileAssets.length === 0) {
+      if (exportItems.length === 0 && psdAssets.length === 0) {
         createOperationLogger('Export').warning(`no assets to export for Dataset "${dataset.name}"`);
         addNotification('warning', 'No assets to export');
         return;
       }
 
       const logger = createOperationLogger('Export');
-      const exportCount = exportItems.length + fileAssets.length;
+      const exportCount = exportItems.length + psdAssets.length;
       logger.info(`exporting Dataset "${dataset.name}" with ${exportCount} asset${exportCount !== 1 ? 's' : ''}`);
+      if (skippedFileAssetCount > 0) {
+        logger.warning(`skipped ${skippedFileAssetCount} non-PSD file asset${skippedFileAssetCount !== 1 ? 's' : ''}`);
+        addNotification('warning', `Skipped ${skippedFileAssetCount} non-PSD file asset${skippedFileAssetCount !== 1 ? 's' : ''}`);
+      }
       const zipBlob = await exportAsZip(
         {
           datasetKeyword: dataset.triggerWord,
           items: exportItems,
-          psdAssets: fileAssets,
+          psdAssets,
+          orderedAssets,
         },
         useProjectStore.getState().taggingConfig.blacklist,
         logger
@@ -3729,6 +4753,20 @@ function App() {
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to export Dataset');
     }
+  };
+
+  const exportDatasetById = (datasetId: string) => {
+    const dataset = useProjectStore.getState().datasets[datasetId];
+    if (!dataset?.filePath) {
+      addNotification('error', 'Dataset file is no longer available');
+      return;
+    }
+    void handleDatasetExport({
+      name: dataset.name,
+      path: dataset.filePath,
+      kind: 'dataset',
+      datasetId: dataset.id,
+    });
   };
 
   const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
@@ -3746,8 +4784,16 @@ function App() {
   };
 
   useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      Boolean(target.closest('input, textarea, select, [contenteditable="true"], iframe'));
+
     const handleWorkspaceShortcut = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+
+      if (isEditableTarget(event.target)) {
         return;
       }
 
@@ -3757,6 +4803,26 @@ function App() {
         }
         event.preventDefault();
         closeTab(activeTab.id);
+        return;
+      }
+
+      if (event.shiftKey && event.key.toLowerCase() === 't') {
+        if (closedTabs.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        reopenClosedTab();
+        return;
+      }
+
+      if (/^[1-9]$/.test(event.key)) {
+        const targetIndex = Number(event.key) - 1;
+        const targetTab = openTabs[targetIndex];
+        if (!targetTab) {
+          return;
+        }
+        event.preventDefault();
+        activateTab(targetTab);
         return;
       }
 
@@ -3774,7 +4840,7 @@ function App() {
 
     window.addEventListener('keydown', handleWorkspaceShortcut);
     return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
-  }, [activeTab, openTabs]);
+  }, [activeTab, closedTabs.length, openTabs]);
 
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null): boolean =>
@@ -4075,6 +5141,7 @@ function App() {
       logger.info('writing project manifest and folders');
       await clearProjectDirectory(directory);
       await createProjectDirectory(directory, project);
+      applyWorkspaceTabsForProject(project.id);
       setProjectDirectory({ handle: directory, name: directory.name });
       logger.success(`created project directory ${directory.name}`);
       addNotification('success', 'New project directory created');
@@ -4101,6 +5168,7 @@ function App() {
     for (const dataset of datasets) {
       upsertProjectDataset(dataset);
     }
+    applyWorkspaceTabsForProject(project.id);
     setProjectDirectory({ handle: directory, name: directory.name });
     logger.success(`opened project directory ${directory.name}`);
     addNotification('success', 'Project directory opened');
@@ -4164,6 +5232,7 @@ function App() {
     setViewMenuOpen(false);
     setToolsMenuOpen(false);
     setWindowsMenuOpen(false);
+    setTabContextMenu(null);
   };
 
   const closeExplorerContextMenu = () => setExplorerContextMenu(null);
@@ -4202,7 +5271,7 @@ function App() {
           : null,
       ].filter((action): action is ContextAction => Boolean(action)),
       [
-        createExplorerAction({ id: 'cut', label: 'Cut', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
+        createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
         createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
         createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
       ],
@@ -4229,18 +5298,10 @@ function App() {
         createExplorerAction({ id: 'export', label: 'Export', icon: Download, onSelect: () => handleDatasetExport(node) }),
       ],
       [
-        createExplorerAction({ id: 'cut', label: 'Cut', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
+        createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
         createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
-        explorerClipboard
-          ? createExplorerAction({
-              id: 'paste',
-              label: 'Paste',
-              icon: Copy,
-              onSelect: () => handleExplorerPaste({ name: projectName || 'Project', path: 'Project', kind: 'folder' }),
-            })
-          : null,
         createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
-      ].filter((action): action is ContextAction => Boolean(action)),
+      ],
       [
         createExplorerAction({ id: 'rename', label: 'Rename', icon: Pencil, onSelect: () => handleExplorerRename(node) }),
         createExplorerAction({ id: 'delete', label: 'Delete', icon: Trash2, variant: 'destructive', onSelect: () => handleExplorerDelete(node) }),
@@ -4277,7 +5338,7 @@ function App() {
     return [
       creationActions,
       [
-        createExplorerAction({ id: 'cut', label: 'Cut', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
+        createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
         createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
         explorerClipboard
           ? createExplorerAction({ id: 'paste', label: 'Paste', icon: Copy, onSelect: () => handleExplorerPaste(node) })
@@ -4505,7 +5566,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setInspectorWindowOpen(true);
+                    openFloatingInspector();
                     setWindowsMenuOpen(false);
                   }}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
@@ -4555,6 +5616,7 @@ function App() {
                   onDragStart={(event) => {
                     draggedTabRef.current = tab.id;
                     event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData(WORKSPACE_TAB_DRAG_TYPE, tab.id);
                     event.dataTransfer.setData('text/plain', tab.id);
                   }}
                   onDragOver={(event) => {
@@ -4566,7 +5628,10 @@ function App() {
                   }}
                   onDrop={(event) => {
                     event.preventDefault();
-                    const source = draggedTabRef.current ?? event.dataTransfer.getData('text/plain');
+                    const source =
+                      draggedTabRef.current ||
+                      event.dataTransfer.getData(WORKSPACE_TAB_DRAG_TYPE) ||
+                      event.dataTransfer.getData('text/plain');
                     if (source) {
                       reorderTabs(source, tab.id);
                     }
@@ -4584,23 +5649,20 @@ function App() {
                     }
                   }}
                   onContextMenu={(event) => {
-                    if (!isFileBackedTab(tab)) {
-                      return;
-                    }
                     event.preventDefault();
-                    setExplorerContextMenu({
-                      node: { name: tab.name, path: tab.path, kind: 'file' },
-                      x: event.clientX,
-                      y: event.clientY,
-                    });
+                    setTabContextMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
                   }}
-                  className={`group flex min-w-[7rem] max-w-52 shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+                  className={`group flex ${tab.pinned ? 'min-w-10 max-w-40' : 'min-w-[7rem] max-w-52'} shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
                     active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
                   } ${dragOverTab === tab.id ? 'border-l-2 border-l-primary' : ''}`}
                   title={title}
                 >
+                  {tab.pinned ? <Pin className="h-3 w-3 shrink-0" /> : null}
                   <Icon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  <span className={`min-w-0 flex-1 truncate ${tab.pinned ? 'hidden sm:block' : ''}`}>{label}</span>
+                  {isTabDirty(tab) ? (
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" title="Unsaved changes" />
+                  ) : null}
                   <button
                     type="button"
                     data-tab-close
@@ -4614,7 +5676,9 @@ function App() {
                       event.preventDefault();
                       event.stopPropagation();
                     }}
-                    className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+                    className={`rounded p-1 text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 ${
+                      tab.pinned ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
                     title="Close tab"
                     aria-label={`Close ${label} tab`}
                   >
@@ -4643,24 +5707,14 @@ function App() {
                   <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
                     Open tool
                   </p>
-                  {STAGES.map((stage) => {
+                  {TOOLS_MENU_STAGES.map((stage) => {
                     const Icon = stage === 'hub' ? Archive : toolIcons[stage];
                     const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.stage === stage);
-                    const isDisabled = stage === 'import';
                     return (
                       <DropdownMenu.Item
                         key={stage}
-                        disabled={isDisabled}
-                        onSelect={() => {
-                          if (!isDisabled) {
-                            navigateToStage(stage);
-                          }
-                        }}
-                        className={`flex items-center gap-2 rounded px-3 py-2 text-xs outline-none ${
-                          isDisabled
-                            ? 'cursor-not-allowed opacity-45'
-                            : 'cursor-pointer hover:bg-secondary'
-                        }`}
+                        onSelect={() => navigateToStage(stage)}
+                        className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-xs outline-none hover:bg-secondary"
                       >
                         <Icon className="h-3.5 w-3.5" />
                         <span className="min-w-0 flex-1 truncate">{STAGE_LABELS[stage]}</span>
@@ -4671,7 +5725,105 @@ function App() {
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
+            <button
+              type="button"
+              disabled={closedTabs.length === 0}
+              onClick={reopenClosedTab}
+              className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+              title="Reopen closed tab"
+              aria-label="Reopen closed tab"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </button>
           </div>
+          <button
+            type="button"
+            onClick={openFloatingInspector}
+            className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground md:hidden"
+            title="Open floating inspector"
+            aria-label="Open floating inspector"
+          >
+            <PanelRight className="h-4 w-4" />
+          </button>
+          {tabContextMenu && tabContextMenuTab ? (
+            <>
+              <button
+                type="button"
+                aria-label="Close tab menu"
+                className="fixed inset-0 z-40 cursor-default"
+                onClick={() => setTabContextMenu(null)}
+              />
+              <div
+                className="fixed z-50 w-52 rounded-md border border-border bg-popover p-1 text-xs shadow-xl"
+                style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleTabPinned(tabContextMenuTab.id)}
+                  className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Pin className="h-3.5 w-3.5" />
+                  <span className="flex-1">{tabContextMenuTab.pinned ? 'Unpin tab' : 'Pin tab'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => closeOtherTabs(tabContextMenuTab.id)}
+                  className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span className="flex-1">Close others</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={closedTabs.length === 0}
+                  onClick={reopenClosedTab}
+                  className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span className="flex-1">Reopen closed tab</span>
+                </button>
+                {isFileBackedTab(tabContextMenuTab) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTabContextMenu(null);
+                      setExplorerContextMenu({
+                        node: { name: tabContextMenuTab.name, path: tabContextMenuTab.path, kind: 'file' },
+                        x: tabContextMenu.x,
+                        y: tabContextMenu.y,
+                      });
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
+                  >
+                    <File className="h-3.5 w-3.5" />
+                    <span className="flex-1">File actions</span>
+                  </button>
+                ) : null}
+                {tabContextMenuDataset && tabContextMenuDatasetFilePath ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTabContextMenu(null);
+                      setExplorerContextMenu({
+                        node: {
+                          name: tabContextMenuDataset.name,
+                          path: tabContextMenuDatasetFilePath,
+                          kind: 'dataset',
+                          datasetId: tabContextMenuDataset.id,
+                        },
+                        x: tabContextMenu.x,
+                        y: tabContextMenu.y,
+                      });
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
+                  >
+                    <Layers3 className="h-3.5 w-3.5" />
+                    <span className="flex-1">Dataset actions</span>
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
           {showHeaderEditToolbar && (
             <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
               <a
@@ -4718,11 +5870,11 @@ function App() {
         <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
           <Dialog.Portal>
             <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-2xl">
-              <div className="mb-5 flex items-start justify-between gap-4">
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card p-4 shadow-2xl">
+              <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
-                  <Dialog.Title className="text-lg font-semibold">Settings</Dialog.Title>
-                  <Dialog.Description className="text-sm text-muted-foreground">
+                  <Dialog.Title className="text-base font-semibold">Settings</Dialog.Title>
+                  <Dialog.Description className="text-xs text-muted-foreground">
                     Configure shared workspace display options.
                   </Dialog.Description>
                 </div>
@@ -4737,7 +5889,7 @@ function App() {
                 </Dialog.Close>
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <div>
                   <label className="mb-2 block text-xs text-muted-foreground">Brick columns</label>
                   <select
@@ -4757,7 +5909,7 @@ function App() {
                   </select>
                 </div>
 
-                <div className="rounded-lg border border-border bg-secondary/20 p-4">
+                <div className="rounded-md border border-border bg-secondary/20 p-3">
                   <h3 className="mb-3 text-sm font-semibold">Local Tagger Files</h3>
                   <div className="space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4773,7 +5925,7 @@ function App() {
                         className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
                       >
                         <Upload size={16} />
-                        Select file
+                        Choose model
                       </button>
                     </div>
 
@@ -4790,7 +5942,7 @@ function App() {
                         className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
                       >
                         <Upload size={16} />
-                        Select file
+                        Choose tags
                       </button>
                     </div>
                   </div>
@@ -5004,16 +6156,23 @@ function App() {
                 ) : activeTab && isDatasetToolTab(activeTab) ? (
                   renderDatasetTool(activeTab)
                 ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
-                  renderTool(
-                    activeStage,
+                  renderTool({
+                    currentStage: activeStage,
                     projectDirectoryHandle,
-                    openAssetExplorerContextMenu,
-                    activeToolNestedView,
-                    openActiveToolNestedFile,
-                    navigateToStage
-                  )
+                    onOpenAssetContextMenu: openAssetExplorerContextMenu,
+                    nested: activeToolNestedView,
+                    onOpenNestedFile: openActiveToolNestedFile,
+                    onOpenTool: navigateToStage,
+                    onOpenDataset: openDatasetTab,
+                    onOpenDatasetTool: openDatasetToolTab,
+                    onCreateDataset: createDatasetFromHub,
+                    onExportDataset: exportDatasetById,
+                  })
                 ) : (
-                  <EmptyWorkspacePlaceholder />
+                  <EmptyWorkspacePlaceholder
+                    onOpenTool={() => setTabMenuOpen(true)}
+                    onOpenProject={() => void handleOpenProject()}
+                  />
                 )}
               </Suspense>
             </div>
@@ -5122,7 +6281,34 @@ function App() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-3">
-                {renderInspectorContent()}
+                {floatingInspectorOwnsContent ? (
+                  <div className="space-y-3 text-xs">
+                    <div className="rounded border border-border bg-background p-3">
+                      <p className="font-medium">Floating inspector is open</p>
+                      <p className="mt-1 text-muted-foreground">
+                        Tool controls are shown in the floating panel.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openFloatingInspector}
+                      className="flex w-full items-center justify-center gap-2 rounded border border-border px-2 py-2 font-medium hover:bg-secondary"
+                    >
+                      <PanelRight className="h-3.5 w-3.5" />
+                      Focus floating inspector
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInspectorWindow((panel) => ({ ...panel, minimized: true }))}
+                      className="flex w-full items-center justify-center gap-2 rounded border border-border px-2 py-2 font-medium hover:bg-secondary"
+                    >
+                      <Minimize2 className="h-3.5 w-3.5" />
+                      Return controls here
+                    </button>
+                  </div>
+                ) : (
+                  renderInspectorContent()
+                )}
               </div>
             </aside>
           )}
@@ -5201,7 +6387,7 @@ function App() {
                     <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
                   )}
                   {openTabs.map((tab) => {
-                    const { Icon, label, scope, title } = getWorkspaceTabChrome(tab);
+                    const { Icon, label, target, title } = getWorkspaceTabChrome(tab);
                     return (
                       <button
                         type="button"
@@ -5212,22 +6398,14 @@ function App() {
                           activeTabId === tab.id ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
                         }`}
                       >
+                        {tab.pinned ? <Pin className="h-3 w-3 shrink-0" /> : null}
                         <Icon className="h-3.5 w-3.5" />
                         <span className="min-w-0 flex-1 truncate">{label}</span>
-                        <span className="shrink-0 text-[10px] opacity-70">{scope}</span>
+                        {isTabDirty(tab) ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" /> : null}
+                        <span className="shrink-0 text-[10px] opacity-70">{target}</span>
                       </button>
                     );
                   })}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 border-t border-border pt-3">
-                <div className="rounded border border-border p-2">
-                  <p className="text-muted-foreground">Source</p>
-                  <p className="mt-1 text-lg font-semibold">{sourceImages.length}</p>
-                </div>
-                <div className="rounded border border-border p-2">
-                  <p className="text-muted-foreground">Generated</p>
-                  <p className="mt-1 text-lg font-semibold">{datasetItems.length}</p>
                 </div>
               </div>
             </div>

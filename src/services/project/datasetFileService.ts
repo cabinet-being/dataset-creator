@@ -1,5 +1,6 @@
 import { createDataset, type Dataset } from '../../types';
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
+import { normalizeDatasetAssetOrder } from '../../lib/datasetAssets';
 import { filterLegacyProjectAssetPaths } from './projectPathFilters';
 
 export const DATASET_FILE_SUFFIX = '.dataset.json';
@@ -14,6 +15,7 @@ type DatasetFileManifest = {
   assetIds: string[];
   assetPaths?: string[];
   psdAssetPaths?: string[];
+  assetOrder?: string[];
   overwriteCaptions?: boolean;
   captionOverrides?: Record<string, string[]>;
   createdAt: string;
@@ -23,6 +25,8 @@ type DatasetFileManifest = {
 const getPathParts = (path: string): string[] => path.split('/').filter(Boolean).slice(1);
 const getParentPath = (path: string): string => path.split('/').slice(0, -1).join('/') || 'Project';
 const getFileName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path;
+const getPsdAssetPaths = (paths: string[] = []): string[] =>
+  filterLegacyProjectAssetPaths(paths).filter((path) => path.toLowerCase().endsWith('.psd'));
 
 export const isDatasetFileName = (name: string): boolean =>
   name.toLowerCase().endsWith(DATASET_FILE_SUFFIX);
@@ -52,8 +56,15 @@ const writeTextFile = async (directory: ProjectDirectoryHandle, name: string, va
   await writable.close();
 };
 
-export const serializeDatasetFile = (dataset: Dataset): string =>
-  JSON.stringify(
+export const serializeDatasetFile = (dataset: Dataset): string => {
+  const assetPaths = filterLegacyProjectAssetPaths([
+    ...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])]),
+  ]);
+  const psdAssetPaths = filterLegacyProjectAssetPaths([
+    ...new Set([...(dataset.psdAssetPaths ?? []), ...getPsdAssetPaths(assetPaths)]),
+  ]);
+
+  return JSON.stringify(
     {
       format: DATASET_FILE_FORMAT,
       version: 1,
@@ -61,8 +72,9 @@ export const serializeDatasetFile = (dataset: Dataset): string =>
       name: dataset.name,
       triggerWord: dataset.triggerWord,
       assetIds: dataset.assetIds,
-      assetPaths: filterLegacyProjectAssetPaths(dataset.assetPaths),
-      psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths),
+      assetPaths,
+      psdAssetPaths,
+      assetOrder: normalizeDatasetAssetOrder(dataset.assetOrder, dataset.assetIds, assetPaths),
       overwriteCaptions: dataset.overwriteCaptions,
       captionOverrides: dataset.captionOverrides,
       createdAt: dataset.createdAt.toISOString(),
@@ -71,6 +83,7 @@ export const serializeDatasetFile = (dataset: Dataset): string =>
     null,
     2
   );
+};
 
 export const readDatasetFile = async (
   root: ProjectDirectoryHandle,
@@ -83,15 +96,22 @@ export const readDatasetFile = async (
     throw new Error('Unsupported Dataset file.');
   }
 
+  const assetIds = manifest.assetIds ?? [];
+  const assetPaths = filterLegacyProjectAssetPaths([...new Set([...(manifest.assetPaths ?? []), ...(manifest.psdAssetPaths ?? [])])]);
+  const psdAssetPaths = filterLegacyProjectAssetPaths([
+    ...new Set([...(manifest.psdAssetPaths ?? []), ...getPsdAssetPaths(assetPaths)]),
+  ]);
+
   return {
     id: manifest.id,
     name: getDatasetDisplayName(file.name),
     parentPath: getParentPath(path),
     filePath: path,
     triggerWord: manifest.triggerWord ?? '',
-    assetIds: manifest.assetIds ?? [],
-    assetPaths: filterLegacyProjectAssetPaths([...new Set([...(manifest.assetPaths ?? []), ...(manifest.psdAssetPaths ?? [])])]),
-    psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(manifest.psdAssetPaths ?? [])]),
+    assetIds,
+    assetPaths,
+    psdAssetPaths,
+    assetOrder: normalizeDatasetAssetOrder(manifest.assetOrder, assetIds, assetPaths),
     overwriteCaptions: manifest.overwriteCaptions ?? false,
     captionOverrides: manifest.captionOverrides ?? {},
     createdAt: new Date(manifest.createdAt),

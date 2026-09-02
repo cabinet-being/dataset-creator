@@ -129,6 +129,7 @@ export interface Dataset {
   assetIds: string[];
   assetPaths: string[];
   psdAssetPaths: string[];
+  assetOrder: string[];
   overwriteCaptions: boolean;
   captionOverrides: Record<string, string[]>;
   createdAt: Date;
@@ -280,6 +281,7 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   assetIds: [],
   assetPaths: [],
   psdAssetPaths: [],
+  assetOrder: [],
   overwriteCaptions: false,
   captionOverrides: {},
   createdAt: new Date(),

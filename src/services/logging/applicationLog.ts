@@ -27,8 +27,8 @@ export const appLog = {
   success: (message: string) => writeLog('success', message),
 };
 
-export const createOperationLogger = (scope: string): OperationLogger => {
-  const prefix = (message: string) => `${scope}: ${message}`;
+export const createOperationLogger = (area: string): OperationLogger => {
+  const prefix = (message: string) => `${area}: ${message}`;
 
   return {
     info: (message) => appLog.info(prefix(message)),

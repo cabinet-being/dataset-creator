@@ -25,12 +25,17 @@ import {
 } from '../../lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
+import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
+import { orderWorkspaceItemsByDatasetOrder } from '../../lib/datasetAssets';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import type { Dataset } from '../../types';
 
 type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
+
+const canAutoTagItem = (item: WorkspaceImage): boolean =>
+  item.kind === 'image' || item.kind === 'synthetic';
 
 type DirectoryPickerWindow = Window &
   typeof globalThis & {
@@ -589,7 +594,9 @@ export const TaggingStage = ({
   onOpenAssetContextMenu,
 }: TaggingStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
+  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const cleanupStageState = useProjectStore(
@@ -649,19 +656,33 @@ export const TaggingStage = ({
     () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
     [datasetAssetIds, datasetId, sourceImagesById]
   );
-  const items = useMemo(
+  const syntheticImages = useMemo(
     () =>
-      toWorkspaceReviewAssets(sourceImages, fileAssets, cleanupStageState.workingEdits).map((item) => {
-        if (!datasetId || !dataset?.overwriteCaptions) {
-          return item;
-        }
-        return {
-          ...item,
-          tags: (dataset.captionOverrides ?? {})[item.id] ?? item.tags,
-        };
-      }),
-    [cleanupStageState.workingEdits, dataset?.captionOverrides, dataset?.overwriteCaptions, datasetId, fileAssets, sourceImages]
+      Object.values(syntheticImagesById).filter(
+        (image) => !image.deleted && (!datasetId || datasetAssetIds.has(image.sourceImageId))
+      ),
+    [datasetAssetIds, datasetId, syntheticImagesById]
   );
+  const items = useMemo(() => {
+    const nextItems = toWorkspaceReviewAssets(
+      sourceImages,
+      fileAssets,
+      cleanupStageState.workingEdits,
+      syntheticImages
+    ).map((item) => {
+      if (!datasetId || !dataset?.overwriteCaptions) {
+        return item;
+      }
+      return {
+        ...item,
+        tags: (dataset.captionOverrides ?? {})[item.id] ?? item.tags,
+      };
+    });
+
+    return dataset
+      ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder, dataset.assetIds)
+      : nextItems;
+  }, [cleanupStageState.workingEdits, dataset, datasetId, fileAssets, sourceImages, syntheticImages]);
   const previewUrls = useWorkspacePreviewUrls(items);
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedItemId) ?? null,
@@ -673,7 +694,7 @@ export const TaggingStage = ({
     [globalTagsToAdd, normalizedDatasetKeyword]
   );
   const hasBulkTags = bulkTags.length > 0;
-  const autoTaggableItems = useMemo(() => items.filter((item) => item.kind === 'image'), [items]);
+  const autoTaggableItems = useMemo(() => items.filter(canAutoTagItem), [items]);
 
   const canUseDirectoryPicker =
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
@@ -797,7 +818,7 @@ export const TaggingStage = ({
 
       if (dataset && onUpdateDataset) {
         if (!dataset.overwriteCaptions) {
-          addNotification('warning', 'Enable Overwrite Caption in Dataset Inspector before editing Dataset captions');
+          addNotification('warning', 'Enable Overwrite captions in Dataset Inspector before editing Dataset captions');
           return;
         }
         void onUpdateDataset({
@@ -814,9 +835,14 @@ export const TaggingStage = ({
         return;
       }
 
-      addNotification('warning', 'Open this asset through a Dataset with Overwrite Caption enabled before editing captions');
+      if (item.kind === 'synthetic' && item.syntheticImageId) {
+        updateDatasetItem(item.syntheticImageId, { tags: nextTags });
+        return;
+      }
+
+      addNotification('warning', 'Open this asset through a Dataset with Overwrite captions enabled before editing captions');
     },
-    [addNotification, dataset, onUpdateDataset, updateSourceImage]
+    [addNotification, dataset, onUpdateDataset, updateDatasetItem, updateSourceImage]
   );
 
   const applyTagsToItem = useCallback(
@@ -1391,7 +1417,7 @@ export const TaggingStage = ({
     if (!selectedItem) {
       return;
     }
-    if (selectedItem.kind !== 'image') {
+    if (!canAutoTagItem(selectedItem)) {
       addNotification('warning', 'Auto-tagging is only available for image assets');
       return;
     }
@@ -1441,11 +1467,11 @@ export const TaggingStage = ({
   const selectedPreviewUrl = selectedItem ? previewUrls[selectedItem.id] : undefined;
   const selectedAutoTaggingDisabled =
     !selectedItem ||
-    selectedItem.kind !== 'image' ||
+    !canAutoTagItem(selectedItem) ||
     !localTagger ||
     localTaggerStatus !== 'ready' ||
     isSelectedAutoTagging;
-  const selectedAutoTaggingTitle = !selectedItem || selectedItem.kind !== 'image'
+  const selectedAutoTaggingTitle = !selectedItem || !canAutoTagItem(selectedItem)
     ? 'Auto-tagging is only available for image assets'
     : isSelectedAutoTagging
       ? 'Auto-tagging...'
@@ -1565,17 +1591,20 @@ export const TaggingStage = ({
   );
 
   const captionInspectorControls = singleFileMode ? selectedTaggingControls : datasetTagsControls;
-  const captionInspectorRoot =
-    active && typeof document !== 'undefined'
-      ? document.getElementById('caption-inspector-root')
-      : null;
+  const captionInspectorRoot = useInspectorPortalRoot('caption-inspector-root', active);
   const captionInspectorPortal = captionInspectorRoot && captionInspectorControls
     ? createPortal(captionInspectorControls, captionInspectorRoot)
     : null;
+  const inlineCaptionControls = !captionInspectorPortal && captionInspectorControls ? (
+    <aside className="rounded-lg border border-border bg-card p-4">
+      {captionInspectorControls}
+    </aside>
+  ) : null;
 
   return (
-    <div className="h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto">
       {selectedView}
+      {inlineCaptionControls}
       {captionInspectorPortal}
 
       <Dialog.Root
