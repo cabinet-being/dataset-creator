@@ -1498,7 +1498,21 @@ export const TaggingStage = ({
   const selectedView = selectedItem ? (
     <div className="flex h-full min-h-0 flex-col gap-4">
       <div className={singleFileMode ? 'min-h-0 flex-1' : 'grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]'}>
-        <div className="h-full min-h-0 overflow-hidden rounded-lg bg-black">
+        <div className="relative h-full min-h-0 overflow-hidden rounded-lg bg-black">
+          {!singleFileMode ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedItemId(null);
+                setSelectedTagInput('');
+              }}
+              className="absolute right-3 top-3 z-20 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-black/65 text-white shadow hover:bg-black/85"
+              title="Back to captions"
+              aria-label="Back to captions"
+            >
+              <X size={16} />
+            </button>
+          ) : null}
           {selectedPreviewUrl ? (
             <img
               src={selectedPreviewUrl}

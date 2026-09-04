@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { AlertCircle, FileImage, FileJson, FileText, Minus, Plus, Video } from 'lucide-react';
 import type { ExplorerFileKind } from '../services/project/explorerFileService';
@@ -109,13 +109,67 @@ const ImageFileViewer = ({
 }) => {
   const url = useObjectUrl(file);
   const [zoom, setZoom] = useState(1);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateViewportSize = () => {
+      setViewportSize({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    };
+
+    updateViewportSize();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateViewportSize);
+      return () => window.removeEventListener('resize', updateViewportSize);
+    }
+
+    const observer = new ResizeObserver(updateViewportSize);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    setNaturalSize(null);
+    setZoom(1);
+  }, [url]);
+
+  const imageLayout = useMemo(() => {
+    if (!naturalSize) {
+      return null;
+    }
+
+    const horizontalPadding = 48;
+    const verticalPadding = 48;
+    const availableWidth = Math.max(1, viewportSize.width - horizontalPadding);
+    const availableHeight = Math.max(1, viewportSize.height - verticalPadding);
+    const fitScale = Math.min(1, availableWidth / naturalSize.width, availableHeight / naturalSize.height);
+    const width = Math.max(1, Math.round(naturalSize.width * fitScale * zoom));
+    const height = Math.max(1, Math.round(naturalSize.height * fitScale * zoom));
+
+    return {
+      width,
+      height,
+      wrapperWidth: Math.max(viewportSize.width, width + horizontalPadding),
+      wrapperHeight: Math.max(viewportSize.height, height + verticalPadding),
+    };
+  }, [naturalSize, viewportSize.height, viewportSize.width, zoom]);
 
   if (!url) {
     return null;
   }
 
   return (
-    <div className="relative flex h-full min-h-0 items-center justify-center overflow-auto bg-background">
+    <div ref={containerRef} className="relative h-full min-h-0 overflow-auto bg-background">
       <div className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded-md border border-border bg-card/95 p-1 shadow">
         <button
           type="button"
@@ -146,18 +200,24 @@ const ImageFileViewer = ({
         </button>
       </div>
       <div
-        className="flex shrink-0 items-center justify-center p-6"
+        className="flex items-center justify-center p-6"
         style={{
-          minWidth: `${zoom * 100}%`,
-          minHeight: `${zoom * 100}%`,
+          minWidth: imageLayout ? `${imageLayout.wrapperWidth}px` : '100%',
+          minHeight: imageLayout ? `${imageLayout.wrapperHeight}px` : '100%',
         }}
       >
         <img
           src={url}
           alt={fileName}
+          onLoad={(event) => {
+            setNaturalSize({
+              width: event.currentTarget.naturalWidth,
+              height: event.currentTarget.naturalHeight,
+            });
+          }}
           onContextMenu={onContextMenu}
-          className="block max-h-full max-w-full object-contain"
-          style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
+          className="block max-w-none object-contain"
+          style={imageLayout ? { width: `${imageLayout.width}px`, height: `${imageLayout.height}px` } : undefined}
         />
       </div>
     </div>

@@ -161,10 +161,14 @@ const removeOptionalFile = async (
 const rewriteAssetManifest = (
   value: string,
   previousName: string,
-  nextName: string
+  nextName: string,
+  options: { preserveAssetIdentity?: boolean } = {}
 ): string => {
   try {
     const manifest = JSON.parse(value) as Record<string, unknown>;
+    if (!options.preserveAssetIdentity && typeof manifest.id === 'string') {
+      manifest.id = crypto.randomUUID();
+    }
     for (const key of ['fileName', 'originalFileName', 'originalFileNameOnDisk', 'imageFileName', 'psdFileName']) {
       if (manifest[key] === previousName) {
         manifest[key] = nextName;
@@ -259,7 +263,8 @@ const copyAssetManifest = async (
   sourceDirectory: ProjectDirectoryHandle,
   destinationDirectory: ProjectDirectoryHandle,
   sourceName: string,
-  targetName: string
+  targetName: string,
+  options: { preserveAssetIdentity?: boolean } = {}
 ) => {
   const manifest = await readOptionalTextFile(sourceDirectory, getAssetManifestName(sourceName));
   if (manifest === null) {
@@ -268,7 +273,7 @@ const copyAssetManifest = async (
   await writeTextFile(
     destinationDirectory,
     getAssetManifestName(targetName),
-    rewriteAssetManifest(manifest, sourceName, targetName)
+    rewriteAssetManifest(manifest, sourceName, targetName, options)
   );
 };
 
@@ -278,7 +283,9 @@ const moveAssetManifest = async (
   sourceName: string,
   targetName: string
 ) => {
-  await copyAssetManifest(sourceDirectory, destinationDirectory, sourceName, targetName);
+  await copyAssetManifest(sourceDirectory, destinationDirectory, sourceName, targetName, {
+    preserveAssetIdentity: true,
+  });
   await removeOptionalFile(sourceDirectory, getAssetManifestName(sourceName));
 };
 
@@ -300,7 +307,8 @@ export const copyExplorerEntry = async (
   root: ProjectDirectoryHandle,
   source: ExplorerClipboardEntry,
   destinationPath: string,
-  requestedName?: string
+  requestedName?: string,
+  options: { preserveAssetIdentity?: boolean } = {}
 ): Promise<string> => {
   if (source.kind === 'file' && (isProjectManifestName(source.name) || isAssetManifestName(source.name))) {
     throw new Error('Project metadata files cannot be copied from Explorer.');
@@ -324,7 +332,7 @@ export const copyExplorerEntry = async (
   const file = await readExplorerFile(root, source.path);
   await writeFile(destination, targetName, file);
   const { directory: sourceDirectory, name: sourceName } = await getExplorerParentDirectory(root, source.path);
-  await copyAssetManifest(sourceDirectory, destination, sourceName, targetName);
+  await copyAssetManifest(sourceDirectory, destination, sourceName, targetName, options);
   return `${destinationPath}/${targetName}`;
 };
 
@@ -406,7 +414,8 @@ export const renameExplorerEntry = async (
       root,
       { path, name, kind: entryKind },
       path.split('/').slice(0, -1).join('/'),
-      trimmedName
+      trimmedName,
+      { preserveAssetIdentity: true }
     );
     await directory.removeEntry(name, { recursive: entryKind === 'folder' });
     if (entryKind === 'file') {
@@ -444,7 +453,9 @@ const moveExplorerEntry = async (
       await moveAssetManifest(directory, destination, name, targetName);
     }
   } else {
-    await copyExplorerEntry(root, source, destinationPath, targetName);
+    await copyExplorerEntry(root, source, destinationPath, targetName, {
+      preserveAssetIdentity: true,
+    });
     await directory.removeEntry(name, { recursive: source.kind === 'folder' });
     if (source.kind === 'file') {
       await removeOptionalFile(directory, getAssetManifestName(name));

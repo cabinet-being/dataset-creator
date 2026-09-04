@@ -1,954 +1,944 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent as ReactMouseEvent,
-} from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  BarChart3,
   Boxes,
-  ChevronRight,
   GitCompareArrows,
-  Network,
-  Trash2,
+  Layers3,
+  LocateFixed,
+  SearchX,
+  SlidersHorizontal,
+  Tags,
 } from 'lucide-react';
-import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
+import { ASPECT_RATIO_LABELS, ASPECT_RATIOS } from '../../lib/constants';
 import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
-import { generateEmbedding } from '../../services/image/embeddingService';
 import {
-  computeDistanceMatrix,
-  findSimilarPairs,
-  performClustering,
-} from '../../services/similarity/similarityService';
-import type { Dataset, SimilarityCluster, SimilarityResult } from '../../types';
-import { useProjectStore } from '../../stores/useProjectStore';
-import { useUIStore } from '../../stores/useUIStore';
-import {
-  toWorkspaceImages,
   createWorkspaceFileAssetId,
-  getWorkspaceKindBadgeClass,
-  getWorkspaceKindFrameClass,
-  getWorkspaceKindFrameOverlayClass,
-  getWorkspaceKindFrameOverlayStyle,
-  getWorkspaceKindFrameStyle,
+  inferWorkspaceAspectRatio,
+  toWorkspaceImages,
+  toWorkspaceReviewAssets,
+  type WorkspaceFileAsset,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
-import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
-import { getExplorerFileKind } from '../../services/project/explorerFileService';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
-import { BrickMasonry } from '../ui/BrickMasonry';
-import { MasonryImageFrame } from '../ui/MasonryImageFrame';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
+import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
+import { computeDistanceMatrix, findSimilarPairs, performClustering } from '../../services/similarity/similarityService';
+import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
+import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
+import { createDatasetImageAssetKey } from '../../lib/datasetAssets';
+import { useProjectStore } from '../../stores/useProjectStore';
+import { useUIStore } from '../../stores/useUIStore';
+import type { AspectRatio, Dataset, SimilarityCluster, SimilarityResult } from '../../types';
+import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
+
+type AnalysisTargetMode = 'project' | 'dataset' | 'file';
+type AnalysisView = 'overview' | 'duplicates' | 'similar' | 'coverage' | 'tags' | 'outliers';
+type SimilarGroupSort = 'risk' | 'similarity' | 'coverage' | 'size';
+type SimilarGroupFilter = 'all' | 'high-confidence' | 'weak' | 'same-color' | 'tag-mismatch' | 'redundant';
 
 type EmbeddingCacheEntry = { blob: Blob; embedding: Float32Array };
-type SimilarityView = 'graph' | 'pairs' | 'clusters';
-type GraphNode = {
+type TraitCacheEntry = { blob: Blob; traits: VisualTraits };
+type PsdPreviewCacheEntry = { previewUrl: string; blob: Blob };
+
+type AnalysisFileTarget = {
+  path: string;
+  name: string;
+  fileKind: string;
+  file: File | Blob;
+  workspaceImageId?: string;
+};
+
+type VisualTraits = {
+  hash: string;
+  dominantColors: string[];
+  brightness: number;
+  contrast: number;
+  colorSignature: [number, number, number];
+};
+
+type DuplicateGroup = {
   id: string;
-  x: number;
-  y: number;
-  groupIndex: number;
-  kind: 'image' | 'cluster';
-  label?: string;
-  imageId?: string;
-  clusterId?: string;
-  memberIds?: string[];
-  singleton?: boolean;
+  items: WorkspaceImage[];
+  score: number;
+  reason: 'exact visual match' | 'near visual match' | 'high-confidence duplicate';
+  suggestedKeepId: string;
+  maxHashDistance: number | null;
 };
-type SimulatedGraphNode = GraphNode & {
-  vx: number;
-  vy: number;
-};
-type GraphEdge = {
+
+type SimilarGroup = {
   id: string;
-  sourceId: string;
-  targetId: string;
-  type: 'membership' | 'pair';
-  strength: number;
-  similarity?: number;
+  items: WorkspaceImage[];
+  score: number;
+  confidence: number;
+  coverageValue: number;
+  tagOverlap: number;
+  colorSimilarity: number;
+  compositionSimilarity: number;
+  duplicatePressure: number;
+  reasons: string[];
+  avgSimilarity: number;
 };
-type GraphClusterAnchor = {
+
+type CoverageAddRecommendation = {
+  kind: 'add';
   id: string;
-  x: number;
-  y: number;
-  radius: number;
-  groupIndex: number;
-  memberIds: string[];
-};
-
-const REVIEW_GRAPH_LIMIT = 72;
-const GRAPH_WIDTH = 1800;
-const GRAPH_HEIGHT = 1250;
-const GRAPH_MIN_SCALE = 0.55;
-const GRAPH_MAX_SCALE = 2.8;
-const GRAPH_PAIR_EDGE_DEGREE_LIMIT = 1;
-const GRAPH_PAIR_EDGE_MIN_SIMILARITY = 0.94;
-const GRAPH_CLUSTER_MEMBER_RADIUS_MIN = 112;
-const GRAPH_CLUSTER_MEMBER_RADIUS_MAX = 440;
-const GRAPH_CLUSTER_ANCHOR_MIN_DISTANCE = 240;
-const GRAPH_CLUSTER_ANCHOR_ITERATIONS = 72;
-const GRAPH_NODE_COLLISION_DISTANCE = 86;
-const GRAPH_GLOBAL_CENTER_STRENGTH = 0.045;
-const GRAPH_CLUSTER_ANCHOR_STRENGTH = 0.72;
-const GRAPH_SINGLETON_ORBIT_X = GRAPH_WIDTH * 0.42;
-const GRAPH_SINGLETON_ORBIT_Y = GRAPH_HEIGHT * 0.38;
-const GRAPH_NODE_RELAXATION_ITERATIONS = 48;
-const GRAPH_SIMULATION_MAX_FRAMES = 220;
-const GRAPH_SIMULATION_RENDER_EVERY = 2;
-const GRAPH_SIMULATION_DAMPING = 0.8;
-const GRAPH_SIMULATION_SETTLE_VELOCITY = 0.045;
-const GRAPH_SIMULATION_CENTER_FORCE = 0.008;
-const GRAPH_SIMULATION_NODE_CENTER_FORCE = 0.0028;
-const GRAPH_SIMULATION_CLUSTER_FORCE = 0.022;
-const GRAPH_SIMULATION_MEMBERSHIP_LINK_FORCE = 0.012;
-const GRAPH_SIMULATION_PAIR_LINK_FORCE = 0.0045;
-const GRAPH_SIMULATION_NODE_REPULSION = 780;
-const GRAPH_SIMULATION_CLUSTER_REPULSION = 0.28;
-const GRAPH_SIMULATION_SINGLETON_OUTWARD_FORCE = 0.014;
-const GRAPH_SIMULATION_SINGLETON_EXCLUSION_FORCE = 0.34;
-const GRAPH_SIMULATION_MAX_VELOCITY = 18;
-
-const getGraphGroupColor = (groupIndex: number): string => {
-  const hues = [198, 38, 156, 262, 92, 345, 24, 220];
-  return `hsl(${hues[groupIndex % hues.length]}, 72%, 52%)`;
-};
-
-const clampGraphCoordinate = (value: number, min: number, max: number): number =>
-  Math.max(min, Math.min(max, value));
-
-const getDeterministicOffset = (index: number, salt: number): number =>
-  Math.sin(index * 12.9898 + salt * 78.233) * 43758.5453 -
-  Math.floor(Math.sin(index * 12.9898 + salt * 78.233) * 43758.5453);
-
-const getGraphClusterRadius = (memberCount: number): number => {
-  if (memberCount <= 1) {
-    return GRAPH_CLUSTER_MEMBER_RADIUS_MIN;
-  }
-
-  const capacityPerRing = Math.max(
-    5,
-    Math.floor((Math.PI * 2 * GRAPH_CLUSTER_MEMBER_RADIUS_MIN) / (GRAPH_NODE_COLLISION_DISTANCE * 1.06))
-  );
-  const ringCount = Math.max(1, Math.ceil(memberCount / capacityPerRing));
-  const densityRadius = GRAPH_CLUSTER_MEMBER_RADIUS_MIN + Math.sqrt(memberCount) * GRAPH_NODE_COLLISION_DISTANCE * 0.58;
-  const ringRadius = GRAPH_CLUSTER_MEMBER_RADIUS_MIN + (ringCount - 1) * GRAPH_NODE_COLLISION_DISTANCE * 1.18;
-
-  return Math.min(
-    GRAPH_CLUSTER_MEMBER_RADIUS_MAX,
-    Math.max(ringRadius, densityRadius)
-  );
-};
-
-const getGraphMembershipDistance = (memberCount: number): number =>
-  Math.min(
-    GRAPH_CLUSTER_MEMBER_RADIUS_MAX * 0.82,
-    GRAPH_CLUSTER_MEMBER_RADIUS_MIN + Math.sqrt(Math.max(1, memberCount)) * GRAPH_NODE_COLLISION_DISTANCE * 0.38
-  );
-
-const getGraphMemberOffset = (
-  memberIndex: number,
-  memberCount: number
-): { x: number; y: number } => {
-  if (memberCount === 1) {
-    return { x: 0, y: -GRAPH_CLUSTER_MEMBER_RADIUS_MIN };
-  }
-
-  const rings: Array<{ radius: number; capacity: number }> = [];
-  let remaining = memberCount;
-  let radius = GRAPH_CLUSTER_MEMBER_RADIUS_MIN;
-
-  while (remaining > 0) {
-    const capacity = Math.max(6, Math.floor((Math.PI * 2 * radius) / GRAPH_NODE_COLLISION_DISTANCE));
-    rings.push({ radius, capacity });
-    remaining -= capacity;
-    radius += GRAPH_NODE_COLLISION_DISTANCE;
-  }
-
-  let skipped = 0;
-  for (const ring of rings) {
-    const countOnRing = Math.min(ring.capacity, memberCount - skipped);
-    if (memberIndex < skipped + countOnRing) {
-      const ringIndex = memberIndex - skipped;
-      const angle =
-        (Math.PI * 2 * ringIndex) / countOnRing -
-        Math.PI / 2 +
-        (skipped / Math.max(1, memberCount)) * Math.PI;
-      return {
-        x: Math.cos(angle) * ring.radius,
-        y: Math.sin(angle) * ring.radius,
-      };
-    }
-    skipped += countOnRing;
-  }
-
-  return { x: 0, y: 0 };
-};
-
-const relaxGraphNodes = (
-  nodes: GraphNode[],
-  anchors: GraphClusterAnchor[],
-  centerX: number,
-  centerY: number
-): { minMemberDistance: number; singletonIntrusionCount: number } => {
-  const anchorByGroupIndex = new Map(anchors.map((anchor) => [anchor.groupIndex, anchor]));
-  const imageNodes = nodes.filter((node) => node.kind === 'image');
-  const clusteredImageNodes = imageNodes.filter((node) => !node.singleton);
-  const singletonNodes = imageNodes.filter((node) => node.singleton);
-
-  for (let iteration = 0; iteration < GRAPH_NODE_RELAXATION_ITERATIONS; iteration++) {
-    for (const node of clusteredImageNodes) {
-      const anchor = anchorByGroupIndex.get(node.groupIndex);
-      if (!anchor) {
-        continue;
-      }
-
-      node.x += (anchor.x - node.x) * 0.018;
-      node.y += (anchor.y - node.y) * 0.018;
-    }
-
-    for (let leftIndex = 0; leftIndex < clusteredImageNodes.length; leftIndex++) {
-      for (let rightIndex = leftIndex + 1; rightIndex < clusteredImageNodes.length; rightIndex++) {
-        const left = clusteredImageNodes[leftIndex];
-        const right = clusteredImageNodes[rightIndex];
-        if (left.groupIndex !== right.groupIndex) {
-          continue;
-        }
-
-        const deltaX = right.x - left.x;
-        const deltaY = right.y - left.y;
-        const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-        if (distance >= GRAPH_NODE_COLLISION_DISTANCE) {
-          continue;
-        }
-
-        const push = (GRAPH_NODE_COLLISION_DISTANCE - distance) / 2;
-        const unitX = deltaX / distance;
-        const unitY = deltaY / distance;
-        left.x -= unitX * push;
-        left.y -= unitY * push;
-        right.x += unitX * push;
-        right.y += unitY * push;
-      }
-    }
-
-    for (const node of clusteredImageNodes) {
-      const anchor = anchorByGroupIndex.get(node.groupIndex);
-      if (!anchor) {
-        continue;
-      }
-
-      const deltaX = node.x - anchor.x;
-      const deltaY = node.y - anchor.y;
-      const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-      const maxDistance = anchor.radius + GRAPH_NODE_COLLISION_DISTANCE * 0.45;
-      const minDistance = Math.min(66, anchor.radius * 0.45);
-
-      if (distance > maxDistance) {
-        node.x = anchor.x + (deltaX / distance) * maxDistance;
-        node.y = anchor.y + (deltaY / distance) * maxDistance;
-      } else if (distance < minDistance) {
-        node.x = anchor.x + (deltaX / distance) * minDistance;
-        node.y = anchor.y + (deltaY / distance) * minDistance;
-      }
-    }
-
-    for (const singleton of singletonNodes) {
-      const deltaCenterX = singleton.x - centerX;
-      const deltaCenterY = singleton.y - centerY;
-      const centerDistance = Math.max(0.001, Math.hypot(deltaCenterX, deltaCenterY));
-      const targetX = centerX + (deltaCenterX / centerDistance) * GRAPH_SINGLETON_ORBIT_X;
-      const targetY = centerY + (deltaCenterY / centerDistance) * GRAPH_SINGLETON_ORBIT_Y;
-      singleton.x += (targetX - singleton.x) * 0.08;
-      singleton.y += (targetY - singleton.y) * 0.08;
-
-      for (const anchor of anchors) {
-        const deltaX = singleton.x - anchor.x;
-        const deltaY = singleton.y - anchor.y;
-        const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-        const exclusionDistance = anchor.radius + GRAPH_NODE_COLLISION_DISTANCE * 1.45;
-        if (distance >= exclusionDistance) {
-          continue;
-        }
-
-        const push = (exclusionDistance - distance) * 0.7;
-        singleton.x += (deltaX / distance) * push;
-        singleton.y += (deltaY / distance) * push;
-      }
-    }
-  }
-
-  let minMemberDistance = Number.POSITIVE_INFINITY;
-  for (let leftIndex = 0; leftIndex < clusteredImageNodes.length; leftIndex++) {
-    for (let rightIndex = leftIndex + 1; rightIndex < clusteredImageNodes.length; rightIndex++) {
-      const left = clusteredImageNodes[leftIndex];
-      const right = clusteredImageNodes[rightIndex];
-      if (left.groupIndex !== right.groupIndex) {
-        continue;
-      }
-
-      minMemberDistance = Math.min(minMemberDistance, Math.hypot(left.x - right.x, left.y - right.y));
-    }
-  }
-
-  let singletonIntrusionCount = 0;
-  for (const singleton of singletonNodes) {
-    for (const anchor of anchors) {
-      const distance = Math.hypot(singleton.x - anchor.x, singleton.y - anchor.y);
-      if (distance < anchor.radius + GRAPH_NODE_COLLISION_DISTANCE) {
-        singletonIntrusionCount++;
-        break;
-      }
-    }
-  }
-
-  return {
-    minMemberDistance: Number.isFinite(minMemberDistance) ? minMemberDistance : 0,
-    singletonIntrusionCount,
-  };
-};
-
-const selectGraphPairEdges = (
-  similarPairs: SimilarityResult[],
-  itemCount: number,
-  threshold: number
-): SimilarityResult[] => {
-  const graphPairThreshold = Math.max(threshold + 0.08, GRAPH_PAIR_EDGE_MIN_SIMILARITY);
-  const globalLimit = Math.max(8, Math.min(Math.ceil(itemCount / 4), 36));
-  const degreeByImageId = new Map<string, number>();
-  const selected: SimilarityResult[] = [];
-
-  for (const pair of similarPairs) {
-    if (pair.similarity < graphPairThreshold) {
-      continue;
-    }
-
-    const leftDegree = degreeByImageId.get(pair.imageId1) ?? 0;
-    const rightDegree = degreeByImageId.get(pair.imageId2) ?? 0;
-    if (leftDegree >= GRAPH_PAIR_EDGE_DEGREE_LIMIT || rightDegree >= GRAPH_PAIR_EDGE_DEGREE_LIMIT) {
-      continue;
-    }
-
-    selected.push(pair);
-    degreeByImageId.set(pair.imageId1, leftDegree + 1);
-    degreeByImageId.set(pair.imageId2, rightDegree + 1);
-
-    if (selected.length >= globalLimit) {
-      break;
-    }
-  }
-
-  return selected;
-};
-
-const buildGraphLayout = (
-  items: WorkspaceImage[],
-  clusters: SimilarityCluster[],
-  similarPairs: SimilarityResult[],
-  threshold: number
-): {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  clusterNodeCount: number;
-  membershipEdgeCount: number;
-  pairEdgeCount: number;
-  singletonCount: number;
-  selectedPairCandidateCount: number;
-  clusterMinDistance: number;
-  layoutIterationCount: number;
-  overlapResolutionRan: boolean;
-  sparseOrOverlapStateDetected: boolean;
-  minMemberDistance: number;
-  singletonIntrusionCount: number;
-} => {
-  if (items.length === 0) {
-    return {
-      nodes: [],
-      edges: [],
-      clusterNodeCount: 0,
-      membershipEdgeCount: 0,
-      pairEdgeCount: 0,
-      singletonCount: 0,
-      selectedPairCandidateCount: 0,
-      clusterMinDistance: 0,
-      layoutIterationCount: 0,
-      overlapResolutionRan: false,
-      sparseOrOverlapStateDetected: false,
-      minMemberDistance: 0,
-      singletonIntrusionCount: 0,
-    };
-  }
-
-  const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
-  const centerX = GRAPH_WIDTH / 2;
-  const centerY = GRAPH_HEIGHT / 2;
-  const itemIds = new Set(items.map((item) => item.id));
-  const assignedImageIds = new Set<string>();
-  const positionedImageIds = new Set<string>();
-  const sortedClusters = [...clusters].sort(
-    (left, right) => right.imageIds.length - left.imageIds.length || right.avgSimilarity - left.avgSimilarity
-  );
-  const graphPairCandidates = selectGraphPairEdges(similarPairs, items.length, threshold);
-  const anchors: GraphClusterAnchor[] = sortedClusters.map((cluster, groupIndex) => {
-    const memberIds = cluster.imageIds.filter((id) => itemIds.has(id));
-    const radius = getGraphClusterRadius(memberIds.length);
-    const jitter = (getDeterministicOffset(groupIndex, memberIds.length) - 0.5) * 0.5;
-    const angle = (groupIndex - 1) * 2.399963229728653 + jitter;
-    const initialRadius =
-      groupIndex === 0 ? 0 : Math.min(430, 175 + Math.sqrt(groupIndex - 1) * 96);
-
-    return {
-      id: cluster.id,
-      x: centerX + Math.cos(angle) * initialRadius,
-      y: centerY + Math.sin(angle) * initialRadius * 0.78,
-      radius,
-      groupIndex,
-      memberIds,
-    };
-  });
-
-  let overlapResolutionRan = false;
-  for (let iteration = 0; iteration < GRAPH_CLUSTER_ANCHOR_ITERATIONS; iteration++) {
-    for (const anchor of anchors) {
-      if (anchor.groupIndex === 0) {
-        anchor.x = centerX;
-        anchor.y = centerY;
-        continue;
-      }
-      anchor.x += (centerX - anchor.x) * GRAPH_GLOBAL_CENTER_STRENGTH;
-      anchor.y += (centerY - anchor.y) * GRAPH_GLOBAL_CENTER_STRENGTH;
-    }
-
-    for (let leftIndex = 0; leftIndex < anchors.length; leftIndex++) {
-      for (let rightIndex = leftIndex + 1; rightIndex < anchors.length; rightIndex++) {
-        const left = anchors[leftIndex];
-        const right = anchors[rightIndex];
-        const deltaX = right.x - left.x;
-        const deltaY = right.y - left.y;
-        const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-        const requiredDistance =
-          GRAPH_CLUSTER_ANCHOR_MIN_DISTANCE + (left.radius + right.radius) * 0.4;
-
-        if (distance >= requiredDistance) {
-          continue;
-        }
-
-        overlapResolutionRan = true;
-        const push = ((requiredDistance - distance) / 2) * GRAPH_CLUSTER_ANCHOR_STRENGTH;
-        const unitX = deltaX / distance;
-        const unitY = deltaY / distance;
-        if (left.groupIndex === 0) {
-          right.x += unitX * push * 2;
-          right.y += unitY * push * 2;
-        } else if (right.groupIndex === 0) {
-          left.x -= unitX * push * 2;
-          left.y -= unitY * push * 2;
-        } else {
-          left.x -= unitX * push;
-          left.y -= unitY * push;
-          right.x += unitX * push;
-          right.y += unitY * push;
-        }
-      }
-    }
-
-    for (const anchor of anchors) {
-      if (anchor.groupIndex === 0) {
-        anchor.x = centerX;
-        anchor.y = centerY;
-        continue;
-      }
-      anchor.x = clampGraphCoordinate(anchor.x, 80 + anchor.radius, GRAPH_WIDTH - 80 - anchor.radius);
-      anchor.y = clampGraphCoordinate(anchor.y, 80 + anchor.radius, GRAPH_HEIGHT - 80 - anchor.radius);
-    }
-  }
-
-  for (let iteration = 0; iteration < 32; iteration++) {
-    for (let leftIndex = 0; leftIndex < anchors.length; leftIndex++) {
-      for (let rightIndex = leftIndex + 1; rightIndex < anchors.length; rightIndex++) {
-        const left = anchors[leftIndex];
-        const right = anchors[rightIndex];
-        const deltaX = right.x - left.x;
-        const deltaY = right.y - left.y;
-        const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-        const requiredDistance =
-          GRAPH_CLUSTER_ANCHOR_MIN_DISTANCE + (left.radius + right.radius) * 0.4;
-
-        if (distance >= requiredDistance) {
-          continue;
-        }
-
-        overlapResolutionRan = true;
-        const push = (requiredDistance - distance) / 2;
-        const unitX = deltaX / distance;
-        const unitY = deltaY / distance;
-        if (left.groupIndex === 0) {
-          right.x += unitX * push * 2;
-          right.y += unitY * push * 2;
-        } else if (right.groupIndex === 0) {
-          left.x -= unitX * push * 2;
-          left.y -= unitY * push * 2;
-        } else {
-          left.x -= unitX * push;
-          left.y -= unitY * push;
-          right.x += unitX * push;
-          right.y += unitY * push;
-        }
-      }
-    }
-
-    for (const anchor of anchors) {
-      if (anchor.groupIndex === 0) {
-        anchor.x = centerX;
-        anchor.y = centerY;
-        continue;
-      }
-      anchor.x = clampGraphCoordinate(anchor.x, 80 + anchor.radius, GRAPH_WIDTH - 80 - anchor.radius);
-      anchor.y = clampGraphCoordinate(anchor.y, 80 + anchor.radius, GRAPH_HEIGHT - 80 - anchor.radius);
-    }
-  }
-  const clusterAnchorById = new Map(anchors.map((anchor) => [anchor.id, anchor]));
-  const clusterMinDistance =
-    anchors.length < 2
-      ? 0
-      : anchors.reduce((minimum, left, index) => {
-          const distances = anchors
-            .slice(index + 1)
-            .map((right) => Math.hypot(left.x - right.x, left.y - right.y));
-          return Math.min(minimum, ...distances);
-        }, Number.POSITIVE_INFINITY);
-  const sparseOrOverlapStateDetected =
-    anchors.length > 1 &&
-    (clusterMinDistance < GRAPH_CLUSTER_ANCHOR_MIN_DISTANCE ||
-      clusterMinDistance > Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.56);
-
-  sortedClusters.forEach((cluster, groupIndex) => {
-    const clusterNodeId = `graph-cluster-${cluster.id}`;
-    const anchor = clusterAnchorById.get(cluster.id);
-    const clusterX = anchor?.x ?? centerX;
-    const clusterY = anchor?.y ?? centerY;
-    const clusterMemberIds = cluster.imageIds.filter((id) => itemIds.has(id));
-
-    nodes.push({
-      id: clusterNodeId,
-      x: clusterX,
-      y: clusterY,
-      groupIndex,
-      kind: 'cluster',
-      label: `C${groupIndex + 1}`,
-      clusterId: cluster.id,
-      memberIds: clusterMemberIds,
-    });
-
-    clusterMemberIds.forEach((id, memberIndex) => {
-      assignedImageIds.add(id);
-      positionedImageIds.add(id);
-      const offset = getGraphMemberOffset(memberIndex, clusterMemberIds.length);
-      nodes.push({
-        id,
-        x: clusterX + offset.x,
-        y: clusterY + offset.y,
-        groupIndex,
-        kind: 'image',
-        imageId: id,
-      });
-      edges.push({
-        id: `${clusterNodeId}-${id}`,
-        sourceId: clusterNodeId,
-        targetId: id,
-        type: 'membership',
-        strength: Math.max(0.3, Math.min(1, cluster.avgSimilarity)),
-      });
-    });
-  });
-
-  const unclusteredItems = items.filter((item) => !assignedImageIds.has(item.id));
-  unclusteredItems.forEach((item, index) => {
-    const jitter = (getDeterministicOffset(index, unclusteredItems.length) - 0.5) * 0.34;
-    const angle =
-      unclusteredItems.length === 1
-        ? Math.PI / 2
-        : (Math.PI * 2 * index) / unclusteredItems.length + Math.PI / 2 + jitter;
-    nodes.push({
-      id: item.id,
-      x: centerX + Math.cos(angle) * GRAPH_SINGLETON_ORBIT_X,
-      y: centerY + Math.sin(angle) * GRAPH_SINGLETON_ORBIT_Y,
-      groupIndex: sortedClusters.length + (index % 8),
-      kind: 'image',
-      imageId: item.id,
-      singleton: true,
-    });
-    positionedImageIds.add(item.id);
-  });
-
-  const nodeRelaxation = relaxGraphNodes(nodes, anchors, centerX, centerY);
-
-  for (const pair of graphPairCandidates) {
-    if (!positionedImageIds.has(pair.imageId1) || !positionedImageIds.has(pair.imageId2)) {
-      continue;
-    }
-
-    edges.push({
-      id: `${pair.imageId1}-${pair.imageId2}`,
-      sourceId: pair.imageId1,
-      targetId: pair.imageId2,
-      type: 'pair',
-      similarity: pair.similarity,
-      strength: Math.max(0, Math.min(1, (pair.similarity - threshold) / Math.max(0.001, 1 - threshold))),
-    });
-  }
-
-  return {
-    nodes,
-    edges,
-    clusterNodeCount: sortedClusters.length,
-    membershipEdgeCount: edges.filter((edge) => edge.type === 'membership').length,
-    pairEdgeCount: edges.filter((edge) => edge.type === 'pair').length,
-    singletonCount: unclusteredItems.length,
-    selectedPairCandidateCount: graphPairCandidates.length,
-    clusterMinDistance: Number.isFinite(clusterMinDistance) ? clusterMinDistance : 0,
-    layoutIterationCount: GRAPH_CLUSTER_ANCHOR_ITERATIONS,
-    overlapResolutionRan,
-    sparseOrOverlapStateDetected,
-    minMemberDistance: nodeRelaxation.minMemberDistance,
-    singletonIntrusionCount: nodeRelaxation.singletonIntrusionCount,
-  };
-};
-
-const stripGraphVelocity = (nodes: SimulatedGraphNode[]): GraphNode[] =>
-  nodes.map(({ vx: _vx, vy: _vy, ...node }) => ({ ...node }));
-
-const measureGraphLayoutState = (
-  nodes: GraphNode[]
-): {
-  minMemberDistance: number;
-  singletonIntrusionCount: number;
-  averageClusterDistance: number;
-} => {
-  const clusterNodes = nodes.filter((node) => node.kind === 'cluster');
-  const memberNodes = nodes.filter((node) => node.kind === 'image' && !node.singleton);
-  const singletonNodes = nodes.filter((node) => node.singleton);
-  const clusterByGroupIndex = new Map(clusterNodes.map((node) => [node.groupIndex, node]));
-
-  let minMemberDistance = Number.POSITIVE_INFINITY;
-  for (let leftIndex = 0; leftIndex < memberNodes.length; leftIndex++) {
-    for (let rightIndex = leftIndex + 1; rightIndex < memberNodes.length; rightIndex++) {
-      const left = memberNodes[leftIndex];
-      const right = memberNodes[rightIndex];
-      if (left.groupIndex !== right.groupIndex) {
-        continue;
-      }
-
-      minMemberDistance = Math.min(minMemberDistance, Math.hypot(left.x - right.x, left.y - right.y));
-    }
-  }
-
-  let singletonIntrusionCount = 0;
-  for (const singleton of singletonNodes) {
-    for (const cluster of clusterNodes) {
-      const memberCount = cluster.memberIds?.length ?? 1;
-      const clusterRadius = getGraphClusterRadius(memberCount) + GRAPH_NODE_COLLISION_DISTANCE;
-      if (Math.hypot(singleton.x - cluster.x, singleton.y - cluster.y) < clusterRadius) {
-        singletonIntrusionCount++;
-        break;
-      }
-    }
-  }
-
-  let clusterDistanceTotal = 0;
-  let clusterDistanceCount = 0;
-  for (let leftIndex = 0; leftIndex < clusterNodes.length; leftIndex++) {
-    for (let rightIndex = leftIndex + 1; rightIndex < clusterNodes.length; rightIndex++) {
-      const left = clusterNodes[leftIndex];
-      const right = clusterNodes[rightIndex];
-      clusterDistanceTotal += Math.hypot(left.x - right.x, left.y - right.y);
-      clusterDistanceCount++;
-    }
-  }
-
-  const membersOutsideClusterTerritory = memberNodes.filter((member) => {
-    const cluster = clusterByGroupIndex.get(member.groupIndex);
-    if (!cluster) {
-      return false;
-    }
-
-    const memberCount = cluster.memberIds?.length ?? 1;
-    const maximumDistance = getGraphClusterRadius(memberCount) + GRAPH_NODE_COLLISION_DISTANCE * 1.1;
-    return Math.hypot(member.x - cluster.x, member.y - cluster.y) > maximumDistance;
-  }).length;
-
-  return {
-    minMemberDistance: Number.isFinite(minMemberDistance) ? minMemberDistance : 0,
-    singletonIntrusionCount: singletonIntrusionCount + membersOutsideClusterTerritory,
-    averageClusterDistance: clusterDistanceCount > 0 ? clusterDistanceTotal / clusterDistanceCount : 0,
-  };
-};
-
-const stepGraphSimulation = (
-  nodes: SimulatedGraphNode[],
-  edges: GraphEdge[]
-): {
-  maxVelocity: number;
-  overlapResolutionRan: boolean;
-} => {
-  const centerX = GRAPH_WIDTH / 2;
-  const centerY = GRAPH_HEIGHT / 2;
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const clusterNodes = nodes.filter((node) => node.kind === 'cluster');
-  const imageNodes = nodes.filter((node) => node.kind === 'image');
-  const memberNodes = imageNodes.filter((node) => !node.singleton);
-  const singletonNodes = imageNodes.filter((node) => node.singleton);
-  const clusterByGroupIndex = new Map(clusterNodes.map((node) => [node.groupIndex, node]));
-  let overlapResolutionRan = false;
-
-  for (const cluster of clusterNodes) {
-    cluster.vx += (centerX - cluster.x) * GRAPH_SIMULATION_CENTER_FORCE;
-    cluster.vy += (centerY - cluster.y) * GRAPH_SIMULATION_CENTER_FORCE;
-  }
-
-  for (const node of nodes) {
-    const centerForce = node.singleton
-      ? GRAPH_SIMULATION_NODE_CENTER_FORCE * 0.5
-      : GRAPH_SIMULATION_NODE_CENTER_FORCE;
-    node.vx += (centerX - node.x) * centerForce;
-    node.vy += (centerY - node.y) * centerForce;
-  }
-
-  for (const member of memberNodes) {
-    const cluster = clusterByGroupIndex.get(member.groupIndex);
-    if (!cluster) {
-      continue;
-    }
-
-    const memberCount = cluster.memberIds?.length ?? 1;
-    const clusterDistance = getGraphMembershipDistance(memberCount);
-    const deltaX = member.x - cluster.x;
-    const deltaY = member.y - cluster.y;
-    const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-
-    member.vx += (cluster.x - member.x) * GRAPH_SIMULATION_CLUSTER_FORCE;
-    member.vy += (cluster.y - member.y) * GRAPH_SIMULATION_CLUSTER_FORCE;
-
-    if (distance < clusterDistance * 0.72) {
-      const push = (clusterDistance * 0.72 - distance) * 0.035;
-      member.vx += (deltaX / distance) * push;
-      member.vy += (deltaY / distance) * push;
-    }
-  }
-
-  for (let leftIndex = 0; leftIndex < clusterNodes.length; leftIndex++) {
-    for (let rightIndex = leftIndex + 1; rightIndex < clusterNodes.length; rightIndex++) {
-      const left = clusterNodes[leftIndex];
-      const right = clusterNodes[rightIndex];
-      const leftRadius = getGraphClusterRadius(left.memberIds?.length ?? 1);
-      const rightRadius = getGraphClusterRadius(right.memberIds?.length ?? 1);
-      const deltaX = right.x - left.x;
-      const deltaY = right.y - left.y;
-      const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-      const requiredDistance = GRAPH_CLUSTER_ANCHOR_MIN_DISTANCE + (leftRadius + rightRadius) * 0.52;
-
-      if (distance >= requiredDistance) {
-        continue;
-      }
-
-      overlapResolutionRan = true;
-      const push = (requiredDistance - distance) * GRAPH_SIMULATION_CLUSTER_REPULSION;
-      const unitX = deltaX / distance;
-      const unitY = deltaY / distance;
-      left.vx -= unitX * push;
-      left.vy -= unitY * push;
-      right.vx += unitX * push;
-      right.vy += unitY * push;
-    }
-  }
-
-  for (const edge of edges) {
-    const source = nodeById.get(edge.sourceId);
-    const target = nodeById.get(edge.targetId);
-    if (!source || !target) {
-      continue;
-    }
-
-    const deltaX = target.x - source.x;
-    const deltaY = target.y - source.y;
-    const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-    const isMembership = edge.type === 'membership';
-    const desiredDistance = isMembership
-      ? getGraphMembershipDistance(source.kind === 'cluster' ? source.memberIds?.length ?? 1 : target.memberIds?.length ?? 1)
-      : 172;
-    const force =
-      (distance - desiredDistance) *
-      (isMembership ? GRAPH_SIMULATION_MEMBERSHIP_LINK_FORCE : GRAPH_SIMULATION_PAIR_LINK_FORCE) *
-      edge.strength;
-    const unitX = deltaX / distance;
-    const unitY = deltaY / distance;
-
-    source.vx += unitX * force;
-    source.vy += unitY * force;
-    target.vx -= unitX * force;
-    target.vy -= unitY * force;
-  }
-
-  for (let leftIndex = 0; leftIndex < nodes.length; leftIndex++) {
-    for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex++) {
-      const left = nodes[leftIndex];
-      const right = nodes[rightIndex];
-      const deltaX = right.x - left.x;
-      const deltaY = right.y - left.y;
-      const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-      const isSameClusterMember =
-        left.kind === 'image' &&
-        right.kind === 'image' &&
-        !left.singleton &&
-        !right.singleton &&
-        left.groupIndex === right.groupIndex;
-      const requiredDistance =
-        left.kind === 'cluster' || right.kind === 'cluster'
-          ? 104
-          : isSameClusterMember
-            ? GRAPH_NODE_COLLISION_DISTANCE + 22
-            : GRAPH_NODE_COLLISION_DISTANCE;
-
-      const influenceDistance = requiredDistance * (isSameClusterMember ? 2.4 : 1.85);
-      if (distance >= influenceDistance) {
-        continue;
-      }
-
-      overlapResolutionRan = true;
-      const unitX = deltaX / distance;
-      const unitY = deltaY / distance;
-      const overlapPush = Math.max(0, requiredDistance - distance) * 0.58;
-      const fieldPush =
-        ((influenceDistance - distance) / influenceDistance) *
-        (GRAPH_SIMULATION_NODE_REPULSION / Math.max(1, distance));
-      const push = overlapPush + fieldPush;
-      left.vx -= unitX * push;
-      left.vy -= unitY * push;
-      right.vx += unitX * push;
-      right.vy += unitY * push;
-    }
-  }
-
-  for (const singleton of singletonNodes) {
-    const deltaCenterX = singleton.x - centerX;
-    const deltaCenterY = singleton.y - centerY;
-    const centerDistance = Math.max(0.001, Math.hypot(deltaCenterX, deltaCenterY));
-    const targetX = centerX + (deltaCenterX / centerDistance) * GRAPH_SINGLETON_ORBIT_X;
-    const targetY = centerY + (deltaCenterY / centerDistance) * GRAPH_SINGLETON_ORBIT_Y;
-
-    singleton.vx += (targetX - singleton.x) * GRAPH_SIMULATION_SINGLETON_OUTWARD_FORCE;
-    singleton.vy += (targetY - singleton.y) * GRAPH_SIMULATION_SINGLETON_OUTWARD_FORCE;
-
-    for (const cluster of clusterNodes) {
-      const radius = getGraphClusterRadius(cluster.memberIds?.length ?? 1) + GRAPH_NODE_COLLISION_DISTANCE * 1.6;
-      const deltaX = singleton.x - cluster.x;
-      const deltaY = singleton.y - cluster.y;
-      const distance = Math.max(0.001, Math.hypot(deltaX, deltaY));
-      if (distance >= radius) {
-        continue;
-      }
-
-      overlapResolutionRan = true;
-      const push = (radius - distance) * GRAPH_SIMULATION_SINGLETON_EXCLUSION_FORCE;
-      singleton.vx += (deltaX / distance) * push;
-      singleton.vy += (deltaY / distance) * push;
-    }
-  }
-
-  let maxVelocity = 0;
-  for (const node of nodes) {
-    node.vx *= GRAPH_SIMULATION_DAMPING;
-    node.vy *= GRAPH_SIMULATION_DAMPING;
-    const velocity = Math.hypot(node.vx, node.vy);
-    if (velocity > GRAPH_SIMULATION_MAX_VELOCITY) {
-      node.vx = (node.vx / velocity) * GRAPH_SIMULATION_MAX_VELOCITY;
-      node.vy = (node.vy / velocity) * GRAPH_SIMULATION_MAX_VELOCITY;
-    }
-    node.x = clampGraphCoordinate(node.x + node.vx, 46, GRAPH_WIDTH - 46);
-    node.y = clampGraphCoordinate(node.y + node.vy, 46, GRAPH_HEIGHT - 46);
-    maxVelocity = Math.max(maxVelocity, Math.hypot(node.vx, node.vy));
-  }
-
-  return { maxVelocity, overlapResolutionRan };
-};
-
-type ReviewCardProps = {
   item: WorkspaceImage;
-  previewUrl?: string;
-  onDelete: (id: string) => void;
-  deleteLabel: string;
-  highlighted?: boolean;
+  gain: number;
+  redundancyScore: number;
+  confidence: number;
+  reason: string;
+  improves: string[];
 };
 
-const ReviewCard = memo(({ item, previewUrl, onDelete, deleteLabel, highlighted = false }: ReviewCardProps) => {
-  return (
-    <div
-      className={`gallery-masonry-item group relative rounded-lg overflow-hidden border bg-card ${
-        highlighted
-          ? `${getWorkspaceKindFrameClass(item.kind, true)} shadow-[0_0_0_2px_rgba(59,130,246,0.35)]`
-          : getWorkspaceKindFrameClass(item.kind)
-      } ${item.deleted ? 'opacity-50 line-through' : ''}`}
-      style={getWorkspaceKindFrameStyle(item.kind)}
-    >
-      <MasonryImageFrame
-        src={previewUrl}
-        alt={`${item.label} ${item.width} x ${item.height}`}
-        width={item.width}
-        height={item.height}
-        placeholder="Preview unavailable"
-      >
-        <div
-          className={getWorkspaceKindFrameOverlayClass()}
-          style={getWorkspaceKindFrameOverlayStyle(item.kind)}
-        />
+type CoverageRemoveRecommendation = {
+  kind: 'remove';
+  id: string;
+  item: WorkspaceImage;
+  redundancyScore: number;
+  confidence: number;
+  reason: string;
+  nearestTitle: string;
+};
 
-        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
-          <button
-            type="button"
-            onClick={() => onDelete(item.id)}
-            title={deleteLabel}
-            aria-label={`${deleteLabel}: ${item.fileName}`}
-            className="p-2 bg-destructive text-destructive-foreground rounded-md hover:opacity-90"
-          >
-            <Trash2 size={16} />
-          </button>
-        </div>
+type CoverageCaptionRecommendation = {
+  kind: 'caption';
+  id: string;
+  item: WorkspaceImage;
+  reason: string;
+};
 
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-          <div className="flex items-end justify-between gap-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
-              <p className="text-xs text-gray-300">
-                {ASPECT_RATIO_LABELS[item.aspectRatio]} · {item.width} x {item.height}
-              </p>
-            </div>
-            <span className={getWorkspaceKindBadgeClass(item.kind)}>
-              {item.label}
-            </span>
-          </div>
-        </div>
-      </MasonryImageFrame>
-    </div>
-  );
-});
+type CoverageBalanceWarning = {
+  kind: 'balance';
+  id: string;
+  label: string;
+  detail: string;
+  severity: 'info' | 'warning';
+};
 
-ReviewCard.displayName = 'ReviewCard';
+type CoverageSections = {
+  add: CoverageAddRecommendation[];
+  remove: CoverageRemoveRecommendation[];
+  captions: CoverageCaptionRecommendation[];
+  balance: CoverageBalanceWarning[];
+};
+
+type RedundancyProfile = {
+  score: number;
+  nearestItems: WorkspaceImage[];
+  strongestSimilarity: number;
+  hashDistance: number | null;
+  tagOverlap: number;
+  colorSimilarity: number;
+  orientationMatch: boolean;
+  aspectMatch: boolean;
+};
+
+type TagAnalysis = {
+  totalCaptionable: number;
+  captioned: number;
+  missingCaptionItems: WorkspaceImage[];
+  triggerWord: string;
+  triggerPresent: number;
+  triggerMissingItems: WorkspaceImage[];
+  frequencies: Array<{ tag: string; count: number; percent: number; items: WorkspaceImage[] }>;
+  overused: Array<{ tag: string; count: number; percent: number; items: WorkspaceImage[] }>;
+  rare: Array<{ tag: string; count: number; percent: number; items: WorkspaceImage[] }>;
+  inconsistent: Array<{ tag: string; items: WorkspaceImage[]; reason: string }>;
+  balanceScore: number;
+};
+
+type Outlier = {
+  id: string;
+  item: WorkspaceImage;
+  score: number;
+  reasons: string[];
+};
 
 type AnalysisStageProps = {
   datasetId?: string;
   active?: boolean;
+  projectDirectoryHandle?: ProjectDirectoryHandle | null;
+  fileTarget?: AnalysisFileTarget;
+  onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
   onUpdateDataset?: (
-    updates: Partial<
-      Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>
-    >
+    updates: Partial<Pick<Dataset, 'assetIds' | 'assetOrder' | 'captionOverrides'>>
   ) => void | Promise<void>;
 };
 
-export const AnalysisStage = ({ datasetId, active = true, onUpdateDataset }: AnalysisStageProps = {}) => {
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+const GRAPH_LIMIT = 96;
+const COVERAGE_CANDIDATE_LIMIT = 128;
+const SIMILARITY_THRESHOLD_DEFAULT = 0.94;
+const DUPLICATE_HASH_DISTANCE = 4;
+const DUPLICATE_RISK_THRESHOLD = 0.96;
+const TAG_OVERUSED_PERCENT = 42;
+
+const getPairKey = (left: string, right: string): string =>
+  left < right ? `${left}:${right}` : `${right}:${left}`;
+
+const getItemTitle = (item?: WorkspaceImage): string => item?.originalFileName ?? item?.fileName ?? 'Asset';
+
+const getProjectRelativePath = (path: string): string => path.replace(/^Project\//, '');
+
+const isAnalysisVisualAsset = (item: WorkspaceImage): boolean =>
+  item.kind === 'image' || item.kind === 'synthetic' || item.kind === 'psd';
+
+const createAnalysisVisualItem = (
+  item: WorkspaceImage,
+  psdPreview?: PsdPreviewCacheEntry
+): WorkspaceImage | null => {
+  if (item.kind === 'image' || item.kind === 'synthetic') {
+    return item;
+  }
+
+  if (item.kind !== 'psd' || !item.previewUrl || !psdPreview || psdPreview.previewUrl !== item.previewUrl) {
+    return null;
+  }
+
+  const width = item.width > 1 ? item.width : 1;
+  const height = item.height > 1 ? item.height : 1;
+  return {
+    ...item,
+    imageData: psdPreview.blob,
+    width,
+    height,
+    aspectRatio: inferWorkspaceAspectRatio(width, height),
+    allowGeneratedPreviewUrl: true,
+  };
+};
+
+const normalizeTags = (tags: string[] = []): string[] =>
+  [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+
+const getCaptionTags = (item: WorkspaceImage, dataset?: Dataset): string[] => {
+  if (!dataset) {
+    return normalizeTags(item.tags);
+  }
+
+  const overrideKeys = [
+    item.id,
+    item.sourceImageId,
+    item.assetPath ? createWorkspaceFileAssetId(item.assetPath) : '',
+  ].filter(Boolean);
+  const overrideTags = overrideKeys.map((key) => dataset.captionOverrides[key]).find((tags) => tags?.length);
+  return normalizeTags(overrideTags ?? item.tags);
+};
+
+const getOrientation = (item: WorkspaceImage): 'portrait' | 'landscape' | 'square' => {
+  const ratio = item.width / Math.max(1, item.height);
+  if (ratio > 1.12) {
+    return 'landscape';
+  }
+  if (ratio < 0.88) {
+    return 'portrait';
+  }
+  return 'square';
+};
+
+const hammingDistance = (left: string, right: string): number => {
+  const length = Math.min(left.length, right.length);
+  let distance = Math.abs(left.length - right.length);
+  for (let index = 0; index < length; index += 1) {
+    if (left[index] !== right[index]) {
+      distance += 1;
+    }
+  }
+  return distance;
+};
+
+const percent = (value: number): string => `${Math.round(value * 100)}%`;
+
+const getCaptionOverridesSignature = (captionOverrides: Dataset['captionOverrides'] = {}): string =>
+  Object.entries(captionOverrides)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, tags]) => `${key}:${normalizeTags(tags).join(',')}`)
+    .join('|');
+
+const colorDistance = (left?: VisualTraits, right?: VisualTraits): number => {
+  if (!left || !right) {
+    return 1;
+  }
+  const distance = Math.hypot(
+    left.colorSignature[0] - right.colorSignature[0],
+    left.colorSignature[1] - right.colorSignature[1],
+    left.colorSignature[2] - right.colorSignature[2]
+  );
+  return Math.min(1, distance / 441.7);
+};
+
+const colorSimilarity = (left?: VisualTraits, right?: VisualTraits): number => 1 - colorDistance(left, right);
+
+const tagOverlap = (left: string[], right: string[]): number => {
+  if (left.length === 0 && right.length === 0) {
+    return 0;
+  }
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const intersection = left.filter((tag) => rightSet.has(tag)).length;
+  const union = new Set([...leftSet, ...rightSet]).size;
+  return union > 0 ? intersection / union : 0;
+};
+
+const getItemSimilarity = (
+  pairMap: Map<string, SimilarityResult>,
+  left: string,
+  right: string
+): number => pairMap.get(getPairKey(left, right))?.similarity ?? 0;
+
+const buildVisualTraits = async (item: WorkspaceImage): Promise<VisualTraits> => {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error('Failed to create analysis canvas');
+  }
+
+  canvas.width = 24;
+  canvas.height = 24;
+  const url = URL.createObjectURL(item.imageData);
+  const img = new Image();
+
+  return new Promise((resolve, reject) => {
+    img.onload = async () => {
+      try {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        const buckets = new Map<string, { count: number; rgb: [number, number, number] }>();
+        let totalR = 0;
+        let totalG = 0;
+        let totalB = 0;
+        let totalLuma = 0;
+        const lumas: number[] = [];
+
+        for (let index = 0; index < data.length; index += 4) {
+          const r = data[index];
+          const g = data[index + 1];
+          const b = data[index + 2];
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          const key = `${Math.round(r / 48) * 48},${Math.round(g / 48) * 48},${Math.round(b / 48) * 48}`;
+          const bucket = buckets.get(key) ?? { count: 0, rgb: [r, g, b] as [number, number, number] };
+          bucket.count += 1;
+          buckets.set(key, bucket);
+          totalR += r;
+          totalG += g;
+          totalB += b;
+          totalLuma += luma;
+          lumas.push(luma);
+        }
+
+        const pixelCount = Math.max(1, data.length / 4);
+        const brightness = totalLuma / pixelCount / 255;
+        const contrast = Math.sqrt(
+          lumas.reduce((sum, luma) => sum + Math.pow(luma / 255 - brightness, 2), 0) / pixelCount
+        );
+        const dominantColors = [...buckets.values()]
+          .sort((left, right) => right.count - left.count)
+          .slice(0, 3)
+          .map(({ rgb }) => `#${rgb.map((value) => value.toString(16).padStart(2, '0')).join('')}`);
+        const hash = await generateImageHash(item.imageData);
+
+        URL.revokeObjectURL(url);
+        resolve({
+          hash,
+          dominantColors,
+          brightness,
+          contrast,
+          colorSignature: [
+            totalR / pixelCount,
+            totalG / pixelCount,
+            totalB / pixelCount,
+          ],
+        });
+      } catch (error) {
+        URL.revokeObjectURL(url);
+        reject(error);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Failed to load ${item.fileName} for analysis`));
+    };
+    img.src = url;
+  });
+};
+
+const createFileTargetItem = (
+  fileTarget: AnalysisFileTarget,
+  existingItem?: WorkspaceImage
+): WorkspaceImage => {
+  if (existingItem) {
+    return existingItem;
+  }
+
+  const kind = fileTarget.fileKind === 'psd' ? 'psd' : fileTarget.fileKind === 'video' ? 'video' : 'image';
+  return {
+    id: fileTarget.workspaceImageId ?? createWorkspaceFileAssetId(fileTarget.path),
+    sourceImageId: '',
+    kind,
+    label: kind === 'psd' ? 'PSD' : kind === 'video' ? 'Video' : 'Image',
+    displayIdentity: 'target',
+    fileName: fileTarget.name,
+    assetPath: fileTarget.path,
+    imageData: fileTarget.file,
+    width: 1,
+    height: 1,
+    aspectRatio: '1:1',
+  };
+};
+
+const MetricPill = ({ label, value }: { label: string; value: string | number }) => (
+  <span className="inline-flex items-center justify-between gap-2 rounded border border-border bg-background px-2 py-1 text-[11px]">
+    <span className="text-muted-foreground">{label}</span>
+    <span className="font-mono font-medium text-foreground">{value}</span>
+  </span>
+);
+
+const TraitSwatches = ({ colors }: { colors: string[] }) => (
+  <div className="flex gap-1">
+    {colors.slice(0, 3).map((color) => (
+      <span
+        key={color}
+        className="h-4 w-4 rounded border border-white/20"
+        style={{ backgroundColor: color }}
+        title={color}
+      />
+    ))}
+  </div>
+);
+
+const AnalysisAssetCard = ({
+  item,
+  previewUrl,
+  selected = false,
+  onSelect,
+  onOpenAssetContextMenu,
+  footer,
+}: {
+  item: WorkspaceImage;
+  previewUrl?: string;
+  selected?: boolean;
+  onSelect?: () => void;
+  onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
+  footer?: ReactNode;
+}) => {
+  const squarePreviewItem = { ...item, width: 1, height: 1 };
+  return (
+    <WorkspacePreviewCard
+      item={squarePreviewItem}
+      previewUrl={previewUrl}
+      alt={item.fileName}
+      onClick={onSelect}
+      onOpenContextMenu={
+        onOpenAssetContextMenu ? (_previewItem, event) => onOpenAssetContextMenu(item, event) : undefined
+      }
+      className={`min-w-0 rounded-lg ${selected ? 'ring-2 ring-primary/40' : ''}`}
+      imageClassName="object-contain"
+      footer={
+        footer ?? (
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-2">
+            <p className="truncate text-xs font-medium text-white">{getItemTitle(item)}</p>
+            <p className="mt-0.5 text-[10px] text-gray-300">
+              {item.label} · {item.width} x {item.height}
+            </p>
+          </div>
+        )
+      }
+    />
+  );
+};
+
+const buildDuplicateGroups = (
+  visualItems: WorkspaceImage[],
+  traitsById: Record<string, VisualTraits>,
+  pairMap: Map<string, SimilarityResult>,
+  dataset?: Dataset
+): DuplicateGroup[] => {
+  const parent = new Map(visualItems.map((item) => [item.id, item.id]));
+  const find = (id: string): string => {
+    const current = parent.get(id) ?? id;
+    if (current === id) {
+      return current;
+    }
+    const root = find(current);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (left: string, right: string) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      parent.set(rightRoot, leftRoot);
+    }
+  };
+  const pairDistances = new Map<string, number>();
+
+  for (let leftIndex = 0; leftIndex < visualItems.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < visualItems.length; rightIndex += 1) {
+      const left = visualItems[leftIndex];
+      const right = visualItems[rightIndex];
+      const leftTraits = traitsById[left.id];
+      const rightTraits = traitsById[right.id];
+      const distance = leftTraits && rightTraits ? hammingDistance(leftTraits.hash, rightTraits.hash) : null;
+      const similarity = getItemSimilarity(pairMap, left.id, right.id);
+      if (distance !== null) {
+        pairDistances.set(getPairKey(left.id, right.id), distance);
+      }
+      if ((distance !== null && distance <= DUPLICATE_HASH_DISTANCE) || similarity >= DUPLICATE_RISK_THRESHOLD) {
+        union(left.id, right.id);
+      }
+    }
+  }
+
+  const groups = new Map<string, WorkspaceImage[]>();
+  for (const item of visualItems) {
+    const root = find(item.id);
+    groups.set(root, [...(groups.get(root) ?? []), item]);
+  }
+
+  return [...groups.values()]
+    .filter((items) => items.length > 1)
+    .map((items, index) => {
+      let maxHashDistance: number | null = null;
+      for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
+          const distance = pairDistances.get(getPairKey(items[leftIndex].id, items[rightIndex].id));
+          if (distance !== undefined) {
+            maxHashDistance = Math.max(maxHashDistance ?? 0, distance);
+          }
+        }
+      }
+      const suggestedKeep = [...items].sort(
+        (left, right) =>
+          getCaptionTags(right, dataset).length - getCaptionTags(left, dataset).length ||
+          right.width * right.height - left.width * left.height ||
+          getItemTitle(left).localeCompare(getItemTitle(right))
+      )[0];
+      const strongestSimilarity = Math.max(
+        0,
+        ...items.flatMap((left, leftIndex) =>
+          items.slice(leftIndex + 1).map((right) => getItemSimilarity(pairMap, left.id, right.id))
+        )
+      );
+      const reason =
+        maxHashDistance === 0
+          ? 'exact visual match' as const
+          : maxHashDistance !== null && maxHashDistance <= DUPLICATE_HASH_DISTANCE
+            ? 'near visual match' as const
+            : 'high-confidence duplicate' as const;
+      return {
+        id: `duplicate-${index}`,
+        items,
+        score: Math.max(maxHashDistance === null ? 0 : 1 - maxHashDistance / 64, strongestSimilarity),
+        reason,
+        suggestedKeepId: suggestedKeep.id,
+        maxHashDistance,
+      };
+    })
+    .sort((left, right) => right.score - left.score || right.items.length - left.items.length);
+};
+
+const buildSimilarGroups = ({
+  clusters,
+  itemById,
+  pairMap,
+  traitsById,
+  dataset,
+  duplicateGroups,
+}: {
+  clusters: SimilarityCluster[];
+  itemById: Map<string, WorkspaceImage>;
+  pairMap: Map<string, SimilarityResult>;
+  traitsById: Record<string, VisualTraits>;
+  dataset?: Dataset;
+  duplicateGroups: DuplicateGroup[];
+}): SimilarGroup[] => {
+  const duplicateIds = new Set(duplicateGroups.flatMap((group) => group.items.map((item) => item.id)));
+  return clusters
+    .map((cluster, index) => {
+      const groupItems = cluster.imageIds
+        .map((id) => itemById.get(id))
+        .filter((item): item is WorkspaceImage => Boolean(item));
+      if (groupItems.length < 2) {
+        return null;
+      }
+      if (groupItems.some((item) => duplicateIds.has(item.id))) {
+        return null;
+      }
+
+      const similarities: number[] = [];
+      const tagScores: number[] = [];
+      const colorScores: number[] = [];
+      for (let leftIndex = 0; leftIndex < groupItems.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < groupItems.length; rightIndex += 1) {
+          const left = groupItems[leftIndex];
+          const right = groupItems[rightIndex];
+          similarities.push(getItemSimilarity(pairMap, left.id, right.id));
+          tagScores.push(tagOverlap(getCaptionTags(left, dataset), getCaptionTags(right, dataset)));
+          colorScores.push(colorSimilarity(traitsById[left.id], traitsById[right.id]));
+        }
+      }
+      const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+      const avgSimilarity = average(similarities);
+      const avgTagOverlap = average(tagScores);
+      const avgColorSimilarity = average(colorScores);
+      const orientations = new Set(groupItems.map(getOrientation));
+      const aspects = new Set(groupItems.map((item) => item.aspectRatio));
+      const duplicatePressure = groupItems.filter((item) => duplicateIds.has(item.id)).length / groupItems.length;
+      const coverageValue = Math.round((orientations.size + aspects.size) / 6 * 100);
+      const compositionSimilarity = Math.round((avgSimilarity * 0.72 + avgColorSimilarity * 0.18 + avgTagOverlap * 0.1) * 100);
+      const confidence = Math.round((avgSimilarity * 0.62 + avgColorSimilarity * 0.22 + Math.max(avgTagOverlap, 0.25) * 0.16) * 100);
+      const reasons = [
+        avgSimilarity >= 0.9 ? 'pose' : 'composition',
+        avgColorSimilarity >= 0.82 ? 'color' : null,
+        avgTagOverlap >= 0.32 ? 'character' : null,
+        duplicatePressure > 0 ? 'near duplicate' : null,
+      ].filter((reason): reason is string => Boolean(reason));
+
+      return {
+        id: `similar-${index}`,
+        items: groupItems,
+        score: Math.round(avgSimilarity * 100),
+        confidence,
+        coverageValue,
+        tagOverlap: Math.round(avgTagOverlap * 100),
+        colorSimilarity: Math.round(avgColorSimilarity * 100),
+        compositionSimilarity,
+        duplicatePressure: Math.round(duplicatePressure * 100),
+        reasons: reasons.length ? reasons : ['composition'],
+        avgSimilarity,
+      };
+    })
+    .filter((group): group is SimilarGroup => Boolean(group));
+};
+
+const buildRedundancyProfile = ({
+  items,
+  referenceItems,
+  pairMap,
+  traitsById,
+  dataset,
+}: {
+  items: WorkspaceImage[];
+  referenceItems: WorkspaceImage[];
+  pairMap: Map<string, SimilarityResult>;
+  traitsById: Record<string, VisualTraits>;
+  dataset?: Dataset;
+}): Map<string, RedundancyProfile> => {
+  const profiles = new Map<string, RedundancyProfile>();
+
+  for (const item of items) {
+    const candidates = referenceItems.filter((reference) => reference.id !== item.id);
+    const scored = candidates
+      .map((reference) => {
+        const embeddingSimilarity = getItemSimilarity(pairMap, item.id, reference.id);
+        const itemTraits = traitsById[item.id];
+        const referenceTraits = traitsById[reference.id];
+        const hashDistance = itemTraits && referenceTraits ? hammingDistance(itemTraits.hash, referenceTraits.hash) : null;
+        const hashSimilarity = hashDistance === null ? 0 : Math.max(0, 1 - hashDistance / 18);
+        const tags = tagOverlap(getCaptionTags(item, dataset), getCaptionTags(reference, dataset));
+        const colors = colorSimilarity(itemTraits, referenceTraits);
+        const orientationMatch = getOrientation(item) === getOrientation(reference);
+        const aspectMatch = item.aspectRatio === reference.aspectRatio;
+        const traitSimilarity = (
+          colors * 0.34 +
+          (orientationMatch ? 0.22 : 0) +
+          (aspectMatch ? 0.18 : 0) +
+          tags * 0.26
+        );
+        const score = Math.max(
+          hashSimilarity * 0.96,
+          embeddingSimilarity * 0.56 + traitSimilarity * 0.34 + hashSimilarity * 0.1
+        );
+
+        return {
+          reference,
+          score,
+          embeddingSimilarity,
+          hashDistance,
+          tagOverlap: tags,
+          colorSimilarity: colors,
+          orientationMatch,
+          aspectMatch,
+        };
+      })
+      .sort((left, right) => right.score - left.score);
+
+    const nearest = scored[0];
+    profiles.set(item.id, {
+      score: nearest?.score ?? 0,
+      nearestItems: scored.slice(0, 3).map((entry) => entry.reference),
+      strongestSimilarity: nearest?.embeddingSimilarity ?? 0,
+      hashDistance: nearest?.hashDistance ?? null,
+      tagOverlap: nearest?.tagOverlap ?? 0,
+      colorSimilarity: nearest?.colorSimilarity ?? 0,
+      orientationMatch: nearest?.orientationMatch ?? false,
+      aspectMatch: nearest?.aspectMatch ?? false,
+    });
+  }
+
+  return profiles;
+};
+
+const buildTagAnalysis = (items: WorkspaceImage[], dataset?: Dataset, overusedThreshold = TAG_OVERUSED_PERCENT): TagAnalysis => {
+  const captionable = items.filter((item) => item.kind === 'image' || item.kind === 'synthetic' || item.kind === 'psd');
+  const triggerWord = dataset?.triggerWord.trim().toLowerCase() ?? '';
+  const tagEntries = captionable.map((item) => ({ item, tags: getCaptionTags(item, dataset) }));
+  const missingCaptionItems = tagEntries.filter(({ tags }) => tags.length === 0).map(({ item }) => item);
+  const triggerMissingItems = triggerWord
+    ? tagEntries.filter(({ tags }) => !tags.includes(triggerWord)).map(({ item }) => item)
+    : [];
+  const frequencyMap = new Map<string, WorkspaceImage[]>();
+
+  for (const { item, tags } of tagEntries) {
+    for (const tag of tags.filter((entry) => entry !== triggerWord)) {
+      frequencyMap.set(tag, [...(frequencyMap.get(tag) ?? []), item]);
+    }
+  }
+
+  const total = Math.max(1, captionable.length);
+  const frequencies = [...frequencyMap.entries()]
+    .map(([tag, tagItems]) => ({ tag, count: tagItems.length, percent: Math.round(tagItems.length / total * 100), items: tagItems }))
+    .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag));
+  const overused = frequencies.filter((entry) => entry.percent >= overusedThreshold).slice(0, 8);
+  const rare = frequencies.filter((entry) => entry.count === 1).slice(0, 10);
+  const inconsistent = frequencies
+    .filter((entry) => entry.count >= 2 && entry.count <= Math.max(2, Math.round(total * 0.22)))
+    .slice(0, 6)
+    .map((entry) => ({ tag: entry.tag, items: entry.items, reason: 'Low support inside this target' }));
+  const balanceScore = Math.max(0, Math.round(100 - overused.length * 8 - missingCaptionItems.length / total * 35 - rare.length * 1.5));
+
+  return {
+    totalCaptionable: captionable.length,
+    captioned: captionable.length - missingCaptionItems.length,
+    missingCaptionItems,
+    triggerWord,
+    triggerPresent: triggerWord ? tagEntries.filter(({ tags }) => tags.includes(triggerWord)).length : 0,
+    triggerMissingItems,
+    frequencies,
+    overused,
+    rare,
+    inconsistent,
+    balanceScore,
+  };
+};
+
+const buildCoverageSections = ({
+  dataset,
+  datasetItems,
+  projectCandidates,
+  redundancyById,
+  tagAnalysis,
+  duplicateGroups,
+}: {
+  dataset?: Dataset;
+  datasetItems: WorkspaceImage[];
+  projectCandidates: WorkspaceImage[];
+  redundancyById: Map<string, RedundancyProfile>;
+  tagAnalysis: TagAnalysis;
+  duplicateGroups: DuplicateGroup[];
+}): CoverageSections => {
+  const emptySections: CoverageSections = { add: [], remove: [], captions: [], balance: [] };
+  if (!dataset) {
+    return emptySections;
+  }
+
+  const totalDatasetItems = datasetItems.length;
+  const orientationCounts = new Map<string, number>();
+  const aspectCounts = new Map<AspectRatio, number>();
+  for (const item of datasetItems) {
+    orientationCounts.set(getOrientation(item), (orientationCounts.get(getOrientation(item)) ?? 0) + 1);
+    aspectCounts.set(item.aspectRatio, (aspectCounts.get(item.aspectRatio) ?? 0) + 1);
+  }
+  const rarestOrientation = ['portrait', 'landscape', 'square'].sort(
+    (left, right) => (orientationCounts.get(left) ?? 0) - (orientationCounts.get(right) ?? 0)
+  )[0];
+  const rarestAspect = [...ASPECT_RATIOS].sort(
+    (left, right) => (aspectCounts.get(left) ?? 0) - (aspectCounts.get(right) ?? 0)
+  )[0];
+  const duplicateItemIds = new Set(duplicateGroups.flatMap((group) => group.items.map((item) => item.id)));
+
+  const add = projectCandidates
+    .map((item) => {
+      const redundancy = redundancyById.get(item.id);
+      const redundancyScore = Math.round((redundancy?.score ?? 0) * 100);
+      const orientation = getOrientation(item);
+      const orientationGain = orientation === rarestOrientation ? 20 : 0;
+      const aspectGain = item.aspectRatio === rarestAspect ? 18 : 0;
+      const tagCount = getCaptionTags(item, dataset).length;
+      const candidateTags = getCaptionTags(item, dataset);
+      const rareTagGain = candidateTags.filter((tag) => tagAnalysis.rare.some((entry) => entry.tag === tag)).length;
+      const colorGain = (redundancy?.colorSimilarity ?? 0) < 0.62 ? 12 : 0;
+      const tagGain = tagCount > 0 ? Math.min(20, rareTagGain * 8 + Math.min(tagCount, 6)) : 0;
+      const redundancyPenalty = Math.round(redundancyScore * 0.35);
+      const gain = Math.round(orientationGain + aspectGain + colorGain + tagGain - redundancyPenalty);
+      const improves = [
+        orientation === rarestOrientation ? 'orientation' : null,
+        item.aspectRatio === rarestAspect ? 'aspect' : null,
+        colorGain > 0 ? 'color diversity' : null,
+        rareTagGain > 0 ? 'tag diversity' : null,
+      ].filter((entry): entry is string => Boolean(entry));
+      return {
+        id: `add:${item.id}`,
+        kind: 'add' as const,
+        item,
+        gain,
+        redundancyScore,
+        confidence: Math.max(30, Math.min(94, 54 + gain - Math.round(redundancyScore * 0.12))),
+        reason: improves.length
+          ? `Improves ${improves.join(', ')}`
+          : `Adds ${orientation} / ${ASPECT_RATIO_LABELS[item.aspectRatio]} candidate`,
+        improves,
+      };
+    })
+    .filter((entry) => entry.gain > 0 && entry.redundancyScore < 65 && entry.improves.length > 0)
+    .sort((left, right) => right.gain - left.gain || left.redundancyScore - right.redundancyScore)
+    .slice(0, 8);
+
+  const remove = datasetItems
+    .filter((item) => Boolean(item.sourceImageId))
+    .map((item) => {
+      const redundancy = redundancyById.get(item.id);
+      const redundancyScore = Math.round((redundancy?.score ?? 0) * 100);
+      const duplicate = duplicateItemIds.has(item.id);
+      const nearestTitle = redundancy?.nearestItems[0] ? getItemTitle(redundancy.nearestItems[0]) : '';
+      return {
+        id: `remove:${item.id}`,
+        kind: 'remove' as const,
+        item,
+        redundancyScore,
+        confidence: duplicate ? Math.max(88, redundancyScore) : Math.max(70, redundancyScore),
+        reason: duplicate ? 'Part of a duplicate group' : 'High redundancy inside this Dataset',
+        nearestTitle,
+      };
+    })
+    .filter((entry) => duplicateItemIds.has(entry.item.id) || entry.redundancyScore >= 78)
+    .sort((left, right) => right.confidence - left.confidence || right.redundancyScore - left.redundancyScore)
+    .slice(0, 8);
+
+  const captions = tagAnalysis.missingCaptionItems
+    .map((item) => ({
+      id: `caption:${item.id}`,
+      kind: 'caption' as const,
+      item,
+      reason: tagAnalysis.triggerWord ? 'Missing caption and trigger word' : 'Missing caption',
+    }))
+    .sort((left, right) => getItemTitle(left.item).localeCompare(getItemTitle(right.item), undefined, { numeric: true, sensitivity: 'base' }))
+    .slice(0, 12);
+
+  const balance: CoverageBalanceWarning[] = [];
+  const addDominantWarning = (label: string, count: number, total: number, detail: string) => {
+    if (total < 6 || count / total < 0.7) {
+      return;
+    }
+    balance.push({
+      kind: 'balance',
+      id: `balance:${label.toLowerCase().replace(/\s+/g, '-')}`,
+      label,
+      detail,
+      severity: count / total >= 0.85 ? 'warning' : 'info',
+    });
+  };
+  const dominantOrientation = [...orientationCounts.entries()].sort((left, right) => right[1] - left[1])[0];
+  if (dominantOrientation) {
+    addDominantWarning(
+      `${dominantOrientation[0]} heavy`,
+      dominantOrientation[1],
+      totalDatasetItems,
+      `${dominantOrientation[1]} of ${totalDatasetItems} analysis-ready assets share this orientation.`
+    );
+  }
+  const dominantAspect = [...aspectCounts.entries()].sort((left, right) => right[1] - left[1])[0];
+  if (dominantAspect) {
+    addDominantWarning(
+      `${ASPECT_RATIO_LABELS[dominantAspect[0]]} heavy`,
+      dominantAspect[1],
+      totalDatasetItems,
+      `${dominantAspect[1]} of ${totalDatasetItems} analysis-ready assets use this aspect preset.`
+    );
+  }
+  for (const entry of tagAnalysis.overused.slice(0, 4)) {
+    balance.push({
+      kind: 'balance',
+      id: `balance:tag:${entry.tag}`,
+      label: `${entry.tag} overused`,
+      detail: `${entry.percent}% of captioned analysis-ready assets use this tag.`,
+      severity: entry.percent >= 65 ? 'warning' : 'info',
+    });
+  }
+
+  return { add, remove, captions, balance };
+};
+
+const buildOutliers = ({
+  items,
+  pairMap,
+  traitsById,
+  tagAnalysis,
+  dataset,
+}: {
+  items: WorkspaceImage[];
+  pairMap: Map<string, SimilarityResult>;
+  traitsById: Record<string, VisualTraits>;
+  tagAnalysis: TagAnalysis;
+  dataset?: Dataset;
+}): Outlier[] => {
+  const orientationCounts = new Map<string, number>();
+  for (const item of items) {
+    orientationCounts.set(getOrientation(item), (orientationCounts.get(getOrientation(item)) ?? 0) + 1);
+  }
+  const dominantOrientation = [...orientationCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+
+  return items
+    .map((item) => {
+      const strongestSimilarity = Math.max(
+        0,
+        ...items.filter((entry) => entry.id !== item.id).map((entry) => getItemSimilarity(pairMap, item.id, entry.id))
+      );
+      const tags = getCaptionTags(item, dataset);
+      const traits = traitsById[item.id];
+      const reasons = [
+        strongestSimilarity < 0.72 ? 'low similarity' : null,
+        tags.length === 0 ? 'no caption' : null,
+        dominantOrientation && getOrientation(item) !== dominantOrientation ? 'orientation mismatch' : null,
+        traits && (traits.brightness < 0.22 || traits.brightness > 0.86) ? 'brightness outlier' : null,
+        tags.some((tag) => tagAnalysis.rare.some((entry) => entry.tag === tag)) ? 'rare tag mix' : null,
+      ].filter((reason): reason is string => Boolean(reason));
+      return {
+        id: `outlier:${item.id}`,
+        item,
+        score: Math.min(100, reasons.length * 22 + Math.round((1 - strongestSimilarity) * 32)),
+        reasons,
+      };
+    })
+    .filter((outlier) => outlier.reasons.length > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 24);
+};
+
+const sortSimilarGroups = (groups: SimilarGroup[], sort: SimilarGroupSort): SimilarGroup[] =>
+  [...groups].sort((left, right) => {
+    if (sort === 'size') {
+      return right.items.length - left.items.length || right.score - left.score;
+    }
+    if (sort === 'coverage') {
+      return right.coverageValue - left.coverageValue || right.confidence - left.confidence;
+    }
+    if (sort === 'similarity') {
+      return right.score - left.score || right.confidence - left.confidence;
+    }
+    return right.duplicatePressure - left.duplicatePressure || right.confidence - left.confidence;
+  });
+
+export const AnalysisStage = ({
+  datasetId,
+  active = true,
+  projectDirectoryHandle,
+  fileTarget,
+  onOpenAssetContextMenu,
+  onUpdateDataset,
+}: AnalysisStageProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
   const cleanupStageState = useProjectStore(
     (state) =>
@@ -956,9 +946,24 @@ export const AnalysisStage = ({ datasetId, active = true, onUpdateDataset }: Ana
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
-  const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
-  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const { addNotification } = useUIStore();
+  const analysisInspectorRoot = useInspectorPortalRoot('analysis-inspector-root', active);
+  const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
+  const traitCacheRef = useRef<Record<string, TraitCacheEntry>>({});
+
+  const [activeView, setActiveView] = useState<AnalysisView>('overview');
+  const [similarityThreshold, setSimilarityThreshold] = useState(SIMILARITY_THRESHOLD_DEFAULT);
+  const [similarSort, setSimilarSort] = useState<SimilarGroupSort>('risk');
+  const [similarFilter, setSimilarFilter] = useState<SimilarGroupFilter>('all');
+  const [overusedThreshold, setOverusedThreshold] = useState(TAG_OVERUSED_PERCENT);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(fileTarget?.workspaceImageId ?? null);
+  const [itemEmbeddings, setItemEmbeddings] = useState<Record<string, Float32Array>>({});
+  const [visualTraitsById, setVisualTraitsById] = useState<Record<string, VisualTraits>>({});
+  const [workspaceFileAssets, setWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const [psdPreviewBlobsById, setPsdPreviewBlobsById] = useState<Record<string, PsdPreviewCacheEntry>>({});
+
+  const targetMode: AnalysisTargetMode = fileTarget ? 'file' : dataset ? 'dataset' : 'project';
+  const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) => !image.hidden), [sourceImagesById]);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const datasetFileAssetPaths = useMemo(
     () =>
@@ -969,1301 +974,1294 @@ export const AnalysisStage = ({ datasetId, active = true, onUpdateDataset }: Ana
         : [],
     [dataset]
   );
-  const datasetFileAssetSummary = useMemo(() => {
-    const entries = datasetFileAssetPaths.map((path) => ({
-      path,
-      id: createWorkspaceFileAssetId(path),
-      kind: getExplorerFileKind(path.split('/').pop() ?? path),
-    }));
-
-    return {
-      total: entries.length,
-      psd: entries.filter((entry) => entry.kind === 'psd').length,
-      video: entries.filter((entry) => entry.kind === 'video').length,
-      captioned: entries.filter((entry) => (dataset?.captionOverrides[entry.id] ?? []).length > 0).length,
-    };
-  }, [dataset, datasetFileAssetPaths]);
-  const syntheticImages = useMemo(
+  const analysisInputKey = useMemo(
     () =>
-      Object.values(syntheticImagesById).filter(
-        (item) => !item.deleted && (!datasetId || datasetAssetIds.has(item.sourceImageId))
-      ),
-    [datasetAssetIds, datasetId, syntheticImagesById]
+      [
+        targetMode,
+        dataset?.id ?? '',
+        dataset?.updatedAt ? new Date(dataset.updatedAt).getTime() : '',
+        dataset?.overwriteCaptions ? 'overwrite' : 'source-captions',
+        [...(dataset?.assetIds ?? [])].sort().join(','),
+        datasetFileAssetPaths.join(','),
+        getCaptionOverridesSignature(dataset?.captionOverrides),
+        fileTarget?.path ?? '',
+      ].join('::'),
+    [
+      dataset?.assetIds,
+      dataset?.captionOverrides,
+      dataset?.id,
+      dataset?.overwriteCaptions,
+      dataset?.updatedAt,
+      datasetFileAssetPaths,
+      fileTarget?.path,
+      targetMode,
+    ]
   );
   const sourceImages = useMemo(
-    () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
-    [datasetAssetIds, datasetId, sourceImagesById]
-  );
-  const items = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
-    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
-  );
-  const sourceImageById = useMemo(
-    () => Object.fromEntries(sourceImages.map((image) => [image.id, image])),
-    [sourceImages]
-  );
-
-  const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<string>>(
-    new Set(ASPECT_RATIOS)
-  );
-  const previewUrls = useWorkspacePreviewUrls(items);
-  const [itemEmbeddings, setItemEmbeddings] = useState<Record<string, Float32Array>>({});
-  const [uiThreshold, setUiThreshold] = useState(0.12);
-  const [activeSimilarityView, setActiveSimilarityView] = useState<SimilarityView>('graph');
-  const [selectedPairKey, setSelectedPairKey] = useState<string | null>(null);
-  const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
-  const [previewItemIds, setPreviewItemIds] = useState<string[] | null>(null);
-  const [graphViewport, setGraphViewport] = useState({ scale: 1, x: 0, y: 0 });
-  const [simulatedGraphNodes, setSimulatedGraphNodes] = useState<GraphNode[] | null>(null);
-  const analysisInspectorRoot = useInspectorPortalRoot('analysis-inspector-root', active);
-  const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
-  const reviewViewContainerRef = useRef<HTMLDivElement | null>(null);
-  const graphInteractionRef = useRef<HTMLDivElement | null>(null);
-  const graphPanRef = useRef<{ active: boolean; x: number; y: number }>({
-    active: false,
-    x: 0,
-    y: 0,
-  });
-  const graphSimulationRef = useRef<{
-    frameId: number | null;
-    nodes: SimulatedGraphNode[];
-    running: boolean;
-  }>({
-    frameId: null,
-    nodes: [],
-    running: false,
-  });
-
-  const similarityThreshold = useMemo(() => {
-    const remapped = 0.7 + 0.29 * Math.sqrt(uiThreshold);
-    if (import.meta.env.DEV) {
-      console.log(`[review] threshold slider value: ${uiThreshold.toFixed(2)}`);
-      console.log(`[review] threshold remap value: ${remapped.toFixed(3)}`);
-    }
-    return remapped;
-  }, [uiThreshold]);
-
-  const handleThresholdChange = useCallback(
-    (value: number) => {
-      if (import.meta.env.DEV) {
-        console.log(`[review] active Review view before threshold change: ${activeSimilarityView}`);
-      }
-      setUiThreshold(value);
-    },
-    [activeSimilarityView]
+    () => allSourceImages.filter((image) => targetMode !== 'dataset' || datasetAssetIds.has(image.id)),
+    [allSourceImages, datasetAssetIds, targetMode]
   );
 
   useEffect(() => {
-    if (import.meta.env.DEV) {
-      console.log(`[review] active Review view after threshold change: ${activeSimilarityView}`);
-      console.log('[review] threshold update did not force-reset the active Review view');
+    if (!active || !projectDirectoryHandle) {
+      setWorkspaceFileAssets([]);
+      return;
     }
-  }, [uiThreshold, activeSimilarityView]);
 
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      console.log('[review] Heatmap view still registered: false');
-      console.log('[review] Graph is the only remaining main visual view: true');
-      console.log('[review] Review tab icons configured: Graph, Similar Pairs, Clusters');
-      console.log('[review] graph helper text rendered: false');
-      console.log('[review] Similar Pairs heading rendered: false');
-      console.log('[review] Clusters heading rendered: false');
-      console.log('[review] graph overlay controls/stats rendered inside graph container: true');
-    }
-  }, []);
+    let canceled = false;
+    const paths = targetMode === 'dataset' ? datasetFileAssetPaths : undefined;
 
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      console.log(`[review] number of review items: ${items.length}`);
-      console.log('[review] object URLs shared through workspace preview cache');
-    }
-  }, [items.length]);
-
-  const filteredItems = useMemo(
-    () => items.filter((item) => selectedAspectRatios.has(item.aspectRatio)),
-    [items, selectedAspectRatios]
-  );
-
-  const reviewItems = useMemo(() => filteredItems.slice(0, REVIEW_GRAPH_LIMIT), [filteredItems]);
-
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      console.log(`[review] current active Review view: ${activeSimilarityView}`);
-      console.log('[review] bounded Review view container applied: true');
-      console.log(
-        `[review] Similar Pairs / Clusters internal scroll enabled: ${activeSimilarityView === 'pairs' || activeSimilarityView === 'clusters'}`
-      );
-    }
-  }, [activeSimilarityView]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const activeIds = new Set(reviewItems.map((item) => item.id));
-
-    const startedAt = performance.now();
-
-    const syncEmbeddings = async () => {
-      const nextEntries: Record<string, Float32Array> = {};
-      let reusedCount = 0;
-      let borrowedCount = 0;
-      let generatedCount = 0;
-
-      for (const item of reviewItems) {
-        const cached = embeddingCacheRef.current[item.id];
-        if (cached && cached.blob === item.imageData) {
-          nextEntries[item.id] = cached.embedding;
-          reusedCount++;
-          continue;
+    const loadFileAssets = async () => {
+      try {
+        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle, paths);
+        if (canceled) {
+          return;
         }
 
-        const sourceEmbedding = sourceImageById[item.sourceImageId]?.embedding;
-        if (sourceEmbedding) {
-          embeddingCacheRef.current[item.id] = {
-            blob: item.imageData,
-            embedding: sourceEmbedding,
-          };
-          nextEntries[item.id] = sourceEmbedding;
-          borrowedCount++;
+        setWorkspaceFileAssets(assets);
+        void generateMissingWorkspacePsdPreviews(
+          projectDirectoryHandle,
+          assets,
+          (path, update) => {
+            if (canceled) {
+              return;
+            }
+            setWorkspaceFileAssets((currentAssets) =>
+              currentAssets.map((asset) => (asset.path === path ? { ...asset, ...update } : asset))
+            );
+          },
+          () => canceled
+        );
+      } catch (error) {
+        if (!canceled) {
+          setWorkspaceFileAssets([]);
+          addNotification('warning', error instanceof Error ? error.message : 'File assets are unavailable for analysis');
+        }
+      }
+    };
+
+    void loadFileAssets();
+
+    return () => {
+      canceled = true;
+    };
+  }, [active, addNotification, datasetFileAssetPaths, projectDirectoryHandle, targetMode]);
+
+  const baseItems = useMemo(
+    () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupStageState.workingEdits, []),
+    [cleanupStageState.workingEdits, sourceImages, workspaceFileAssets]
+  );
+  const fileTargetItem = useMemo(() => {
+    if (!fileTarget) {
+      return null;
+    }
+    const existingItem = baseItems.find(
+      (item) =>
+        item.id === fileTarget.workspaceImageId ||
+        item.assetPath === fileTarget.path ||
+        getProjectRelativePath(item.assetPath ?? '') === getProjectRelativePath(fileTarget.path)
+    );
+    return createFileTargetItem(fileTarget, existingItem);
+  }, [baseItems, fileTarget]);
+  const items = useMemo(() => {
+    if (!fileTargetItem) {
+      return baseItems;
+    }
+    return baseItems.some((item) => item.id === fileTargetItem.id) ? baseItems : [fileTargetItem, ...baseItems];
+  }, [baseItems, fileTargetItem]);
+  const psdPreviewRequests = useMemo(
+    () =>
+      items
+        .filter((item) => item.kind === 'psd' && item.previewUrl)
+        .map((item) => ({
+          id: item.id,
+          fileName: item.fileName,
+          previewUrl: item.previewUrl as string,
+        })),
+    [items]
+  );
+  const psdPreviewSignature = useMemo(
+    () =>
+      psdPreviewRequests
+        .map((item) => `${item.id}:${item.previewUrl}`)
+        .sort()
+        .join('|'),
+    [psdPreviewRequests]
+  );
+
+  useEffect(() => {
+    let canceled = false;
+    const activePsdIds = new Set(psdPreviewRequests.map((item) => item.id));
+
+    setPsdPreviewBlobsById((previous) => {
+      const nextEntries = Object.entries(previous).filter(([id]) => activePsdIds.has(id));
+      return nextEntries.length === Object.keys(previous).length ? previous : Object.fromEntries(nextEntries);
+    });
+
+    const loadPsdPreviewBlobs = async () => {
+      for (const item of psdPreviewRequests) {
+        const previewUrl = item.previewUrl;
+        const cached = psdPreviewBlobsById[item.id];
+        if (cached?.previewUrl === previewUrl) {
           continue;
         }
 
         try {
+          const response = await fetch(previewUrl);
+          if (!response.ok) {
+            throw new Error(`Preview request failed for ${item.fileName}`);
+          }
+          const blob = await response.blob();
+          if (canceled) {
+            return;
+          }
+          setPsdPreviewBlobsById((previous) => ({
+            ...previous,
+            [item.id]: { previewUrl, blob },
+          }));
+        } catch (error) {
+          if (import.meta.env.DEV) {
+            console.warn('[analysis] PSD preview blob unavailable', item.id, error);
+          }
+        }
+      }
+    };
+
+    void loadPsdPreviewBlobs();
+    return () => {
+      canceled = true;
+    };
+  }, [psdPreviewBlobsById, psdPreviewRequests, psdPreviewSignature]);
+
+  const visualItems = useMemo(
+    () =>
+      items
+        .map((item) => createAnalysisVisualItem(item, psdPreviewBlobsById[item.id]))
+        .filter((item): item is WorkspaceImage => item !== null && isAnalysisVisualAsset(item))
+        .slice(0, GRAPH_LIMIT),
+    [items, psdPreviewBlobsById]
+  );
+  const coverageCandidateItems = useMemo(
+    () =>
+      dataset
+        ? toWorkspaceImages(
+            allSourceImages.filter((image) => !datasetAssetIds.has(image.id)),
+            [],
+            cleanupStageState.workingEdits
+          ).slice(0, COVERAGE_CANDIDATE_LIMIT)
+        : [],
+    [allSourceImages, cleanupStageState.workingEdits, dataset, datasetAssetIds]
+  );
+  const analysisVisualItems = useMemo(() => {
+    const byId = new Map<string, WorkspaceImage>();
+    for (const item of [...visualItems, ...coverageCandidateItems]) {
+      byId.set(item.id, item);
+    }
+    return [...byId.values()];
+  }, [coverageCandidateItems, visualItems]);
+  const activeAnalysisItemIds = useMemo(() => analysisVisualItems.map((item) => item.id), [analysisVisualItems]);
+  const activeAnalysisItemIdsSignature = useMemo(
+    () => [...activeAnalysisItemIds].sort().join('|'),
+    [activeAnalysisItemIds]
+  );
+  const pendingAnalysisAssets = useMemo(
+    () =>
+      items.filter(
+        (item) =>
+          item.kind === 'video' ||
+          (item.kind === 'psd' && (!item.previewUrl || !psdPreviewBlobsById[item.id]))
+      ),
+    [items, psdPreviewBlobsById]
+  );
+
+  useEffect(() => {
+    setSelectedItemId(fileTargetItem?.id ?? null);
+  }, [fileTargetItem?.id, targetMode]);
+
+  useEffect(() => {
+    const activeIds = new Set(activeAnalysisItemIds);
+    setItemEmbeddings((previous) => {
+      const nextEntries = Object.entries(previous).filter(([id]) => activeIds.has(id));
+      return nextEntries.length === Object.keys(previous).length ? previous : Object.fromEntries(nextEntries);
+    });
+    setVisualTraitsById((previous) => {
+      const nextEntries = Object.entries(previous).filter(([id]) => activeIds.has(id));
+      return nextEntries.length === Object.keys(previous).length ? previous : Object.fromEntries(nextEntries);
+    });
+  }, [activeAnalysisItemIds, activeAnalysisItemIdsSignature, analysisInputKey]);
+
+  useEffect(() => {
+    let canceled = false;
+    const activeIds = new Set(analysisVisualItems.map((item) => item.id));
+
+    const syncEmbeddings = async () => {
+      const nextEmbeddings: Record<string, Float32Array> = {};
+      for (const item of analysisVisualItems) {
+        const sourceEmbedding = sourceImagesById[item.sourceImageId]?.embedding;
+        if (sourceEmbedding) {
+          nextEmbeddings[item.id] = sourceEmbedding;
+          continue;
+        }
+        const cached = embeddingCacheRef.current[item.id];
+        if (cached && cached.blob === item.imageData) {
+          nextEmbeddings[item.id] = cached.embedding;
+          continue;
+        }
+        try {
           const embedding = await generateEmbedding(item.imageData);
-          if (cancelled) {
+          if (canceled) {
             return;
           }
           embeddingCacheRef.current[item.id] = { blob: item.imageData, embedding };
-          nextEntries[item.id] = embedding;
-          generatedCount++;
+          nextEmbeddings[item.id] = embedding;
         } catch (error) {
           if (import.meta.env.DEV) {
-            console.warn(`[review] failed embedding generation: ${item.id}`, error);
+            console.warn('[analysis] embedding unavailable', item.id, error);
           }
         }
       }
-
-      if (cancelled) {
+      if (canceled) {
         return;
       }
-
       setItemEmbeddings((previous) => {
         const next: Record<string, Float32Array> = {};
-        let changed = false;
-
-        for (const item of reviewItems) {
-          const nextEmbedding = nextEntries[item.id] ?? previous[item.id];
-          if (nextEmbedding) {
-            next[item.id] = nextEmbedding;
+        for (const id of activeIds) {
+          const embedding = nextEmbeddings[id] ?? previous[id];
+          if (embedding) {
+            next[id] = embedding;
           }
         }
-
-        for (const id of Object.keys(previous)) {
-          if (!activeIds.has(id)) {
-            changed = true;
-          }
-        }
-
-        const nextKeys = Object.keys(next);
-        const previousKeys = Object.keys(previous);
-
-        if (
-          !changed &&
-          nextKeys.length === previousKeys.length &&
-          nextKeys.every((id) => previous[id] === next[id])
-        ) {
-          return previous;
-        }
-
         return next;
       });
-
-      if (import.meta.env.DEV) {
-        console.log(`[review] graph review item count: ${reviewItems.length}`);
-        console.log(`[review] graph embeddings reused: ${reusedCount}`);
-        console.log(`[review] graph embeddings borrowed from source: ${borrowedCount}`);
-        console.log(`[review] graph embeddings generated: ${generatedCount}`);
-        console.log(
-          `[review] graph data generation timing: ${(performance.now() - startedAt).toFixed(1)}ms`
-        );
-      }
     };
 
     void syncEmbeddings();
-
     return () => {
-      cancelled = true;
+      canceled = true;
     };
-  }, [reviewItems, sourceImages]);
+  }, [analysisVisualItems, sourceImagesById]);
 
-  const aspectRatioCounts = useMemo(
-    () =>
-      Object.fromEntries(
-        ASPECT_RATIOS.map((ratio) => [
-          ratio,
-          items.filter((item) => item.aspectRatio === ratio).length,
-        ])
-      ) as Record<string, number>,
-    [items]
-  );
+  useEffect(() => {
+    let canceled = false;
+    const activeIds = new Set(analysisVisualItems.map((item) => item.id));
 
-  const reviewData = useMemo(() => {
-    const startedAt = performance.now();
-    const reviewVisibleItems = reviewItems.filter((item) => itemEmbeddings[item.id]);
-
-    if (reviewVisibleItems.length < 2) {
-      if (import.meta.env.DEV) {
-        console.log('[review] Review graph data exists: false');
+    const syncTraits = async () => {
+      const nextTraits: Record<string, VisualTraits> = {};
+      for (const item of analysisVisualItems) {
+        const cached = traitCacheRef.current[item.id];
+        if (cached && cached.blob === item.imageData) {
+          nextTraits[item.id] = cached.traits;
+          continue;
+        }
+        try {
+          const traits = await buildVisualTraits(item);
+          if (canceled) {
+            return;
+          }
+          traitCacheRef.current[item.id] = { blob: item.imageData, traits };
+          nextTraits[item.id] = traits;
+        } catch (error) {
+          if (import.meta.env.DEV) {
+            console.warn('[analysis] visual traits unavailable', item.id, error);
+          }
+        }
       }
-      return null;
+      if (canceled) {
+        return;
+      }
+      setVisualTraitsById((previous) => {
+        const next: Record<string, VisualTraits> = {};
+        for (const id of activeIds) {
+          const traits = nextTraits[id] ?? previous[id];
+          if (traits) {
+            next[id] = traits;
+          }
+        }
+        return next;
+      });
+    };
+
+    void syncTraits();
+    return () => {
+      canceled = true;
+    };
+  }, [analysisVisualItems]);
+
+  const similarityData = useMemo(() => {
+    const usableItems = analysisVisualItems.filter((item) => itemEmbeddings[item.id]);
+    const usableTargetItems = visualItems.filter((item) => itemEmbeddings[item.id]);
+    if (usableItems.length < 2) {
+      return {
+        items: usableTargetItems,
+        pairMap: new Map<string, SimilarityResult>(),
+        similarPairs: [] as SimilarityResult[],
+        riskPairs: [] as SimilarityResult[],
+        clusters: [] as SimilarityCluster[],
+      };
     }
 
-    const embeddings = new Map<string, Float32Array>();
-    for (const item of reviewVisibleItems) {
-      embeddings.set(item.id, itemEmbeddings[item.id]);
-    }
-
+    const embeddings = new Map(usableItems.map((item) => [item.id, itemEmbeddings[item.id]]));
     const matrix = computeDistanceMatrix(embeddings);
-
-    const itemIndexById = Object.fromEntries(
-      reviewVisibleItems.map((item, index) => [item.id, index + 1])
-    ) as Record<string, number>;
-
+    const allPairs = [...matrix.values()].flat();
+    const pairMap = new Map(allPairs.map((pair) => [getPairKey(pair.imageId1, pair.imageId2), pair]));
+    const similarPairs = findSimilarPairs(matrix, similarityThreshold);
+    const riskPairs = findSimilarPairs(matrix, DUPLICATE_RISK_THRESHOLD);
     const clusters = performClustering(
-      reviewVisibleItems.map((item) => item.id),
+      usableTargetItems.map((item) => item.id),
       matrix,
       similarityThreshold
     ).filter((cluster) => cluster.imageIds.length > 1);
 
-    const similarPairs = findSimilarPairs(matrix, similarityThreshold);
-    const graph = buildGraphLayout(reviewVisibleItems, clusters, similarPairs, similarityThreshold);
-    const graphImageNodeCount = graph.nodes.filter((node) => node.kind === 'image').length;
+    return { items: usableTargetItems, pairMap, similarPairs, riskPairs, clusters };
+  }, [analysisVisualItems, itemEmbeddings, similarityThreshold, visualItems]);
 
-    if (import.meta.env.DEV) {
-      console.log(`[review] shared threshold value: ${uiThreshold.toFixed(2)}`);
-      console.log(`[review] shared threshold remap value: ${similarityThreshold.toFixed(3)}`);
-      console.log('[review] graph, pairs, and clusters recomputed from shared threshold change');
-      console.log('[review] Review graph data exists: true');
-      console.log(`[review] graph items included: ${reviewVisibleItems.length}`);
-      console.log(
-        `[review] graph/review similarity view: ${reviewVisibleItems.length}/${filteredItems.length} filtered items`
-      );
-      console.log(`[review] dataset items filtered/truncated for graph: ${filteredItems.length > reviewVisibleItems.length}`);
-      console.log(`[review] graph image node count: ${graphImageNodeCount}`);
-      console.log(`[review] graph cluster node count: ${graph.clusterNodeCount}`);
-      console.log(`[review] graph cluster membership edge count: ${graph.membershipEdgeCount}`);
-      console.log(`[review] graph similar-pair edge count: ${graph.pairEdgeCount}`);
-      console.log(
-        `[review] graph pair edges chosen from real similar pairs: ${graph.pairEdgeCount}/${similarPairs.length}, min similarity ${Math.max(
-          similarityThreshold + 0.08,
-          GRAPH_PAIR_EDGE_MIN_SIMILARITY
-        ).toFixed(3)}, max degree ${GRAPH_PAIR_EDGE_DEGREE_LIMIT}`
-      );
-      console.log(`[review] graph singleton image count: ${graph.singletonCount}`);
-      console.log(`[review] graph cluster nodes rendered successfully: ${graph.clusterNodeCount === clusters.length}`);
-      console.log(
-        `[review] graph force parameters: cluster center ${GRAPH_SIMULATION_CENTER_FORCE}, all-node center ${GRAPH_SIMULATION_NODE_CENTER_FORCE}, cluster anchor ${GRAPH_SIMULATION_CLUSTER_FORCE}, node repulsion ${GRAPH_SIMULATION_NODE_REPULSION}, node collision ${GRAPH_NODE_COLLISION_DISTANCE}, simulation frames ${GRAPH_SIMULATION_MAX_FRAMES}`
-      );
-      console.log('[review] graph grid-like placement active: false');
-      console.log(
-        `[review] graph layout parameters: ${GRAPH_WIDTH}x${GRAPH_HEIGHT}, minimum cluster distance ${graph.clusterMinDistance.toFixed(
-          1
-        )}, singleton orbit ${GRAPH_SINGLETON_ORBIT_X.toFixed(1)}x${GRAPH_SINGLETON_ORBIT_Y.toFixed(
-          1
-        )}, scalable member radius ${GRAPH_CLUSTER_MEMBER_RADIUS_MIN}-${GRAPH_CLUSTER_MEMBER_RADIUS_MAX}`
-      );
-      console.log('[review] graph cluster-anchor logic active: true');
-      console.log('[review] graph inter-cluster repulsion active: true');
-      console.log(
-        `[review] graph intra-cluster collision handling active: force relaxation, min member distance ${graph.minMemberDistance.toFixed(
-          1
-        )}`
-      );
-      console.log('[review] graph center force active: true');
-      console.log('[review] graph all-node center gravity active: true');
-      console.log(
-        `[review] graph singleton outward bias active: true, singleton intrusions ${graph.singletonIntrusionCount}`
-      );
-      console.log(`[review] graph nodes assigned to cluster groups: ${graph.membershipEdgeCount}`);
-      console.log(`[review] graph nodes treated as singletons: ${graph.singletonCount}`);
-      console.log(
-        `[review] graph overlap separation applied: force relaxation ran ${graph.overlapResolutionRan}, sparse/overlap state detected ${graph.sparseOrOverlapStateDetected}`
-      );
-      console.log('[review] graph recomputed after threshold change');
-      console.log('[review] graph live simulation inputs updated after threshold/data change');
-      console.log(`[review] similar pair count after threshold change: ${similarPairs.length}`);
-      console.log(`[review] cluster count after threshold change: ${clusters.length}`);
-      console.log(
-        `[review] graph data generation timing: ${(performance.now() - startedAt).toFixed(1)}ms`
-      );
-    }
-
-    return {
-      items: reviewVisibleItems,
-      itemIndexById,
-      clusters,
-      similarPairs,
-      graphEdges: graph.edges,
-      graphNodes: graph.nodes,
-      graphClusterNodeCount: graph.clusterNodeCount,
-      graphMembershipEdgeCount: graph.membershipEdgeCount,
-      graphPairEdgeCount: graph.pairEdgeCount,
-      graphSingletonCount: graph.singletonCount,
-      graphRawPairCount: similarPairs.length,
-      graphSelectedPairCandidateCount: graph.selectedPairCandidateCount,
-      graphClusterMinDistance: graph.clusterMinDistance,
-      graphLayoutIterationCount: graph.layoutIterationCount,
-      graphOverlapResolutionRan: graph.overlapResolutionRan,
-      graphSparseOrOverlapStateDetected: graph.sparseOrOverlapStateDetected,
-      graphMinMemberDistance: graph.minMemberDistance,
-      graphSingletonIntrusionCount: graph.singletonIntrusionCount,
-    };
-  }, [filteredItems.length, reviewItems, itemEmbeddings, similarityThreshold, uiThreshold]);
+  const itemById = useMemo(
+    () => new Map([...items, ...coverageCandidateItems].map((item) => [item.id, item])),
+    [coverageCandidateItems, items]
+  );
 
   useEffect(() => {
-    if (!import.meta.env.DEV || activeSimilarityView !== 'graph') {
-      return;
-    }
-
-    const container = reviewViewContainerRef.current;
-    const graph = graphInteractionRef.current;
-    console.log('[review] Heatmap view still registered: false');
-    console.log(
-      `[review] graph content container size after simplification: ${container?.clientWidth ?? 0}x${
-        container?.clientHeight ?? 0
-      }`
-    );
-    console.log(
-      `[review] graph canvas interaction size after overlay move: ${graph?.clientWidth ?? 0}x${
-        graph?.clientHeight ?? 0
-      }`
-    );
-    console.log('[review] graph overlay controls/stats rendered inside graph container: true');
-  }, [activeSimilarityView, reviewData?.items.length]);
-
-  useEffect(() => {
-    if (graphSimulationRef.current.frameId !== null) {
-      window.cancelAnimationFrame(graphSimulationRef.current.frameId);
-      graphSimulationRef.current.frameId = null;
-    }
-
-    if (activeSimilarityView !== 'graph' || !reviewData) {
-      graphSimulationRef.current.running = false;
-      setSimulatedGraphNodes(null);
-      return;
-    }
-
-    const previousNodes = new Map(
-      graphSimulationRef.current.nodes.map((node) => [node.id, node])
-    );
-    const nodes: SimulatedGraphNode[] = reviewData.graphNodes.map((node) => {
-      const previous = previousNodes.get(node.id);
-      return {
-        ...node,
-        x: previous?.x ?? node.x,
-        y: previous?.y ?? node.y,
-        vx: (previous?.vx ?? 0) * 0.25,
-        vy: (previous?.vy ?? 0) * 0.25,
-      };
+    setSelectedItemId((currentId) => {
+      if (!currentId || itemById.has(currentId)) {
+        return currentId;
+      }
+      return null;
     });
+  }, [analysisInputKey, itemById]);
 
-    let frame = 0;
-    let overlapResolutionRan = false;
-    graphSimulationRef.current = {
-      frameId: null,
-      nodes,
-      running: true,
-    };
-    setSimulatedGraphNodes(stripGraphVelocity(nodes));
-
-    if (import.meta.env.DEV) {
-      const imageCount = nodes.filter((node) => node.kind === 'image').length;
-      const clusterCount = nodes.filter((node) => node.kind === 'cluster').length;
-      const singletonCount = nodes.filter((node) => node.singleton).length;
-      console.log('[review] graph live force simulation started after spawn/update');
-      console.log(`[review] graph layout node count: ${imageCount}`);
-      console.log(`[review] graph layout cluster count: ${clusterCount}`);
-      console.log(`[review] graph layout singleton count: ${singletonCount}`);
-      console.log(
-        `[review] graph live force parameters: cluster center ${GRAPH_SIMULATION_CENTER_FORCE}, all-node center ${GRAPH_SIMULATION_NODE_CENTER_FORCE}, cluster ${GRAPH_SIMULATION_CLUSTER_FORCE}, membership link ${GRAPH_SIMULATION_MEMBERSHIP_LINK_FORCE}, pair link ${GRAPH_SIMULATION_PAIR_LINK_FORCE}, node repulsion ${GRAPH_SIMULATION_NODE_REPULSION}, damping ${GRAPH_SIMULATION_DAMPING}`
-      );
-      console.log('[review] graph grid-like placement active: false');
-      console.log('[review] graph center force active: true');
-      console.log('[review] graph all nodes gravitate toward center: true');
-      console.log('[review] graph collision handling runs inside clusters: true');
-      console.log(
-        `[review] graph scalable cluster spread active: max radius ${GRAPH_CLUSTER_MEMBER_RADIUS_MAX}, collision ${GRAPH_NODE_COLLISION_DISTANCE}`
-      );
-      console.log('[review] graph singleton outward bias active: true');
-      console.log(
-        `[review] graph dynamic update mode: ${previousNodes.size > 0 ? 'incremental restabilization' : 'initial spawn settling'}`
-      );
-    }
-
-    const tick = () => {
-      const result = stepGraphSimulation(nodes, reviewData.graphEdges);
-      overlapResolutionRan = overlapResolutionRan || result.overlapResolutionRan;
-      frame++;
-
-      if (frame % GRAPH_SIMULATION_RENDER_EVERY === 0) {
-        setSimulatedGraphNodes(stripGraphVelocity(nodes));
-      }
-
-      if (frame < GRAPH_SIMULATION_MAX_FRAMES && result.maxVelocity > GRAPH_SIMULATION_SETTLE_VELOCITY) {
-        graphSimulationRef.current.frameId = window.requestAnimationFrame(tick);
-        return;
-      }
-
-      graphSimulationRef.current.running = false;
-      graphSimulationRef.current.frameId = null;
-      setSimulatedGraphNodes(stripGraphVelocity(nodes));
-
-      if (import.meta.env.DEV) {
-        const metrics = measureGraphLayoutState(nodes);
-        console.log(
-          `[review] graph live simulation settled after ${frame} frames, max velocity ${result.maxVelocity.toFixed(
-            3
-          )}`
-        );
-        console.log(
-          `[review] graph overlap-resolution ran during live simulation: ${overlapResolutionRan}`
-        );
-        console.log(
-          `[review] graph average distance between cluster anchors: ${metrics.averageClusterDistance.toFixed(
-            1
-          )}`
-        );
-        console.log(
-          `[review] graph min same-cluster member distance after simulation: ${metrics.minMemberDistance.toFixed(
-            1
-          )}`
-        );
-        console.log(
-          `[review] graph singleton/territory intrusion count after simulation: ${metrics.singletonIntrusionCount}`
-        );
-        console.log('[review] graph dynamic restabilization complete');
-      }
-    };
-
-    graphSimulationRef.current.frameId = window.requestAnimationFrame(tick);
-
-    return () => {
-      if (graphSimulationRef.current.frameId !== null) {
-        window.cancelAnimationFrame(graphSimulationRef.current.frameId);
-        graphSimulationRef.current.frameId = null;
-      }
-    };
-  }, [activeSimilarityView, reviewData]);
-
-  useEffect(() => {
-    return () => {
-      if (graphSimulationRef.current.frameId !== null) {
-        window.cancelAnimationFrame(graphSimulationRef.current.frameId);
-      }
-    };
-  }, []);
-
-  const graphNodesForRender = useMemo(
+  const visualItemById = useMemo(() => new Map(visualItems.map((item) => [item.id, item])), [visualItems]);
+  const duplicateGroups = useMemo(
+    () => buildDuplicateGroups(visualItems, visualTraitsById, similarityData.pairMap, dataset),
+    [dataset, similarityData.pairMap, visualItems, visualTraitsById]
+  );
+  const tagAnalysis = useMemo(
+    () => buildTagAnalysis(visualItems, dataset, overusedThreshold),
+    [dataset, overusedThreshold, visualItems]
+  );
+  const similarGroups = useMemo(
     () =>
-      activeSimilarityView === 'graph' && simulatedGraphNodes
-        ? simulatedGraphNodes
-        : reviewData?.graphNodes ?? [],
-    [activeSimilarityView, reviewData?.graphNodes, simulatedGraphNodes]
+      buildSimilarGroups({
+        clusters: similarityData.clusters,
+        itemById: visualItemById,
+        pairMap: similarityData.pairMap,
+        traitsById: visualTraitsById,
+        dataset,
+        duplicateGroups,
+      }),
+    [dataset, duplicateGroups, similarityData.clusters, similarityData.pairMap, visualItemById, visualTraitsById]
   );
-
-  const graphNodeById = useMemo(
-    () => new Map(graphNodesForRender.map((node) => [node.id, node])),
-    [graphNodesForRender]
-  );
-
-  const reviewItemNameById = useMemo(
-    () => new Map((reviewData?.items ?? []).map((item) => [item.id, item.fileName])),
-    [reviewData?.items]
-  );
-
-  const getReviewItemName = useCallback(
-    (id: string) => reviewItemNameById.get(id) ?? id.replace(/^(source|synthetic):/, ''),
-    [reviewItemNameById]
-  );
-
-  useEffect(() => {
-    if (!reviewData?.similarPairs.some((pair) => `${pair.imageId1}:${pair.imageId2}` === selectedPairKey)) {
-      setSelectedPairKey(null);
-    }
-    if (!reviewData?.clusters.some((cluster) => cluster.id === selectedClusterId)) {
-      setSelectedClusterId(null);
-    }
-  }, [reviewData, selectedClusterId, selectedPairKey]);
-
-  useEffect(() => {
-    setActiveSimilarityView('graph');
-    setSelectedPairKey(null);
-    setSelectedClusterId(null);
-    setPreviewItemIds(null);
-  }, [selectedAspectRatios]);
-
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      console.log(`[review] current Analysis Preview mode: ${activeSimilarityView}`);
-      console.log(
-        `[review] current Analysis Preview item ids: ${JSON.stringify(previewItemIds ?? filteredItems.map((item) => item.id))}`
-      );
-    }
-  }, [activeSimilarityView, filteredItems, previewItemIds]);
-
-  const highlightedIds = useMemo(() => {
-    if (!reviewData) {
-      return new Set<string>();
-    }
-
-    if (activeSimilarityView === 'pairs' && selectedPairKey) {
-      const pair = reviewData.similarPairs.find(
-        (entry) => `${entry.imageId1}:${entry.imageId2}` === selectedPairKey
-      );
-      return new Set(pair ? [pair.imageId1, pair.imageId2] : []);
-    }
-
-    if (activeSimilarityView === 'clusters' && selectedClusterId) {
-      const cluster = reviewData.clusters.find((entry) => entry.id === selectedClusterId);
-      return new Set(cluster?.imageIds ?? []);
-    }
-
-    if (activeSimilarityView === 'graph' && previewItemIds && previewItemIds.length > 0) {
-      return new Set(previewItemIds);
-    }
-
-    return new Set<string>();
-  }, [activeSimilarityView, reviewData, previewItemIds, selectedClusterId, selectedPairKey]);
-
-  const toggleAspectRatio = useCallback((ratio: string) => {
-    setSelectedAspectRatios((previous) => {
-      const next = new Set(previous);
-      if (next.has(ratio)) {
-        next.delete(ratio);
-      } else {
-        next.add(ratio);
+  const filteredSimilarGroups = useMemo(() => {
+    const filtered = similarGroups.filter((group) => {
+      if (similarFilter === 'high-confidence') {
+        return group.confidence >= 88;
       }
-      return next;
+      if (similarFilter === 'weak') {
+        return group.confidence < 82;
+      }
+      if (similarFilter === 'same-color') {
+        return group.colorSimilarity >= 82;
+      }
+      if (similarFilter === 'tag-mismatch') {
+        return group.tagOverlap < 18 && group.score >= 86;
+      }
+      if (similarFilter === 'redundant') {
+        return group.duplicatePressure >= 40 || group.coverageValue <= 34;
+      }
+      return true;
     });
-  }, []);
+    return sortSimilarGroups(filtered, similarSort);
+  }, [similarFilter, similarGroups, similarSort]);
+  const datasetItems = useMemo(
+    () => visualItems.filter((item) => !dataset || datasetAssetIds.has(item.sourceImageId)),
+    [dataset, datasetAssetIds, visualItems]
+  );
+  const coverageCandidateRedundancyById = useMemo(
+    () =>
+      buildRedundancyProfile({
+        items: coverageCandidateItems,
+        referenceItems: datasetItems,
+        pairMap: similarityData.pairMap,
+        traitsById: visualTraitsById,
+        dataset,
+      }),
+    [coverageCandidateItems, dataset, datasetItems, similarityData.pairMap, visualTraitsById]
+  );
+  const datasetRedundancyById = useMemo(
+    () =>
+      buildRedundancyProfile({
+        items: datasetItems,
+        referenceItems: datasetItems,
+        pairMap: similarityData.pairMap,
+        traitsById: visualTraitsById,
+        dataset,
+      }),
+    [dataset, datasetItems, similarityData.pairMap, visualTraitsById]
+  );
+  const coverageSections = useMemo(() => {
+    const redundancyById = new Map<string, RedundancyProfile>([
+      ...coverageCandidateRedundancyById,
+      ...datasetRedundancyById,
+    ]);
+    return buildCoverageSections({
+      dataset,
+      datasetItems,
+      projectCandidates: coverageCandidateItems,
+      redundancyById,
+      tagAnalysis,
+      duplicateGroups,
+    });
+  }, [
+    coverageCandidateItems,
+    coverageCandidateRedundancyById,
+    dataset,
+    datasetItems,
+    datasetRedundancyById,
+    duplicateGroups,
+    tagAnalysis,
+  ]);
+  const coverageItemCount =
+    coverageSections.add.length +
+    coverageSections.remove.length +
+    coverageSections.captions.length +
+    coverageSections.balance.length;
+  const outliers = useMemo(
+    () => buildOutliers({ items: visualItems, pairMap: similarityData.pairMap, traitsById: visualTraitsById, tagAnalysis, dataset }),
+    [dataset, similarityData.pairMap, tagAnalysis, visualItems, visualTraitsById]
+  );
+  const selectedItem = selectedItemId ? itemById.get(selectedItemId) ?? null : null;
+  const previewItems = useMemo(() => {
+    const byId = new Map(items.map((item) => [item.id, item]));
+    for (const recommendation of [
+      ...coverageSections.add,
+      ...coverageSections.remove,
+      ...coverageSections.captions,
+    ]) {
+      byId.set(recommendation.item.id, recommendation.item);
+    }
+    return [...byId.values()];
+  }, [coverageSections, items]);
+  const previewUrls = useWorkspacePreviewUrls(previewItems);
 
-  const handleDeleteItem = useCallback(
-    (id: string) => {
-      if (dataset && onUpdateDataset) {
-        const sourceImageId = id.startsWith('source:')
-          ? id.replace(/^source:/, '')
-          : items.find((item) => item.id === id)?.sourceImageId;
-        if (sourceImageId) {
-          void onUpdateDataset({ assetIds: dataset.assetIds.filter((assetId) => assetId !== sourceImageId) });
-          addNotification('info', 'Asset removed from Dataset');
-        }
+  const orientationCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of visualItems) {
+      counts.set(getOrientation(item), (counts.get(getOrientation(item)) ?? 0) + 1);
+    }
+    return counts;
+  }, [visualItems]);
+  const aspectCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        ASPECT_RATIOS.map((ratio) => [
+          ratio,
+          visualItems.filter((item) => item.aspectRatio === ratio).length,
+        ])
+      ) as Record<AspectRatio, number>,
+    [visualItems]
+  );
+  const coverageScore = useMemo(() => {
+    const orientationCoverage = ['portrait', 'landscape', 'square'].filter((orientation) => (orientationCounts.get(orientation) ?? 0) > 0).length / 3;
+    const aspectCoverage = ASPECT_RATIOS.filter((ratio) => aspectCounts[ratio] > 0).length / ASPECT_RATIOS.length;
+    const tagCoverage = tagAnalysis.totalCaptionable ? tagAnalysis.captioned / tagAnalysis.totalCaptionable : 0;
+    return Math.round((orientationCoverage * 0.35 + aspectCoverage * 0.25 + tagCoverage * 0.25 + tagAnalysis.balanceScore / 100 * 0.15) * 100);
+  }, [aspectCounts, orientationCounts, tagAnalysis.balanceScore, tagAnalysis.captioned, tagAnalysis.totalCaptionable]);
+  const traitReadyCount = visualItems.filter((item) => visualTraitsById[item.id]).length;
+  const embeddingReadyCount = visualItems.filter((item) => itemEmbeddings[item.id]).length;
+  const preparingCount = visualItems.filter((item) => !visualTraitsById[item.id] || !itemEmbeddings[item.id]).length;
+
+  const applyCoverageRecommendation = async (recommendation: CoverageAddRecommendation | CoverageRemoveRecommendation) => {
+    if (!dataset || !onUpdateDataset) {
+      return;
+    }
+    const sourceImageId = recommendation.item.sourceImageId;
+    if (!sourceImageId) {
+      return;
+    }
+    if (recommendation.kind === 'add') {
+      if (dataset.assetIds.includes(sourceImageId)) {
         return;
       }
-
-      if (id.startsWith('source:')) {
-        updateSourceImage(id.replace(/^source:/, ''), { hidden: true });
-      } else {
-        softDeleteDatasetItem(id.replace(/^synthetic:/, ''));
-      }
-      addNotification('info', 'Image removed from review');
-    },
-    [addNotification, dataset, items, onUpdateDataset, softDeleteDatasetItem, updateSourceImage]
-  );
-
-  const showGraph = useCallback(() => {
-    setActiveSimilarityView('graph');
-    setSelectedPairKey(null);
-    setSelectedClusterId(null);
-    setPreviewItemIds(null);
-    if (import.meta.env.DEV) {
-      console.log('[review] graph UI clicked');
+      await onUpdateDataset({
+        assetIds: [...dataset.assetIds, sourceImageId],
+        assetOrder: [...(dataset.assetOrder ?? []), createDatasetImageAssetKey(sourceImageId)],
+      });
+      addNotification('success', 'Asset added to Dataset');
+      return;
     }
-  }, []);
-
-  const showPairs = useCallback(() => {
-    setActiveSimilarityView('pairs');
-    setSelectedClusterId(null);
-    setPreviewItemIds(null);
-    if (import.meta.env.DEV) {
-      console.log('[review] pair UI clicked');
-    }
-  }, []);
-
-  const showClusters = useCallback(() => {
-    setActiveSimilarityView('clusters');
-    setSelectedPairKey(null);
-    setPreviewItemIds(null);
-    if (import.meta.env.DEV) {
-      console.log('[review] cluster UI clicked');
-    }
-  }, []);
-
-  const zoomGraphFromWheelDelta = useCallback((deltaY: number) => {
-    const direction = deltaY < 0 ? 1 : -1;
-    const zoomFactor = direction > 0 ? 1.12 : 0.88;
-    setGraphViewport((previous) => {
-      const nextScale = Math.max(
-        GRAPH_MIN_SCALE,
-        Math.min(GRAPH_MAX_SCALE, previous.scale * zoomFactor)
-      );
-      const next = { ...previous, scale: nextScale };
-
-      if (import.meta.env.DEV) {
-        console.log(`[review] graph zoom level: ${next.scale.toFixed(2)}`);
-        console.log(`[review] graph pan offset: ${next.x.toFixed(1)}, ${next.y.toFixed(1)}`);
-      }
-
-      return next;
+    await onUpdateDataset({
+      assetIds: dataset.assetIds.filter((assetId) => assetId !== sourceImageId),
+      assetOrder: (dataset.assetOrder ?? []).filter((key) => key !== createDatasetImageAssetKey(sourceImageId)),
     });
-  }, []);
+    addNotification('info', 'Asset removed from Dataset');
+  };
 
-  useEffect(() => {
-    const node = graphInteractionRef.current;
-    if (!node) {
+  const updateTagsForItems = async (targetItems: WorkspaceImage[], updater: (tags: string[]) => string[]) => {
+    if (targetItems.length === 0) {
       return;
     }
 
-    const handleNativeWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      zoomGraphFromWheelDelta(event.deltaY);
-      if (import.meta.env.DEV) {
-        console.log('[review] graph native wheel event captured with passive:false; preventDefault applied');
+    if (dataset) {
+      if (!onUpdateDataset || !dataset.overwriteCaptions) {
+        addNotification('warning', 'Enable Overwrite captions in Dataset Inspector before editing Dataset captions');
+        return;
       }
-    };
-
-    node.addEventListener('wheel', handleNativeWheel, { passive: false });
-    return () => node.removeEventListener('wheel', handleNativeWheel);
-  }, [activeSimilarityView, zoomGraphFromWheelDelta]);
-
-  const handleGraphMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (event.button !== 1) {
+      const nextOverrides = { ...(dataset.captionOverrides ?? {}) };
+      for (const item of targetItems) {
+        nextOverrides[item.id] = normalizeTags(updater(getCaptionTags(item, dataset)));
+      }
+      await onUpdateDataset({ captionOverrides: nextOverrides });
+      addNotification('success', `Updated captions for ${targetItems.length} asset${targetItems.length === 1 ? '' : 's'}`);
       return;
     }
 
-    event.preventDefault();
-    graphPanRef.current = { active: true, x: event.clientX, y: event.clientY };
-  }, []);
+    for (const item of targetItems) {
+      if (item.kind === 'image' && item.sourceImageId) {
+        updateSourceImage(item.sourceImageId, { tags: normalizeTags(updater(getCaptionTags(item))) });
+      }
+    }
+    addNotification('success', `Updated tags for ${targetItems.length} asset${targetItems.length === 1 ? '' : 's'}`);
+  };
 
-  const handleGraphMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!graphPanRef.current.active) {
+  const removeTagFromItems = (tag: string, targetItems: WorkspaceImage[]) => {
+    void updateTagsForItems(targetItems, (tags) => tags.filter((entry) => entry !== tag));
+  };
+
+  const addTriggerToMissingItems = () => {
+    if (!tagAnalysis.triggerWord) {
+      addNotification('warning', 'Set a Dataset trigger word before applying it');
       return;
     }
+    void updateTagsForItems(tagAnalysis.triggerMissingItems, (tags) => [tagAnalysis.triggerWord, ...tags]);
+  };
 
-    event.preventDefault();
-    const deltaX = event.clientX - graphPanRef.current.x;
-    const deltaY = event.clientY - graphPanRef.current.y;
-    graphPanRef.current = { active: true, x: event.clientX, y: event.clientY };
+  const targetTitle =
+    targetMode === 'file'
+      ? `File Analysis: ${fileTarget?.name ?? 'Asset'}`
+      : targetMode === 'dataset'
+        ? `Dataset Analysis: ${dataset?.name ?? 'Dataset'}`
+        : 'Project Analysis';
+  const targetDescription =
+    targetMode === 'file'
+      ? 'Visual traits, nearest groups, and caption health for one asset.'
+      : targetMode === 'dataset'
+        ? 'Duplicate groups, coverage pressure, and tag health for this Dataset.'
+        : 'Project-wide duplicate groups, similar groups, and dataset candidates.';
 
-    setGraphViewport((previous) => {
-      const next = {
-        ...previous,
-        x: previous.x + deltaX,
-        y: previous.y + deltaY,
-      };
+  const attentionItems = [
+    duplicateGroups.length > 0 ? `${duplicateGroups.length} duplicate group${duplicateGroups.length === 1 ? '' : 's'} need review` : null,
+    tagAnalysis.missingCaptionItems.length > 0 ? `${tagAnalysis.missingCaptionItems.length} asset${tagAnalysis.missingCaptionItems.length === 1 ? '' : 's'} without captions` : null,
+    tagAnalysis.overused.length > 0 ? `${tagAnalysis.overused.length} overused tag${tagAnalysis.overused.length === 1 ? '' : 's'} can flatten the dataset` : null,
+    outliers.length > 0 ? `${outliers.length} outlier${outliers.length === 1 ? '' : 's'} may need review` : null,
+    coverageSections.add.length > 0 ? `${coverageSections.add.length} add candidate${coverageSections.add.length === 1 ? '' : 's'} available` : null,
+    coverageSections.remove.length > 0 ? `${coverageSections.remove.length} redundant asset${coverageSections.remove.length === 1 ? '' : 's'} flagged` : null,
+    coverageSections.balance.length > 0 ? `${coverageSections.balance.length} balance warning${coverageSections.balance.length === 1 ? '' : 's'}` : null,
+  ].filter((entry): entry is string => Boolean(entry));
+  const healthItems = [
+    { label: 'Duplicates', value: duplicateGroups.length === 0 ? 'No duplicate groups' : `${duplicateGroups.length} duplicate group${duplicateGroups.length === 1 ? '' : 's'}` },
+    { label: 'Coverage', value: `${coverageScore}/100` },
+    { label: 'Captions', value: `${tagAnalysis.captioned}/${tagAnalysis.totalCaptionable} captioned` },
+    { label: 'Tags', value: `Balance ${tagAnalysis.balanceScore}/100` },
+  ];
 
-      if (import.meta.env.DEV) {
-        console.log(`[review] graph zoom level: ${next.scale.toFixed(2)}`);
-        console.log(`[review] graph pan offset: ${next.x.toFixed(1)}, ${next.y.toFixed(1)}`);
-      }
-
-      return next;
-    });
-  }, []);
-
-  const stopGraphPanning = useCallback(() => {
-    graphPanRef.current.active = false;
-  }, []);
-
-  const resetGraphViewport = useCallback(() => {
-    const next = { scale: 1, x: 0, y: 0 };
-    setGraphViewport(next);
-    if (import.meta.env.DEV) {
-      console.log(`[review] graph zoom level: ${next.scale.toFixed(2)}`);
-      console.log(`[review] graph pan offset: ${next.x.toFixed(1)}, ${next.y.toFixed(1)}`);
-    }
-  }, []);
-
-  const previewItems = useMemo(() => {
-    if (previewItemIds && previewItemIds.length > 0) {
-      const previewSet = new Set(previewItemIds);
-      return filteredItems.filter((item) => previewSet.has(item.id));
-    }
-
-    return filteredItems;
-  }, [filteredItems, previewItemIds]);
-
-  const analysisViewLabel = useMemo(() => {
-    if (!datasetId || datasetFileAssetSummary.total === 0) {
-      return `${filteredItems.length} image items`;
-    }
-
-    return `${filteredItems.length} image items, ${datasetFileAssetSummary.total} file assets`;
-  }, [datasetFileAssetSummary.total, datasetId, filteredItems.length]);
-
-  const previewTitle = useMemo(() => {
-    if (activeSimilarityView === 'pairs' && selectedPairKey && reviewData) {
-      const pair = reviewData.similarPairs.find(
-        (entry) => `${entry.imageId1}:${entry.imageId2}` === selectedPairKey
-      );
-      if (pair) {
-        return `Analysis Preview (${getReviewItemName(pair.imageId1)} and ${getReviewItemName(pair.imageId2)})`;
-      }
-    }
-
-    if (activeSimilarityView === 'clusters' && selectedClusterId && reviewData) {
-      const cluster = reviewData.clusters.find((entry) => entry.id === selectedClusterId);
-      if (cluster) {
-        return `Analysis Preview (Cluster with ${cluster.imageIds.length} items)`;
-      }
-    }
-
-    return `Analysis Preview (${analysisViewLabel})`;
-  }, [
-    activeSimilarityView,
-    analysisViewLabel,
-    filteredItems.length,
-    getReviewItemName,
-    reviewData,
-    selectedClusterId,
-    selectedPairKey,
-  ]);
+  const viewDefinitions = [
+    { id: 'overview' as const, label: 'Overview', Icon: BarChart3, count: attentionItems.length },
+    { id: 'duplicates' as const, label: 'Duplicates', Icon: GitCompareArrows, count: duplicateGroups.length },
+    { id: 'similar' as const, label: 'Similar Groups', Icon: Layers3, count: filteredSimilarGroups.length },
+    { id: 'coverage' as const, label: 'Coverage', Icon: Boxes, count: coverageItemCount },
+    { id: 'tags' as const, label: 'Tags', Icon: Tags, count: tagAnalysis.frequencies.length },
+    { id: 'outliers' as const, label: 'Outliers', Icon: SearchX, count: outliers.length },
+  ];
 
   const analysisControls = (
-    <div className="space-y-3">
+    <div className="space-y-3 text-xs">
+      <div className="rounded-md border border-border bg-background p-3">
+        <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Target</p>
+        <p className="mt-1 truncate text-sm font-semibold">
+          {targetMode === 'file' ? fileTarget?.name : targetMode === 'dataset' ? dataset?.name : 'Project'}
+        </p>
+        <p className="mt-1 text-muted-foreground">{targetDescription}</p>
+      </div>
+
       <div>
-        <p className="mb-2 text-muted-foreground">Aspect Ratio</p>
+        <p className="mb-2 text-muted-foreground">View</p>
         <div className="grid gap-1.5">
-          {ASPECT_RATIOS.map((ratio) => (
+          {viewDefinitions.map(({ id, label, Icon, count }) => (
             <button
-              key={ratio}
+              key={id}
               type="button"
-              onClick={() => toggleAspectRatio(ratio)}
-              className={`flex items-center justify-between rounded border px-2 py-1.5 text-left text-xs font-medium transition-colors ${
-                selectedAspectRatios.has(ratio)
-                  ? 'border-primary bg-primary/10 text-foreground'
-                  : 'border-border bg-background hover:bg-secondary'
+              onClick={() => setActiveView(id)}
+              className={`flex items-center justify-between rounded-md border px-2 py-2 text-left transition-colors ${
+                activeView === id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-secondary'
               }`}
             >
-              <span>{ASPECT_RATIO_LABELS[ratio]}</span>
-              <span className="font-mono text-muted-foreground">{aspectRatioCounts[ratio] ?? 0}</span>
+              <span className="flex items-center gap-2">
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </span>
+              <span className="font-mono">{count}</span>
             </button>
           ))}
         </div>
       </div>
 
-      <div>
-        <p className="mb-2 text-muted-foreground">View</p>
-        <div className="grid grid-cols-3 gap-1.5">
-          <button
-            type="button"
-            onClick={showGraph}
-            className={`inline-flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-xs transition-colors ${
-              activeSimilarityView === 'graph'
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border bg-background hover:bg-secondary'
-            }`}
-          >
-            <Network size={13} />
-            Graph
-          </button>
-          <button
-            type="button"
-            onClick={showPairs}
-            className={`inline-flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-xs transition-colors ${
-              activeSimilarityView === 'pairs'
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border bg-background hover:bg-secondary'
-            }`}
-          >
-            <GitCompareArrows size={13} />
-            Pairs
-          </button>
-          <button
-            type="button"
-            onClick={showClusters}
-            className={`inline-flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-xs transition-colors ${
-              activeSimilarityView === 'clusters'
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border bg-background hover:bg-secondary'
-            }`}
-          >
-            <Boxes size={13} />
-            Clusters
-          </button>
-        </div>
-      </div>
-
-      <div className="rounded border border-border bg-background p-2">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="text-muted-foreground">Threshold</span>
-          <span className="font-mono font-medium">{uiThreshold.toFixed(2)} {'->'} {similarityThreshold.toFixed(3)}</span>
+      <div className="rounded-md border border-border bg-background p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Similarity
+          </span>
+          <span className="font-mono">{percent(similarityThreshold)}</span>
         </div>
         <input
           type="range"
-          min="0"
+          min="0.5"
           max="1"
-          step="0.05"
-          value={uiThreshold}
-          onChange={(event) => handleThresholdChange(parseFloat(event.target.value))}
+          step="0.01"
+          value={similarityThreshold}
+          onChange={(event) => setSimilarityThreshold(Number(event.target.value))}
           className="w-full"
         />
+        <p className="mt-1 text-[10px] text-muted-foreground">Controls Similar Groups only. Duplicates use visual hash.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <div className="rounded border border-border bg-background p-2">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Visible</p>
-          <p className="mt-1 text-sm font-semibold">{filteredItems.length}</p>
-        </div>
-        <div className="rounded border border-border bg-background p-2">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Analyzed</p>
-          <p className="mt-1 text-sm font-semibold">{reviewData?.items.length ?? 0}/{filteredItems.length}</p>
-        </div>
-        <div className="rounded border border-border bg-background p-2">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Pairs</p>
-          <p className="mt-1 text-sm font-semibold">{reviewData?.similarPairs.length ?? 0}</p>
-        </div>
-        <div className="rounded border border-border bg-background p-2">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Clusters</p>
-          <p className="mt-1 text-sm font-semibold">{reviewData?.clusters.length ?? 0}</p>
-        </div>
-      </div>
-
-      {datasetFileAssetSummary.total > 0 ? (
-        <div className="rounded border border-border bg-background p-2 text-xs text-muted-foreground">
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <span>Dataset file assets</span>
-            <span className="font-mono text-foreground">{datasetFileAssetSummary.total}</span>
-          </div>
-          <div className="mt-2 grid grid-cols-3 gap-1.5">
-            <span className="rounded bg-secondary px-2 py-1">PSD {datasetFileAssetSummary.psd}</span>
-            <span className="rounded bg-secondary px-2 py-1">Video {datasetFileAssetSummary.video}</span>
-            <span className="rounded bg-secondary px-2 py-1">Tagged {datasetFileAssetSummary.captioned}</span>
-          </div>
+      {activeView === 'similar' ? (
+        <div className="rounded-md border border-border bg-background p-3">
+          <label className="mb-2 block text-muted-foreground">Sort</label>
+          <select
+            value={similarSort}
+            onChange={(event) => setSimilarSort(event.target.value as SimilarGroupSort)}
+            className="w-full rounded border border-border bg-background px-2 py-1 text-foreground"
+          >
+            <option value="risk">Risk</option>
+            <option value="similarity">Similarity</option>
+            <option value="coverage">Coverage value</option>
+            <option value="size">Size</option>
+          </select>
+          <label className="mb-2 mt-3 block text-muted-foreground">Filter</label>
+          <select
+            value={similarFilter}
+            onChange={(event) => setSimilarFilter(event.target.value as SimilarGroupFilter)}
+            className="w-full rounded border border-border bg-background px-2 py-1 text-foreground"
+          >
+            <option value="all">All groups</option>
+            <option value="high-confidence">High confidence</option>
+            <option value="weak">Weak groups</option>
+            <option value="same-color">Same color</option>
+            <option value="tag-mismatch">Tag mismatch</option>
+            <option value="redundant">Redundant</option>
+          </select>
         </div>
       ) : null}
 
-      <button
-        type="button"
-        onClick={resetGraphViewport}
-        className="flex w-full items-center justify-center rounded border border-border bg-background px-2 py-2 text-xs font-medium hover:bg-secondary"
-      >
-        Reset graph view
-      </button>
+      {activeView === 'tags' ? (
+        <div className="rounded-md border border-border bg-background p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Overused threshold</span>
+            <span className="font-mono">{overusedThreshold}%</span>
+          </div>
+          <input
+            type="range"
+            min="20"
+            max="80"
+            step="1"
+            value={overusedThreshold}
+            onChange={(event) => setOverusedThreshold(Number(event.target.value))}
+            className="w-full"
+          />
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-3 gap-1.5">
+        {(['portrait', 'landscape', 'square'] as const).map((orientation) => (
+          <div key={orientation} className="rounded-md border border-border bg-background p-2">
+            <p className="text-[10px] capitalize text-muted-foreground">{orientation}</p>
+            <p className="mt-1 font-mono text-sm font-semibold">{orientationCounts.get(orientation) ?? 0}</p>
+          </div>
+        ))}
+      </div>
+
+      {selectedItem ? (
+        <div className="rounded-md border border-border bg-background p-3">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Selected asset</p>
+          <p className="mt-1 truncate text-sm font-semibold">{getItemTitle(selectedItem)}</p>
+          <p className="mt-1 text-muted-foreground">
+            {getOrientation(selectedItem)} · {getCaptionTags(selectedItem, dataset).length} tags
+          </p>
+          {visualTraitsById[selectedItem.id] ? (
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-muted-foreground">Colors</span>
+              <TraitSwatches colors={visualTraitsById[selectedItem.id].dominantColors} />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
   const analysisInspectorPortal = analysisInspectorRoot ? createPortal(analysisControls, analysisInspectorRoot) : null;
 
-  if (items.length === 0) {
-    return (
-      <div className="space-y-6">
-        {analysisInspectorPortal}
-        {analysisInspectorPortal ? null : analysisControls}
-        <div className="text-center py-12">
-          <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No workspace images to analyze.</p>
-          {datasetFileAssetSummary.total > 0 ? (
-            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-              {datasetFileAssetSummary.total} Dataset file asset
-              {datasetFileAssetSummary.total === 1 ? '' : 's'} outside the image embedding graph.
-            </p>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {analysisInspectorPortal}
       {analysisInspectorPortal ? null : analysisControls}
 
-      <div className="rounded-lg border border-border bg-card p-4 space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-semibold">Similarity Graph</h3>
-            <p className="text-sm text-muted-foreground">Image embeddings</p>
-          </div>
-          {reviewData && (
-            <div className="text-right text-sm text-muted-foreground">
-              <p>Analyzed images: {reviewData.items.length}/{filteredItems.length}</p>
-              {datasetFileAssetSummary.total > 0 ? (
-                <p>File assets in Dataset: {datasetFileAssetSummary.total}</p>
-              ) : null}
-              <p>Pairs: {reviewData.similarPairs.length}</p>
-              <p>Clusters: {reviewData.clusters.length}</p>
-            </div>
-          )}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold">{targetTitle}</h3>
+          <p className="mt-1 text-sm text-muted-foreground">{targetDescription}</p>
         </div>
-
-        <div
-          ref={reviewViewContainerRef}
-          className="h-[min(860px,calc(100vh-12rem))] min-h-[620px] overflow-hidden rounded-md border border-border bg-background/50"
-        >
-          {reviewData ? (
-            <div className="h-full">
-              {activeSimilarityView === 'graph' && (
-                <div className="relative h-full overflow-hidden rounded-md bg-secondary/20">
-                  <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
-                    <div className="rounded-md border border-border bg-background/90 px-3 py-2 text-right text-xs text-muted-foreground shadow-sm backdrop-blur">
-                      <p>{graphNodesForRender.filter((node) => node.kind === 'image').length} images</p>
-                      <p>{reviewData.graphClusterNodeCount} clusters</p>
-                      <p>
-                        {reviewData.graphPairEdgeCount}/{reviewData.graphRawPairCount} pair links
-                      </p>
-                      <p>{reviewData.graphSingletonCount} singletons</p>
-                      <p>Zoom {graphViewport.scale.toFixed(2)}x</p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={resetGraphViewport}
-                      className="pointer-events-auto rounded-md border border-border bg-background/90 px-3 py-1 text-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted"
-                    >
-                      Reset view
-                    </button>
-                  </div>
-
-                  <div
-                    className={`h-full overflow-hidden ${
-                      graphPanRef.current.active ? 'cursor-grabbing' : 'cursor-grab'
-                    }`}
-                    ref={graphInteractionRef}
-                    onMouseDown={handleGraphMouseDown}
-                    onMouseMove={handleGraphMouseMove}
-                    onMouseUp={stopGraphPanning}
-                    onMouseLeave={stopGraphPanning}
-                    onAuxClick={(event) => event.preventDefault()}
-                  >
-                    <svg
-                      viewBox={`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`}
-                      role="img"
-                      aria-label="Similarity graph"
-                      className="h-full w-full min-w-[900px]"
-                    >
-                      <rect width={GRAPH_WIDTH} height={GRAPH_HEIGHT} fill="transparent" />
-
-                      <g
-                        transform={`translate(${graphViewport.x} ${graphViewport.y}) scale(${graphViewport.scale})`}
-                      >
-                        {reviewData.graphEdges.map((edge) => {
-                          const left = graphNodeById.get(edge.sourceId);
-                          const right = graphNodeById.get(edge.targetId);
-                          if (!left || !right) {
-                            return null;
-                          }
-
-                          const isMembership = edge.type === 'membership';
-                          return (
-                            <line
-                              key={edge.id}
-                              x1={left.x}
-                              y1={left.y}
-                              x2={right.x}
-                              y2={right.y}
-                              stroke={isMembership ? getGraphGroupColor(left.groupIndex) : 'hsl(var(--primary))'}
-                              strokeDasharray={isMembership ? undefined : '5 5'}
-                              strokeLinecap="round"
-                              strokeOpacity={isMembership ? 0.46 : 0.24 + edge.strength * 0.5}
-                              strokeWidth={isMembership ? 2.2 : 1.2 + edge.strength * 2.8}
-                            >
-                              <title>
-                                {isMembership
-                                  ? `${left.label} membership: ${getReviewItemName(edge.targetId)}`
-                                  : `${getReviewItemName(edge.sourceId)} to ${getReviewItemName(edge.targetId)}: ${(
-                                      (edge.similarity ?? 0) * 100
-                                    ).toFixed(1)}%`}
-                              </title>
-                            </line>
-                          );
-                        })}
-
-                        {graphNodesForRender.map((node) => {
-                          const color = getGraphGroupColor(node.groupIndex);
-                          if (node.kind === 'cluster') {
-                            return (
-                              <g
-                                key={node.id}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => {
-                                  setPreviewItemIds(node.memberIds ?? []);
-                                  setSelectedPairKey(null);
-                                  setSelectedClusterId(node.clusterId ?? null);
-                                  if (import.meta.env.DEV) {
-                                    console.log(`[review] graph cluster node clicked: ${node.clusterId}`);
-                                  }
-                                }}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault();
-                                    setPreviewItemIds(node.memberIds ?? []);
-                                    setSelectedClusterId(node.clusterId ?? null);
-                                  }
-                                }}
-                                className="cursor-pointer"
-                              >
-                                <circle
-                                  cx={node.x}
-                                  cy={node.y}
-                                  r="38"
-                                  fill="hsl(var(--background))"
-                                  stroke={color}
-                                  strokeWidth="4"
-                                />
-                                <circle
-                                  cx={node.x}
-                                  cy={node.y}
-                                  r="28"
-                                  fill={color}
-                                  fillOpacity="0.2"
-                                  stroke={color}
-                                  strokeWidth="1.5"
-                                />
-                                <text
-                                  x={node.x}
-                                  y={node.y - 2}
-                                  textAnchor="middle"
-                                  fontSize="15"
-                                  fill="currentColor"
-                                  className="font-semibold text-foreground"
-                                >
-                                  {node.label}
-                                </text>
-                                <text
-                                  x={node.x}
-                                  y={node.y + 15}
-                                  textAnchor="middle"
-                                  fontSize="9"
-                                  fill="currentColor"
-                                  className="text-muted-foreground"
-                                >
-                                  {node.memberIds?.length ?? 0} imgs
-                                </text>
-                                <title>
-                                  {node.label}: {node.memberIds?.length ?? 0} images
-                                </title>
-                              </g>
-                            );
-                          }
-
-                          const item = reviewData.items.find((entry) => entry.id === node.imageId);
-                          const index = node.imageId ? reviewData.itemIndexById[node.imageId] : undefined;
-                          return (
-                            <g
-                              key={node.id}
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => {
-                                setPreviewItemIds(node.imageId ? [node.imageId] : []);
-                                setSelectedPairKey(null);
-                                setSelectedClusterId(null);
-                                if (import.meta.env.DEV) {
-                                  console.log(`[review] graph node clicked: ${node.id}`);
-                                }
-                              }}
-                              onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                setPreviewItemIds(node.imageId ? [node.imageId] : []);
-                              }
-                            }}
-                              className="cursor-pointer"
-                            >
-                              <circle
-                                cx={node.x}
-                                cy={node.y}
-                                r="34"
-                                fill={color}
-                                fillOpacity="0.2"
-                                stroke={color}
-                                strokeWidth="2"
-                              />
-                              <foreignObject x={node.x - 24} y={node.y - 24} width="48" height="48">
-                                <div className="h-12 w-12 overflow-hidden rounded-full border border-background bg-black">
-                                  {item && previewUrls[item.id] ? (
-                                    <img
-                                      src={previewUrls[item.id]}
-                                      alt={item.fileName}
-                                      className="h-full w-full object-cover"
-                                      draggable={false}
-                                    />
-                                  ) : (
-                                    <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">
-                                  {index}
-                                    </div>
-                                  )}
-                                </div>
-                              </foreignObject>
-                              <circle
-                                cx={node.x + 26}
-                                cy={node.y - 26}
-                                r="12"
-                                fill="hsl(var(--background))"
-                                stroke={color}
-                              />
-                              <text
-                                x={node.x + 26}
-                                y={node.y - 22}
-                                textAnchor="middle"
-                                fontSize="10"
-                                fill="currentColor"
-                                className="font-mono text-foreground"
-                              >
-                              {index}
-                              </text>
-                            <title>{item?.fileName ?? `Image ${index}`}</title>
-                            </g>
-                          );
-                        })}
-                      </g>
-                    </svg>
-                  </div>
-
-                  {reviewData.graphEdges.length === 0 ? (
-                    <p className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-border bg-background/90 px-3 py-2 text-xs text-muted-foreground shadow-sm backdrop-blur">
-                      No links are above the current shared threshold.
-                    </p>
-                  ) : null}
-                </div>
-              )}
-
-              {activeSimilarityView === 'pairs' && (
-                <div className="h-full overflow-y-auto bg-secondary/30 p-3">
-                  {reviewData.similarPairs.length > 0 ? (
-                    <div className="space-y-2">
-                      {reviewData.similarPairs.map((pair) => {
-                        const pairKey = `${pair.imageId1}:${pair.imageId2}`;
-                        return (
-                          <button
-                            key={pairKey}
-                            type="button"
-                            onClick={() => {
-                              setSelectedPairKey(pairKey);
-                              setSelectedClusterId(null);
-                              setActiveSimilarityView('pairs');
-                              setPreviewItemIds([pair.imageId1, pair.imageId2]);
-                              if (import.meta.env.DEV) {
-                                console.log(`[review] pair UI clicked: ${pairKey}`);
-                                console.log(`[review] selected pair id(s): ${pair.imageId1}, ${pair.imageId2}`);
-                              }
-                            }}
-                            className={`w-full flex items-center justify-between text-left text-xs rounded-md px-3 py-2 transition-colors ${
-                              selectedPairKey === pairKey
-                                ? 'bg-primary/10 border border-primary/30'
-                                : 'bg-background border border-border hover:border-primary/40'
-                            }`}
-                          >
-                            <span>
-                              {getReviewItemName(pair.imageId1)} and {getReviewItemName(pair.imageId2)}
-                            </span>
-                            <span className="font-mono text-foreground flex items-center gap-2">
-                              {(pair.similarity * 100).toFixed(1)}%
-                              <ChevronRight size={14} />
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      No strong similarity pairs in the current graph view.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {activeSimilarityView === 'clusters' && (
-                <div className="h-full overflow-y-auto bg-secondary/30 p-3">
-                  {reviewData.clusters.length > 0 ? (
-                    <div className="space-y-2">
-                      {reviewData.clusters.map((cluster: SimilarityCluster) => (
-                        <button
-                          key={cluster.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedClusterId(cluster.id);
-                            setSelectedPairKey(null);
-                            setActiveSimilarityView('clusters');
-                            setPreviewItemIds(cluster.imageIds);
-                            if (import.meta.env.DEV) {
-                              console.log(`[review] cluster UI clicked: ${cluster.id}`);
-                              console.log(`[review] selected cluster id: ${cluster.id}`);
-                            }
-                          }}
-                          className={`w-full flex items-center justify-between text-left text-xs rounded-md px-3 py-2 transition-colors ${
-                            selectedClusterId === cluster.id
-                              ? 'bg-primary/10 border border-primary/30'
-                              : 'bg-background border border-border hover:border-primary/40'
-                          }`}
-                        >
-                          <span>
-                            {cluster.imageIds
-                              .map((id) => getReviewItemName(id))
-                              .join(', ')}
-                          </span>
-                          <span className="font-mono text-foreground flex items-center gap-2">
-                            {(cluster.avgSimilarity * 100).toFixed(1)}%
-                            <ChevronRight size={14} />
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      No multi-image clusters above the current review threshold.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="h-full overflow-auto bg-secondary/30 p-4 text-sm text-muted-foreground">
-              Preparing similarity graph for the current analysis dataset...
-            </div>
-          )}
+        <div className="flex flex-wrap gap-1.5">
+          <MetricPill label="Analysis-ready" value={visualItems.length} />
+          <MetricPill label="Traits" value={`${traitReadyCount}/${visualItems.length}`} />
+          <MetricPill label="Embeddings" value={`${embeddingReadyCount}/${visualItems.length}`} />
+          <MetricPill label="Preparing" value={preparingCount > 0 ? `${preparingCount} preparing` : 'Ready'} />
+          <MetricPill label="Waiting" value={pendingAnalysisAssets.length} />
         </div>
       </div>
 
-      {filteredItems.length > 0 && (
-        <div>
-          <div className="mb-4">
-            <div>
-              <h3 className="text-lg font-semibold">{previewTitle}</h3>
-              <p className="text-sm text-muted-foreground">
-                {activeSimilarityView === 'pairs' && selectedPairKey
-                  ? 'Showing only the selected similar pair.'
-                  : activeSimilarityView === 'clusters' && selectedClusterId
-                    ? 'Showing only the selected similarity cluster.'
-                    : 'Inspecting the selected analysis view.'}
-              </p>
+      <section className="grid gap-3 md:grid-cols-5">
+        <div className="rounded-md border border-border bg-card p-4">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Duplicate groups</p>
+          <p className="mt-2 text-2xl font-semibold">{duplicateGroups.length}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Visual hash based.</p>
+        </div>
+        <div className="rounded-md border border-border bg-card p-4">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Similar groups</p>
+          <p className="mt-2 text-2xl font-semibold">{similarGroups.length}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Embedding + traits.</p>
+        </div>
+        <div className="rounded-md border border-border bg-card p-4">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Coverage score</p>
+          <p className="mt-2 text-2xl font-semibold">{coverageScore}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Orientation presence, aspect preset coverage, captions, and tag balance.</p>
+        </div>
+        <div className="rounded-md border border-border bg-card p-4">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Caption health</p>
+          <p className="mt-2 text-2xl font-semibold">{tagAnalysis.captioned}/{tagAnalysis.totalCaptionable}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Captioned visual assets.</p>
+        </div>
+        <div className="rounded-md border border-border bg-card p-4">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Tag balance</p>
+          <p className="mt-2 text-2xl font-semibold">{tagAnalysis.balanceScore}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Frequency pressure.</p>
+        </div>
+      </section>
+
+      {activeView === 'overview' ? (
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(22rem,0.8fr)]">
+          <div className="rounded-md border border-border bg-card p-4">
+            <h3 className="text-base font-semibold">Needs attention</h3>
+            <div className="mt-3 grid gap-2">
+              {attentionItems.length ? attentionItems.map((item) => (
+                <div key={item} className="rounded border border-border bg-background px-3 py-2 text-sm">{item}</div>
+              )) : (
+                <div className="rounded border border-dashed border-border p-8 text-center text-sm text-muted-foreground">No review items for the current analysis state.</div>
+              )}
             </div>
           </div>
-
-          <BrickMasonry
-            items={previewItems}
-            getKey={(item) => item.id}
-            getEstimate={(item) => item.height / Math.max(1, item.width)}
-            renderItem={(item) => (
-              <ReviewCard
-                item={item}
-                previewUrl={previewUrls[item.id]}
-                onDelete={handleDeleteItem}
-                deleteLabel={dataset ? 'Remove source group from Dataset' : 'Remove from review'}
-                highlighted={highlightedIds.has(item.id)}
-              />
-            )}
-          />
-        </div>
-      )}
-
-      {filteredItems.length === 0 && (
-        <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">No items match the selected aspect ratios</p>
-            <p className="mt-1 text-xs text-muted-foreground">Change the aspect filters to continue analysis.</p>
+          <div className="space-y-4">
+            <div className="rounded-md border border-border bg-card p-4">
+              <h3 className="text-base font-semibold">Review Summary</h3>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {healthItems.map((item) => (
+                  <div key={item.label} className="rounded border border-border bg-background px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">{item.label}</p>
+                    <p className="mt-1 text-sm font-semibold">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-card p-4">
+              <h3 className="text-base font-semibold">Orientation Mix</h3>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {(['portrait', 'landscape', 'square'] as const).map((orientation) => (
+                  <div key={orientation} className="rounded border border-border bg-background px-3 py-2">
+                    <p className="text-[10px] capitalize text-muted-foreground">{orientation}</p>
+                    <p className="mt-1 font-mono text-sm font-semibold">{orientationCounts.get(orientation) ?? 0}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-card p-4">
+              <h3 className="text-base font-semibold">Aspect Ratio Presets</h3>
+              <div className="mt-3 grid gap-2">
+                {ASPECT_RATIOS.map((ratio) => (
+                  <div key={ratio} className="flex items-center justify-between rounded border border-border bg-background px-3 py-2 text-sm">
+                    <span>{ASPECT_RATIO_LABELS[ratio]}</span>
+                    <span className="font-mono">{aspectCounts[ratio]}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        </section>
+      ) : null}
+
+      {activeView === 'duplicates' ? (
+        <section className="rounded-md border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Duplicate Groups</h3>
+              <p className="text-xs text-muted-foreground">Exact, near, and high-confidence visual matches.</p>
+            </div>
+            <span className="text-xs text-muted-foreground">{duplicateGroups.length} groups</span>
+          </div>
+          <div className="grid gap-3 xl:grid-cols-2">
+            {duplicateGroups.length ? duplicateGroups.map((group) => (
+              <div key={group.id} className="rounded-md border border-border bg-background p-3">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{group.reason}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {group.items.length} assets · max hash distance {group.maxHashDistance ?? 'n/a'}
+                    </p>
+                  </div>
+                  <MetricPill label="score" value={percent(group.score)} />
+                </div>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+                  {group.items.slice(0, 6).map((item) => (
+                    <AnalysisAssetCard
+                      key={item.id}
+                      item={item}
+                      previewUrl={previewUrls[item.id]}
+                      selected={selectedItemId === item.id}
+                      onSelect={() => setSelectedItemId(item.id)}
+                      onOpenAssetContextMenu={onOpenAssetContextMenu}
+                      footer={
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-2">
+                          <p className="truncate text-[11px] font-medium text-white">{getItemTitle(item)}</p>
+                          <p className="text-[10px] text-gray-300">{group.suggestedKeepId === item.id ? 'Suggested keep' : 'Duplicate candidate'}</p>
+                        </div>
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            )) : (
+              <div className="col-span-full rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                No visual duplicate groups detected.
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeView === 'similar' ? (
+        <section className="rounded-md border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Similar Groups</h3>
+              <p className="text-xs text-muted-foreground">Useful visual similarity for coverage review, with reasons and metrics.</p>
+            </div>
+            <span className="text-xs text-muted-foreground">{filteredSimilarGroups.length} groups</span>
+          </div>
+          <div className="columns-1 gap-3 xl:columns-2 2xl:columns-3">
+            {filteredSimilarGroups.length ? filteredSimilarGroups.map((group) => (
+              <div key={group.id} className="mb-3 break-inside-avoid rounded-md border border-border bg-background p-3">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">Group {group.id.replace('similar-', '')}</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {group.reasons.map((reason) => (
+                        <span key={reason} className="rounded bg-secondary px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{reason}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <MetricPill label="score" value={group.score} />
+                </div>
+                <div className="mb-3 grid grid-cols-2 gap-1.5 text-[11px]">
+                  <MetricPill label="confidence" value={group.confidence} />
+                  <MetricPill label="color" value={group.colorSimilarity} />
+                  <MetricPill label="tags" value={group.tagOverlap} />
+                  <MetricPill label="coverage" value={group.coverageValue} />
+                  <MetricPill label="composition" value={group.compositionSimilarity} />
+                  <MetricPill label="dup pressure" value={group.duplicatePressure} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {group.items.slice(0, 8).map((item) => (
+                    <AnalysisAssetCard
+                      key={item.id}
+                      item={item}
+                      previewUrl={previewUrls[item.id]}
+                      selected={selectedItemId === item.id}
+                      onSelect={() => setSelectedItemId(item.id)}
+                      onOpenAssetContextMenu={onOpenAssetContextMenu}
+                      footer={
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-2">
+                          <p className="truncate text-[11px] font-medium text-white">{getItemTitle(item)}</p>
+                          <p className="text-[10px] text-gray-300">{getOrientation(item)} · {getCaptionTags(item, dataset).length} tags</p>
+                        </div>
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            )) : (
+              <div className="col-span-full rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                No similar groups match the current filter.
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeView === 'coverage' ? (
+        <section className="rounded-md border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Coverage</h3>
+              <p className="text-xs text-muted-foreground">Add candidates, redundant assets, missing captions, and balance warnings.</p>
+            </div>
+            <LocateFixed className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <div className="grid gap-4">
+            <div className="rounded-md border border-border bg-background p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold">Add Candidates</h4>
+                <span className="text-xs text-muted-foreground">{coverageSections.add.length} assets</span>
+              </div>
+              {coverageSections.add.length ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {coverageSections.add.map((recommendation) => (
+                    <div key={recommendation.id} className="grid gap-3 rounded border border-border bg-card p-3 sm:grid-cols-[140px_minmax(0,1fr)]">
+                      <AnalysisAssetCard
+                        item={recommendation.item}
+                        previewUrl={previewUrls[recommendation.item.id]}
+                        selected={selectedItemId === recommendation.item.id}
+                        onSelect={() => setSelectedItemId(recommendation.item.id)}
+                        onOpenAssetContextMenu={onOpenAssetContextMenu}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{getItemTitle(recommendation.item)}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{recommendation.reason}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void applyCoverageRecommendation(recommendation)}
+                            disabled={!dataset || !onUpdateDataset || !recommendation.item.sourceImageId}
+                            className="shrink-0 rounded bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold uppercase text-emerald-500 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            Add
+                          </button>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-1">
+                          {recommendation.improves.map((entry) => (
+                            <span key={entry} className="rounded bg-secondary px-2 py-0.5 text-[10px] uppercase text-muted-foreground">
+                              {entry}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          <MetricPill label="gain" value={`+${recommendation.gain}`} />
+                          <MetricPill label="redundancy" value={recommendation.redundancyScore} />
+                          <MetricPill label="confidence" value={recommendation.confidence} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                  No useful add candidates found outside this Dataset.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border border-border bg-background p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold">Remove Redundant</h4>
+                <span className="text-xs text-muted-foreground">{coverageSections.remove.length} assets</span>
+              </div>
+              {coverageSections.remove.length ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {coverageSections.remove.map((recommendation) => (
+                    <div key={recommendation.id} className="grid gap-3 rounded border border-border bg-card p-3 sm:grid-cols-[140px_minmax(0,1fr)]">
+                      <AnalysisAssetCard
+                        item={recommendation.item}
+                        previewUrl={previewUrls[recommendation.item.id]}
+                        selected={selectedItemId === recommendation.item.id}
+                        onSelect={() => setSelectedItemId(recommendation.item.id)}
+                        onOpenAssetContextMenu={onOpenAssetContextMenu}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{getItemTitle(recommendation.item)}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{recommendation.reason}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void applyCoverageRecommendation(recommendation)}
+                            disabled={!dataset || !onUpdateDataset || !recommendation.item.sourceImageId}
+                            className="shrink-0 rounded bg-amber-500/15 px-2 py-1 text-[10px] font-semibold uppercase text-amber-500 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          <MetricPill label="redundancy" value={recommendation.redundancyScore} />
+                          <MetricPill label="confidence" value={recommendation.confidence} />
+                        </div>
+                        {recommendation.nearestTitle ? (
+                          <p className="mt-3 rounded border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                            Closest to {recommendation.nearestTitle}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                  No duplicate or high-redundancy source assets need removal.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border border-border bg-background p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold">Needs Captions</h4>
+                <span className="text-xs text-muted-foreground">{coverageSections.captions.length} assets</span>
+              </div>
+              {coverageSections.captions.length ? (
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {coverageSections.captions.map((recommendation) => (
+                    <button
+                      key={recommendation.id}
+                      type="button"
+                      onClick={() => setSelectedItemId(recommendation.item.id)}
+                      className="rounded border border-border bg-card px-3 py-2 text-left text-xs hover:bg-secondary"
+                    >
+                      <p className="truncate font-medium">{getItemTitle(recommendation.item)}</p>
+                      <p className="mt-1 text-muted-foreground">{recommendation.reason}</p>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                  All analysis-ready assets have captions.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border border-border bg-background p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold">Balance Warnings</h4>
+                <span className="text-xs text-muted-foreground">{coverageSections.balance.length} warnings</span>
+              </div>
+              {coverageSections.balance.length ? (
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {coverageSections.balance.map((warning) => (
+                    <div
+                      key={warning.id}
+                      className={`rounded border px-3 py-2 text-xs ${
+                        warning.severity === 'warning'
+                          ? 'border-amber-500/40 bg-amber-500/10'
+                          : 'border-border bg-card'
+                      }`}
+                    >
+                      <p className="font-medium">{warning.label}</p>
+                      <p className="mt-1 text-muted-foreground">{warning.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                  No obvious orientation, aspect, or tag balance warnings.
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeView === 'tags' ? (
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
+          <div className="rounded-md border border-border bg-card p-4">
+            <h3 className="text-base font-semibold">Tag Frequency</h3>
+            <div className="mt-3 overflow-hidden rounded border border-border">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-secondary text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Tag</th>
+                    <th className="px-3 py-2 font-medium">Count</th>
+                    <th className="px-3 py-2 font-medium">Share</th>
+                    <th className="px-3 py-2 font-medium">Signal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tagAnalysis.frequencies.slice(0, 24).map((entry) => (
+                    <tr key={entry.tag} className="border-t border-border">
+                      <td className="px-3 py-2 font-medium">{entry.tag}</td>
+                      <td className="px-3 py-2 font-mono">{entry.count}</td>
+                      <td className="px-3 py-2 font-mono">{entry.percent}%</td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {entry.percent >= TAG_OVERUSED_PERCENT ? 'overused' : entry.count === 1 ? 'rare' : 'stable'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="space-y-3">
+            <div className="rounded-md border border-border bg-card p-4">
+              <h3 className="text-base font-semibold">Caption Health</h3>
+              <div className="mt-3 grid gap-2">
+                <MetricPill label="captioned" value={`${tagAnalysis.captioned}/${tagAnalysis.totalCaptionable}`} />
+                <MetricPill label="missing" value={tagAnalysis.missingCaptionItems.length} />
+                <MetricPill label="trigger" value={tagAnalysis.triggerWord || 'not set'} />
+                <MetricPill label="trigger present" value={tagAnalysis.triggerWord ? `${tagAnalysis.triggerPresent}/${tagAnalysis.totalCaptionable}` : 'n/a'} />
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-base font-semibold">Trigger Word</h3>
+                {tagAnalysis.triggerWord && tagAnalysis.triggerMissingItems.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={addTriggerToMissingItems}
+                    className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-secondary"
+                  >
+                    Add missing
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-3 grid gap-2">
+                <MetricPill label="word" value={tagAnalysis.triggerWord || 'not set'} />
+                <MetricPill label="present" value={tagAnalysis.triggerWord ? `${tagAnalysis.triggerPresent}/${tagAnalysis.totalCaptionable}` : 'n/a'} />
+                <MetricPill label="missing" value={tagAnalysis.triggerMissingItems.length} />
+              </div>
+            </div>
+            <TagIssueCard
+              title="Overused tags"
+              entries={tagAnalysis.overused.map((entry) => ({
+                label: `${entry.tag} · ${entry.percent}%`,
+                actionLabel: 'Remove',
+                onAction: () => removeTagFromItems(entry.tag, entry.items),
+              }))}
+            />
+            <TagIssueCard
+              title="Rare tags"
+              entries={tagAnalysis.rare.map((entry) => ({
+                label: `${entry.tag} · 1 asset`,
+                actionLabel: 'Remove',
+                onAction: () => removeTagFromItems(entry.tag, entry.items),
+              }))}
+            />
+            <TagIssueCard
+              title="Inconsistent tags"
+              entries={tagAnalysis.inconsistent.map((entry) => ({
+                label: `${entry.tag} · ${entry.reason}`,
+                actionLabel: 'Remove',
+                onAction: () => removeTagFromItems(entry.tag, entry.items),
+              }))}
+            />
+          </div>
+        </section>
+      ) : null}
+
+      {activeView === 'outliers' ? (
+        <section className="rounded-md border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Outliers</h3>
+              <p className="text-xs text-muted-foreground">Assets that may not fit the target because of tags, orientation, brightness, or weak similarity.</p>
+            </div>
+            <span className="text-xs text-muted-foreground">{outliers.length} assets</span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {outliers.length ? outliers.map((outlier) => (
+              <div key={outlier.id} className="rounded-md border border-border bg-background p-3">
+                <AnalysisAssetCard
+                  item={outlier.item}
+                  previewUrl={previewUrls[outlier.item.id]}
+                  selected={selectedItemId === outlier.item.id}
+                  onSelect={() => setSelectedItemId(outlier.item.id)}
+                  onOpenAssetContextMenu={onOpenAssetContextMenu}
+                />
+                <div className="mt-3 flex flex-wrap gap-1">
+                  <MetricPill label="score" value={outlier.score} />
+                  {outlier.reasons.map((reason) => (
+                    <span key={reason} className="rounded bg-secondary px-2 py-1 text-[10px] uppercase text-muted-foreground">{reason}</span>
+                  ))}
+                </div>
+              </div>
+            )) : (
+              <div className="col-span-full rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                No obvious outliers detected.
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {pendingAnalysisAssets.length > 0 ? (
+        <section className="rounded-md border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Waiting Assets</h3>
+              <p className="text-xs text-muted-foreground">PSD assets join Analysis after preview generation. Video is not part of visual Analysis.</p>
+            </div>
+            <span className="text-xs text-muted-foreground">{pendingAnalysisAssets.length} assets</span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {pendingAnalysisAssets.map((item) => (
+              <div key={item.id} className="rounded border border-border bg-background px-3 py-2 text-xs">
+                <p className="truncate font-medium">{getItemTitle(item)}</p>
+                <p className="mt-1 text-muted-foreground">
+                  {item.kind === 'video'
+                    ? 'Video asset'
+                    : item.previewStatus === 'failed'
+                      ? 'Preview unavailable'
+                      : 'Waiting for PSD preview'}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {items.length === 0 ? (
+        <section className="flex min-h-80 items-center justify-center rounded-md border border-dashed border-border bg-card p-8 text-center">
+          <div>
+            <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+            <p className="text-sm font-medium">No visual assets to analyze</p>
+            <p className="mt-1 text-xs text-muted-foreground">Open a project, Dataset, or visual file to start Analysis.</p>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 };
+
+const TagIssueCard = ({
+  title,
+  entries,
+}: {
+  title: string;
+  entries: Array<{ label: string; actionLabel?: string; onAction?: () => void }>;
+}) => (
+  <div className="rounded-md border border-border bg-card p-4">
+    <h3 className="text-base font-semibold">{title}</h3>
+    <div className="mt-3 grid gap-2">
+      {entries.length ? entries.slice(0, 8).map((entry) => (
+        <div key={entry.label} className="flex items-center justify-between gap-3 rounded border border-border bg-background px-3 py-2 text-xs">
+          <span className="min-w-0 truncate">{entry.label}</span>
+          {entry.onAction && entry.actionLabel ? (
+            <button
+              type="button"
+              onClick={entry.onAction}
+              className="shrink-0 rounded border border-border px-2 py-1 font-medium hover:bg-secondary"
+            >
+              {entry.actionLabel}
+            </button>
+          ) : null}
+        </div>
+      )) : (
+        <div className="rounded border border-dashed border-border p-4 text-center text-xs text-muted-foreground">No issues detected.</div>
+      )}
+    </div>
+  </div>
+);

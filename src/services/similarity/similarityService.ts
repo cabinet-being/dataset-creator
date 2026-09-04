@@ -53,8 +53,9 @@ export const performClustering = (
   const assignment = new Map<string, number>();
   const pairMap = buildPairMap(distanceMatrix);
   const candidatePairs = findSimilarPairs(distanceMatrix, threshold);
-  const representativeThreshold = Math.min(0.995, Math.max(threshold + 0.08, threshold * 1.05));
-  const clusterThreshold = Math.min(0.995, Math.max(threshold + 0.05, threshold));
+  const representativeThreshold = Math.min(0.999, Math.max(threshold + 0.015, threshold * 1.01));
+  const clusterThreshold = threshold;
+  const averageThreshold = Math.min(0.999, Math.max(threshold + 0.01, threshold * 1.005));
 
   for (const { imageId1, imageId2, similarity } of candidatePairs) {
     const clusterIndex1 = assignment.get(imageId1);
@@ -79,7 +80,7 @@ export const performClustering = (
         continue;
       }
 
-      if (canMergeClusters(left, right, pairMap, clusterThreshold, representativeThreshold)) {
+      if (canMergeClusters(left, right, pairMap, clusterThreshold, representativeThreshold, averageThreshold)) {
         const merged = [...left, ...right];
         clusters[clusterIndex1] = merged;
         clusters[clusterIndex2] = [];
@@ -108,7 +109,8 @@ export const performClustering = (
         pairMap,
         similarity,
         clusterThreshold,
-        representativeThreshold
+        representativeThreshold,
+        averageThreshold
       )
     ) {
       existingCluster.push(candidateId);
@@ -158,7 +160,8 @@ const canJoinCluster = (
   pairMap: Map<string, SimilarityResult>,
   anchorSimilarity: number,
   clusterThreshold: number,
-  representativeThreshold: number
+  representativeThreshold: number,
+  averageThreshold: number
 ): boolean => {
   if (anchorSimilarity < clusterThreshold) {
     return false;
@@ -193,7 +196,7 @@ const canJoinCluster = (
   }
 
   const averageSimilarity = similaritySum / similarityCount;
-  return strongConnections >= Math.max(1, Math.ceil(cluster.length / 2)) && averageSimilarity >= clusterThreshold;
+  return strongConnections >= Math.max(1, Math.ceil(cluster.length * 0.7)) && averageSimilarity >= averageThreshold;
 };
 
 const canMergeClusters = (
@@ -201,7 +204,8 @@ const canMergeClusters = (
   right: string[],
   pairMap: Map<string, SimilarityResult>,
   clusterThreshold: number,
-  representativeThreshold: number
+  representativeThreshold: number,
+  averageThreshold: number
 ): boolean => {
   const leftRepresentative = left[0];
   const rightRepresentative = right[0];
@@ -236,8 +240,8 @@ const canMergeClusters = (
   }
 
   const averageSimilarity = similaritySum / similarityCount;
-  const minimumStrongConnections = Math.max(1, Math.ceil(Math.min(left.length, right.length) / 2));
-  return strongConnections >= minimumStrongConnections && averageSimilarity >= clusterThreshold;
+  const minimumStrongConnections = Math.max(1, Math.ceil(left.length * right.length * 0.7));
+  return strongConnections >= minimumStrongConnections && averageSimilarity >= averageThreshold;
 };
 
 /**

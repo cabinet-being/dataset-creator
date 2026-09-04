@@ -249,7 +249,7 @@ type DatasetToolWorkspaceTab = {
 
 type FileWorkspaceTab = {
   id: string;
-  kind: 'file-view' | 'file-edit' | 'file-caption';
+  kind: 'file-view' | 'file-edit' | 'file-caption' | 'file-analysis';
   path: string;
   name: string;
   fileKind: ExplorerFileKind;
@@ -290,7 +290,7 @@ const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
 });
 
 const createFileTabId = (path: string): string => `file:${path}`;
-const createFileModeTabId = (mode: 'edit' | 'caption', path: string): string => `file:${mode}:${path}`;
+const createFileModeTabId = (mode: 'edit' | 'caption' | 'analysis', path: string): string => `file:${mode}:${path}`;
 const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
 const createDatasetToolTabId = (datasetId: string, stage: DatasetToolStage): string => `dataset:${datasetId}:${stage}`;
 
@@ -344,7 +344,7 @@ const dedupeWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => {
 
 const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
-  tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption';
+  tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption' || tab.kind === 'file-analysis';
 
 const getInspectorContext = (tab: WorkspaceTab | null, activeStage: StageName | null): InspectorContext => {
   if (!tab) {
@@ -357,6 +357,10 @@ const getInspectorContext = (tab: WorkspaceTab | null, activeStage: StageName | 
 
   if (tab.kind === 'file-caption' || activeStage === 'tagging') {
     return 'caption';
+  }
+
+  if (tab.kind === 'file-analysis') {
+    return 'analysis';
   }
 
   if (tab.kind === 'file-edit' || (tab.kind === 'file-view' && tab.fileKind === 'psd')) {
@@ -648,7 +652,13 @@ const renderTool = ({
         />
       );
     case 'analysis':
-      return <AnalysisStage active />;
+      return (
+        <AnalysisStage
+          active
+          projectDirectoryHandle={projectDirectoryHandle}
+          onOpenAssetContextMenu={onOpenAssetContextMenu}
+        />
+      );
     case 'review':
       return <FinalReviewStage active onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'tagging':
@@ -1344,6 +1354,7 @@ function App() {
     node: ExplorerTreeNode;
     x: number;
     y: number;
+    actionGroups?: ContextActionGroup[];
   } | null>(null);
   const [inspectorRenameValue, setInspectorRenameValue] = useState('');
   const [inspectorRenaming, setInspectorRenaming] = useState(false);
@@ -1652,6 +1663,10 @@ function App() {
     }).length;
 
     return {
+      assets: sourceAssetIds.length + activeDatasetFileAssetPaths.length,
+      supported:
+        sourceItems.filter((item) => item.kind === 'image' || item.kind === 'synthetic').length +
+        filterLegacyProjectAssetPaths(activeDataset.psdAssetPaths ?? []).length,
       sourceRefs: sourceAssetIds.length,
       availableSourceRefs: sourceAssetIds.filter((id) => Boolean(sourceImagesById[id])).length,
       fileAssets: activeDatasetFileAssetPaths.length,
@@ -1734,6 +1749,8 @@ function App() {
           ? `Dataset: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'file-edit'
           ? `Photopea: ${tab.name}`
+          : tab.kind === 'file-analysis'
+            ? `Analysis: ${tab.name}`
           : tab.kind === 'file-caption'
             ? `Caption: ${tab.name}`
             : tab.name;
@@ -2927,6 +2944,67 @@ function App() {
     addNotification('info', 'Asset removed from Dataset');
   };
 
+  const openDatasetBoardAssetContextMenu = (
+    dataset: Dataset,
+    item: WorkspaceImage,
+    event: MouseEvent<HTMLElement>
+  ) => {
+    const assetPath = item.assetPath;
+    if (!assetPath) {
+      addNotification('warning', 'This Dataset item is not linked to an Explorer file.');
+      return;
+    }
+
+    const path = assetPath.startsWith('Project/') ? assetPath : `Project/${assetPath}`;
+    const node = findExplorerNodeByPath(path) ?? {
+      name: item.fileName,
+      path,
+      kind: 'file' as const,
+    };
+    const fileKind = getExplorerFileKind(node.name);
+    const workspaceImageId = findWorkspaceImageIdForPath(node.path);
+    const canOpenFileInTab = canOpenExplorerFile(fileKind);
+    const canOpenInPhotopea = isExplorerImageFileName(node.name) && Boolean(workspaceImageId);
+    const canOpenInCaption = (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
+    const canOpenInAnalysis = fileKind === 'image' || fileKind === 'psd' || fileKind === 'video';
+
+    setActiveExplorerNode(node);
+    setSelectedExplorerPaths(new Set([node.path]));
+    setSelectionAnchorPath(node.path);
+    setExplorerContextMenu({
+      node,
+      x: event.clientX,
+      y: event.clientY,
+      actionGroups: [
+        [
+          canOpenFileInTab
+            ? createExplorerAction({ id: 'open', label: 'Open', icon: File, onSelect: () => openExplorerFile(node) })
+            : null,
+        ].filter((action): action is ContextAction => Boolean(action)),
+        [
+          canOpenInPhotopea
+            ? createExplorerAction({ id: 'photopea', label: 'Photopea', icon: Edit3, onSelect: () => openFileModeTab(node, 'edit') })
+            : null,
+          canOpenInCaption
+            ? createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openFileModeTab(node, 'caption') })
+            : null,
+          canOpenInAnalysis
+            ? createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openFileModeTab(node, 'analysis') })
+            : null,
+        ].filter((action): action is ContextAction => Boolean(action)),
+        [
+          createExplorerAction({
+            id: 'remove-from-dataset',
+            label: 'Remove from Dataset',
+            icon: Trash2,
+            variant: 'destructive',
+            onSelect: () => removeDatasetBoardAsset(dataset, item),
+          }),
+        ],
+      ].filter((group) => group.length > 0),
+    });
+  };
+
   const saveDatasetBoardOrder = async (
     dataset: Dataset,
     items: WorkspaceImage[],
@@ -2993,8 +3071,14 @@ function App() {
       );
     }
 
-    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>) =>
-      updateDatasetFileBackedState(dataset, updates);
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>) => {
+      const latestDataset = useProjectStore.getState().datasets[tab.datasetId];
+      if (!latestDataset) {
+        addNotification('warning', 'Dataset is no longer available');
+        return;
+      }
+      return updateDatasetFileBackedState(latestDataset, updates);
+    };
     switch (tab.stage) {
       case 'select':
         return (
@@ -3013,20 +3097,26 @@ function App() {
             mode="review"
             active={activeTabId === tab.id}
             onUpdateDataset={updateDataset}
-            onOpenAssetContextMenu={openAssetExplorerContextMenu}
+            onOpenAssetContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
           />
         );
       case 'analysis':
-        return <AnalysisStage datasetId={dataset.id} active={activeTabId === tab.id} onUpdateDataset={updateDataset} />;
+        return (
+          <AnalysisStage
+            datasetId={dataset.id}
+            active={activeTabId === tab.id}
+            projectDirectoryHandle={projectDirectoryHandle}
+            onUpdateDataset={updateDataset}
+            onOpenAssetContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
+          />
+        );
       case 'tagging':
         return (
           <TaggingStageComponent
             datasetId={dataset.id}
             active={activeTabId === tab.id}
             onUpdateDataset={updateDataset}
-            selectedItemId={tab.nested?.itemId ?? null}
-            onOpenItem={(itemId) => setToolTabNestedView(tab.id, { kind: 'file', itemId })}
-            onOpenAssetContextMenu={openAssetExplorerContextMenu}
+            onOpenAssetContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
           />
         );
       default:
@@ -3084,10 +3174,10 @@ function App() {
     }
   };
 
-  const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption') => {
+  const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption' | 'analysis') => {
     try {
       const imageId = findWorkspaceImageIdForPath(node.path);
-      if (!imageId) {
+      if (mode !== 'analysis' && !imageId) {
         addNotification('warning', `${mode === 'edit' ? 'Photopea' : 'Caption'} is available for project workspace images.`);
         return;
       }
@@ -3105,18 +3195,18 @@ function App() {
 
       const tab: FileWorkspaceTab = {
         id: createFileModeTabId(mode, node.path),
-        kind: mode === 'edit' ? 'file-edit' : 'file-caption',
+        kind: mode === 'edit' ? 'file-edit' : mode === 'analysis' ? 'file-analysis' : 'file-caption',
         path: node.path,
         name: node.name,
         fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
         file,
-        workspaceImageId: imageId,
+        workspaceImageId: imageId ?? undefined,
       };
 
       setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
       setActiveTabId(tab.id);
     } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : `Failed to open ${mode === 'edit' ? 'Photopea' : 'Caption'}`);
+      addNotification('error', error instanceof Error ? error.message : `Failed to open ${mode === 'edit' ? 'Photopea' : mode === 'analysis' ? 'Analysis' : 'Caption'}`);
     }
   };
 
@@ -3310,12 +3400,12 @@ function App() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-md border border-border bg-card p-3">
-              <p className="text-xs text-muted-foreground">Source refs</p>
-              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.sourceRefs ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Assets</p>
+              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.assets ?? 0}</p>
             </div>
             <div className="rounded-md border border-border bg-card p-3">
-              <p className="text-xs text-muted-foreground">File assets</p>
-              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.fileAssets ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Supported</p>
+              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.supported ?? 0}</p>
             </div>
             <div className="rounded-md border border-border bg-card p-3">
               <p className="text-xs text-muted-foreground">Captioned</p>
@@ -3324,10 +3414,16 @@ function App() {
               </p>
             </div>
             <div className="rounded-md border border-border bg-card p-3">
-              <p className="text-xs text-muted-foreground">Trigger</p>
-              <p className="mt-1 truncate text-2xl font-semibold">
-                {dataset.triggerWord.trim() || 'Missing'}
-              </p>
+              <label className="text-xs text-muted-foreground" htmlFor={`dataset-trigger-${dataset.id}`}>
+                Trigger
+              </label>
+              <input
+                id={`dataset-trigger-${dataset.id}`}
+                value={dataset.triggerWord}
+                onChange={(event) => void updateDatasetFileBackedState(dataset, { triggerWord: event.target.value })}
+                placeholder="Missing"
+                className="mt-1 h-8 w-full min-w-0 rounded border border-border bg-background px-2 font-mono text-sm font-semibold text-foreground placeholder:text-muted-foreground"
+              />
             </div>
           </div>
 
@@ -3430,7 +3526,7 @@ function App() {
                             ? 'ring-2 ring-primary'
                             : ''
                       }`}
-                      onOpenContextMenu={openAssetExplorerContextMenu}
+                      onOpenContextMenu={(_item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
                       footer={
                         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
                           <div className="flex items-end justify-between gap-2">
@@ -3439,29 +3535,6 @@ function App() {
                               <p className="text-xs text-gray-300">
                                 {item.label} · {item.width} x {item.height}
                               </p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1">
-                              {canReorderDatasetBoard ? (
-                                <span
-                                  className="flex h-8 w-8 items-center justify-center rounded-md bg-black/55 text-white"
-                                  title="Drag to reorder"
-                                >
-                                  <Grip className="h-4 w-4" />
-                                </span>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  void removeDatasetBoardAsset(dataset, item);
-                                }}
-                                className="flex h-8 w-8 items-center justify-center rounded-md bg-black/55 text-white hover:bg-destructive"
-                                title="Remove from Dataset"
-                                aria-label={`Remove ${item.fileName} from Dataset`}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
                             </div>
                           </div>
                         </div>
@@ -3790,12 +3863,12 @@ function App() {
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="rounded bg-secondary/60 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Sources</p>
-                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.sourceRefs ?? 0}</p>
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Assets</p>
+                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.assets ?? 0}</p>
                   </div>
                   <div className="rounded bg-secondary/60 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Files</p>
-                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.fileAssets ?? 0}</p>
+                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Supported</p>
+                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.supported ?? 0}</p>
                   </div>
                 </div>
                 {activeDatasetSummary && activeDatasetSummary.sourceRefs > activeDatasetSummary.availableSourceRefs ? (
@@ -5253,6 +5326,7 @@ function App() {
     const fileKind = getExplorerFileKind(node.name);
     const workspaceImageId = findWorkspaceImageIdForPath(node.path);
     const canOpenFileInTab = isSingleFileSelection && canOpenExplorerFile(fileKind);
+    const canOpenInAnalysis = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd' || fileKind === 'video');
     const canOpenInPhotopea = isSingleFileSelection && isExplorerImageFileName(node.name) && Boolean(workspaceImageId);
     const canOpenInCaption = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
 
@@ -5268,6 +5342,9 @@ function App() {
           : null,
         canOpenInCaption
           ? createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openFileModeTab(node, 'caption') })
+          : null,
+        canOpenInAnalysis
+          ? createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openFileModeTab(node, 'analysis') })
           : null,
       ].filter((action): action is ContextAction => Boolean(action)),
       [
@@ -6070,7 +6147,9 @@ function App() {
                     className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
                     style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
                   >
-                    {explorerContextMenu.node.kind === 'file'
+                    {explorerContextMenu.actionGroups
+                      ? <ContextActionGroups groups={explorerContextMenu.actionGroups} />
+                      : explorerContextMenu.node.kind === 'file'
                       ? renderFileContextMenuItems(explorerContextMenu.node)
                       : explorerContextMenu.node.kind === 'dataset'
                         ? renderDatasetContextMenuItems(explorerContextMenu.node)
@@ -6132,6 +6211,19 @@ function App() {
                               x: event.clientX,
                               y: event.clientY,
                             });
+                          }}
+                        />
+                      ) : tab.kind === 'file-analysis' ? (
+                        <AnalysisStage
+                          active={isActiveFileTab}
+                          projectDirectoryHandle={projectDirectoryHandle}
+                          onOpenAssetContextMenu={openAssetExplorerContextMenu}
+                          fileTarget={{
+                            path: tab.path,
+                            name: tab.name,
+                            fileKind: tab.fileKind,
+                            file: tab.file,
+                            workspaceImageId: tab.workspaceImageId,
                           }}
                         />
                       ) : tab.kind === 'file-edit' ? (
@@ -6326,7 +6418,9 @@ function App() {
               className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
               style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
             >
-              {renderFileContextMenuItems(explorerContextMenu.node)}
+              {explorerContextMenu.actionGroups
+                ? <ContextActionGroups groups={explorerContextMenu.actionGroups} />
+                : renderFileContextMenuItems(explorerContextMenu.node)}
             </div>
           </>
         )}

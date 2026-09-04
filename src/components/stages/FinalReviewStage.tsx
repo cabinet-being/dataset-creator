@@ -58,13 +58,6 @@ const REVIEW_KINDS = ['image', 'synthetic', 'video', 'psd'] as const satisfies R
 const isReviewKind = (kind: WorkspaceImageKind): kind is ReviewKind =>
   (REVIEW_KINDS as readonly WorkspaceImageKind[]).includes(kind);
 const isString = (value: string | undefined): value is string => Boolean(value);
-const getDatasetAssetKey = (item: WorkspaceImage): string | null => {
-  if (item.kind === 'image' || item.kind === 'synthetic') {
-    return createDatasetImageAssetKey(item.sourceImageId);
-  }
-  return item.assetPath ? createDatasetFileAssetKey(item.assetPath) : null;
-};
-
 const getDatasetQuickActionLabel = (
   item: WorkspaceImage,
   mode: 'add' | 'remove'
@@ -173,8 +166,6 @@ export const FinalReviewStage = ({
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
-  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
-  const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const addNotification = useUIStore((state) => state.addNotification);
   const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
@@ -433,66 +424,6 @@ export const FinalReviewStage = ({
     });
   };
 
-  const handleDeleteItem = useCallback((item: WorkspaceImage) => {
-    if (dataset && onUpdateDataset) {
-      if (mode === 'select') {
-        const assetKey = getDatasetAssetKey(item);
-        if (item.kind === 'image' || item.kind === 'synthetic') {
-          const nextAssetIds = [...new Set([...dataset.assetIds, item.sourceImageId])];
-          void onUpdateDataset({
-            assetIds: nextAssetIds,
-            assetOrder: normalizeDatasetAssetOrder(
-              assetKey ? [...(dataset.assetOrder ?? []), assetKey] : dataset.assetOrder,
-              nextAssetIds,
-              dataset.assetPaths
-            ),
-          });
-        } else if (item.assetPath) {
-          const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), item.assetPath])]);
-          const nextPsdAssetPaths =
-            item.kind === 'psd'
-              ? filterLegacyProjectAssetPaths([...new Set([...(dataset.psdAssetPaths ?? []), item.assetPath])])
-              : filterLegacyProjectAssetPaths(dataset.psdAssetPaths);
-          void onUpdateDataset({
-            assetPaths: nextAssetPaths,
-            psdAssetPaths: nextPsdAssetPaths,
-            assetOrder: normalizeDatasetAssetOrder(
-              assetKey ? [...(dataset.assetOrder ?? []), assetKey] : dataset.assetOrder,
-              dataset.assetIds,
-              nextAssetPaths
-            ),
-          });
-        }
-        addNotification('success', 'Asset added to Dataset');
-        return;
-      }
-      const nextAssetOrder = (dataset.assetOrder ?? []).filter((key) => key !== getDatasetAssetKey(item));
-      if (item.kind === 'image' || item.kind === 'synthetic') {
-        const nextAssetIds = dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId);
-        void onUpdateDataset({
-          assetIds: nextAssetIds,
-          assetOrder: normalizeDatasetAssetOrder(nextAssetOrder, nextAssetIds, dataset.assetPaths),
-        });
-      } else if (item.assetPath) {
-        const nextAssetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath);
-        void onUpdateDataset({
-          assetPaths: nextAssetPaths,
-          psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
-          assetOrder: normalizeDatasetAssetOrder(nextAssetOrder, dataset.assetIds, nextAssetPaths),
-        });
-      }
-      addNotification('info', 'Asset removed from Dataset');
-      return;
-    }
-
-    if (item.kind === 'image' && item.sourceImageId) {
-      updateSourceImage(item.sourceImageId, { hidden: true });
-    } else if (item.kind === 'synthetic' && item.syntheticImageId) {
-      updateDatasetItem(item.syntheticImageId, { excludedFromDataset: true });
-    }
-    addNotification('info', 'Asset removed from review');
-  }, [addNotification, dataset, mode, onUpdateDataset, updateDatasetItem, updateSourceImage]);
-
   const addItemsToDataset = useCallback((nextItems: WorkspaceImage[]) => {
     if (!dataset || !onUpdateDataset) {
       return;
@@ -544,7 +475,6 @@ export const FinalReviewStage = ({
   }, [addNotification, dataset, onUpdateDataset]);
 
   const showSelectActions = Boolean(dataset && onUpdateDataset && mode === 'select');
-  const showReviewRemoveActions = Boolean(dataset && onUpdateDataset && mode === 'review');
   const reviewControls = (
     <div className="relative z-50 rounded-md border border-border bg-card px-3 py-2">
       {openMenu && (
@@ -761,17 +691,13 @@ export const FinalReviewStage = ({
               quickActionLabel={
                 showSelectActions
                   ? getDatasetQuickActionLabel(item, 'add')
-                  : showReviewRemoveActions
-                    ? getDatasetQuickActionLabel(item, 'remove')
-                    : undefined
+                  : undefined
               }
-              quickActionVariant={showReviewRemoveActions ? 'remove' : 'add'}
+              quickActionVariant="add"
               onQuickAction={
                 showSelectActions
                   ? (item) => addItemsToDataset([item])
-                  : showReviewRemoveActions
-                    ? handleDeleteItem
-                    : undefined
+                  : undefined
               }
               onOpenContextMenu={onOpenAssetContextMenu}
             />

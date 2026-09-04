@@ -125,6 +125,9 @@ export const indexProjectAssets = async (
       .filter((source) => source.originalFilePath)
       .map((source) => [source.originalFilePath as string, source])
   );
+  const existingById = new Map(
+    Object.values(options.existingSourceImages ?? {}).map((source) => [source.id, source])
+  );
   let indexedCount = 0;
   let createdManifestCount = 0;
 
@@ -139,15 +142,22 @@ export const indexProjectAssets = async (
     const manifestName = getAssetManifestName(file.name);
     const existingManifest = await readOptionalManifest(directory, manifestName);
     const kind = resolveProjectAssetKind(file.name, file.type);
+    const manifestIdOwner = typeof existingManifest?.id === 'string'
+      ? existingById.get(existingManifest.id)
+      : undefined;
+    const manifestIdentityConflict =
+      kind === 'image' &&
+      Boolean(manifestIdOwner) &&
+      manifestIdOwner?.originalFilePath !== assetPath;
     let sourceImage: SourceImage | undefined;
 
     if (kind === 'image' && !existingSource) {
       const { width, height } = await getImageDimensions(file);
-      const id = existingManifest?.id;
+      const id = manifestIdentityConflict ? undefined : existingManifest?.id;
       sourceImage = createSourceImage(file, file.name, width, height, URL.createObjectURL(file));
       if (id) {
         sourceImage.id = id;
-        sourceImage.fileName = existingManifest.fileName ?? sourceImage.fileName;
+        sourceImage.fileName = existingManifest?.fileName ?? sourceImage.fileName;
       }
       sourceImage.originalFileName = existingManifest?.originalFileName ?? file.name;
       sourceImage.originalFilePath = assetPath;
@@ -158,7 +168,8 @@ export const indexProjectAssets = async (
 
     const manifestValid =
       Boolean(existingManifest?.id) &&
-      (existingManifest?.assetPath === assetPath || existingManifest?.originalFilePath === assetPath);
+      (existingManifest?.assetPath === assetPath || existingManifest?.originalFilePath === assetPath) &&
+      !manifestIdentityConflict;
     if (!manifestValid) {
       await writeGenericAssetManifest(directory, file, assetPath, sourceImage ?? existingSource);
       createdManifestCount += 1;
@@ -170,6 +181,11 @@ export const indexProjectAssets = async (
         assetPath,
         manifestCreated: !manifestValid,
       });
+    }
+
+    if (sourceImage) {
+      existingByPath.set(assetPath, sourceImage);
+      existingById.set(sourceImage.id, sourceImage);
     }
 
     indexedCount += 1;
