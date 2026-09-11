@@ -37,6 +37,12 @@ type InsertMode = 'prepend' | 'append' | 'overwrite';
 const canAutoTagItem = (item: WorkspaceImage): boolean =>
   item.kind === 'image' || item.kind === 'synthetic';
 
+const canCaptionItem = (item: WorkspaceImage): boolean =>
+  item.kind === 'image' || item.kind === 'synthetic' || item.kind === 'psd';
+
+const DATASET_OVERWRITE_CAPTIONS_WARNING =
+  'Enable Overwrite captions in Dataset Inspector before editing Dataset captions';
+
 type DirectoryPickerWindow = Window &
   typeof globalThis & {
     showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
@@ -137,6 +143,7 @@ type TaggingCardProps = {
   onRemoveTag: (itemId: string, tag: string) => void;
   suggestions: string[];
   knownTags: Set<string>;
+  captionActionsDisabled?: boolean;
   onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
@@ -149,6 +156,7 @@ const TaggingCard = memo(
     onRemoveTag,
     suggestions,
     knownTags,
+    captionActionsDisabled = false,
     onOpenContextMenu,
   }: TaggingCardProps) => {
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -262,6 +270,9 @@ const TaggingCard = memo(
     }, [shouldShowDropdown]);
 
     const addSuggestion = (tag: string) => {
+      if (captionActionsDisabled) {
+        return;
+      }
       const nextValue = replaceCurrentTagFragment(inputValue, tag);
       setInputValue(nextValue);
       setIsDropdownOpen(false);
@@ -317,7 +328,8 @@ const TaggingCard = memo(
                     <button
                       type="button"
                       onClick={() => onRemoveTag(item.id, tag)}
-                      className="hover:opacity-70"
+                      disabled={captionActionsDisabled}
+                      className="hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={`Remove tag ${tag}`}
                     >
                       <X size={12} />
@@ -375,13 +387,14 @@ const TaggingCard = memo(
                 }
               }}
               placeholder="Add tags with commas, then press Enter"
+              disabled={captionActionsDisabled}
               aria-autocomplete="list"
               aria-expanded={shouldShowDropdown}
               aria-controls={`tag-suggestions-${item.id}`}
               aria-activedescendant={
                 shouldShowDropdown ? `tag-suggestion-${item.id}-${activeSuggestionIndex}` : undefined
               }
-              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
+              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm disabled:cursor-not-allowed disabled:opacity-50"
             />
             {shouldShowDropdown && dropdownPosition
               ? createPortal(
@@ -457,41 +470,46 @@ const TaggingCard = memo(
 
 TaggingCard.displayName = 'TaggingCard';
 
-type SelectedTaggingControlsProps = {
-  item: WorkspaceImage;
-  tags: string[];
+type CaptionScopeTag = {
+  tag: string;
+  count: number;
+};
+
+type CaptionScopeControlsProps = {
+  scopeItems: WorkspaceImage[];
+  tags: CaptionScopeTag[];
   tagInput: string;
   suggestions: string[];
   knownTags: Set<string>;
-  threshold: number;
-  maxTags: number;
-  autoTaggingDisabled: boolean;
-  autoTaggingBusy: boolean;
-  autoTaggingTitle: string;
-  autoTaggingAriaLabel: string;
+  insertMode: InsertMode;
+  captionActionsDisabled: boolean;
+  autoCaptionDisabled: boolean;
+  autoCaptionBusy: boolean;
+  autoCaptionTitle: string;
   onTagInputChange: (value: string) => void;
   onSubmitTags: () => void;
-  onRunAutoTagging: () => void;
-  onRemoveTag: (itemId: string, tag: string) => void;
+  onOpenAutoCaptionDialog: () => void;
+  onInsertModeChange: (mode: InsertMode) => void;
+  onRemoveTag: (tag: string) => void;
 };
 
-const SelectedTaggingControls = ({
-  item,
+const CaptionScopeControls = ({
+  scopeItems,
   tags,
   tagInput,
   suggestions,
   knownTags,
-  threshold,
-  maxTags,
-  autoTaggingDisabled,
-  autoTaggingBusy,
-  autoTaggingTitle,
-  autoTaggingAriaLabel,
+  insertMode,
+  captionActionsDisabled,
+  autoCaptionDisabled,
+  autoCaptionBusy,
+  autoCaptionTitle,
   onTagInputChange,
   onSubmitTags,
-  onRunAutoTagging,
+  onOpenAutoCaptionDialog,
+  onInsertModeChange,
   onRemoveTag,
-}: SelectedTaggingControlsProps) => (
+}: CaptionScopeControlsProps) => (
   <>
     <div className="mb-4">
       <label className="mb-2 block text-xs text-muted-foreground">Add tags</label>
@@ -508,11 +526,12 @@ const SelectedTaggingControls = ({
           onChange={(event) => onTagInputChange(event.target.value)}
           placeholder="tag1, tag2"
           list="selected-tag-suggestions"
+          disabled={captionActionsDisabled}
           className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
         />
         <button
           type="submit"
-          disabled={!tagInput.trim()}
+          disabled={!tagInput.trim() || captionActionsDisabled || scopeItems.length === 0}
           className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           title="Add tags"
           aria-label="Add tags"
@@ -521,12 +540,12 @@ const SelectedTaggingControls = ({
         </button>
         <button
           type="button"
-          onClick={onRunAutoTagging}
-          disabled={autoTaggingDisabled}
+          onClick={onOpenAutoCaptionDialog}
+          disabled={autoCaptionDisabled || captionActionsDisabled || scopeItems.length === 0}
           className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          title={autoTaggingTitle}
-          aria-label={autoTaggingAriaLabel}
-          aria-busy={autoTaggingBusy}
+          title={autoCaptionTitle}
+          aria-label={autoCaptionTitle}
+          aria-busy={autoCaptionBusy}
         >
           <Sparkles size={16} />
         </button>
@@ -536,9 +555,21 @@ const SelectedTaggingControls = ({
           <option key={tag} value={tag} />
         ))}
       </datalist>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Auto-tag uses current threshold {threshold.toFixed(2)} and max {maxTags}.
-      </p>
+    </div>
+
+    <div className="mb-4">
+      <label className="mb-2 block text-xs text-muted-foreground">Insert Mode</label>
+      <select
+        value={insertMode}
+        onChange={(event) => onInsertModeChange(event.target.value as InsertMode)}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+      >
+        {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
+          <option key={mode} value={mode}>
+            {INSERT_MODE_LABELS[mode]}
+          </option>
+        ))}
+      </select>
     </div>
 
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -550,15 +581,19 @@ const SelectedTaggingControls = ({
         {tags.length > 0 ? (
           tags.map((tag) => (
             <span
-              key={tag}
-              className={getCaptionTagClassName(knownTags.size > 0 && !knownTags.has(tag))}
+              key={tag.tag}
+              className={getCaptionTagClassName(knownTags.size > 0 && !knownTags.has(tag.tag))}
             >
-              {tag}
+              {tag.tag}
+              {scopeItems.length > 1 ? (
+                <span className="opacity-70">{tag.count}/{scopeItems.length}</span>
+              ) : null}
               <button
                 type="button"
-                onClick={() => onRemoveTag(item.id, tag)}
-                className="hover:opacity-70"
-                aria-label={`Remove tag ${tag}`}
+                onClick={() => onRemoveTag(tag.tag)}
+                disabled={captionActionsDisabled}
+                className="hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`Remove tag ${tag.tag}`}
               >
                 <X size={12} />
               </button>
@@ -635,17 +670,19 @@ export const TaggingStage = ({
   const disconnectLocalTagger = useLocalTaggerStore((state) => state.disconnect);
 
   const [newBlacklistTag, setNewBlacklistTag] = useState('');
-  const [globalTagsToAdd, setGlobalTagsToAdd] = useState('');
   const [suggestionTags, setSuggestionTags] = useState<string[]>([]);
   const [suggestionFileName, setSuggestionFileName] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedTagInput, setSelectedTagInput] = useState('');
-  const [isSelectedAutoTagging, setIsSelectedAutoTagging] = useState(false);
+  const [autoCaptionDialogOpen, setAutoCaptionDialogOpen] = useState(false);
+  const [autoCaptionThreshold, setAutoCaptionThreshold] = useState(taggingConfig.threshold);
+  const [autoCaptionMaxTags, setAutoCaptionMaxTags] = useState(taggingConfig.maxTags);
   const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
   const autoConnectSettingsKeyRef = useRef<string | null>(null);
   const savedSuggestionLoadKeyRef = useRef<string | null>(null);
+  const autoTaggingRunTokenRef = useRef(0);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const datasetAssetPaths = useMemo(
@@ -688,13 +725,26 @@ export const TaggingStage = ({
     () => items.find((item) => item.id === selectedItemId) ?? null,
     [items, selectedItemId]
   );
-  const normalizedDatasetKeyword = datasetTriggerWord.trim().toLowerCase();
-  const bulkTags = useMemo(
-    () => Array.from(new Set(parseTagInput(globalTagsToAdd).filter((tag) => tag !== normalizedDatasetKeyword))),
-    [globalTagsToAdd, normalizedDatasetKeyword]
+  const canUseCaptionScopeItem = useCallback(
+    (item: WorkspaceImage) =>
+      dataset
+        ? canCaptionItem(item)
+        : item.kind === 'image' || item.kind === 'synthetic',
+    [dataset]
   );
-  const hasBulkTags = bulkTags.length > 0;
-  const autoTaggableItems = useMemo(() => items.filter(canAutoTagItem), [items]);
+  const captionScopeItems = useMemo(
+    () => (selectedItem && canUseCaptionScopeItem(selectedItem)
+      ? [selectedItem]
+      : selectedItem
+        ? []
+        : items.filter(canUseCaptionScopeItem)),
+    [canUseCaptionScopeItem, items, selectedItem]
+  );
+  const autoCaptionScopeItems = useMemo(
+    () => captionScopeItems.filter(canAutoTagItem),
+    [captionScopeItems]
+  );
+  const captionActionsDisabled = Boolean(dataset && !dataset.overwriteCaptions);
 
   const canUseDirectoryPicker =
     typeof window !== 'undefined' && typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
@@ -812,37 +862,107 @@ export const TaggingStage = ({
     }
   }, [selectedItem, selectedItemId]);
 
-  const updateWorkspaceImageTags = useCallback(
-    (item: WorkspaceImage, tags: string[]) => {
-      const nextTags = normalizeUniqueTags(tags);
-
-      if (dataset && onUpdateDataset) {
-        if (!dataset.overwriteCaptions) {
-          addNotification('warning', 'Enable Overwrite captions in Dataset Inspector before editing Dataset captions');
+  const buildNextTags = useCallback(
+    (existingTags: string[] = [], incomingTags: string[], mode: InsertMode = taggingConfig.insertMode) => {
+      const blacklist = new Set(taggingConfig.blacklist.map((tag) => tag.trim().toLowerCase()));
+      const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
+      const normalizedIncoming = normalizeUniqueTags(incomingTags)
+        .filter((tag) => tag !== normalizedKeyword)
+        .filter((tag) => !blacklist.has(tag));
+      const normalizedExisting = normalizeUniqueTags(existingTags)
+        .filter((tag) => tag !== normalizedKeyword)
+        .filter((tag) => !blacklist.has(tag));
+      const nextTags: string[] = [];
+      const seen = new Set<string>();
+      const addTag = (tag: string) => {
+        if (!tag || seen.has(tag)) {
           return;
         }
-        void onUpdateDataset({
-          captionOverrides: {
-            ...(dataset.captionOverrides ?? {}),
-            [item.id]: nextTags,
-          },
-        });
-        return;
+        seen.add(tag);
+        nextTags.push(tag);
+      };
+
+      if (mode === 'prepend' || mode === 'overwrite') {
+        normalizedIncoming.forEach(addTag);
+      }
+      if (mode !== 'overwrite') {
+        normalizedExisting.forEach(addTag);
+      }
+      if (mode === 'append') {
+        normalizedIncoming.forEach(addTag);
       }
 
-      if (item.kind === 'image') {
-        updateSourceImage(item.sourceImageId, { tags: nextTags });
-        return;
-      }
-
-      if (item.kind === 'synthetic' && item.syntheticImageId) {
-        updateDatasetItem(item.syntheticImageId, { tags: nextTags });
-        return;
-      }
-
-      addNotification('warning', 'Open this asset through a Dataset with Overwrite captions enabled before editing captions');
+      return nextTags;
     },
-    [addNotification, dataset, onUpdateDataset, updateDatasetItem, updateSourceImage]
+    [datasetTriggerWord, taggingConfig.blacklist, taggingConfig.insertMode]
+  );
+
+  const persistCaptionTagsForItems = useCallback(
+    async (targetItems: WorkspaceImage[], resolveTags: (item: WorkspaceImage) => string[]) => {
+      const captionableItems = targetItems.filter(canUseCaptionScopeItem);
+      if (captionableItems.length === 0) {
+        return false;
+      }
+
+      if (dataset && onUpdateDataset) {
+        const latestDataset = useProjectStore.getState().datasets[dataset.id] ?? dataset;
+        if (!latestDataset.overwriteCaptions) {
+          addNotification('warning', DATASET_OVERWRITE_CAPTIONS_WARNING);
+          return false;
+        }
+
+        const nextOverrides = { ...(latestDataset.captionOverrides ?? {}) };
+        let changedItemCount = 0;
+        for (const item of captionableItems) {
+          const nextTags = normalizeUniqueTags(resolveTags(item));
+          const previousTags = nextOverrides[item.id] ?? item.tags ?? [];
+          const changed =
+            nextTags.length !== previousTags.length ||
+            nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
+          if (changed) {
+            nextOverrides[item.id] = nextTags;
+            changedItemCount += 1;
+          }
+        }
+
+        if (changedItemCount === 0) {
+          return false;
+        }
+
+        await onUpdateDataset({ captionOverrides: nextOverrides });
+        return true;
+      }
+
+      let changedItemCount = 0;
+      for (const item of captionableItems) {
+        const nextTags = normalizeUniqueTags(resolveTags(item));
+        const previousTags = item.tags ?? [];
+        const changed =
+          nextTags.length !== previousTags.length ||
+          nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
+        if (!changed) {
+          continue;
+        }
+
+        if (item.kind === 'image') {
+          updateSourceImage(item.sourceImageId, { tags: nextTags });
+          changedItemCount += 1;
+        } else if (item.kind === 'synthetic' && item.syntheticImageId) {
+          updateDatasetItem(item.syntheticImageId, { tags: nextTags });
+          changedItemCount += 1;
+        }
+      }
+
+      return changedItemCount > 0;
+    },
+    [addNotification, canUseCaptionScopeItem, dataset, onUpdateDataset, updateDatasetItem, updateSourceImage]
+  );
+
+  const updateWorkspaceImageTags = useCallback(
+    (item: WorkspaceImage, tags: string[]) => {
+      void persistCaptionTagsForItems([item], () => tags);
+    },
+    [persistCaptionTagsForItems]
   );
 
   const applyTagsToItem = useCallback(
@@ -853,22 +973,9 @@ export const TaggingStage = ({
         return false;
       }
 
-      const existingTags = new Set(item.tags ?? []);
-      const nextTags = [...(item.tags ?? [])];
       const skippedDuplicates: string[] = [];
-      const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
-
-      for (const tag of parsedTags) {
-        if (tag === normalizedKeyword || taggingConfig.blacklist.includes(tag) || existingTags.has(tag)) {
-          if (existingTags.has(tag)) {
-            skippedDuplicates.push(tag);
-          }
-          continue;
-        }
-
-        existingTags.add(tag);
-        nextTags.push(tag);
-      }
+      const existingTags = new Set((item.tags ?? []).map((tag) => tag.trim().toLowerCase()));
+      skippedDuplicates.push(...parsedTags.filter((tag) => existingTags.has(tag)));
 
       if (import.meta.env.DEV) {
         console.log(`[tagging] raw input string: ${rawValue}`);
@@ -877,69 +984,22 @@ export const TaggingStage = ({
         console.log('[tagging] dataset keyword insertion skipped during manual tagging');
       }
 
-      const previousTags = item.tags ?? [];
-      const changed =
-        nextTags.length !== previousTags.length ||
-        nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
-
-      if (changed) {
-        updateWorkspaceImageTags(item, nextTags);
-      }
+      void persistCaptionTagsForItems([item], (entry) => buildNextTags(entry.tags, parsedTags));
 
       return true;
     },
-    [items, taggingConfig.blacklist, datasetTriggerWord, updateWorkspaceImageTags]
+    [buildNextTags, datasetTriggerWord, items, persistCaptionTagsForItems]
   );
 
   const mergeAutoTags = useCallback(
     (existingTags: string[] = [], predictedTags: string[]) => {
-      const blacklist = new Set(taggingConfig.blacklist.map((tag) => tag.toLowerCase()));
-      const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
-      const normalizedPredictions = predictedTags
-        .map((tag) => tag.trim().toLowerCase())
-        .filter(Boolean)
-        .filter((tag) => tag !== normalizedKeyword)
-        .filter((tag) => !blacklist.has(tag));
-      const normalizedExisting = existingTags
-        .map((tag) => tag.trim().toLowerCase())
-        .filter(Boolean)
-        .filter((tag) => tag !== normalizedKeyword)
-        .filter((tag) => !blacklist.has(tag));
-      const nextTags: string[] = [];
-      const seen = new Set<string>();
-
-      const addTag = (tag: string) => {
-        if (!tag || seen.has(tag) || blacklist.has(tag)) {
-          return;
-        }
-
-        seen.add(tag);
-        nextTags.push(tag);
-      };
-
-      if (taggingConfig.insertMode === 'prepend' || taggingConfig.insertMode === 'overwrite') {
-        normalizedPredictions.forEach(addTag);
-      }
-
-      if (taggingConfig.insertMode !== 'overwrite') {
-        normalizedExisting.forEach(addTag);
-      }
-
-      if (taggingConfig.insertMode === 'append') {
-        normalizedPredictions.forEach(addTag);
-      }
-
       if (import.meta.env.DEV) {
-        console.log('[tagging] dataset keyword insertion skipped during auto-tagging');
+        console.log('[tagging] dataset keyword insertion skipped during auto-caption');
       }
 
-      return nextTags;
+      return buildNextTags(existingTags, predictedTags);
     },
-    [
-      taggingConfig.blacklist,
-      datasetTriggerWord,
-      taggingConfig.insertMode,
-    ]
+    [buildNextTags]
   );
 
   const connectBundleSource = useCallback(
@@ -947,7 +1007,7 @@ export const TaggingStage = ({
       setLocalTaggerStatus('loading');
       setLocalTagger(null);
       setLocalTaggerProgress('Starting model connection...');
-      setLocalTaggerMessage('Validating local tagger bundle...');
+          setLocalTaggerMessage('Validating local caption model...');
 
       try {
         const connectedBundle = await connectLocalTaggerBundle(source, setLocalTaggerProgress);
@@ -957,7 +1017,7 @@ export const TaggingStage = ({
         setLocalTaggerMessage(
           `Ready. Loaded ${connectedBundle.tags.length.toLocaleString()} tags from ${connectedBundle.name}.`
         );
-        addNotification('success', `Local tagger ready: ${connectedBundle.name}`);
+        addNotification('success', `Local caption model ready: ${connectedBundle.name}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Model validation failed.';
         setLocalTagger(null);
@@ -986,7 +1046,7 @@ export const TaggingStage = ({
 
       if (!modelHandle || !tagsHandle) {
         if (!silent) {
-          setLocalTaggerMessage('Saved tagger file names exist, but file access handles are unavailable.');
+          setLocalTaggerMessage('Saved caption model file names exist, but file access handles are unavailable.');
         }
         return false;
       }
@@ -998,7 +1058,7 @@ export const TaggingStage = ({
 
       if (!canReadModel || !canReadTags) {
         setLocalTaggerStatus('not-ready');
-        setLocalTaggerMessage('Browser permission is required to read saved local tagger files.');
+        setLocalTaggerMessage('Browser permission is required to read saved local caption model files.');
         return false;
       }
 
@@ -1217,155 +1277,108 @@ export const TaggingStage = ({
     });
   };
 
-  const handleAddGlobalTags = () => {
-    if (bulkTags.length === 0) {
-      addNotification('warning', 'No eligible bulk tags to add');
+  const handleSubmitScopeTags = useCallback(() => {
+    const parsedTags = parseTagInput(selectedTagInput);
+    if (parsedTags.length === 0 || captionScopeItems.length === 0 || captionActionsDisabled) {
       return;
     }
 
-    const blacklist = new Set(taggingConfig.blacklist.map((tag) => tag.trim().toLowerCase()));
-    const normalizedBulkTags = bulkTags.filter((tag) => !blacklist.has(tag));
-
-    if (normalizedBulkTags.length === 0) {
-      addNotification('warning', 'No eligible bulk tags to add');
-      return;
-    }
-
-    for (const item of items) {
-      const normalizedExisting = (item.tags ?? [])
-        .map((tag) => tag.trim().toLowerCase())
-        .filter(Boolean)
-        .filter((tag) => tag !== normalizedDatasetKeyword)
-        .filter((tag) => !blacklist.has(tag));
-      const nextTags: string[] = [];
-      const seen = new Set<string>();
-
-      const addTag = (tag: string) => {
-        if (!tag || seen.has(tag)) {
-          return;
+    void persistCaptionTagsForItems(captionScopeItems, (item) => buildNextTags(item.tags, parsedTags))
+      .then((changed) => {
+        if (changed) {
+          addNotification(
+            'success',
+            `Updated captions for ${captionScopeItems.length} asset${captionScopeItems.length === 1 ? '' : 's'}`
+          );
+          setSelectedTagInput('');
         }
-        seen.add(tag);
-        nextTags.push(tag);
-      };
+      });
+  }, [
+    addNotification,
+    buildNextTags,
+    captionActionsDisabled,
+    captionScopeItems,
+    persistCaptionTagsForItems,
+    selectedTagInput,
+  ]);
 
-      if (taggingConfig.insertMode === 'prepend' || taggingConfig.insertMode === 'overwrite') {
-        normalizedBulkTags.forEach(addTag);
+  const handleRemoveScopeTag = useCallback(
+    (tag: string) => {
+      if (captionScopeItems.length === 0 || captionActionsDisabled) {
+        return;
       }
 
-      if (taggingConfig.insertMode !== 'overwrite') {
-        normalizedExisting.forEach(addTag);
-      }
-
-      if (taggingConfig.insertMode === 'append') {
-        normalizedBulkTags.forEach(addTag);
-      }
-
-      const previousTags = item.tags ?? [];
-      const changed =
-        nextTags.length !== previousTags.length ||
-        nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
-
-      if (changed) {
-        updateWorkspaceImageTags(item, nextTags);
-      }
-    }
-
-    addNotification('success', `Applied ${normalizedBulkTags.length} caption tag(s) across the current workspace`);
-    if (import.meta.env.DEV) {
-      console.log('[tagging] dataset keyword insertion skipped during bulk add');
-      console.log(`[tagging] shared insert mode: ${taggingConfig.insertMode}`);
-    }
-    setGlobalTagsToAdd('');
-  };
-
-  const handleRemoveGlobalTags = () => {
-    const tagsToRemove = new Set(bulkTags);
-
-    if (tagsToRemove.size === 0) {
-      addNotification('warning', 'No eligible bulk tags to remove');
-      return;
-    }
-
-    let changedImageCount = 0;
-    let removedTagCount = 0;
-
-    for (const item of items) {
-      const previousTags = item.tags ?? [];
-      const nextTags = previousTags.filter((tag) => !tagsToRemove.has(tag.trim().toLowerCase()));
-      const itemRemovedTagCount = previousTags.length - nextTags.length;
-
-      if (itemRemovedTagCount > 0) {
-        changedImageCount += 1;
-        removedTagCount += itemRemovedTagCount;
-        updateWorkspaceImageTags(item, nextTags);
-      }
-    }
-
-    if (changedImageCount === 0) {
-      addNotification('info', 'No matching tags found in the current workspace');
-      return;
-    }
-
-    addNotification(
-      'success',
-      `Removed ${removedTagCount} caption tag(s) from ${changedImageCount} image${changedImageCount !== 1 ? 's' : ''}`
-    );
-    if (import.meta.env.DEV) {
-      console.log(`[tagging] bulk removed tags: ${JSON.stringify(Array.from(tagsToRemove))}`);
-      console.log(`[tagging] images changed by bulk remove: ${changedImageCount}`);
-    }
-    setGlobalTagsToAdd('');
-  };
+      const normalizedTag = tag.trim().toLowerCase();
+      void persistCaptionTagsForItems(
+        captionScopeItems,
+        (item) => (item.tags ?? []).filter((entry) => entry.trim().toLowerCase() !== normalizedTag)
+      );
+    },
+    [captionActionsDisabled, captionScopeItems, persistCaptionTagsForItems]
+  );
 
   const handleRunLocalAutoTagging = useCallback(async () => {
+    if (dataset && !dataset.overwriteCaptions) {
+      autoTaggingRunTokenRef.current += 1;
+      setLocalTaggerStatus(localTagger ? 'ready' : 'not-connected');
+      setAutoTaggingProgress({ completed: 0, total: 0 });
+      addNotification('warning', DATASET_OVERWRITE_CAPTIONS_WARNING);
+      return;
+    }
+
     if (!localTagger || localTaggerStatus !== 'ready') {
       setLocalTaggerStatus('not-ready');
-      setLocalTaggerMessage('Connect and validate a supported model folder before running auto-tagging.');
+      setLocalTaggerMessage('Connect and validate a supported model folder before running auto-caption.');
       return;
     }
 
-    if (autoTaggableItems.length === 0) {
-      addNotification('warning', 'No image assets available for auto-tagging');
+    if (autoCaptionScopeItems.length === 0) {
+      addNotification('warning', 'No image assets available for auto-caption');
       return;
     }
 
+    const runToken = autoTaggingRunTokenRef.current + 1;
+    autoTaggingRunTokenRef.current = runToken;
     setLocalTaggerStatus('running');
-    setAutoTaggingProgress({ completed: 0, total: autoTaggableItems.length });
+    setAutoTaggingProgress({ completed: 0, total: autoCaptionScopeItems.length });
 
     try {
       let changedItemCount = 0;
+      const predictedTagsByItemId = new Map<string, string[]>();
 
-      for (let index = 0; index < autoTaggableItems.length; index += 1) {
-        const item = autoTaggableItems[index];
-        setAutoTaggingProgress({ completed: index, total: autoTaggableItems.length });
+      for (let index = 0; index < autoCaptionScopeItems.length; index += 1) {
+        const item = autoCaptionScopeItems[index];
+        const latestDataset = dataset ? useProjectStore.getState().datasets[dataset.id] : null;
+        if (autoTaggingRunTokenRef.current !== runToken || (latestDataset && !latestDataset.overwriteCaptions)) {
+          autoTaggingRunTokenRef.current += 1;
+          setAutoTaggingProgress({ completed: 0, total: 0 });
+          setLocalTaggerStatus('ready');
+          setLocalTaggerMessage('Ready. Auto-caption stopped.');
+          return;
+        }
+        setAutoTaggingProgress({ completed: index, total: autoCaptionScopeItems.length });
 
         const predictions = await predictLocalTags(
           localTagger,
           item.imageData,
-          taggingConfig.threshold,
-          taggingConfig.maxTags
+          autoCaptionThreshold,
+          autoCaptionMaxTags
         );
-        const nextTags = mergeAutoTags(
-          item.tags ?? [],
-          predictions.map((prediction) => prediction.tag)
-        );
-        const previousTags = item.tags ?? [];
-        const changed =
-          nextTags.length !== previousTags.length ||
-          nextTags.some((tag, tagIndex) => previousTags[tagIndex] !== tag);
-
-        if (changed) {
-          updateWorkspaceImageTags(item, nextTags);
-          changedItemCount += 1;
-        }
+        predictedTagsByItemId.set(item.id, predictions.map((prediction) => prediction.tag));
 
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       }
 
-      setAutoTaggingProgress({ completed: autoTaggableItems.length, total: autoTaggableItems.length });
+      const changed = await persistCaptionTagsForItems(autoCaptionScopeItems, (item) =>
+        mergeAutoTags(item.tags ?? [], predictedTagsByItemId.get(item.id) ?? [])
+      );
+      changedItemCount = changed ? predictedTagsByItemId.size : 0;
+
+      setAutoTaggingProgress({ completed: autoCaptionScopeItems.length, total: autoCaptionScopeItems.length });
       setLocalTaggerStatus('ready');
       setLocalTaggerMessage(`Ready. Last run updated ${changedItemCount} image(s).`);
-      addNotification('success', `Auto-tagging completed for ${autoTaggableItems.length} image(s)`);
+      addNotification('success', `Auto-caption completed for ${autoCaptionScopeItems.length} image(s)`);
+      setAutoCaptionDialogOpen(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Runtime inference failed.';
       setLocalTaggerStatus('not-ready');
@@ -1374,13 +1387,36 @@ export const TaggingStage = ({
     }
   }, [
     addNotification,
-    autoTaggableItems,
+    autoCaptionMaxTags,
+    autoCaptionScopeItems,
+    autoCaptionThreshold,
+    autoTaggingProgress.completed,
+    autoTaggingProgress.total,
+    dataset,
     localTagger,
     localTaggerStatus,
     mergeAutoTags,
-    taggingConfig.maxTags,
-    taggingConfig.threshold,
-    updateWorkspaceImageTags,
+    persistCaptionTagsForItems,
+    setAutoTaggingProgress,
+    setLocalTaggerMessage,
+    setLocalTaggerStatus,
+  ]);
+
+  const handleCancelAutoCaption = useCallback(() => {
+    autoTaggingRunTokenRef.current += 1;
+    setAutoTaggingProgress({ completed: 0, total: 0 });
+    if (localTagger) {
+      setLocalTaggerStatus('ready');
+      setLocalTaggerMessage('Ready. Auto-caption canceled.');
+    }
+    setAutoCaptionDialogOpen(false);
+  }, [
+    autoTaggingProgress.completed,
+    autoTaggingProgress.total,
+    localTagger,
+    setAutoTaggingProgress,
+    setLocalTaggerMessage,
+    setLocalTaggerStatus,
   ]);
 
   const handleRemoveTag = useCallback(
@@ -1403,101 +1439,52 @@ export const TaggingStage = ({
     [items, updateWorkspaceImageTags]
   );
 
-  const handleSubmitSelectedTags = useCallback(() => {
-    if (!selectedItem || !selectedTagInput.trim()) {
-      return;
-    }
-
-    if (applyTagsToItem(selectedItem.id, selectedTagInput)) {
-      setSelectedTagInput('');
-    }
-  }, [applyTagsToItem, selectedItem, selectedTagInput]);
-
-  const handleRunSelectedAutoTagging = useCallback(async () => {
-    if (!selectedItem) {
-      return;
-    }
-    if (!canAutoTagItem(selectedItem)) {
-      addNotification('warning', 'Auto-tagging is only available for image assets');
-      return;
-    }
-
-    if (!localTagger || localTaggerStatus !== 'ready') {
-      setLocalTaggerStatus('not-ready');
-      setLocalTaggerMessage('Connect and validate a supported model folder before running auto-tagging.');
-      return;
-    }
-
-    setIsSelectedAutoTagging(true);
-    try {
-      const predictions = await predictLocalTags(
-        localTagger,
-        selectedItem.imageData,
-        taggingConfig.threshold,
-        taggingConfig.maxTags
-      );
-      const nextTags = mergeAutoTags(
-        selectedItem.tags ?? [],
-        predictions.map((prediction) => prediction.tag)
-      );
-      updateWorkspaceImageTags(selectedItem, nextTags);
-      addNotification('success', `Auto-tagged ${selectedItem.fileName}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Runtime inference failed.';
-      setLocalTaggerStatus('not-ready');
-      setLocalTaggerMessage(message);
-      addNotification('error', message);
-    } finally {
-      setIsSelectedAutoTagging(false);
-    }
-  }, [
-    addNotification,
-    localTagger,
-    localTaggerStatus,
-    mergeAutoTags,
-    selectedItem,
-    setLocalTaggerMessage,
-    setLocalTaggerStatus,
-    taggingConfig.maxTags,
-    taggingConfig.threshold,
-    updateWorkspaceImageTags,
-  ]);
-
-  const selectedTags = normalizeUniqueTags(selectedItem?.tags ?? []);
   const selectedPreviewUrl = selectedItem ? previewUrls[selectedItem.id] : undefined;
-  const selectedAutoTaggingDisabled =
-    !selectedItem ||
-    !canAutoTagItem(selectedItem) ||
+  const scopeTags = useMemo<CaptionScopeTag[]>(() => {
+    const counts = new Map<string, number>();
+    for (const item of captionScopeItems) {
+      for (const tag of normalizeUniqueTags(item.tags ?? [])) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts, ([tag, count]) => ({ tag, count }))
+      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag));
+  }, [captionScopeItems]);
+  const scopeAutoCaptionDisabled =
     !localTagger ||
     localTaggerStatus !== 'ready' ||
-    isSelectedAutoTagging;
-  const selectedAutoTaggingTitle = !selectedItem || !canAutoTagItem(selectedItem)
-    ? 'Auto-tagging is only available for image assets'
-    : isSelectedAutoTagging
-      ? 'Auto-tagging...'
-      : 'Auto-tag image';
-  const selectedTaggingControls = selectedItem ? (
-    <SelectedTaggingControls
-      item={selectedItem}
-      tags={selectedTags}
+    autoCaptionScopeItems.length === 0;
+  const scopeAutoCaptionTitle = autoCaptionScopeItems.length === 0
+    ? 'Auto-caption is only available for image assets'
+    : localTaggerStatus === 'running'
+      ? 'Auto-caption running'
+      : 'Auto-caption';
+  const captionScopeControls = (
+    <CaptionScopeControls
+      scopeItems={captionScopeItems}
+      tags={scopeTags}
       tagInput={selectedTagInput}
       suggestions={manualTagSuggestions}
       knownTags={knownSuggestionTags}
-      threshold={taggingConfig.threshold}
-      maxTags={taggingConfig.maxTags}
-      autoTaggingDisabled={selectedAutoTaggingDisabled}
-      autoTaggingBusy={isSelectedAutoTagging}
-      autoTaggingTitle={selectedAutoTaggingTitle}
-      autoTaggingAriaLabel={selectedAutoTaggingTitle}
+      insertMode={taggingConfig.insertMode}
+      captionActionsDisabled={captionActionsDisabled}
+      autoCaptionDisabled={scopeAutoCaptionDisabled}
+      autoCaptionBusy={localTaggerStatus === 'running'}
+      autoCaptionTitle={scopeAutoCaptionTitle}
       onTagInputChange={setSelectedTagInput}
-      onSubmitTags={handleSubmitSelectedTags}
-      onRunAutoTagging={() => void handleRunSelectedAutoTagging()}
-      onRemoveTag={handleRemoveTag}
+      onSubmitTags={handleSubmitScopeTags}
+      onOpenAutoCaptionDialog={() => {
+        setAutoCaptionThreshold(taggingConfig.threshold);
+        setAutoCaptionMaxTags(taggingConfig.maxTags);
+        setAutoCaptionDialogOpen(true);
+      }}
+      onInsertModeChange={(mode) => updateTaggingConfig({ insertMode: mode })}
+      onRemoveTag={handleRemoveScopeTag}
     />
-  ) : null;
+  );
   const selectedView = selectedItem ? (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className={singleFileMode ? 'min-h-0 flex-1' : 'grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]'}>
+      <div className="min-h-0 flex-1">
         <div className="relative h-full min-h-0 overflow-hidden rounded-lg bg-black">
           {!singleFileMode ? (
             <button
@@ -1527,84 +1514,11 @@ export const TaggingStage = ({
           )}
         </div>
 
-        {!singleFileMode ? (
-          <aside className="flex min-h-0 flex-col rounded-lg border border-border bg-card p-4">
-            {selectedTaggingControls}
-          </aside>
-        ) : null}
       </div>
     </div>
   ) : null;
 
-  const datasetTagsControls = (
-    <div className="space-y-4">
-      <div>
-        <label className="mb-2 block text-xs text-muted-foreground">Bulk Tags</label>
-        <textarea
-          value={globalTagsToAdd}
-          onChange={(event) => setGlobalTagsToAdd(event.target.value)}
-          placeholder="tag1, tag2, tag3"
-          className="min-h-24 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
-        />
-      </div>
-
-      <div>
-        <label className="mb-2 block text-xs text-muted-foreground">Insert Mode</label>
-        <select
-          value={taggingConfig.insertMode}
-          onChange={(event) =>
-            updateTaggingConfig({
-              insertMode: event.target.value as InsertMode,
-            })
-          }
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-        >
-          {(['prepend', 'append', 'overwrite'] as const).map((mode) => (
-            <option key={mode} value={mode}>
-              {INSERT_MODE_LABELS[mode]}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="grid gap-2">
-        <button
-          type="button"
-          onClick={handleAddGlobalTags}
-          disabled={!hasBulkTags || items.length === 0}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Apply to All {items.length} Images
-        </button>
-        <button
-          type="button"
-          onClick={handleRemoveGlobalTags}
-          disabled={!hasBulkTags || items.length === 0}
-          className="rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive hover:text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-destructive"
-        >
-          Remove from All {items.length} Images
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleRunLocalAutoTagging()}
-          disabled={!localTagger || localTaggerStatus !== 'ready'}
-          className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Sparkles size={16} />
-          Run auto-tagging
-        </button>
-        <button
-          type="button"
-          onClick={() => setTaggingModal({ settings: true })}
-          className="rounded-md border border-border px-3 py-2 text-sm font-medium transition-colors hover:bg-secondary"
-        >
-          Settings
-        </button>
-      </div>
-    </div>
-  );
-
-  const captionInspectorControls = singleFileMode ? selectedTaggingControls : datasetTagsControls;
+  const captionInspectorControls = captionScopeControls;
   const captionInspectorRoot = useInspectorPortalRoot('caption-inspector-root', active);
   const captionInspectorPortal = captionInspectorRoot && captionInspectorControls
     ? createPortal(captionInspectorControls, captionInspectorRoot)
@@ -1622,6 +1536,137 @@ export const TaggingStage = ({
       {captionInspectorPortal}
 
       <Dialog.Root
+        open={autoCaptionDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && localTaggerStatus === 'running') {
+            handleCancelAutoCaption();
+            return;
+          }
+          setAutoCaptionDialogOpen(open);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[100] bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[101] w-[min(440px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <Dialog.Title className="text-lg font-semibold">Auto-caption</Dialog.Title>
+                <Dialog.Description className="text-sm text-muted-foreground">
+                  Configure inference for {autoCaptionScopeItems.length} asset{autoCaptionScopeItems.length === 1 ? '' : 's'}.
+                </Dialog.Description>
+              </div>
+              <button
+                type="button"
+                onClick={handleCancelAutoCaption}
+                className="rounded-md p-2 transition-colors hover:bg-secondary"
+                aria-label="Close Auto-caption"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-md border border-border bg-background p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="text-sm font-semibold">
+                    {localTaggerStatus === 'ready' || localTaggerStatus === 'running'
+                      ? localTagger?.name ?? 'Ready'
+                      : localTaggerStatus === 'not-ready'
+                        ? 'Model not ready'
+                        : 'No model connected'}
+                  </h4>
+                  {localTaggerStatus === 'ready' ? (
+                    <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-xs text-emerald-500">Ready</span>
+                  ) : null}
+                  {localTaggerStatus === 'running' ? (
+                    <span className="rounded-full bg-primary/15 px-2 py-1 text-xs text-primary">Running</span>
+                  ) : null}
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{localTaggerMessage}</p>
+                {localTagger ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Runtime: {localTagger.runtime.toUpperCase()} | Tags: {localTagger.tags.length.toLocaleString()}
+                  </p>
+                ) : null}
+              </div>
+
+              <div>
+                <label className="mb-2 block text-xs text-muted-foreground">Threshold</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={autoCaptionThreshold}
+                  onChange={(event) => setAutoCaptionThreshold(parseFloat(event.target.value))}
+                  disabled={localTaggerStatus === 'running'}
+                  className="w-full"
+                />
+                <p className="mt-1 text-xs font-mono">{autoCaptionThreshold.toFixed(2)}</p>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-xs text-muted-foreground">Max tags</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={autoCaptionMaxTags}
+                  onChange={(event) => setAutoCaptionMaxTags(Math.max(1, parseInt(event.target.value || '1', 10)))}
+                  disabled={localTaggerStatus === 'running'}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+              </div>
+
+              {localTaggerStatus === 'running' ? (
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Progress</span>
+                    <span>{autoTaggingProgress.completed} / {autoTaggingProgress.total}</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-secondary">
+                    <div
+                      className="h-full bg-primary transition-all"
+                      style={{
+                        width: `${autoTaggingProgress.total > 0
+                          ? Math.round((autoTaggingProgress.completed / autoTaggingProgress.total) * 100)
+                          : 0}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleCancelAutoCaption}
+                  className="rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRunLocalAutoTagging()}
+                  disabled={
+                    localTaggerStatus === 'running' ||
+                    !localTagger ||
+                    localTaggerStatus !== 'ready' ||
+                    autoCaptionScopeItems.length === 0 ||
+                    captionActionsDisabled
+                  }
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Sparkles size={16} />
+                  Auto-caption
+                </button>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root
         open={taggingModals.settings}
         onOpenChange={(open) => setTaggingModal({ settings: open })}
       >
@@ -1630,7 +1675,7 @@ export const TaggingStage = ({
           <Dialog.Content className="fixed left-1/2 top-1/2 z-[101] w-[min(840px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-card p-5 shadow-2xl">
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>
-                <Dialog.Title className="text-lg font-semibold">Tagging Settings</Dialog.Title>
+                <Dialog.Title className="text-lg font-semibold">Caption Settings</Dialog.Title>
                 <Dialog.Description className="text-sm text-muted-foreground">
                   Configure the local model, blacklist, and manual tag suggestions.
                 </Dialog.Description>
@@ -1639,7 +1684,7 @@ export const TaggingStage = ({
                 <button
                   type="button"
                   className="rounded-md p-2 transition-colors hover:bg-secondary"
-                  aria-label="Close Tagging Settings"
+                  aria-label="Close Caption Settings"
                 >
                   <X size={16} />
                 </button>
@@ -1648,7 +1693,7 @@ export const TaggingStage = ({
 
             <div className="space-y-5">
               <section className="rounded-lg border border-border bg-secondary/20 p-4">
-                <h3 className="mb-3 text-sm font-semibold">Auto Tagger</h3>
+                <h3 className="mb-3 text-sm font-semibold">Auto-caption Model</h3>
                 <div className="mb-4 grid gap-3 md:grid-cols-2">
                   <div className="rounded-md border border-border bg-background p-3">
                     <p className="text-xs text-muted-foreground">Settings model</p>
@@ -1663,38 +1708,6 @@ export const TaggingStage = ({
                     </p>
                   </div>
                 </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-xs text-muted-foreground">Threshold</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={taggingConfig.threshold}
-                      onChange={(event) =>
-                        updateTaggingConfig({ threshold: parseFloat(event.target.value) })
-                      }
-                      className="w-full"
-                    />
-                    <p className="mt-1 text-xs font-mono">{taggingConfig.threshold.toFixed(2)}</p>
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-xs text-muted-foreground">Max auto tags</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="50"
-                      value={taggingConfig.maxTags}
-                      onChange={(event) =>
-                        updateTaggingConfig({ maxTags: Math.max(1, parseInt(event.target.value || '1', 10)) })
-                      }
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-
                 <div className="mt-4 rounded-md border border-border bg-background p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <h4 className="text-sm font-semibold">
@@ -1739,7 +1752,7 @@ export const TaggingStage = ({
                   ) : null}
                   {localTaggerStatus === 'running' ? (
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Auto-tagging {autoTaggingProgress.completed} of {autoTaggingProgress.total} images...
+                      Auto-caption {autoTaggingProgress.completed} of {autoTaggingProgress.total} images...
                     </p>
                   ) : null}
                 </div>
@@ -1867,6 +1880,7 @@ export const TaggingStage = ({
                 onRemoveTag={handleRemoveTag}
                 suggestions={manualTagSuggestions}
                 knownTags={knownSuggestionTags}
+                captionActionsDisabled={captionActionsDisabled}
                 onOpenContextMenu={onOpenAssetContextMenu}
               />
             )}
