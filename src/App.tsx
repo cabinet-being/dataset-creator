@@ -191,6 +191,12 @@ type ToolWorkspaceTab = {
 
 type DatasetToolName = Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>;
 type DatasetBoardSortMode = 'manual' | 'name' | 'type' | 'captioned' | 'aspect';
+type EmptyDatasetSuggestion = {
+  signature: string;
+  items: WorkspaceImage[];
+  assetIds: string[];
+  totalCount: number;
+};
 const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; label: string }> = [
   { value: 'manual', label: 'Manual order' },
   { value: 'name', label: 'Name' },
@@ -1376,6 +1382,9 @@ function App() {
   const [draggedDatasetAssetId, setDraggedDatasetAssetId] = useState<string | null>(null);
   const [datasetDropTargetAssetId, setDatasetDropTargetAssetId] = useState<string | null>(null);
   const [datasetDropActive, setDatasetDropActive] = useState(false);
+  const [dismissedEmptyDatasetSuggestionSignatures, setDismissedEmptyDatasetSuggestionSignatures] = useState<Set<string>>(
+    () => new Set()
+  );
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
@@ -1648,6 +1657,58 @@ function App() {
     [activeDataset, activeDatasetSourceImages, datasetWorkspaceFileAssets]
   );
   const activeDatasetPreviewUrls = useWorkspacePreviewUrls(activeDatasetPreviewItems);
+  const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
+    if (!activeDataset || activeTab?.kind !== 'dataset') {
+      return null;
+    }
+
+    const isEmpty =
+      activeDataset.assetIds.length === 0 &&
+      filterLegacyProjectAssetPaths(activeDataset.assetPaths ?? []).length === 0 &&
+      filterLegacyProjectAssetPaths(activeDataset.psdAssetPaths ?? []).length === 0;
+    if (!isEmpty) {
+      return null;
+    }
+
+    const candidates = workspaceImages
+      .filter((item) => {
+        const tagCount = item.tags?.length ?? 0;
+        return (
+          item.kind === 'image' &&
+          Boolean(item.sourceImageId) &&
+          !item.hidden &&
+          !item.excludedFromDataset &&
+          tagCount > 0
+        );
+      })
+      .sort(
+        (left, right) =>
+          (right.tags?.length ?? 0) - (left.tags?.length ?? 0) ||
+          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
+      );
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const assetIds = [...new Set(candidates.map((item) => item.sourceImageId).filter(Boolean))];
+    const signature = `${activeDataset.id}:${assetIds
+      .map((assetId) => {
+        const item = candidates.find((candidate) => candidate.sourceImageId === assetId);
+        return `${assetId}:${item?.tags?.length ?? 0}`;
+      })
+      .join('|')}`;
+    if (dismissedEmptyDatasetSuggestionSignatures.has(signature)) {
+      return null;
+    }
+
+    return {
+      signature,
+      items: candidates.slice(0, 24),
+      assetIds,
+      totalCount: assetIds.length,
+    };
+  }, [activeDataset, activeTab, dismissedEmptyDatasetSuggestionSignatures, workspaceImages]);
+  const activeEmptyDatasetSuggestionPreviewUrls = useWorkspacePreviewUrls(activeEmptyDatasetSuggestion?.items ?? []);
   const activeDatasetSummary = useMemo(() => {
     if (!activeDataset) {
       return null;
@@ -2927,6 +2988,44 @@ function App() {
     });
   };
 
+  const dismissEmptyDatasetSuggestion = (signature: string) => {
+    setDismissedEmptyDatasetSuggestionSignatures((current) => {
+      const next = new Set(current);
+      next.add(signature);
+      return next;
+    });
+  };
+
+  const applyEmptyDatasetSuggestion = async (dataset: Dataset, suggestion: EmptyDatasetSuggestion) => {
+    const currentDataset = useProjectStore.getState().datasets[dataset.id];
+    if (!currentDataset) {
+      addNotification('warning', 'Dataset is no longer available');
+      return;
+    }
+
+    const nextAssetIds = [...new Set([...currentDataset.assetIds, ...suggestion.assetIds])];
+    const addedCount = nextAssetIds.length - currentDataset.assetIds.length;
+    if (addedCount <= 0) {
+      dismissEmptyDatasetSuggestion(suggestion.signature);
+      addNotification('info', 'Suggested assets are already in this Dataset');
+      return;
+    }
+
+    const nextAssetOrder = normalizeDatasetAssetOrder(
+      [
+        ...(currentDataset.assetOrder ?? []),
+        ...suggestion.assetIds.map(createDatasetImageAssetKey),
+      ],
+      nextAssetIds,
+      filterLegacyProjectAssetPaths(currentDataset.assetPaths ?? [])
+    );
+    await updateDatasetFileBackedState(currentDataset, {
+      assetIds: nextAssetIds,
+      assetOrder: nextAssetOrder,
+    });
+    addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
+  };
+
   const removeDatasetBoardAsset = async (dataset: Dataset, item: WorkspaceImage) => {
     const assetOrder = (dataset.assetOrder ?? []).filter((key) => key !== getDatasetBoardAssetKey(item));
     if (item.kind === 'image') {
@@ -3543,6 +3642,60 @@ function App() {
                       }
                     />
                   </div>
+                )}
+              />
+            </div>
+          ) : activeEmptyDatasetSuggestion ? (
+            <div className="min-h-40 rounded border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">Suggested fill</p>
+                  <p className="text-xs text-muted-foreground">
+                    {activeEmptyDatasetSuggestion.totalCount} captioned asset
+                    {activeEmptyDatasetSuggestion.totalCount !== 1 ? 's' : ''}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void applyEmptyDatasetSuggestion(dataset, activeEmptyDatasetSuggestion)}
+                    className="inline-flex items-center rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Add {activeEmptyDatasetSuggestion.totalCount} asset
+                    {activeEmptyDatasetSuggestion.totalCount !== 1 ? 's' : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => dismissEmptyDatasetSuggestion(activeEmptyDatasetSuggestion.signature)}
+                    className="inline-flex items-center rounded border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+              <BrickMasonry
+                items={activeEmptyDatasetSuggestion.items}
+                getKey={(item) => item.id}
+                getEstimate={(item) => item.height / Math.max(1, item.width)}
+                className="p-3"
+                renderItem={(item) => (
+                  <WorkspacePreviewCard
+                    item={item}
+                    previewUrl={activeEmptyDatasetSuggestionPreviewUrls[item.id]}
+                    className="gallery-masonry-item opacity-45 grayscale transition hover:opacity-65 hover:grayscale-0"
+                    footer={
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+                        <div className="flex items-end justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
+                            <p className="text-xs text-gray-300">
+                              {item.tags?.length ?? 0} tag{(item.tags?.length ?? 0) !== 1 ? 's' : ''}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    }
+                  />
                 )}
               />
             </div>
