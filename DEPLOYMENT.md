@@ -62,7 +62,7 @@ The production preview should load correctly with the `/DatasetCreator/` base pa
 
 * `public/.nojekyll` is included so GitHub Pages serves generated assets without Jekyll processing.
 * No backend or environment variables are required for the default workflow.
-* Local model files for Stage 7 are selected by the user in the browser and are not deployed with the app.
+* Local model files for Caption tool are selected by the user in the browser and are not deployed with the app.
 * The generated `dist/` folder stays ignored by git and is uploaded only by GitHub Actions.
 
 ## Manual Static Hosting

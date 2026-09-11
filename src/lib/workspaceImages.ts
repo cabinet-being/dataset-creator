@@ -39,7 +39,7 @@ const getProjectDataFileExtension = (fileName: string, mimeType: string): string
 export type WorkspaceImage = {
   id: string;
   sourceImageId: string;
-  syntheticImageId?: string;
+  editedAssetId?: string;
   kind: WorkspaceImageKind;
   label: 'Image' | 'Edited' | 'Video' | 'PSD';
   displayIdentity: string;
@@ -55,7 +55,7 @@ export type WorkspaceImage = {
   allowObjectPreviewUrl?: boolean;
   tags?: string[];
   aspectRatio: AspectRatio;
-  syntheticType?: EditedAsset['type'];
+  editedAssetType?: EditedAsset['type'];
   exportOrder?: number;
   excludedFromDataset?: boolean;
   deleted?: boolean;
@@ -92,7 +92,7 @@ export const WORKSPACE_KIND_STYLES: Record<
     badgeClass: 'bg-emerald-500/90 text-white',
     ringStyle: '0 0 0 2px rgba(16, 185, 129, 0.7) inset',
   },
-  synthetic: {
+  edited: {
     label: 'Edited',
     borderClass: 'border-sky-500/70',
     selectedBorderClass: 'border-sky-400',
@@ -156,7 +156,7 @@ export const inferWorkspaceAspectRatio = (width: number, height: number): Aspect
 
 export const toWorkspaceImages = (
   sourceImages: SourceImage[],
-  syntheticImages: EditedAsset[],
+  editedAssets: EditedAsset[],
   workingEdits: Record<string, CleanupWorkingEdit> = {}
 ): WorkspaceImage[] => {
   const sourceOrder = new Map(sourceImages.map((image, index) => [image.id, index + 1]));
@@ -188,23 +188,23 @@ export const toWorkspaceImages = (
     };
   });
 
-  const syntheticCountsBySource = new Map<string, number>();
-  const synthetic: WorkspaceImage[] = syntheticImages
+  const editedCountsBySource = new Map<string, number>();
+  const edited: WorkspaceImage[] = editedAssets
     .filter((image) => !image.deleted && sourceIds.has(image.sourceImageId))
     .map((image) => {
-      const workspaceId = `synthetic:${image.id}`;
+      const workspaceId = `edited:${image.id}`;
       const parentIndex = sourceOrder.get(image.sourceImageId) ?? 0;
-      const nextSyntheticIndex = (syntheticCountsBySource.get(image.sourceImageId) ?? 0) + 1;
-      syntheticCountsBySource.set(image.sourceImageId, nextSyntheticIndex);
+      const nextEditedIndex = (editedCountsBySource.get(image.sourceImageId) ?? 0) + 1;
+      editedCountsBySource.set(image.sourceImageId, nextEditedIndex);
       const workingEdit = workingEdits[workspaceId];
 
       return {
         id: workspaceId,
         sourceImageId: image.sourceImageId,
-        syntheticImageId: image.id,
-        kind: 'synthetic',
+        editedAssetId: image.id,
+        kind: 'edited',
         label: 'Edited',
-        displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
+        displayIdentity: `${parentIndex || '?'}.${nextEditedIndex}`,
         fileName: `${image.id}.png`,
         assetPath: withProjectRoot(image.imageDataPath ?? `.dataset-creator-data/generated-images/${image.id}/image.png`),
         imageData: workingEdit?.blob ?? image.imageData,
@@ -214,14 +214,14 @@ export const toWorkspaceImages = (
         height: workingEdit?.height ?? image.height,
         tags: image.tags,
         aspectRatio: image.aspectRatio,
-        syntheticType: image.type,
+        editedAssetType: image.type,
         exportOrder: image.exportOrder,
         excludedFromDataset: image.excludedFromDataset,
         deleted: image.deleted,
       };
     });
 
-  return [...sources, ...synthetic];
+  return [...sources, ...edited];
 };
 
 export const getWorkspaceImageAspectRatio = (image: WorkspaceImage): AspectRatio =>
@@ -231,10 +231,10 @@ export const toWorkspaceReviewAssets = (
   sourceImages: SourceImage[],
   fileAssets: WorkspaceFileAsset[],
   workingEdits: Record<string, CleanupWorkingEdit> = {},
-  syntheticImages: EditedAsset[] = []
+  editedAssets: EditedAsset[] = []
 ): WorkspaceImage[] => {
-  const imageItems = toWorkspaceImages(sourceImages, syntheticImages, workingEdits).filter(
-    (item) => item.kind === 'image' || item.kind === 'synthetic'
+  const imageItems = toWorkspaceImages(sourceImages, editedAssets, workingEdits).filter(
+    (item) => item.kind === 'image' || item.kind === 'edited'
   );
   const fileItems: WorkspaceImage[] = fileAssets.map((asset, index) => ({
     id: asset.id,

@@ -6,7 +6,7 @@ export type AspectRatio = '2:3' | '3:2' | '1:1';
 
 export type ImageType = 'cleaned' | 'crop' | 'augmented';
 
-export type WorkspaceImageKind = 'image' | 'synthetic' | 'video' | 'psd';
+export type WorkspaceImageKind = 'image' | 'edited' | 'video' | 'psd';
 
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
@@ -170,8 +170,8 @@ export interface ProjectState {
   datasetItems: Record<string, EditedAsset>;
   datasets: Record<string, Dataset>;
   cleanupOverlays: Record<string, CleanupOverlay>;
-  currentStage: ToolName;
-  stageState: Record<ToolName, unknown>;
+  currentTool: ToolName;
+  toolState: Record<ToolName, unknown>;
   taggingConfig: TaggingConfig;
   workspaceSettings: WorkspaceSettings;
   lastModified: Date;
@@ -288,8 +288,8 @@ export const createProject = (name: string): ProjectState => ({
   datasetItems: {},
   datasets: {},
   cleanupOverlays: {},
-  currentStage: 'hub',
-  stageState: {
+  currentTool: 'hub',
+  toolState: {
     hub: {},
     import: {},
     select: {},

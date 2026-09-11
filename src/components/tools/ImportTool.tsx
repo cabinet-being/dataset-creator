@@ -22,7 +22,7 @@ import {
 
 import { FolderOpen, ImageIcon, RotateCcw, Trash2, Upload } from 'lucide-react';
 
-export const ImportStage = () => {
+export const ImportTool = () => {
   const {
     addSourceImage,
     removeSourceImage,

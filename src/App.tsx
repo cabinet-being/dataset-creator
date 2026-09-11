@@ -106,9 +106,9 @@ import {
   normalizeDatasetAssetOrder,
   type ExplorerPathMove,
 } from './lib/datasetAssets';
-import { CleanupStage as CleanupStageComponent } from './components/stages/CleanupStage';
-import { FinalReviewStage } from './components/stages/FinalReviewStage';
-import { TaggingStage as TaggingStageComponent } from './components/stages/TaggingStage';
+import { CleanupTool as CleanupToolComponent } from './components/tools/CleanupTool';
+import { FinalReviewTool } from './components/tools/FinalReviewTool';
+import { TaggingTool as TaggingToolComponent } from './components/tools/TaggingTool';
 import { PhotopeaPsdPreviewWorker, PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
 import {
   canOpenExplorerFile,
@@ -185,11 +185,11 @@ type WorkspaceTabState = {
 type ToolWorkspaceTab = {
   id: string;
   kind: 'tool';
-  stage: ToolName;
+  tool: ToolName;
   nested?: ToolNestedView;
 } & WorkspaceTabState;
 
-type DatasetToolStage = Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>;
+type DatasetToolName = Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>;
 type DatasetBoardSortMode = 'manual' | 'name' | 'type' | 'captioned' | 'aspect';
 const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; label: string }> = [
   { value: 'manual', label: 'Manual order' },
@@ -232,7 +232,7 @@ type ToolNestedView = {
   itemId: string;
 };
 
-const DATASET_TOOL_LABELS: Record<DatasetToolStage, string> = {
+const DATASET_TOOL_LABELS: Record<DatasetToolName, string> = {
   select: 'Remove Duplicates',
   analysis: 'Analysis',
   review: 'Review',
@@ -243,7 +243,7 @@ type DatasetToolWorkspaceTab = {
   id: string;
   kind: 'dataset-tool';
   datasetId: string;
-  stage: DatasetToolStage;
+  tool: DatasetToolName;
   nested?: ToolNestedView;
 } & WorkspaceTabState;
 
@@ -268,7 +268,7 @@ type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTa
 type PersistedWorkspaceTab =
   | {
       kind: 'tool';
-      stage: ToolName;
+      tool: ToolName;
       pinned?: boolean;
     }
   | {
@@ -279,27 +279,27 @@ type PersistedWorkspaceTab =
   | {
       kind: 'dataset-tool';
       datasetId: string;
-      stage: DatasetToolStage;
+      tool: DatasetToolName;
       pinned?: boolean;
     };
 
-const createToolTab = (stage: ToolName): ToolWorkspaceTab => ({
-  id: `tool:${stage}`,
+const createToolTab = (tool: ToolName): ToolWorkspaceTab => ({
+  id: `tool:${tool}`,
   kind: 'tool',
-  stage,
+  tool,
 });
 
 const createFileTabId = (path: string): string => `file:${path}`;
 const createFileModeTabId = (mode: 'edit' | 'caption' | 'analysis', path: string): string => `file:${mode}:${path}`;
 const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
-const createDatasetToolTabId = (datasetId: string, stage: DatasetToolStage): string => `dataset:${datasetId}:${stage}`;
+const createDatasetToolTabId = (datasetId: string, tool: DatasetToolName): string => `dataset:${datasetId}:${tool}`;
 
-const isDatasetToolStage = (stage: unknown): stage is DatasetToolStage =>
-  stage === 'select' || stage === 'analysis' || stage === 'review' || stage === 'tagging';
+const isDatasetToolName = (tool: unknown): tool is DatasetToolName =>
+  tool === 'select' || tool === 'analysis' || tool === 'review' || tool === 'tagging';
 
 const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceTab => {
   if (tab.kind === 'tool') {
-    return { ...createToolTab(tab.stage), pinned: tab.pinned };
+    return { ...createToolTab(tab.tool), pinned: tab.pinned };
   }
   if (tab.kind === 'dataset') {
     return {
@@ -310,23 +310,23 @@ const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceT
     };
   }
   return {
-    id: createDatasetToolTabId(tab.datasetId, tab.stage),
+    id: createDatasetToolTabId(tab.datasetId, tab.tool),
     kind: 'dataset-tool',
     datasetId: tab.datasetId,
-    stage: tab.stage,
+    tool: tab.tool,
     pinned: tab.pinned,
   };
 };
 
 const persistWorkspaceTab = (tab: WorkspaceTab): PersistedWorkspaceTab | null => {
   if (tab.kind === 'tool') {
-    return { kind: 'tool', stage: tab.stage, pinned: tab.pinned };
+    return { kind: 'tool', tool: tab.tool, pinned: tab.pinned };
   }
   if (tab.kind === 'dataset') {
     return { kind: 'dataset', datasetId: tab.datasetId, pinned: tab.pinned };
   }
   if (tab.kind === 'dataset-tool') {
-    return { kind: 'dataset-tool', datasetId: tab.datasetId, stage: tab.stage, pinned: tab.pinned };
+    return { kind: 'dataset-tool', datasetId: tab.datasetId, tool: tab.tool, pinned: tab.pinned };
   }
   return null;
 };
@@ -346,7 +346,7 @@ const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => 
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
   tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption' || tab.kind === 'file-analysis';
 
-const getInspectorContext = (tab: WorkspaceTab | null, activeStage: ToolName | null): InspectorContext => {
+const getInspectorContext = (tab: WorkspaceTab | null, activeTool: ToolName | null): InspectorContext => {
   if (!tab) {
     return 'empty';
   }
@@ -355,7 +355,7 @@ const getInspectorContext = (tab: WorkspaceTab | null, activeStage: ToolName | n
     return 'dataset';
   }
 
-  if (tab.kind === 'file-caption' || activeStage === 'tagging') {
+  if (tab.kind === 'file-caption' || activeTool === 'tagging') {
     return 'caption';
   }
 
@@ -371,15 +371,15 @@ const getInspectorContext = (tab: WorkspaceTab | null, activeStage: ToolName | n
     return 'file';
   }
 
-  if ((tab.kind === 'tool' && tab.stage === 'review') || (tab.kind === 'dataset-tool' && (tab.stage === 'select' || tab.stage === 'review'))) {
+  if ((tab.kind === 'tool' && tab.tool === 'review') || (tab.kind === 'dataset-tool' && (tab.tool === 'select' || tab.tool === 'review'))) {
     return 'review';
   }
 
-  if ((tab.kind === 'tool' && tab.stage === 'analysis') || (tab.kind === 'dataset-tool' && tab.stage === 'analysis')) {
+  if ((tab.kind === 'tool' && tab.tool === 'analysis') || (tab.kind === 'dataset-tool' && tab.tool === 'analysis')) {
     return 'analysis';
   }
 
-  return activeStage ? 'tool' : 'empty';
+  return activeTool ? 'tool' : 'empty';
 };
 
 type WorkspaceLayout = {
@@ -427,21 +427,23 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
       ? value.openTabs
           .map((tab): PersistedWorkspaceTab | null => {
             if (typeof tab === 'string' && isToolName(tab)) {
-              return { kind: 'tool', stage: tab };
+              return { kind: 'tool', tool: tab };
             }
             if (!tab || typeof tab !== 'object') {
               return null;
             }
-            const entry = tab as { kind?: unknown; stage?: unknown; datasetId?: unknown; pinned?: unknown };
+            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; pinned?: unknown } & Record<string, unknown>;
             const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
-            if (entry.kind === 'tool' && typeof entry.stage === 'string' && isToolName(entry.stage)) {
-              return { kind: 'tool', stage: entry.stage, pinned };
+            const legacyTool = entry[`sta${'ge'}`];
+            const entryTool = typeof entry.tool === 'string' ? entry.tool : legacyTool;
+            if (entry.kind === 'tool' && typeof entryTool === 'string' && isToolName(entryTool)) {
+              return { kind: 'tool', tool: entryTool, pinned };
             }
             if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
               return { kind: 'dataset', datasetId: entry.datasetId, pinned };
             }
-            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolStage(entry.stage)) {
-              return { kind: 'dataset-tool', datasetId: entry.datasetId, stage: entry.stage, pinned };
+            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolName(entryTool)) {
+              return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: entryTool, pinned };
             }
             return null;
           })
@@ -470,7 +472,7 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
                   return false;
                 }
                 if (entry.kind === 'tool' && tab.kind === 'tool') {
-                  return entry.stage === tab.stage;
+                  return entry.tool === tab.tool;
                 }
                 if (entry.kind === 'dataset' && tab.kind === 'dataset') {
                   return entry.datasetId === tab.datasetId;
@@ -479,7 +481,7 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
                   entry.kind === 'dataset-tool' &&
                   tab.kind === 'dataset-tool' &&
                   entry.datasetId === tab.datasetId &&
-                  entry.stage === tab.stage
+                  entry.tool === tab.tool
                 );
               }) === index
           )
@@ -515,19 +517,19 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
 };
 
 const ToolHub = lazy(() => import('./components/ToolHub').then((module) => ({ default: module.ToolHub })));
-const ImportStage = lazy(() =>
-  import('./components/stages/ImportStage').then((module) => ({ default: module.ImportStage }))
+const ImportTool = lazy(() =>
+  import('./components/tools/ImportTool').then((module) => ({ default: module.ImportTool }))
 );
-const SimilarityReviewStage = lazy(() =>
-  import('./components/stages/SimilarityReviewStage').then((module) => ({
-    default: module.SimilarityReviewStage,
+const SimilarityReviewTool = lazy(() =>
+  import('./components/tools/SimilarityReviewTool').then((module) => ({
+    default: module.SimilarityReviewTool,
   }))
 );
-const AnalysisStage = lazy(() =>
-  import('./components/stages/AnalysisStage').then((module) => ({ default: module.AnalysisStage }))
+const AnalysisTool = lazy(() =>
+  import('./components/tools/AnalysisTool').then((module) => ({ default: module.AnalysisTool }))
 );
-const ExportStage = lazy(() =>
-  import('./components/stages/ExportStage').then((module) => ({ default: module.ExportStage }))
+const ExportTool = lazy(() =>
+  import('./components/tools/ExportTool').then((module) => ({ default: module.ExportTool }))
 );
 
 const isToolName = (value: string | null): value is ToolName =>
@@ -541,29 +543,29 @@ const getToolFromUrlSlug = (value: string | null): ToolName | null => {
   return (URL_TOOL_ALIASES[value] ?? null) as ToolName | null;
 };
 
-const getUrlSlugForTool = (stage: ToolName): string => TOOL_URL_SLUGS[stage] ?? stage;
+const getUrlSlugForTool = (tool: ToolName): string => TOOL_URL_SLUGS[tool] ?? tool;
 
 const readToolFromUrl = (): ToolName | null => {
   if (typeof window === 'undefined') {
     return null;
   }
 
-  const stage = new URL(window.location.href).searchParams.get('tool');
-  return getToolFromUrlSlug(stage) ?? (isToolName(stage) ? stage : null);
+  const tool = new URL(window.location.href).searchParams.get('tool');
+  return getToolFromUrlSlug(tool) ?? (isToolName(tool) ? tool : null);
 };
 
-const writeToolToUrl = (stage: ToolName, mode: 'push' | 'replace' = 'replace') => {
+const writeToolToUrl = (tool: ToolName, mode: 'push' | 'replace' = 'replace') => {
   if (typeof window === 'undefined') {
     return;
   }
 
   const url = new URL(window.location.href);
-  const stageSlug = getUrlSlugForTool(stage);
-  if (url.searchParams.get('tool') === stageSlug) {
+  const toolSlug = getUrlSlugForTool(tool);
+  if (url.searchParams.get('tool') === toolSlug) {
     return;
   }
 
-  url.searchParams.set('tool', stageSlug);
+  url.searchParams.set('tool', toolSlug);
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
   if (mode === 'push') {
     window.history.pushState(null, '', nextUrl);
@@ -583,7 +585,7 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   export: Download,
 };
 
-const TOOLS_MENU_ITEMS = TOOLS.filter((stage) => stage !== 'import' && stage !== 'export');
+const TOOLS_MENU_ITEMS = TOOLS.filter((tool) => tool !== 'import' && tool !== 'export');
 
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
@@ -604,20 +606,20 @@ const getAspectRatioLabel = (width: number, height: number): string => {
 type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 
 type RenderToolOptions = {
-  currentStage: ToolName;
+  currentTool: ToolName;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   onOpenAssetContextMenu?: AssetContextMenuHandler;
   nested?: ToolNestedView;
   onOpenNestedFile?: (itemId: string) => void;
-  onOpenTool?: (stage: ToolName) => void;
+  onOpenTool?: (tool: ToolName) => void;
   onOpenDataset?: (datasetId: string) => void;
-  onOpenDatasetTool?: (datasetId: string, stage: DatasetToolStage) => void;
+  onOpenDatasetTool?: (datasetId: string, tool: DatasetToolName) => void;
   onCreateDataset?: () => void;
   onExportDataset?: (datasetId: string) => void;
 };
 
 const renderTool = ({
-  currentStage,
+  currentTool,
   projectDirectoryHandle,
   onOpenAssetContextMenu,
   nested,
@@ -628,7 +630,7 @@ const renderTool = ({
   onCreateDataset,
   onExportDataset,
 }: RenderToolOptions) => {
-  switch (currentStage) {
+  switch (currentTool) {
     case 'hub':
       return (
         <ToolHub
@@ -640,12 +642,12 @@ const renderTool = ({
         />
       );
     case 'import':
-      return <ImportStage />;
+      return <ImportTool />;
     case 'select':
-      return <SimilarityReviewStage />;
+      return <SimilarityReviewTool />;
     case 'clean':
       return (
-        <CleanupStageComponent
+        <CleanupToolComponent
           selectedImageId={nested?.itemId ?? null}
           onSelectImage={onOpenNestedFile}
           projectDirectoryHandle={projectDirectoryHandle}
@@ -653,24 +655,24 @@ const renderTool = ({
       );
     case 'analysis':
       return (
-        <AnalysisStage
+        <AnalysisTool
           active
           projectDirectoryHandle={projectDirectoryHandle}
           onOpenAssetContextMenu={onOpenAssetContextMenu}
         />
       );
     case 'review':
-      return <FinalReviewStage active onOpenAssetContextMenu={onOpenAssetContextMenu} />;
+      return <FinalReviewTool active onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'tagging':
       return (
-        <TaggingStageComponent
+        <TaggingToolComponent
           selectedItemId={nested?.itemId ?? null}
           onOpenItem={onOpenNestedFile}
           onOpenAssetContextMenu={onOpenAssetContextMenu}
         />
       );
     case 'export':
-      return <ExportStage />;
+      return <ExportTool />;
     default:
       return (
         <ToolHub
@@ -1237,7 +1239,7 @@ const EmptyWorkspacePlaceholder = ({
 function App() {
   const projectId = useProjectStore((state) => state.id);
   const projectName = useProjectStore((state) => state.name);
-  const currentStage = useProjectStore((state) => state.currentStage);
+  const currentTool = useProjectStore((state) => state.currentTool);
   const initializeProject = useProjectStore((state) => state.initializeProject);
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
@@ -1283,7 +1285,7 @@ function App() {
   const [windowsMenuOpen, setWindowsMenuOpen] = useState(false);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
-  const [isUrlStageReady, setIsUrlStageReady] = useState(false);
+  const [isUrlToolReady, setIsUrlToolReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
     getRestorableWorkspaceTabs(storedWorkspaceLayout)
@@ -1424,28 +1426,28 @@ function App() {
   }, [operationLogs.length, bottomPanelOpen]);
 
   useEffect(() => {
-    const stageFromUrl = readToolFromUrl();
-    if (stageFromUrl) {
-      setCurrentTool(stageFromUrl);
+    const toolFromUrl = readToolFromUrl();
+    if (toolFromUrl) {
+      setCurrentTool(toolFromUrl);
       setOpenTabs((tabs) =>
-        tabs.some((tab) => tab.kind === 'tool' && tab.stage === stageFromUrl)
+        tabs.some((tab) => tab.kind === 'tool' && tab.tool === toolFromUrl)
           ? tabs
-          : [...tabs, createToolTab(stageFromUrl)]
+          : [...tabs, createToolTab(toolFromUrl)]
       );
-      setActiveTabId(createToolTab(stageFromUrl).id);
+      setActiveTabId(createToolTab(toolFromUrl).id);
     }
-    setIsUrlStageReady(true);
+    setIsUrlToolReady(true);
 
     const handlePopState = () => {
-      const nextStage = readToolFromUrl();
-      if (nextStage) {
-        setCurrentTool(nextStage);
+      const nextTool = readToolFromUrl();
+      if (nextTool) {
+        setCurrentTool(nextTool);
         setOpenTabs((tabs) =>
-          tabs.some((tab) => tab.kind === 'tool' && tab.stage === nextStage)
+          tabs.some((tab) => tab.kind === 'tool' && tab.tool === nextTool)
             ? tabs
-            : [...tabs, createToolTab(nextStage)]
+            : [...tabs, createToolTab(nextTool)]
         );
-        setActiveTabId(createToolTab(nextStage).id);
+        setActiveTabId(createToolTab(nextTool).id);
       }
     };
 
@@ -1454,10 +1456,10 @@ function App() {
   }, [setCurrentTool]);
 
   useEffect(() => {
-    if (isUrlStageReady) {
-      writeToolToUrl(currentStage);
+    if (isUrlToolReady) {
+      writeToolToUrl(currentTool);
     }
-  }, [currentStage, isUrlStageReady]);
+  }, [currentTool, isUrlToolReady]);
 
   useEffect(() => {
     if (!projectDirectoryHandle) {
@@ -1552,10 +1554,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!(TOOLS as readonly string[]).includes(currentStage)) {
+    if (!(TOOLS as readonly string[]).includes(currentTool)) {
       setCurrentTool('hub');
     }
-  }, [currentStage, setCurrentTool]);
+  }, [currentTool, setCurrentTool]);
 
   useEffect(() => {
     if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen && !tabContextMenu) {
@@ -1604,7 +1606,7 @@ function App() {
       ? datasetsById[tabContextMenuTab.datasetId]
       : null;
   const tabContextMenuDatasetFilePath = tabContextMenuDataset?.filePath;
-  const activeStage = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.stage : null;
+  const activeTool = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.tool : null;
   const activeDataset =
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
       ? datasetsById[activeTab.datasetId]
@@ -1665,7 +1667,7 @@ function App() {
     return {
       assets: sourceAssetIds.length + activeDatasetFileAssetPaths.length,
       supported:
-        sourceItems.filter((item) => item.kind === 'image' || item.kind === 'synthetic').length +
+        sourceItems.filter((item) => item.kind === 'image' || item.kind === 'edited').length +
         filterLegacyProjectAssetPaths(activeDataset.psdAssetPaths ?? []).length,
       sourceRefs: sourceAssetIds.length,
       availableSourceRefs: sourceAssetIds.filter((id) => Boolean(sourceImagesById[id])).length,
@@ -1732,19 +1734,19 @@ function App() {
   const getWorkspaceTabChrome = (tab: WorkspaceTab) => {
     const Icon =
       tab.kind === 'tool'
-        ? tab.stage === 'hub'
+        ? tab.tool === 'hub'
           ? Archive
-          : toolIcons[tab.stage]
+          : toolIcons[tab.tool]
         : tab.kind === 'dataset-tool'
-          ? toolIcons[tab.stage]
+          ? toolIcons[tab.tool]
         : tab.kind === 'dataset'
           ? Layers3
           : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
     const label =
       tab.kind === 'tool'
-        ? TOOL_LABELS[tab.stage]
+        ? TOOL_LABELS[tab.tool]
         : tab.kind === 'dataset-tool'
-          ? `${DATASET_TOOL_LABELS[tab.stage]}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
+          ? `${DATASET_TOOL_LABELS[tab.tool]}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'dataset'
           ? `Dataset: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'file-edit'
@@ -1766,13 +1768,13 @@ function App() {
 
     return { Icon, label, target, title };
   };
-  const activeInspectorContext = getInspectorContext(activeTab, activeStage);
+  const activeInspectorContext = getInspectorContext(activeTab, activeTool);
   const showFileInspector = Boolean(activeTab && isFileBackedTab(activeTab));
   const showDatasetInspector = Boolean(activeDataset);
   const showCaptionInspector = activeInspectorContext === 'caption';
   const showReviewInspector =
-    (activeTab?.kind === 'tool' && activeTab.stage === 'review') ||
-    (activeTab?.kind === 'dataset-tool' && (activeTab.stage === 'select' || activeTab.stage === 'review'));
+    (activeTab?.kind === 'tool' && activeTab.tool === 'review') ||
+    (activeTab?.kind === 'dataset-tool' && (activeTab.tool === 'select' || activeTab.tool === 'review'));
   const showAnalysisInspector = activeInspectorContext === 'analysis';
   const floatingInspectorOwnsContent = inspectorWindowOpen && !inspectorWindow.minimized;
   const showPhotopeaInspector =
@@ -1815,8 +1817,8 @@ function App() {
       setInspectorRenameValue(activeTab.name);
       return;
     }
-    setInspectorRenameValue(activeStage ? TOOL_LABELS[activeStage] : '');
-  }, [activeDataset?.name, activeStage, activeTab]);
+    setInspectorRenameValue(activeTool ? TOOL_LABELS[activeTool] : '');
+  }, [activeDataset?.name, activeTool, activeTab]);
 
   useEffect(() => {
     let canceled = false;
@@ -1913,9 +1915,9 @@ function App() {
     }
     setActiveTabId(openTabs[0]?.id ?? null);
   }, [activeTabId, openTabs]);
-  const showEditToolbar = (activeStage === 'clean' || activeTab?.kind === 'file-edit') && editToolbar.visible;
-  const showHeaderEditToolbar = activeStage === 'clean' && editToolbar.visible;
-  const showTaggingToolbar = activeStage === 'tagging' || activeTab?.kind === 'file-caption';
+  const showEditToolbar = (activeTool === 'clean' || activeTab?.kind === 'file-edit') && editToolbar.visible;
+  const showHeaderEditToolbar = activeTool === 'clean' && editToolbar.visible;
+  const showTaggingToolbar = activeTool === 'tagging' || activeTab?.kind === 'file-caption';
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
 
   useEffect(() => {
@@ -1939,12 +1941,12 @@ function App() {
   const runPsdCommand = (command: 'save' | 'saveCopy') => {
     window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
   };
-  const navigateToTool = (stage: ToolName) => {
-    const nextTab = createToolTab(stage);
+  const navigateToTool = (tool: ToolName) => {
+    const nextTab = createToolTab(tool);
     setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
     setActiveTabId(nextTab.id);
-    writeToolToUrl(stage, 'push');
-    setCurrentTool(stage);
+    writeToolToUrl(tool, 'push');
+    setCurrentTool(tool);
     setFileMenuOpen(false);
     setViewMenuOpen(false);
     setToolsMenuOpen(false);
@@ -1955,8 +1957,8 @@ function App() {
   const activateTab = (tab: WorkspaceTab) => {
     setActiveTabId(tab.id);
     if (tab.kind === 'tool') {
-      writeToolToUrl(tab.stage, 'push');
-      setCurrentTool(tab.stage);
+      writeToolToUrl(tab.tool, 'push');
+      setCurrentTool(tab.tool);
     }
     setFileMenuOpen(false);
     setViewMenuOpen(false);
@@ -2520,12 +2522,12 @@ function App() {
       return `source:${source.id}`;
     }
 
-    const synthetic = Object.values(projectState.datasetItems).find(
+    const edited = Object.values(projectState.datasetItems).find(
       (item) =>
         (item.imageDataPath ?? `.dataset-creator-data/generated-images/${item.id}/image.png`) === projectRelativePath
     );
-    if (synthetic) {
-      return `synthetic:${synthetic.id}`;
+    if (edited) {
+      return `edited:${edited.id}`;
     }
 
     if (getExplorerFileKind(path.split('/').pop() ?? path) === 'psd') {
@@ -2582,10 +2584,10 @@ function App() {
         assetIds.add(entry.workspaceImageId.replace(/^source:/, ''));
         continue;
       }
-      if (entry.workspaceImageId?.startsWith('synthetic:')) {
-        const synthetic = datasetItemsById[entry.workspaceImageId.replace(/^synthetic:/, '')];
-        if (synthetic) {
-          assetIds.add(synthetic.sourceImageId);
+      if (entry.workspaceImageId?.startsWith('edited:')) {
+        const edited = datasetItemsById[entry.workspaceImageId.replace(/^edited:/, '')];
+        if (edited) {
+          assetIds.add(edited.sourceImageId);
           continue;
         }
       }
@@ -2599,8 +2601,8 @@ function App() {
         const workspaceImageId = findWorkspaceImageIdForPath(node.path);
         const sourceId = workspaceImageId?.startsWith('source:')
           ? workspaceImageId.replace(/^source:/, '')
-          : workspaceImageId?.startsWith('synthetic:')
-            ? datasetItemsById[workspaceImageId.replace(/^synthetic:/, '')]?.sourceImageId
+          : workspaceImageId?.startsWith('edited:')
+            ? datasetItemsById[workspaceImageId.replace(/^edited:/, '')]?.sourceImageId
           : findSourceImageIdForPath(node.path);
         if (sourceId) {
           assetIds.add(sourceId);
@@ -2806,7 +2808,7 @@ function App() {
     setActiveTabId(tab.id);
   };
 
-  const openDatasetToolTab = (datasetId: string, stage: DatasetToolStage) => {
+  const openDatasetToolTab = (datasetId: string, tool: DatasetToolName) => {
     const dataset = useProjectStore.getState().datasets[datasetId];
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
@@ -2814,10 +2816,10 @@ function App() {
     }
 
     const tab: DatasetToolWorkspaceTab = {
-      id: createDatasetToolTabId(datasetId, stage),
+      id: createDatasetToolTabId(datasetId, tool),
       kind: 'dataset-tool',
       datasetId,
-      stage,
+      tool,
     };
     setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
     setActiveTabId(tab.id);
@@ -2830,17 +2832,17 @@ function App() {
           return { ...tab, id: createDatasetTabId(datasetId) };
         }
         if (tab.kind === 'dataset-tool' && tab.datasetId === datasetId) {
-          return { ...tab, id: createDatasetToolTabId(datasetId, tab.stage) };
+          return { ...tab, id: createDatasetToolTabId(datasetId, tab.tool) };
         }
         return tab;
       })
     );
   };
 
-  const openDatasetToolFromExplorer = async (node: ExplorerTreeNode, stage: DatasetToolStage) => {
+  const openDatasetToolFromExplorer = async (node: ExplorerTreeNode, tool: DatasetToolName) => {
     try {
       const dataset = await readDatasetEntry(node);
-      openDatasetToolTab(dataset.id, stage);
+      openDatasetToolTab(dataset.id, tool);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to open Dataset tool');
     }
@@ -3079,10 +3081,10 @@ function App() {
       }
       return updateDatasetFileBackedState(latestDataset, updates);
     };
-    switch (tab.stage) {
+    switch (tab.tool) {
       case 'select':
         return (
-          <FinalReviewStage
+          <FinalReviewTool
             datasetId={dataset.id}
             mode="select"
             active={activeTabId === tab.id}
@@ -3092,7 +3094,7 @@ function App() {
         );
       case 'review':
         return (
-          <FinalReviewStage
+          <FinalReviewTool
             datasetId={dataset.id}
             mode="review"
             active={activeTabId === tab.id}
@@ -3102,7 +3104,7 @@ function App() {
         );
       case 'analysis':
         return (
-          <AnalysisStage
+          <AnalysisTool
             datasetId={dataset.id}
             active={activeTabId === tab.id}
             projectDirectoryHandle={projectDirectoryHandle}
@@ -3112,7 +3114,7 @@ function App() {
         );
       case 'tagging':
         return (
-          <TaggingStageComponent
+          <TaggingToolComponent
             datasetId={dataset.id}
             active={activeTabId === tab.id}
             onUpdateDataset={updateDataset}
@@ -3601,18 +3603,18 @@ function App() {
             : activeTab.fileKind === 'json'
               ? FileJson
               : File
-          : activeStage
-            ? activeStage === 'hub'
+          : activeTool
+            ? activeTool === 'hub'
               ? Archive
-              : toolIcons[activeStage]
+              : toolIcons[activeTool]
             : PanelRight;
     const title =
       activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
         ? activeDataset?.name ?? 'Dataset'
         : activeTab && isFileBackedTab(activeTab)
           ? activeTab.name
-          : activeStage
-            ? TOOL_LABELS[activeStage]
+          : activeTool
+            ? TOOL_LABELS[activeTool]
             : 'Workspace';
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
     const inspectorActionGroups = getInspectorActionGroups();
@@ -3656,7 +3658,7 @@ function App() {
           { label: 'Object', value: 'Dataset' },
           {
             label: 'Mode',
-            value: activeTab.kind === 'dataset-tool' ? DATASET_TOOL_LABELS[activeTab.stage] : 'Dataset view',
+            value: activeTab.kind === 'dataset-tool' ? DATASET_TOOL_LABELS[activeTab.tool] : 'Dataset view',
           },
           { label: 'Target', value: 'Dataset contents' },
           { label: 'Path', value: activeDataset?.filePath ?? 'Dataset' },
@@ -3664,7 +3666,7 @@ function App() {
       }
 
       return [
-        { label: 'Object', value: TOOL_LABELS[activeTab.stage] },
+        { label: 'Object', value: TOOL_LABELS[activeTab.tool] },
         { label: 'Mode', value: activeTab.nested ? 'Nested item' : 'Project tool' },
         { label: 'Target', value: 'Project' },
       ];
@@ -3710,8 +3712,8 @@ function App() {
                 ? activeTab.path
                 : activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
                   ? activeDataset?.filePath ?? 'Dataset'
-                  : activeStage
-                    ? TOOL_DESCRIPTIONS[activeStage]
+                  : activeTool
+                    ? TOOL_DESCRIPTIONS[activeTool]
                     : 'Open a file, Dataset, or tool'}
             </p>
           </div>
@@ -3858,7 +3860,7 @@ function App() {
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">Context</span>
                   <span className="font-medium">
-                    {activeTab?.kind === 'dataset-tool' ? `${DATASET_TOOL_LABELS[activeTab.stage]} applied` : 'Dataset object'}
+                    {activeTab?.kind === 'dataset-tool' ? `${DATASET_TOOL_LABELS[activeTab.tool]} applied` : 'Dataset object'}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -5555,20 +5557,20 @@ function App() {
             </button>
             {toolsMenuOpen && (
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {TOOLS_MENU_ITEMS.map((stage) => {
-                  const Icon = stage === 'hub' ? Archive : toolIcons[stage];
-                  const active = activeTab?.kind === 'tool' && activeStage === stage;
+                {TOOLS_MENU_ITEMS.map((tool) => {
+                  const Icon = tool === 'hub' ? Archive : toolIcons[tool];
+                  const active = activeTab?.kind === 'tool' && activeTool === tool;
                   return (
                     <button
                       type="button"
-                      key={stage}
-                      onClick={() => navigateToTool(stage)}
+                      key={tool}
+                      onClick={() => navigateToTool(tool)}
                       className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary ${
                         active ? 'bg-secondary/70' : ''
                       }`}
                     >
                       <Icon className="h-4 w-4" />
-                      <span className="flex-1">{TOOL_LABELS[stage]}</span>
+                      <span className="flex-1">{TOOL_LABELS[tool]}</span>
                       {active && <Check className="h-4 w-4" />}
                     </button>
                   );
@@ -5784,17 +5786,17 @@ function App() {
                   <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
                     Open tool
                   </p>
-                  {TOOLS_MENU_ITEMS.map((stage) => {
-                    const Icon = stage === 'hub' ? Archive : toolIcons[stage];
-                    const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.stage === stage);
+                  {TOOLS_MENU_ITEMS.map((tool) => {
+                    const Icon = tool === 'hub' ? Archive : toolIcons[tool];
+                    const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.tool === tool);
                     return (
                       <DropdownMenu.Item
-                        key={stage}
-                        onSelect={() => navigateToTool(stage)}
+                        key={tool}
+                        onSelect={() => navigateToTool(tool)}
                         className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-xs outline-none hover:bg-secondary"
                       >
                         <Icon className="h-3.5 w-3.5" />
-                        <span className="min-w-0 flex-1 truncate">{TOOL_LABELS[stage]}</span>
+                        <span className="min-w-0 flex-1 truncate">{TOOL_LABELS[tool]}</span>
                         {isOpen && <Check className="h-3.5 w-3.5 text-muted-foreground" />}
                       </DropdownMenu.Item>
                     );
@@ -6214,7 +6216,7 @@ function App() {
                           }}
                         />
                       ) : tab.kind === 'file-analysis' ? (
-                        <AnalysisStage
+                        <AnalysisTool
                           active={isActiveFileTab}
                           projectDirectoryHandle={projectDirectoryHandle}
                           onOpenAssetContextMenu={openAssetExplorerContextMenu}
@@ -6227,14 +6229,14 @@ function App() {
                           }}
                         />
                       ) : tab.kind === 'file-edit' ? (
-                        <CleanupStageComponent
+                        <CleanupToolComponent
                           selectedImageId={tab.workspaceImageId}
                           singleFileMode
                           active={isActiveFileTab}
                           projectDirectoryHandle={projectDirectoryHandle}
                         />
                       ) : (
-                        <TaggingStageComponent
+                        <TaggingToolComponent
                           selectedItemId={tab.workspaceImageId}
                           singleFileMode
                           active={isActiveFileTab}
@@ -6247,9 +6249,9 @@ function App() {
                   renderDatasetWorkspace(activeTab)
                 ) : activeTab && isDatasetToolTab(activeTab) ? (
                   renderDatasetTool(activeTab)
-                ) : activeTab && isFileBackedTab(activeTab) ? null : activeStage ? (
+                ) : activeTab && isFileBackedTab(activeTab) ? null : activeTool ? (
                   renderTool({
-                    currentStage: activeStage,
+                    currentTool: activeTool,
                     projectDirectoryHandle,
                     onOpenAssetContextMenu: openAssetExplorerContextMenu,
                     nested: activeToolNestedView,

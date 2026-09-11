@@ -7,7 +7,7 @@ export const createDatasetImageAssetKey = (assetId: string): string => `image:${
 export const createDatasetFileAssetKey = (assetPath: string): string => `file:${assetPath}`;
 
 export const getWorkspaceDatasetAssetKey = (item: WorkspaceImage): string | null => {
-  if ((item.kind === 'image' || item.kind === 'synthetic') && item.sourceImageId) {
+  if ((item.kind === 'image' || item.kind === 'edited') && item.sourceImageId) {
     return createDatasetImageAssetKey(item.sourceImageId);
   }
   if ((item.kind === 'video' || item.kind === 'psd') && item.assetPath) {

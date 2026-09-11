@@ -143,7 +143,7 @@ dataset-creator/
       ToolHub.tsx
       InternalFileViewer.tsx
       photopea/ ## Photopea iframe integration
-      stages/ ## workspace tools
+      tools/ ## workspace tools
         import
         remove duplicates
         Photopea editing
@@ -202,7 +202,7 @@ The local auto-tagger expects `model.onnx` and `selected_tags.csv`. ONNX Runtime
 Recommended development flow:
 
 1. Start the Vite dev server.
-2. Work on one workspace tool at a time under `src/components/stages`.
+2. Work on one workspace tool at a time under `src/components/tools`.
 3. Keep browser-processing behavior inside the relevant service folder.
 4. Keep shared project state changes in the Zustand stores.
 5. Run a production build before publishing.

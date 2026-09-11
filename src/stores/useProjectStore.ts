@@ -30,7 +30,7 @@ const revokePreviewUrl = (previewUrl: string | undefined) => {
   }
 };
 
-const stripSyntheticPreviewUrl = (item: EditedAsset): EditedAsset => ({
+const stripEditedAssetPreviewUrl = (item: EditedAsset): EditedAsset => ({
   ...item,
   previewUrl: undefined,
 });
@@ -65,7 +65,7 @@ interface ProjectStore extends ProjectState {
   initializeProject: (name: string) => void;
   loadProject: (project: ProjectState) => void;
   renameProject: (name: string) => void;
-  setCurrentTool: (stage: ToolName) => void;
+  setCurrentTool: (tool: ToolName) => void;
   
   // Source images
   addSourceImage: (image: SourceImage) => void;
@@ -96,8 +96,8 @@ interface ProjectStore extends ProjectState {
   removeCleanupOverlay: (id: string) => void;
   
   // Tool runtime state
-  setToolState: (stage: ToolName, state: unknown) => void;
-  getToolState: (stage: ToolName) => unknown;
+  setToolState: (tool: ToolName, state: unknown) => void;
+  getToolState: (tool: ToolName) => unknown;
   
   // Tagging
   updateTaggingConfig: (updates: Partial<TaggingConfig>) => void;
@@ -167,10 +167,10 @@ export const useProjectStore = create<ProjectStore>()(
             lastModified: new Date(),
           })),
         
-        setCurrentTool: (stage: ToolName) =>
+        setCurrentTool: (tool: ToolName) =>
           set((state) => ({
             ...state,
-            currentStage: stage,
+            currentTool: tool,
             lastModified: new Date(),
           })),
         
@@ -429,7 +429,7 @@ export const useProjectStore = create<ProjectStore>()(
         
         addDatasetItem: (item: EditedAsset) =>
           set((state) => {
-            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(item));
+            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripEditedAssetPreviewUrl(item));
 
             return {
               ...state,
@@ -458,7 +458,7 @@ export const useProjectStore = create<ProjectStore>()(
             ...state,
             datasetItems: {
               ...state.datasetItems,
-              ...Object.fromEntries(supportedItems.map((item) => [item.id, stripSyntheticPreviewUrl(item)])),
+              ...Object.fromEntries(supportedItems.map((item) => [item.id, stripEditedAssetPreviewUrl(item)])),
             },
             lastModified: new Date(),
           }));
@@ -488,7 +488,7 @@ export const useProjectStore = create<ProjectStore>()(
               ...updates,
               previewUrl: imageDataChanged && updates.previewUrl === undefined ? undefined : updates.previewUrl ?? currentItem.previewUrl,
             };
-            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(updatedItem));
+            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripEditedAssetPreviewUrl(updatedItem));
 
             return {
               ...state,
@@ -510,7 +510,7 @@ export const useProjectStore = create<ProjectStore>()(
               deleted: true,
               deletedAt: new Date(),
             };
-            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(updatedItem));
+            void dbPut(OBJECT_STORES.DATASET_ITEMS, stripEditedAssetPreviewUrl(updatedItem));
 
             return {
               ...state,
@@ -548,14 +548,14 @@ export const useProjectStore = create<ProjectStore>()(
             return { ...state, cleanupOverlays: rest };
           }),
         
-        setToolState: (stage: ToolName, stageState: unknown) =>
+        setToolState: (tool: ToolName, toolState: unknown) =>
           set((state) => ({
             ...state,
-            stageState: { ...state.stageState, [stage]: stageState },
+            toolState: { ...state.toolState, [tool]: toolState },
             lastModified: new Date(),
           })),
         
-        getToolState: (stage: ToolName) => get().stageState[stage],
+        getToolState: (tool: ToolName) => get().toolState[tool],
         
         updateTaggingConfig: (updates: Partial<any>) =>
           set((state) => ({

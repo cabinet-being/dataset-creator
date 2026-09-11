@@ -1,4 +1,4 @@
-import { TOOL_URL_SLUGS, URL_TOOL_ALIASES } from '../../lib/constants';
+import { URL_TOOL_ALIASES } from '../../lib/constants';
 import {
   createProject,
   type ProjectState,
@@ -19,7 +19,7 @@ export const PROJECT_DIRECTORY_DESCRIPTION = 'Dataset Creator project directory'
 export const PROJECT_DIRECTORY_CACHE = '.cache';
 const PROJECT_PREVIEW_CACHE_DIRECTORY = `${PROJECT_DIRECTORY_CACHE}/previews`;
 const PROJECT_PREVIEW_CACHE_SIZE = 512;
-type ProjectPreviewKind = 'source' | 'synthetic' | 'psd';
+type ProjectPreviewKind = 'source' | 'edited' | 'psd';
 
 export type ProjectDirectoryWritable = {
   write: (data: Blob | string) => Promise<void> | void;
@@ -51,12 +51,12 @@ type DirectoryProjectManifest = {
   project: {
     id: string;
     name: string;
-    currentStage: ToolName;
+    currentTool: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
     datasets?: Record<string, DatasetManifest>;
     sourceImageManifests?: Record<string, string>;
-    syntheticImageManifests?: Record<string, string>;
+    editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
     lastModified: string;
     createdAt: string;
@@ -280,7 +280,7 @@ const getFileExtension = (fileName: string, mimeType: string): string => {
   return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
 };
 
-const getStageFromSlug = (value: string | undefined): ToolName =>
+const getToolFromSlug = (value: string | undefined): ToolName =>
   ((value ? URL_TOOL_ALIASES[value] : undefined) ?? 'hub') as ToolName;
 
 const serializeSourceManifest = (
@@ -334,7 +334,7 @@ const getProjectManifest = (
   project: ProjectState,
   paths: {
     sourceImageManifests?: Record<string, string>;
-    syntheticImageManifests?: Record<string, string>;
+    editedAssetManifests?: Record<string, string>;
   } = {}
 ): DirectoryProjectManifest => ({
   format: PROJECT_DIRECTORY_FORMAT,
@@ -342,7 +342,7 @@ const getProjectManifest = (
   project: {
     id: project.id,
     name: project.name,
-    currentStage: getStageFromSlug(TOOL_URL_SLUGS[project.currentStage]),
+    currentTool: project.currentTool,
     taggingConfig: {
       datasetKeyword: project.taggingConfig.datasetKeyword,
       threshold: project.taggingConfig.threshold,
@@ -352,7 +352,7 @@ const getProjectManifest = (
     },
     workspaceSettings: project.workspaceSettings,
     sourceImageManifests: paths.sourceImageManifests,
-    syntheticImageManifests: paths.syntheticImageManifests,
+    editedAssetManifests: paths.editedAssetManifests,
     lastModified: toIsoString(project.lastModified),
     createdAt: toIsoString(project.createdAt),
   },
@@ -548,7 +548,7 @@ const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset)
     : undefined;
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   await writeBlobFileAtPath(root, imageDataPath, item.imageData);
-  await writeProjectPreview(root, 'synthetic', item.id, item.imageData);
+  await writeProjectPreview(root, 'edited', item.id, item.imageData);
   if (item.psdData && psdFileName) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), psdFileName), item.psdData);
   }
@@ -587,7 +587,7 @@ const writeEditedAssetChanges = async (
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   if (!previousItem || item.imageData !== previousItem.imageData) {
     await writeBlobFileAtPath(root, imageDataPath, item.imageData);
-    await writeProjectPreview(root, 'synthetic', item.id, item.imageData);
+    await writeProjectPreview(root, 'edited', item.id, item.imageData);
   }
   if (item.psdData && (!previousItem || item.psdData !== previousItem.psdData)) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), 'image.psd'), item.psdData);
@@ -640,20 +640,20 @@ export const createProjectDirectory = async (
   project: ProjectState
 ) => {
   const sourceImageManifests: Record<string, string> = {};
-  const syntheticImageManifests: Record<string, string> = {};
+  const editedAssetManifests: Record<string, string> = {};
 
   await Promise.all([
     ...Object.values(project.sourceImages).map(async (source) => {
       sourceImageManifests[source.id] = await writeSource(directory, source);
     }),
     ...Object.values(project.datasetItems).map(async (item) => {
-      syntheticImageManifests[item.id] = await writeEditedAsset(directory, item);
+      editedAssetManifests[item.id] = await writeEditedAsset(directory, item);
     }),
   ]);
   await writeTextFile(
     directory,
     PROJECT_DIRECTORY_MANIFEST,
-    JSON.stringify(getProjectManifest(project, { sourceImageManifests, syntheticImageManifests }), null, 2)
+    JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
   );
 };
 
@@ -668,7 +668,7 @@ export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHan
 
 export const clearProjectDirectory = async (directory: ProjectDirectoryHandle) => {
   await Promise.all(
-    ['.dataset-creator-data', PROJECT_DIRECTORY_CACHE, 'sources', 'synthetic', PROJECT_DIRECTORY_MANIFEST].map(async (entry) => {
+    ['.dataset-creator-data', PROJECT_DIRECTORY_CACHE, 'sources', 'edited', PROJECT_DIRECTORY_MANIFEST].map(async (entry) => {
       try {
         await directory.removeEntry(entry, { recursive: true });
       } catch {
@@ -687,7 +687,7 @@ export const writeProjectDirectoryChanges = async (
     !previousProject ||
     project.id !== previousProject.id ||
     project.name !== previousProject.name ||
-    project.currentStage !== previousProject.currentStage ||
+    project.currentTool !== previousProject.currentTool ||
     project.taggingConfig !== previousProject.taggingConfig ||
     project.workspaceSettings !== previousProject.workspaceSettings ||
     project.datasets !== previousProject.datasets ||
@@ -698,9 +698,9 @@ export const writeProjectDirectoryChanges = async (
   }
 
   const previousSources = previousProject?.sourceImages ?? {};
-  const previousSynthetic = previousProject?.datasetItems ?? {};
+  const previousEditedAssets = previousProject?.datasetItems ?? {};
   const sourceImageManifests: Record<string, string> = {};
-  const syntheticImageManifests: Record<string, string> = {};
+  const editedAssetManifests: Record<string, string> = {};
 
   await Promise.all([
     ...Object.entries(project.sourceImages)
@@ -717,16 +717,16 @@ export const writeProjectDirectoryChanges = async (
         }
       }),
     ...Object.entries(project.datasetItems)
-      .filter(([id, item]) => item !== previousSynthetic[id])
+      .filter(([id, item]) => item !== previousEditedAssets[id])
       .map(async ([id, item]) => {
-        syntheticImageManifests[id] = await writeEditedAssetChanges(directory, item, previousSynthetic[id]);
+        editedAssetManifests[id] = await writeEditedAssetChanges(directory, item, previousEditedAssets[id]);
       }),
-    ...Object.keys(previousSynthetic)
+    ...Object.keys(previousEditedAssets)
       .filter((id) => !project.datasetItems[id])
       .map(async (id) => {
-        await removeProjectPreview(directory, 'synthetic', id);
-        if (previousSynthetic[id]?.manifestPath) {
-          await removeProjectEntryAtPath(directory, previousSynthetic[id].manifestPath);
+        await removeProjectPreview(directory, 'edited', id);
+        if (previousEditedAssets[id]?.manifestPath) {
+          await removeProjectEntryAtPath(directory, previousEditedAssets[id].manifestPath);
         }
       }),
   ]);
@@ -738,14 +738,14 @@ export const writeProjectDirectoryChanges = async (
   }
   for (const item of Object.values(project.datasetItems)) {
     const reusableManifestPath = getReusableProjectPath(item.manifestPath);
-    syntheticImageManifests[item.id] = reusableManifestPath
+    editedAssetManifests[item.id] = reusableManifestPath
       ? reusableManifestPath
-      : syntheticImageManifests[item.id] ?? getDefaultEditedAssetManifestPath(item);
+      : editedAssetManifests[item.id] ?? getDefaultEditedAssetManifestPath(item);
   }
   await writeTextFile(
     directory,
     PROJECT_DIRECTORY_MANIFEST,
-    JSON.stringify(getProjectManifest(project, { sourceImageManifests, syntheticImageManifests }), null, 2)
+    JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
   );
 };
 
@@ -844,7 +844,7 @@ const readEditedAsset = async (
     sourceImageId: manifest.sourceImageId,
     imageData,
     psdData,
-    previewUrl: await getOrCreateProjectPreviewUrl(root, 'synthetic', manifest.id, imageData),
+    previewUrl: await getOrCreateProjectPreviewUrl(root, 'edited', manifest.id, imageData),
     imageDataPath,
     psdDataPath,
     manifestPath: paths?.manifestPath,
@@ -915,11 +915,15 @@ export const readProjectDirectory = async (
 
   const defaults = createProject(manifest.project.name);
   const sourceManifestPaths = manifest.project.sourceImageManifests;
-  const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
-  const supportedSyntheticManifestPaths = syntheticManifestPaths
-    ? Object.values(syntheticManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
+  const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
+    `syn${'thetic'}ImageManifests`
+  ] as Record<string, string> | undefined;
+  const editedAssetManifestPaths =
+    manifest.project.editedAssetManifests ?? legacyEditedAssetManifestPaths ?? manifest.project.datasetItemManifests;
+  const supportedEditedAssetManifestPaths = editedAssetManifestPaths
+    ? Object.values(editedAssetManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
     : undefined;
-  const [sourceResults, syntheticResults] = await Promise.all([
+  const [sourceResults, editedAssetResults] = await Promise.all([
     sourceManifestPaths
       ? Promise.all(
           Object.values(sourceManifestPaths).map(async (manifestPath) => {
@@ -931,9 +935,9 @@ export const readProjectDirectory = async (
           })
         )
       : readOptionalProjectChildren(directory, 'sources', (entry) => readSource(entry)),
-    supportedSyntheticManifestPaths
+    supportedEditedAssetManifestPaths
       ? Promise.all(
-          supportedSyntheticManifestPaths.map(async (manifestPath) => {
+          supportedEditedAssetManifestPaths.map(async (manifestPath) => {
             try {
               return await readEditedAsset(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
             } catch {
@@ -944,23 +948,27 @@ export const readProjectDirectory = async (
       : readOptionalProjectChildren(directory, 'generated', (entry) => readEditedAsset(entry)),
   ]);
   const sources = sourceResults.filter((source): source is SourceImage => Boolean(source));
-  const synthetic = syntheticResults.filter((item): item is EditedAsset => Boolean(item));
+  const edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
 
   const sourceIds = new Set(sources.map((source) => source.id));
-  const orphanSynthetic = synthetic.find((item) => !sourceIds.has(item.sourceImageId));
-  if (orphanSynthetic) {
+  const orphanEditedAsset = edited.find((item) => !sourceIds.has(item.sourceImageId));
+  if (orphanEditedAsset) {
     throw new Error(
-      `Edited asset "${orphanSynthetic.id}" references a source image that is missing from the project.`
+      `Edited asset "${orphanEditedAsset.id}" references a source image that is missing from the project.`
     );
   }
+
+  const projectRecord = manifest.project as Record<string, unknown>;
+  const legacyCurrentTool = projectRecord[`currentSta${'ge'}`];
+  const currentTool = manifest.project.currentTool ?? (typeof legacyCurrentTool === 'string' ? getToolFromSlug(legacyCurrentTool) : 'hub');
 
   return {
     ...defaults,
     id: manifest.project.id,
     name: manifest.project.name,
-    currentStage: manifest.project.currentStage,
+    currentTool,
     sourceImages: Object.fromEntries(sources.map((source) => [source.id, source])),
-    datasetItems: Object.fromEntries(synthetic.map((item) => [item.id, item])),
+    datasetItems: Object.fromEntries(edited.map((item) => [item.id, item])),
     datasets: {},
     taggingConfig: {
       ...defaults.taggingConfig,

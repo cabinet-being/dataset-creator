@@ -29,7 +29,7 @@ export const WorkspaceAssetFrame = ({
         ? 'Generating preview...'
         : placeholder;
 
-  if (item.kind === 'image' || item.kind === 'synthetic' || (item.kind === 'psd' && previewUrl)) {
+  if (item.kind === 'image' || item.kind === 'edited' || (item.kind === 'psd' && previewUrl)) {
     return (
       <MasonryImageFrame
         src={previewUrl}

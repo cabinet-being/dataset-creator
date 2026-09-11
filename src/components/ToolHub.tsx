@@ -45,9 +45,9 @@ const getRequirementLabel = (
 };
 
 type ToolHubProps = {
-  onOpenTool?: (stage: ToolName) => void;
+  onOpenTool?: (tool: ToolName) => void;
   onOpenDataset?: (datasetId: string) => void;
-  onOpenDatasetTool?: (datasetId: string, stage: Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>) => void;
+  onOpenDatasetTool?: (datasetId: string, tool: Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>) => void;
   onCreateDataset?: () => void;
   onExportDataset?: (datasetId: string) => void;
 };
@@ -61,18 +61,18 @@ export const ToolHub = ({
 }: ToolHubProps = {}) => {
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
-  const syntheticImages = useMemo(
-    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
-    [syntheticImagesById]
+  const editedAssets = useMemo(
+    () => Object.values(editedAssetsById).filter((item) => !item.deleted),
+    [editedAssetsById]
   );
 
   const sourceCount = sourceImages.length;
   const workspaceImages = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages),
-    [sourceImages, syntheticImages]
+    () => toWorkspaceImages(sourceImages, editedAssets),
+    [sourceImages, editedAssets]
   );
   const workspaceCount = workspaceImages.length;
   const datasetCount = Object.keys(datasetsById).length;
@@ -82,12 +82,12 @@ export const ToolHub = ({
         .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
     [datasetsById]
   );
-  const openTool = (stage: ToolName) => {
+  const openTool = (tool: ToolName) => {
     if (onOpenTool) {
-      onOpenTool(stage);
+      onOpenTool(tool);
       return;
     }
-    setCurrentTool(stage);
+    setCurrentTool(tool);
   };
 
   return (

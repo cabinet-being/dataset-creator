@@ -31,7 +31,7 @@ type PhotopeaPhase =
   | 'clearing-documents'
   | 'opening-buffer'
   | 'opening-source'
-  | 'preparing-synthetic-psd'
+  | 'preparing-edited-psd'
   | 'saving-png'
   | 'saving-psd';
 
@@ -64,7 +64,7 @@ const postImageBufferToPhotopea = (photopeaWindow: Window, buffer: ArrayBuffer) 
   }
 };
 
-type CleanupStageProps = {
+type CleanupToolProps = {
   selectedImageId?: string | null;
   singleFileMode?: boolean;
   active?: boolean;
@@ -72,22 +72,22 @@ type CleanupStageProps = {
   onSelectImage?: (imageId: string) => void;
 };
 
-export const CleanupStage = ({
+export const CleanupTool = ({
   selectedImageId,
   singleFileMode = false,
   active = true,
   projectDirectoryHandle = null,
   onSelectImage,
-}: CleanupStageProps = {}) => {
+}: CleanupToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const addNotification = useUIStore((state) => state.addNotification);
   const setEditToolbar = useUIStore((state) => state.setEditToolbar);
   const initialSelectedImageId = useProjectStore(
-    (state) => (state.stageState.clean as { selectedImageId?: string } | undefined)?.selectedImageId
+    (state) => (state.toolState.clean as { selectedImageId?: string } | undefined)?.selectedImageId
   );
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -97,8 +97,8 @@ export const CleanupStage = ({
   const loadedImageKeyRef = useRef<string | null>(null);
   const loadingImageKeyRef = useRef<string | null>(null);
   const pendingImageRef = useRef<WorkspaceImage | null>(null);
-  const pendingSyntheticPsdBufferRef = useRef<ArrayBuffer | null>(null);
-  const pendingSyntheticPsdUpgradeRef = useRef(false);
+  const pendingEditedPsdBufferRef = useRef<ArrayBuffer | null>(null);
+  const pendingEditedPsdUpgradeRef = useRef(false);
 
   const [selectedImageKey, setSelectedImageKey] = useState<string | null>(null);
   const [photopeaReady, setPhotopeaReady] = useState(false);
@@ -108,14 +108,14 @@ export const CleanupStage = ({
   const [hasPhotopeaMounted, setHasPhotopeaMounted] = useState(false);
 
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
-  const syntheticImages = useMemo(
-    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
-    [syntheticImagesById]
+  const editedAssets = useMemo(
+    () => Object.values(editedAssetsById).filter((item) => !item.deleted),
+    [editedAssetsById]
   );
 
   const workspaceImages = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages),
-    [sourceImages, syntheticImages]
+    () => toWorkspaceImages(sourceImages, editedAssets),
+    [sourceImages, editedAssets]
   );
   const previewUrls = useWorkspacePreviewUrls(workspaceImages);
 
@@ -126,7 +126,7 @@ export const CleanupStage = ({
 
   const readEditableImageBuffer = useCallback(
     async (image: WorkspaceImage): Promise<ArrayBuffer> => {
-      const editableBlob = image.kind === 'synthetic' && image.psdData ? image.psdData : image.imageData;
+      const editableBlob = image.kind === 'edited' && image.psdData ? image.psdData : image.imageData;
       try {
         return await readEditableBlobBuffer(editableBlob);
       } catch (error) {
@@ -134,8 +134,8 @@ export const CleanupStage = ({
           image.kind === 'image'
             ? sourceImagesById[image.sourceImageId]?.originalFilePath
             : image.psdData
-              ? syntheticImagesById[image.syntheticImageId ?? '']?.psdDataPath
-              : syntheticImagesById[image.syntheticImageId ?? '']?.imageDataPath;
+              ? editedAssetsById[image.editedAssetId ?? '']?.psdDataPath
+              : editedAssetsById[image.editedAssetId ?? '']?.imageDataPath;
 
         if (!projectDirectoryHandle || !fallbackPath) {
           throw error;
@@ -145,7 +145,7 @@ export const CleanupStage = ({
         return readEditableBlobBuffer(fallbackFile);
       }
     },
-    [projectDirectoryHandle, sourceImagesById, syntheticImagesById]
+    [projectDirectoryHandle, sourceImagesById, editedAssetsById]
   );
 
   useEffect(() => {
@@ -173,8 +173,8 @@ export const CleanupStage = ({
     loadedImageKeyRef.current = null;
     loadingImageKeyRef.current = null;
     pendingImageRef.current = null;
-    pendingSyntheticPsdBufferRef.current = null;
-    pendingSyntheticPsdUpgradeRef.current = false;
+    pendingEditedPsdBufferRef.current = null;
+    pendingEditedPsdUpgradeRef.current = false;
     if (resetPhotopea) {
       setPhotopeaReady(false);
     }
@@ -251,8 +251,8 @@ export const CleanupStage = ({
     try {
       setEditorStatus('Opening image in Photopea...');
       setDocumentReady(false);
-      pendingSyntheticPsdUpgradeRef.current =
-        image.kind === 'synthetic' && Boolean(image.syntheticImageId) && !image.psdData;
+      pendingEditedPsdUpgradeRef.current =
+        image.kind === 'edited' && Boolean(image.editedAssetId) && !image.psdData;
       const buffer = await readEditableImageBuffer(image);
       phaseRef.current = 'opening-buffer';
       pendingImageRef.current = image;
@@ -312,8 +312,8 @@ export const CleanupStage = ({
           height: image.height,
           mimeType: editedBlob.type,
         }));
-        if (!saveCopy && image.kind === 'synthetic' && image.syntheticImageId) {
-          updateDatasetItem(image.syntheticImageId, {
+        if (!saveCopy && image.kind === 'edited' && image.editedAssetId) {
+          updateDatasetItem(image.editedAssetId, {
             imageData: editedBlob,
             psdData: psdBlob,
             width: imageInfo.width,
@@ -321,7 +321,7 @@ export const CleanupStage = ({
             aspectRatio: image.aspectRatio,
           });
         } else {
-          const syntheticImage = createEditedAsset(
+          const editedAsset = createEditedAsset(
             image.sourceImageId,
             editedBlob,
             imageInfo.width,
@@ -329,9 +329,9 @@ export const CleanupStage = ({
             'cleaned',
             image.aspectRatio
           );
-          syntheticImage.psdData = psdBlob;
+          editedAsset.psdData = psdBlob;
 
-          addDatasetItem(syntheticImage);
+          addDatasetItem(editedAsset);
 
           if (!saveCopy && image.kind === 'image') {
             updateSourceImage(image.sourceImageId, { hidden: true });
@@ -382,8 +382,8 @@ export const CleanupStage = ({
       const data = event.data;
 
       if (data instanceof ArrayBuffer) {
-        if (phaseRef.current === 'preparing-synthetic-psd') {
-          pendingSyntheticPsdBufferRef.current = data;
+        if (phaseRef.current === 'preparing-edited-psd') {
+          pendingEditedPsdBufferRef.current = data;
           setEditorStatus('Receiving generated PSD from Photopea...');
           return;
         }
@@ -449,8 +449,8 @@ export const CleanupStage = ({
       }
 
       if (phaseRef.current === 'opening-source') {
-        if (pendingSyntheticPsdUpgradeRef.current) {
-          phaseRef.current = 'preparing-synthetic-psd';
+        if (pendingEditedPsdUpgradeRef.current) {
+          phaseRef.current = 'preparing-edited-psd';
           setEditorStatus('Preparing generated PSD...');
           iframeRef.current?.contentWindow?.postMessage('app.activeDocument.saveToOE("psd");', PHOTOPEA_ORIGIN);
           return;
@@ -466,25 +466,25 @@ export const CleanupStage = ({
         return;
       }
 
-      if (phaseRef.current === 'preparing-synthetic-psd') {
+      if (phaseRef.current === 'preparing-edited-psd') {
         const pendingImage = pendingImageRef.current;
-        const psdBuffer = pendingSyntheticPsdBufferRef.current;
-        if (!pendingImage?.syntheticImageId || !psdBuffer) {
+        const psdBuffer = pendingEditedPsdBufferRef.current;
+        if (!pendingImage?.editedAssetId || !psdBuffer) {
           phaseRef.current = 'idle';
           loadingImageKeyRef.current = null;
           pendingImageRef.current = null;
-          pendingSyntheticPsdBufferRef.current = null;
-          pendingSyntheticPsdUpgradeRef.current = false;
+          pendingEditedPsdBufferRef.current = null;
+          pendingEditedPsdUpgradeRef.current = false;
           setEditorStatus('Failed to prepare generated PSD.');
           addNotification('error', 'Failed to prepare generated PSD');
           return;
         }
 
         const psdData = new Blob([psdBuffer], { type: 'image/vnd.adobe.photoshop' });
-        updateDatasetItem(pendingImage.syntheticImageId, { psdData });
+        updateDatasetItem(pendingImage.editedAssetId, { psdData });
         pendingImageRef.current = { ...pendingImage, psdData };
-        pendingSyntheticPsdBufferRef.current = null;
-        pendingSyntheticPsdUpgradeRef.current = false;
+        pendingEditedPsdBufferRef.current = null;
+        pendingEditedPsdUpgradeRef.current = false;
         loadedImageKeyRef.current = null;
         phaseRef.current = 'clearing-documents';
         setEditorStatus('Opening generated PSD...');

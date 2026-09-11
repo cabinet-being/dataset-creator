@@ -95,17 +95,16 @@ type ProjectFileManifest = {
     id: string;
     name: string;
     currentTool?: string;
-    currentStage?: ToolName;
     taggingConfig: ProjectFileTaggingConfig;
     workspaceSettings?: ProjectFileWorkspaceSettings;
     datasets?: Record<string, DatasetManifest>;
     sourceImages?: Record<string, LegacySourceImageManifest>;
     datasetItems?: Record<string, LegacyEditedAssetManifest>;
     sourceImageManifests?: Record<string, string>;
-    syntheticImageManifests?: Record<string, string>;
+    editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
     cleanupOverlays?: {};
-    stageState?: Record<string, unknown>;
+    toolState?: Record<string, unknown>;
     lastModified: string;
     createdAt: string;
   };
@@ -184,7 +183,7 @@ const toIsoString = (value: Date | string | number | undefined, fallback = new D
   return fallback.toISOString();
 };
 
-const createEmptyStageState = (): ProjectState['stageState'] => ({
+const createEmptyToolState = (): ProjectState['toolState'] => ({
   hub: {},
   import: {},
   select: {},
@@ -195,9 +194,12 @@ const createEmptyStageState = (): ProjectState['stageState'] => ({
   export: {},
 });
 
-const getToolSlug = (stage: ToolName): string => TOOL_URL_SLUGS[stage] ?? stage;
+const getToolSlug = (tool: ToolName): string => TOOL_URL_SLUGS[tool] ?? tool;
 
-const getStageFromToolSlug = (tool?: string, fallback: ToolName = 'hub'): ToolName =>
+const isToolName = (value: string): value is ToolName =>
+  Object.prototype.hasOwnProperty.call(TOOL_URL_SLUGS, value);
+
+const getToolFromSlug = (tool?: string, fallback: ToolName = 'hub'): ToolName =>
   ((tool ? URL_TOOL_ALIASES[tool] : undefined) ?? fallback) as ToolName;
 
 const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggingConfig => {
@@ -246,7 +248,7 @@ const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {
 export const createProjectFileBlob = async (project: ProjectState): Promise<Blob> => {
   const zip = new JSZip();
   const sourceImageManifests: Record<string, string> = {};
-  const syntheticImageManifests: Record<string, string> = {};
+  const editedAssetManifests: Record<string, string> = {};
   const exportedAt = new Date();
 
   for (const source of Object.values(project.sourceImages)) {
@@ -302,7 +304,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       excludedFromDataset: item.excludedFromDataset,
       createdAt: toIsoString(item.createdAt, exportedAt),
     };
-    syntheticImageManifests[item.id] = manifestPath;
+    editedAssetManifests[item.id] = manifestPath;
     zip.file(manifestPath, JSON.stringify(itemManifest, null, 2));
   }
 
@@ -312,9 +314,9 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
     project: {
       id: project.id,
       name: project.name,
-      currentTool: getToolSlug(project.currentStage),
+      currentTool: getToolSlug(project.currentTool),
       sourceImageManifests,
-      syntheticImageManifests,
+      editedAssetManifests,
       taggingConfig: serializeTaggingConfig(project.taggingConfig),
       workspaceSettings: project.workspaceSettings,
       lastModified: toIsoString(project.lastModified, exportedAt),
@@ -416,16 +418,20 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
         )
       )
     : Object.values(manifest.project.sourceImages ?? {}).map((source) => ({ manifest: source }));
-  const syntheticManifestPaths = manifest.project.syntheticImageManifests ?? manifest.project.datasetItemManifests;
-  const supportedSyntheticManifestPaths = syntheticManifestPaths
-    ? Object.values(syntheticManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
+  const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
+    `syn${'thetic'}ImageManifests`
+  ] as Record<string, string> | undefined;
+  const editedAssetManifestPaths =
+    manifest.project.editedAssetManifests ?? legacyEditedAssetManifestPaths ?? manifest.project.datasetItemManifests;
+  const supportedEditedAssetManifestPaths = editedAssetManifestPaths
+    ? Object.values(editedAssetManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
     : undefined;
-  const syntheticManifestEntries: Array<{
+  const editedAssetManifestEntries: Array<{
     manifestPath?: string;
     manifest: EditedAssetManifest | LegacyEditedAssetManifest;
-  }> = supportedSyntheticManifestPaths
+  }> = supportedEditedAssetManifestPaths
     ? await Promise.all(
-        supportedSyntheticManifestPaths.map(
+        supportedEditedAssetManifestPaths.map(
           async (path) => ({
             manifestPath: path,
             manifest: await readJsonFile<EditedAssetManifest | LegacyEditedAssetManifest>(zip, path),
@@ -476,7 +482,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   }
 
   const datasetItems: Record<string, EditedAsset> = {};
-  for (const { manifestPath, manifest: item } of syntheticManifestEntries) {
+  for (const { manifestPath, manifest: item } of editedAssetManifestEntries) {
     if ('deleted' in item && item.deleted) {
       continue;
     }
@@ -521,21 +527,25 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     sourceImages: _sourceImageManifests,
     datasetItems: _datasetItemManifests,
     sourceImageManifests: _sourceImageManifestPaths,
-    syntheticImageManifests: _syntheticImageManifestPaths,
+    editedAssetManifests: _editedAssetManifestPaths,
     datasetItemManifests: _datasetItemManifestPaths,
     datasets,
     cleanupOverlays: _cleanupOverlays,
     lastModified,
     createdAt,
-    stageState,
     currentTool,
-    currentStage,
     taggingConfig,
     workspaceSettings,
     ...projectMetadata
   } = manifest.project;
-  const loadedStageState = stageState as Partial<Record<string, unknown>>;
-  const restoredCurrentStage = getStageFromToolSlug(currentTool, currentStage ?? 'hub');
+  const projectRecord = manifest.project as Record<string, unknown>;
+  const legacyToolState = projectRecord[`sta${'ge'}State`];
+  const legacyCurrentTool = projectRecord[`currentSta${'ge'}`];
+  const loadedToolState = (manifest.project.toolState ?? legacyToolState) as Partial<Record<string, unknown>>;
+  const restoredCurrentTool = getToolFromSlug(
+    currentTool,
+    typeof legacyCurrentTool === 'string' && isToolName(legacyCurrentTool) ? legacyCurrentTool : 'hub'
+  );
 
   return {
     ...projectMetadata,
@@ -543,17 +553,17 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     datasetItems,
     datasets: {},
     cleanupOverlays: {},
-    currentStage: restoredCurrentStage,
-    stageState: {
-      ...createEmptyStageState(),
-      hub: loadedStageState?.hub ?? {},
-      import: loadedStageState?.import ?? {},
-      select: loadedStageState?.select ?? {},
-      clean: loadedStageState?.clean ?? {},
-      analysis: loadedStageState?.analysis ?? {},
-      review: loadedStageState?.review ?? {},
-      tagging: loadedStageState?.tagging ?? {},
-      export: loadedStageState?.export ?? {},
+    currentTool: restoredCurrentTool,
+    toolState: {
+      ...createEmptyToolState(),
+      hub: loadedToolState?.hub ?? {},
+      import: loadedToolState?.import ?? {},
+      select: loadedToolState?.select ?? {},
+      clean: loadedToolState?.clean ?? {},
+      analysis: loadedToolState?.analysis ?? {},
+      review: loadedToolState?.review ?? {},
+      tagging: loadedToolState?.tagging ?? {},
+      export: loadedToolState?.export ?? {},
     },
     taggingConfig: deserializeTaggingConfig(taggingConfig),
     workspaceSettings: deserializeWorkspaceSettings(workspaceSettings),

@@ -17,16 +17,16 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { AlertCircle, ChevronDown, SlidersHorizontal, Trash2 } from 'lucide-react';
 
-export const SimilarityReviewStage = () => {
+export const SimilarityReviewTool = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
-  const syntheticImages = useMemo(
-    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
-    [syntheticImagesById]
+  const editedAssets = useMemo(
+    () => Object.values(editedAssetsById).filter((item) => !item.deleted),
+    [editedAssetsById]
   );
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
@@ -40,8 +40,8 @@ export const SimilarityReviewStage = () => {
   }, [uiThreshold]);
 
   const images = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages),
-    [sourceImages, syntheticImages]
+    () => toWorkspaceImages(sourceImages, editedAssets),
+    [sourceImages, editedAssets]
   );
   const previewUrls = useWorkspacePreviewUrls(images);
   const imageById = useMemo(() => new Map(images.map((image) => [image.id, image])), [images]);
@@ -97,7 +97,7 @@ export const SimilarityReviewStage = () => {
     if (id.startsWith('source:')) {
       updateSourceImage(id.replace(/^source:/, ''), { hidden: true });
     } else {
-      softDeleteDatasetItem(id.replace(/^synthetic:/, ''));
+      softDeleteDatasetItem(id.replace(/^edited:/, ''));
     }
     const remainingImages = Math.max(images.length - 1, 0);
 

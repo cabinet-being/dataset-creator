@@ -60,7 +60,7 @@ const PHOTOPEA_ORIGIN = 'https://www.photopea.com';
 const PHOTOPEA_EXPORT_TIMEOUT_MS = 45000;
 
 export const getExportBasename = (item: WorkspaceImage): string =>
-  item.fileName.replace(/\.[^.]+$/, '') || item.id.replace(/^(source|synthetic):/, '');
+  item.fileName.replace(/\.[^.]+$/, '') || item.id.replace(/^(source|edited):/, '');
 
 const getPsdExportBasename = (asset: ExportPsdAsset): string =>
   asset.fileName.replace(/\.[^.]+$/, '') || 'photoshop-document';

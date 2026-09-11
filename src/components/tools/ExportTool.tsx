@@ -14,22 +14,22 @@ import { createOperationLogger } from '../../services/logging/applicationLog';
 import { toWorkspaceImages, getWorkspaceKindBadgeClass } from '../../lib/workspaceImages';
 import { AlertCircle, CheckCircle2, Download, FolderOpen } from 'lucide-react';
 
-type ExportStageProps = {
+type ExportToolProps = {
   active?: boolean;
 };
 
-export const ExportStage = ({ active = true }: ExportStageProps = {}) => {
+export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
   const { taggingConfig } = useProjectStore();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
   const datasetTriggerWord = useMemo(
     () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
     [datasetsById]
   );
-  const cleanupStageState = useProjectStore(
+  const cleanupToolState = useProjectStore(
     (state) =>
-      (state.stageState.clean as
+      (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
@@ -41,13 +41,13 @@ export const ExportStage = ({ active = true }: ExportStageProps = {}) => {
   const exportInspectorRoot = useInspectorPortalRoot('export-inspector-root', active);
 
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
-  const syntheticImages = useMemo(
-    () => Object.values(syntheticImagesById).filter((item) => !item.deleted),
-    [syntheticImagesById]
+  const editedAssets = useMemo(
+    () => Object.values(editedAssetsById).filter((item) => !item.deleted),
+    [editedAssetsById]
   );
   const items = useMemo(
-    () => toWorkspaceImages(sourceImages, syntheticImages, cleanupStageState.workingEdits),
-    [cleanupStageState.workingEdits, sourceImages, syntheticImages]
+    () => toWorkspaceImages(sourceImages, editedAssets, cleanupToolState.workingEdits),
+    [cleanupToolState.workingEdits, sourceImages, editedAssets]
   );
   const exportItems = useMemo(
     () => items.filter((item) => !item.excludedFromDataset),

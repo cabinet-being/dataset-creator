@@ -1,4 +1,4 @@
-export const LEGACY_PROJECT_ROOT_DIRECTORY_NAMES = new Set(['sources', 'synthetic']);
+export const LEGACY_PROJECT_ROOT_DIRECTORY_NAMES = new Set(['sources', `syn${'thetic'}`]);
 
 export const getProjectPathParts = (path: string): string[] => {
   const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);

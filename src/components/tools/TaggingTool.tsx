@@ -35,10 +35,10 @@ type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
 
 const canAutoTagItem = (item: WorkspaceImage): boolean =>
-  item.kind === 'image' || item.kind === 'synthetic';
+  item.kind === 'image' || item.kind === 'edited';
 
 const canCaptionItem = (item: WorkspaceImage): boolean =>
-  item.kind === 'image' || item.kind === 'synthetic' || item.kind === 'psd';
+  item.kind === 'image' || item.kind === 'edited' || item.kind === 'psd';
 
 const DATASET_OVERWRITE_CAPTIONS_WARNING =
   'Enable Overwrite captions in Dataset Inspector before editing Dataset captions';
@@ -607,7 +607,7 @@ const CaptionScopeControls = ({
   </>
 );
 
-type TaggingStageProps = {
+type TaggingToolProps = {
   selectedItemId?: string | null;
   singleFileMode?: boolean;
   active?: boolean;
@@ -619,7 +619,7 @@ type TaggingStageProps = {
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
-export const TaggingStage = ({
+export const TaggingTool = ({
   selectedItemId: selectedItemIdProp,
   singleFileMode = false,
   active = true,
@@ -627,21 +627,21 @@ export const TaggingStage = ({
   onUpdateDataset,
   onOpenItem,
   onOpenAssetContextMenu,
-}: TaggingStageProps = {}) => {
+}: TaggingToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateTaggingConfig = useProjectStore((state) => state.updateTaggingConfig);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
-  const cleanupStageState = useProjectStore(
+  const cleanupToolState = useProjectStore(
     (state) =>
-      (state.stageState.clean as
+      (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
   const initialSelectedItemId = useProjectStore(
-    (state) => (state.stageState.tagging as { selectedItemId?: string } | undefined)?.selectedItemId
+    (state) => (state.toolState.tagging as { selectedItemId?: string } | undefined)?.selectedItemId
   );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const datasetsById = useProjectStore((state) => state.datasets);
@@ -693,19 +693,19 @@ export const TaggingStage = ({
     () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
     [datasetAssetIds, datasetId, sourceImagesById]
   );
-  const syntheticImages = useMemo(
+  const editedAssets = useMemo(
     () =>
-      Object.values(syntheticImagesById).filter(
+      Object.values(editedAssetsById).filter(
         (image) => !image.deleted && (!datasetId || datasetAssetIds.has(image.sourceImageId))
       ),
-    [datasetAssetIds, datasetId, syntheticImagesById]
+    [datasetAssetIds, datasetId, editedAssetsById]
   );
   const items = useMemo(() => {
     const nextItems = toWorkspaceReviewAssets(
       sourceImages,
       fileAssets,
-      cleanupStageState.workingEdits,
-      syntheticImages
+      cleanupToolState.workingEdits,
+      editedAssets
     ).map((item) => {
       if (!datasetId || !dataset?.overwriteCaptions) {
         return item;
@@ -719,7 +719,7 @@ export const TaggingStage = ({
     return dataset
       ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder, dataset.assetIds)
       : nextItems;
-  }, [cleanupStageState.workingEdits, dataset, datasetId, fileAssets, sourceImages, syntheticImages]);
+  }, [cleanupToolState.workingEdits, dataset, datasetId, fileAssets, sourceImages, editedAssets]);
   const previewUrls = useWorkspacePreviewUrls(items);
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedItemId) ?? null,
@@ -729,7 +729,7 @@ export const TaggingStage = ({
     (item: WorkspaceImage) =>
       dataset
         ? canCaptionItem(item)
-        : item.kind === 'image' || item.kind === 'synthetic',
+        : item.kind === 'image' || item.kind === 'edited',
     [dataset]
   );
   const captionScopeItems = useMemo(
@@ -947,8 +947,8 @@ export const TaggingStage = ({
         if (item.kind === 'image') {
           updateSourceImage(item.sourceImageId, { tags: nextTags });
           changedItemCount += 1;
-        } else if (item.kind === 'synthetic' && item.syntheticImageId) {
-          updateDatasetItem(item.syntheticImageId, { tags: nextTags });
+        } else if (item.kind === 'edited' && item.editedAssetId) {
+          updateDatasetItem(item.editedAssetId, { tags: nextTags });
           changedItemCount += 1;
         }
       }

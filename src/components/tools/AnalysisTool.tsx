@@ -156,7 +156,7 @@ type Outlier = {
   reasons: string[];
 };
 
-type AnalysisStageProps = {
+type AnalysisToolProps = {
   datasetId?: string;
   active?: boolean;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
@@ -182,13 +182,13 @@ const getItemTitle = (item?: WorkspaceImage): string => item?.originalFileName ?
 const getProjectRelativePath = (path: string): string => path.replace(/^Project\//, '');
 
 const isAnalysisVisualAsset = (item: WorkspaceImage): boolean =>
-  item.kind === 'image' || item.kind === 'synthetic' || item.kind === 'psd';
+  item.kind === 'image' || item.kind === 'edited' || item.kind === 'psd';
 
 const createAnalysisVisualItem = (
   item: WorkspaceImage,
   psdPreview?: PsdPreviewCacheEntry
 ): WorkspaceImage | null => {
-  if (item.kind === 'image' || item.kind === 'synthetic') {
+  if (item.kind === 'image' || item.kind === 'edited') {
     return item;
   }
 
@@ -680,7 +680,7 @@ const buildRedundancyProfile = ({
 };
 
 const buildTagAnalysis = (items: WorkspaceImage[], dataset?: Dataset, overusedThreshold = TAG_OVERUSED_PERCENT): TagAnalysis => {
-  const captionable = items.filter((item) => item.kind === 'image' || item.kind === 'synthetic' || item.kind === 'psd');
+  const captionable = items.filter((item) => item.kind === 'image' || item.kind === 'edited' || item.kind === 'psd');
   const triggerWord = dataset?.triggerWord.trim().toLowerCase() ?? '';
   const tagEntries = captionable.map((item) => ({ item, tags: getCaptionTags(item, dataset) }));
   const missingCaptionItems = tagEntries.filter(({ tags }) => tags.length === 0).map(({ item }) => item);
@@ -929,20 +929,20 @@ const sortSimilarGroups = (groups: SimilarGroup[], sort: SimilarGroupSort): Simi
     return right.duplicatePressure - left.duplicatePressure || right.confidence - left.confidence;
   });
 
-export const AnalysisStage = ({
+export const AnalysisTool = ({
   datasetId,
   active = true,
   projectDirectoryHandle,
   fileTarget,
   onOpenAssetContextMenu,
   onUpdateDataset,
-}: AnalysisStageProps = {}) => {
+}: AnalysisToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
-  const cleanupStageState = useProjectStore(
+  const cleanupToolState = useProjectStore(
     (state) =>
-      (state.stageState.clean as
+      (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
@@ -1048,8 +1048,8 @@ export const AnalysisStage = ({
   }, [active, addNotification, datasetFileAssetPaths, projectDirectoryHandle, targetMode]);
 
   const baseItems = useMemo(
-    () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupStageState.workingEdits, []),
-    [cleanupStageState.workingEdits, sourceImages, workspaceFileAssets]
+    () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupToolState.workingEdits, []),
+    [cleanupToolState.workingEdits, sourceImages, workspaceFileAssets]
   );
   const fileTargetItem = useMemo(() => {
     if (!fileTarget) {
@@ -1147,10 +1147,10 @@ export const AnalysisStage = ({
         ? toWorkspaceImages(
             allSourceImages.filter((image) => !datasetAssetIds.has(image.id)),
             [],
-            cleanupStageState.workingEdits
+            cleanupToolState.workingEdits
           ).slice(0, COVERAGE_CANDIDATE_LIMIT)
         : [],
-    [allSourceImages, cleanupStageState.workingEdits, dataset, datasetAssetIds]
+    [allSourceImages, cleanupToolState.workingEdits, dataset, datasetAssetIds]
   );
   const analysisVisualItems = useMemo(() => {
     const byId = new Map<string, WorkspaceImage>();

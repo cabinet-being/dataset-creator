@@ -11,8 +11,8 @@ dataset-creator/
 │   │   │   ├── ImageGallery.tsx
 │   │   │   ├── Heatmap.tsx
 │   │   │   ├── MasonryGrid.tsx
-│   │   │   └── StageNavigation.tsx
-│   │   ├── stages/
+│   │   │   └── ToolNavigation.tsx
+│   │   ├── tools/
 │   │   │   ├── Import/
 │   │   │   ├── SimilarityReview/
 │   │   │   ├── Cleanup/
@@ -47,7 +47,7 @@ dataset-creator/
 │   │       └── exportService.ts
 │   ├── types/
 │   │   ├── entities.ts
-│   │   ├── stage.ts
+│   │   ├── tool.ts
 │   │   └── index.ts
 │   ├── workers/
 │   │   ├── embedding.worker.ts
@@ -120,8 +120,8 @@ Project {
   name: string;
   sourceImages: SourceImage[];
   datasetItems: DatasetItem[];
-  currentStage: StageName;
-  stageState: Record<StageName, StageData>;
+  currentTool: ToolName;
+  toolState: Record<ToolName, ToolData>;
   taggingConfig: TaggingConfig;
   lastModified: Date;
 }
@@ -133,9 +133,9 @@ Project {
 2. **useDatasetStore**: Derived state, computations, cache
 3. **useUIStore**: UI state, current selections, view mode
 
-## 3. Stage Model
+## 3. Tool Model
 
-Pipeline with state persistence between stages:
+Pipeline with state persistence between tools:
 
 ```
 Import → Select → Clean → Crop → Augment → Final Review → Tagging → Export
@@ -143,7 +143,7 @@ Import → Select → Clean → Crop → Augment → Final Review → Tagging �
   S1       S2       S3      S4       S5           S6           S7       S8
 ```
 
-Each stage:
+Each tool:
 - Can navigate back/forward
 - Persists its state
 - Modifies or reads specific entities
@@ -166,7 +166,7 @@ ObjectStores:
 ### Auto-save
 
 - Debounced save on every state change (500ms)
-- Save on leaving stage
+- Save on leaving tool
 - Recovery on app load
 
 ## 5. Worker Strategy
@@ -236,7 +236,7 @@ Offload to Web Workers:
 
 ## 9. Extension Points
 
-- Smart eraser (v2) - inpainting in cleanup stage
+- Smart eraser (v2) - inpainting in cleanup tool
 - Cloud sync (v2) - optional backend
 - Batch processing (v2) - multiple projects
 - Advanced ML models (v2) - better embeddings/tagging

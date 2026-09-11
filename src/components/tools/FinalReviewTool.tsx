@@ -45,16 +45,16 @@ type ReviewCardProps = {
   onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
-type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'synthetic' | 'video' | 'psd'>;
+type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'edited' | 'video' | 'psd'>;
 
 const KIND_LABELS: Record<ReviewKind, string> = {
   image: 'Image',
-  synthetic: 'Edited',
+  edited: 'Edited',
   video: 'Video',
   psd: 'PSD',
 };
 
-const REVIEW_KINDS = ['image', 'synthetic', 'video', 'psd'] as const satisfies ReviewKind[];
+const REVIEW_KINDS = ['image', 'edited', 'video', 'psd'] as const satisfies ReviewKind[];
 const isReviewKind = (kind: WorkspaceImageKind): kind is ReviewKind =>
   (REVIEW_KINDS as readonly WorkspaceImageKind[]).includes(kind);
 const isString = (value: string | undefined): value is string => Boolean(value);
@@ -63,7 +63,7 @@ const getDatasetQuickActionLabel = (
   mode: 'add' | 'remove'
 ): string => {
   const action = mode === 'add' ? 'Add' : 'Remove';
-  if (item.kind === 'image' || item.kind === 'synthetic') {
+  if (item.kind === 'image' || item.kind === 'edited') {
     return `${action} source group ${mode === 'add' ? 'to' : 'from'} Dataset`;
   }
   return `${action} ${mode === 'add' ? 'to' : 'from'} Dataset`;
@@ -138,7 +138,7 @@ const ReviewCard = memo(
 
 ReviewCard.displayName = 'ReviewCard';
 
-type FinalReviewStageProps = {
+type FinalReviewToolProps = {
   datasetId?: string;
   mode?: 'review' | 'select';
   active?: boolean;
@@ -150,19 +150,19 @@ type FinalReviewStageProps = {
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
-export const FinalReviewStage = ({
+export const FinalReviewTool = ({
   datasetId,
   mode = 'review',
   active = true,
   onUpdateDataset,
   onOpenAssetContextMenu,
-}: FinalReviewStageProps = {}) => {
+}: FinalReviewToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const syntheticImagesById = useProjectStore((state) => state.datasetItems);
+  const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
-  const cleanupStageState = useProjectStore(
+  const cleanupToolState = useProjectStore(
     (state) =>
-      (state.stageState.clean as
+      (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
         | undefined) ?? {}
   );
@@ -200,24 +200,24 @@ export const FinalReviewStage = ({
     }
     return allSources.filter((image) => datasetAssetIds.has(image.id));
   }, [datasetAssetIds, datasetId, mode, sourceImagesById]);
-  const syntheticImages = useMemo(
+  const editedAssets = useMemo(
     () =>
-      Object.values(syntheticImagesById).filter(
+      Object.values(editedAssetsById).filter(
         (image) => !image.deleted && (!datasetId || datasetAssetIds.has(image.sourceImageId))
       ),
-    [datasetAssetIds, datasetId, syntheticImagesById]
+    [datasetAssetIds, datasetId, editedAssetsById]
   );
   const items = useMemo(() => {
     const nextItems = toWorkspaceReviewAssets(
       sourceImages,
       fileAssets,
-      cleanupStageState.workingEdits,
-      syntheticImages
+      cleanupToolState.workingEdits,
+      editedAssets
     );
     return dataset && mode !== 'select'
       ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder, dataset.assetIds)
       : nextItems;
-  }, [cleanupStageState.workingEdits, dataset, fileAssets, mode, sourceImages, syntheticImages]);
+  }, [cleanupToolState.workingEdits, dataset, fileAssets, mode, sourceImages, editedAssets]);
   const previewUrls = useWorkspacePreviewUrls(items);
   const psdDiagnostics = useMemo(() => {
     const psdAssets = fileAssets.filter((asset) => asset.kind === 'psd');
@@ -430,12 +430,12 @@ export const FinalReviewStage = ({
     }
 
     const imageIds = nextItems
-      .filter((item) => item.kind === 'image' || item.kind === 'synthetic')
+      .filter((item) => item.kind === 'image' || item.kind === 'edited')
       .map((item) => item.sourceImageId)
       .filter(Boolean);
     const assetPaths = filterLegacyProjectAssetPaths(
       nextItems
-        .filter((item) => item.kind !== 'image' && item.kind !== 'synthetic')
+        .filter((item) => item.kind !== 'image' && item.kind !== 'edited')
         .map((item) => item.assetPath)
         .filter(isString)
     );
