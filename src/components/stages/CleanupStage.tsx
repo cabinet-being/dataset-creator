@@ -5,7 +5,7 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
-import { createSyntheticImage } from '../../types';
+import { createEditedAsset } from '../../types';
 import {
   WORKSPACE_KIND_STYLES,
   getWorkspaceKindBadgeClass,
@@ -321,7 +321,7 @@ export const CleanupStage = ({
             aspectRatio: image.aspectRatio,
           });
         } else {
-          const syntheticImage = createSyntheticImage(
+          const syntheticImage = createEditedAsset(
             image.sourceImageId,
             editedBlob,
             imageInfo.width,

@@ -2,7 +2,7 @@ import {
   createStandardImageFileName,
   type AspectRatio,
   type SourceImage,
-  type SyntheticImage,
+  type EditedAsset,
   type WorkspaceImageKind,
 } from '../types';
 import type { ExplorerFileKind } from '../services/project/explorerFileService';
@@ -41,7 +41,7 @@ export type WorkspaceImage = {
   sourceImageId: string;
   syntheticImageId?: string;
   kind: WorkspaceImageKind;
-  label: 'Image' | 'Generated' | 'Video' | 'PSD';
+  label: 'Image' | 'Edited' | 'Video' | 'PSD';
   displayIdentity: string;
   fileName: string;
   originalFileName?: string;
@@ -52,10 +52,10 @@ export type WorkspaceImage = {
   height: number;
   previewUrl?: string;
   previewStatus?: 'queued' | 'generating' | 'failed';
-  allowGeneratedPreviewUrl?: boolean;
+  allowObjectPreviewUrl?: boolean;
   tags?: string[];
   aspectRatio: AspectRatio;
-  syntheticType?: SyntheticImage['type'];
+  syntheticType?: EditedAsset['type'];
   exportOrder?: number;
   excludedFromDataset?: boolean;
   deleted?: boolean;
@@ -78,7 +78,7 @@ export type WorkspaceFileAsset = {
 export const WORKSPACE_KIND_STYLES: Record<
   WorkspaceImageKind,
   {
-    label: 'Image' | 'Generated' | 'Video' | 'PSD';
+    label: 'Image' | 'Edited' | 'Video' | 'PSD';
     borderClass: string;
     selectedBorderClass: string;
     badgeClass: string;
@@ -93,7 +93,7 @@ export const WORKSPACE_KIND_STYLES: Record<
     ringStyle: '0 0 0 2px rgba(16, 185, 129, 0.7) inset',
   },
   synthetic: {
-    label: 'Generated',
+    label: 'Edited',
     borderClass: 'border-sky-500/70',
     selectedBorderClass: 'border-sky-400',
     badgeClass: 'bg-sky-500/90 text-white',
@@ -156,7 +156,7 @@ export const inferWorkspaceAspectRatio = (width: number, height: number): Aspect
 
 export const toWorkspaceImages = (
   sourceImages: SourceImage[],
-  syntheticImages: SyntheticImage[],
+  syntheticImages: EditedAsset[],
   workingEdits: Record<string, CleanupWorkingEdit> = {}
 ): WorkspaceImage[] => {
   const sourceOrder = new Map(sourceImages.map((image, index) => [image.id, index + 1]));
@@ -203,7 +203,7 @@ export const toWorkspaceImages = (
         sourceImageId: image.sourceImageId,
         syntheticImageId: image.id,
         kind: 'synthetic',
-        label: 'Generated',
+        label: 'Edited',
         displayIdentity: `${parentIndex || '?'}.${nextSyntheticIndex}`,
         fileName: `${image.id}.png`,
         assetPath: withProjectRoot(image.imageDataPath ?? `.dataset-creator-data/generated-images/${image.id}/image.png`),
@@ -231,7 +231,7 @@ export const toWorkspaceReviewAssets = (
   sourceImages: SourceImage[],
   fileAssets: WorkspaceFileAsset[],
   workingEdits: Record<string, CleanupWorkingEdit> = {},
-  syntheticImages: SyntheticImage[] = []
+  syntheticImages: EditedAsset[] = []
 ): WorkspaceImage[] => {
   const imageItems = toWorkspaceImages(sourceImages, syntheticImages, workingEdits).filter(
     (item) => item.kind === 'image' || item.kind === 'synthetic'
@@ -247,7 +247,7 @@ export const toWorkspaceReviewAssets = (
     imageData: asset.file,
     previewUrl: asset.previewUrl,
     previewStatus: asset.previewStatus,
-    allowGeneratedPreviewUrl: asset.kind !== 'psd',
+    allowObjectPreviewUrl: asset.kind !== 'psd',
     width: asset.width ?? 1,
     height: asset.height ?? 1,
     tags: asset.tags,

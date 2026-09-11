@@ -49,7 +49,7 @@ type ReviewKind = Extract<WorkspaceImageKind, 'image' | 'synthetic' | 'video' | 
 
 const KIND_LABELS: Record<ReviewKind, string> = {
   image: 'Image',
-  synthetic: 'Generated',
+  synthetic: 'Edited',
   video: 'Video',
   psd: 'PSD',
 };

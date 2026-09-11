@@ -1,10 +1,10 @@
-import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
+import { TOOL_URL_SLUGS, URL_TOOL_ALIASES } from '../../lib/constants';
 import {
   createProject,
   type ProjectState,
   type SourceImage,
-  type StageName,
-  type SyntheticImage,
+  type ToolName,
+  type EditedAsset,
   type TaggingConfig,
   type WorkspaceSettings,
 } from '../../types';
@@ -51,7 +51,7 @@ type DirectoryProjectManifest = {
   project: {
     id: string;
     name: string;
-    currentStage: StageName;
+    currentStage: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
     datasets?: Record<string, DatasetManifest>;
@@ -90,7 +90,7 @@ type SourceManifest = {
   createdAt: string;
 };
 
-type SyntheticManifest = {
+type EditedAssetDirectoryManifest = {
   id: string;
   sourceImageId: string;
   imageFileName: string;
@@ -99,12 +99,12 @@ type SyntheticManifest = {
   psdDataPath?: string;
   width: number;
   height: number;
-  type: SyntheticImage['type'];
-  cropFrame?: SyntheticImage['cropFrame'];
-  augmentationConfig?: SyntheticImage['augmentationConfig'];
+  type: EditedAsset['type'];
+  cropFrame?: EditedAsset['cropFrame'];
+  augmentationConfig?: EditedAsset['augmentationConfig'];
   cleanupOverlayId?: string;
   tags?: string[];
-  aspectRatio: SyntheticImage['aspectRatio'];
+  aspectRatio: EditedAsset['aspectRatio'];
   deleted: boolean;
   deletedAt?: string;
   excludedFromDataset?: boolean;
@@ -280,8 +280,8 @@ const getFileExtension = (fileName: string, mimeType: string): string => {
   return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
 };
 
-const getStageFromSlug = (value: string | undefined): StageName =>
-  ((value ? URL_STAGE_ALIASES[value] : undefined) ?? 'hub') as StageName;
+const getStageFromSlug = (value: string | undefined): ToolName =>
+  ((value ? URL_TOOL_ALIASES[value] : undefined) ?? 'hub') as ToolName;
 
 const serializeSourceManifest = (
   source: SourceImage,
@@ -302,13 +302,13 @@ const serializeSourceManifest = (
   createdAt: toIsoString(source.createdAt),
 });
 
-const serializeSyntheticManifest = (
-  item: SyntheticImage,
+const serializeEditedAssetManifest = (
+  item: EditedAsset,
   imageFileName: string,
   imageDataPath: string,
   psdFileName?: string,
   psdDataPath?: string
-): SyntheticManifest => ({
+): EditedAssetDirectoryManifest => ({
   id: item.id,
   sourceImageId: item.sourceImageId,
   imageFileName,
@@ -342,7 +342,7 @@ const getProjectManifest = (
   project: {
     id: project.id,
     name: project.name,
-    currentStage: getStageFromSlug(STAGE_URL_SLUGS[project.currentStage]),
+    currentStage: getStageFromSlug(TOOL_URL_SLUGS[project.currentStage]),
     taggingConfig: {
       datasetKeyword: project.taggingConfig.datasetKeyword,
       threshold: project.taggingConfig.threshold,
@@ -363,7 +363,7 @@ const getDefaultSourceManifestPath = (source: SourceImage): string =>
     `original.${getFileExtension(source.fileName, source.mimeType)}`
   )}`;
 
-const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
+const getDefaultEditedAssetManifestPath = (item: EditedAsset): string =>
   `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
 
 const getPreviewCachePath = (kind: ProjectPreviewKind, id: string): string => {
@@ -538,9 +538,9 @@ const writeSourceChanges = async (
   return manifestPath;
 };
 
-const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage): Promise<string> => {
+const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset): Promise<string> => {
   const defaultImageFileName = 'image.png';
-  const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultSyntheticManifestPath(item));
+  const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultEditedAssetManifestPath(item));
   const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), defaultImageFileName);
   const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
@@ -555,7 +555,7 @@ const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage
   await writeTextFileAtPath(
     root,
     manifestPath,
-    JSON.stringify(serializeSyntheticManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
+    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
   );
   if (item.manifestPath && toProjectRelativePath(item.manifestPath) !== manifestPath) {
     await removeProjectFileAtPath(root, item.manifestPath);
@@ -563,16 +563,16 @@ const writeSynthetic = async (root: ProjectDirectoryHandle, item: SyntheticImage
   return manifestPath;
 };
 
-const writeSyntheticChanges = async (
+const writeEditedAssetChanges = async (
   root: ProjectDirectoryHandle,
-  item: SyntheticImage,
-  previousItem?: SyntheticImage
+  item: EditedAsset,
+  previousItem?: EditedAsset
 ): Promise<string> => {
   const defaultImageFileName = 'image.png';
   const manifestPath = getNormalizedAssetManifestPath(
     item.manifestPath ?? previousItem?.manifestPath,
     defaultImageFileName,
-    getDefaultSyntheticManifestPath(item)
+    getDefaultEditedAssetManifestPath(item)
   );
   const imageDataPath =
     getReusableProjectPath(item.imageDataPath) ??
@@ -602,7 +602,7 @@ const writeSyntheticChanges = async (
   await writeTextFileAtPath(
     root,
     manifestPath,
-    JSON.stringify(serializeSyntheticManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
+    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
   );
   const previousManifestPath = item.manifestPath ?? previousItem?.manifestPath;
   if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
@@ -647,7 +647,7 @@ export const createProjectDirectory = async (
       sourceImageManifests[source.id] = await writeSource(directory, source);
     }),
     ...Object.values(project.datasetItems).map(async (item) => {
-      syntheticImageManifests[item.id] = await writeSynthetic(directory, item);
+      syntheticImageManifests[item.id] = await writeEditedAsset(directory, item);
     }),
   ]);
   await writeTextFile(
@@ -719,7 +719,7 @@ export const writeProjectDirectoryChanges = async (
     ...Object.entries(project.datasetItems)
       .filter(([id, item]) => item !== previousSynthetic[id])
       .map(async ([id, item]) => {
-        syntheticImageManifests[id] = await writeSyntheticChanges(directory, item, previousSynthetic[id]);
+        syntheticImageManifests[id] = await writeEditedAssetChanges(directory, item, previousSynthetic[id]);
       }),
     ...Object.keys(previousSynthetic)
       .filter((id) => !project.datasetItems[id])
@@ -740,7 +740,7 @@ export const writeProjectDirectoryChanges = async (
     const reusableManifestPath = getReusableProjectPath(item.manifestPath);
     syntheticImageManifests[item.id] = reusableManifestPath
       ? reusableManifestPath
-      : syntheticImageManifests[item.id] ?? getDefaultSyntheticManifestPath(item);
+      : syntheticImageManifests[item.id] ?? getDefaultEditedAssetManifestPath(item);
   }
   await writeTextFile(
     directory,
@@ -799,18 +799,18 @@ const readSource = async (
   };
 };
 
-const readSynthetic = async (
+const readEditedAsset = async (
   directory: ProjectDirectoryHandle,
   root?: ProjectDirectoryHandle,
   paths?: { manifestPath?: string; imageDataPath?: string; psdDataPath?: string }
-): Promise<SyntheticImage> => {
-  const manifest = await readJsonFile<SyntheticManifest>(
+): Promise<EditedAsset> => {
+  const manifest = await readJsonFile<EditedAssetDirectoryManifest>(
     directory,
     paths?.manifestPath ? getFileName(paths.manifestPath) : PROJECT_DIRECTORY_MANIFEST,
-    `synthetic manifest in "${directory.name}"`
+    `edited asset manifest in "${directory.name}"`
   );
   if (!manifest.id || !manifest.sourceImageId || !manifest.imageFileName) {
-    throw new Error(`Synthetic manifest in "${directory.name}" is missing required fields.`);
+    throw new Error(`Edited asset manifest in "${directory.name}" is missing required fields.`);
   }
 
   let imageData: Blob;
@@ -821,7 +821,7 @@ const readSynthetic = async (
       : await readBlobFile(directory, manifest.imageFileName);
   } catch (error) {
     throw new Error(
-      `Unable to read synthetic image "${manifest.imageFileName}": ${getErrorMessage(error)}`
+      `Unable to read edited asset image "${manifest.imageFileName}": ${getErrorMessage(error)}`
     );
   }
 
@@ -834,7 +834,7 @@ const readSynthetic = async (
         : await readBlobFile(directory, manifest.psdFileName ?? 'image.psd');
     } catch (error) {
       throw new Error(
-        `Unable to read synthetic PSD "${manifest.psdFileName}": ${getErrorMessage(error)}`
+        `Unable to read edited asset PSD "${manifest.psdFileName}": ${getErrorMessage(error)}`
       );
     }
   }
@@ -935,22 +935,22 @@ export const readProjectDirectory = async (
       ? Promise.all(
           supportedSyntheticManifestPaths.map(async (manifestPath) => {
             try {
-              return await readSynthetic(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
+              return await readEditedAsset(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
             } catch {
               return null;
             }
           })
         )
-      : readOptionalProjectChildren(directory, 'generated', (entry) => readSynthetic(entry)),
+      : readOptionalProjectChildren(directory, 'generated', (entry) => readEditedAsset(entry)),
   ]);
   const sources = sourceResults.filter((source): source is SourceImage => Boolean(source));
-  const synthetic = syntheticResults.filter((item): item is SyntheticImage => Boolean(item));
+  const synthetic = syntheticResults.filter((item): item is EditedAsset => Boolean(item));
 
   const sourceIds = new Set(sources.map((source) => source.id));
   const orphanSynthetic = synthetic.find((item) => !sourceIds.has(item.sourceImageId));
   if (orphanSynthetic) {
     throw new Error(
-      `Synthetic image "${orphanSynthetic.id}" references a source image that is missing from the project.`
+      `Edited asset "${orphanSynthetic.id}" references a source image that is missing from the project.`
     );
   }
 

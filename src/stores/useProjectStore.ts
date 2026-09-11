@@ -3,8 +3,8 @@ import { devtools } from 'zustand/middleware';
 import {
   ProjectState,
   SourceImage,
-  SyntheticImage,
-  StageName,
+  EditedAsset,
+  ToolName,
   TaggingConfig,
   WorkspaceSettings,
   createProject,
@@ -30,12 +30,12 @@ const revokePreviewUrl = (previewUrl: string | undefined) => {
   }
 };
 
-const stripSyntheticPreviewUrl = (item: SyntheticImage): SyntheticImage => ({
+const stripSyntheticPreviewUrl = (item: EditedAsset): EditedAsset => ({
   ...item,
   previewUrl: undefined,
 });
 
-const isLegacyDatasetItem = (item: SyntheticImage): boolean =>
+const isLegacyDatasetItem = (item: EditedAsset): boolean =>
   [item.manifestPath, item.imageDataPath, item.psdDataPath]
     .filter((path): path is string => Boolean(path))
     .some((path) => isLegacyProjectRootPath(path));
@@ -65,7 +65,7 @@ interface ProjectStore extends ProjectState {
   initializeProject: (name: string) => void;
   loadProject: (project: ProjectState) => void;
   renameProject: (name: string) => void;
-  setCurrentStage: (stage: StageName) => void;
+  setCurrentTool: (stage: ToolName) => void;
   
   // Source images
   addSourceImage: (image: SourceImage) => void;
@@ -82,22 +82,22 @@ interface ProjectStore extends ProjectState {
   removeDataset: (id: string) => void;
   addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
-  // Synthetic images
-  addDatasetItem: (item: SyntheticImage) => void;
+  // Edited image variants
+  addDatasetItem: (item: EditedAsset) => void;
   hydrateDatasetItems: () => Promise<void>;
   removeDatasetItem: (id: string) => void;
-  updateDatasetItem: (id: string, updates: Partial<SyntheticImage>) => void;
+  updateDatasetItem: (id: string, updates: Partial<EditedAsset>) => void;
   softDeleteDatasetItem: (id: string) => void;
-  getDatasetItems: (includeDeleted?: boolean) => SyntheticImage[];
+  getDatasetItems: (includeDeleted?: boolean) => EditedAsset[];
   
   // Cleanup overlays
   addCleanupOverlay: (overlay: CleanupOverlay) => void;
   updateCleanupOverlay: (id: string, updates: Partial<CleanupOverlay>) => void;
   removeCleanupOverlay: (id: string) => void;
   
-  // Stage state
-  setStageState: (stage: StageName, state: unknown) => void;
-  getStageState: (stage: StageName) => unknown;
+  // Tool runtime state
+  setToolState: (stage: ToolName, state: unknown) => void;
+  getToolState: (stage: ToolName) => unknown;
   
   // Tagging
   updateTaggingConfig: (updates: Partial<TaggingConfig>) => void;
@@ -167,7 +167,7 @@ export const useProjectStore = create<ProjectStore>()(
             lastModified: new Date(),
           })),
         
-        setCurrentStage: (stage: StageName) =>
+        setCurrentTool: (stage: ToolName) =>
           set((state) => ({
             ...state,
             currentStage: stage,
@@ -427,7 +427,7 @@ export const useProjectStore = create<ProjectStore>()(
             };
           }),
         
-        addDatasetItem: (item: SyntheticImage) =>
+        addDatasetItem: (item: EditedAsset) =>
           set((state) => {
             void dbPut(OBJECT_STORES.DATASET_ITEMS, stripSyntheticPreviewUrl(item));
 
@@ -439,7 +439,7 @@ export const useProjectStore = create<ProjectStore>()(
           }),
 
         hydrateDatasetItems: async () => {
-          const storedItems = await dbGetAll<SyntheticImage>(OBJECT_STORES.DATASET_ITEMS);
+          const storedItems = await dbGetAll<EditedAsset>(OBJECT_STORES.DATASET_ITEMS);
           const currentSourceIds = new Set(Object.keys(get().sourceImages));
           const supportedItems = storedItems.filter(
             (item) => !isLegacyDatasetItem(item) && currentSourceIds.has(item.sourceImageId)
@@ -472,7 +472,7 @@ export const useProjectStore = create<ProjectStore>()(
             return { ...state, datasetItems: rest, lastModified: new Date() };
           }),
         
-        updateDatasetItem: (id: string, updates: Partial<SyntheticImage>) =>
+        updateDatasetItem: (id: string, updates: Partial<EditedAsset>) =>
           set((state) => {
             const currentItem = state.datasetItems[id];
             if (!currentItem) {
@@ -548,14 +548,14 @@ export const useProjectStore = create<ProjectStore>()(
             return { ...state, cleanupOverlays: rest };
           }),
         
-        setStageState: (stage: StageName, stageState: unknown) =>
+        setToolState: (stage: ToolName, stageState: unknown) =>
           set((state) => ({
             ...state,
             stageState: { ...state.stageState, [stage]: stageState },
             lastModified: new Date(),
           })),
         
-        getStageState: (stage: StageName) => get().stageState[stage],
+        getToolState: (stage: ToolName) => get().stageState[stage],
         
         updateTaggingConfig: (updates: Partial<any>) =>
           set((state) => ({

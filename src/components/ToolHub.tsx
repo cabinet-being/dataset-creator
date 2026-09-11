@@ -13,10 +13,10 @@ import {
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { useMemo } from 'react';
-import { HUB_TOOL_CARDS, STAGE_LABELS, TOOL_REQUIREMENTS } from '../lib/constants';
+import { HUB_TOOL_CARDS, TOOL_LABELS, TOOL_REQUIREMENTS } from '../lib/constants';
 import { toWorkspaceImages } from '../lib/workspaceImages';
 import { useProjectStore } from '../stores/useProjectStore';
-import { type StageName } from '../types';
+import { type ToolName } from '../types';
 
 const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   import: Upload,
@@ -45,9 +45,9 @@ const getRequirementLabel = (
 };
 
 type ToolHubProps = {
-  onOpenTool?: (stage: StageName) => void;
+  onOpenTool?: (stage: ToolName) => void;
   onOpenDataset?: (datasetId: string) => void;
-  onOpenDatasetTool?: (datasetId: string, stage: Extract<StageName, 'select' | 'analysis' | 'review' | 'tagging'>) => void;
+  onOpenDatasetTool?: (datasetId: string, stage: Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>) => void;
   onCreateDataset?: () => void;
   onExportDataset?: (datasetId: string) => void;
 };
@@ -59,7 +59,7 @@ export const ToolHub = ({
   onCreateDataset,
   onExportDataset,
 }: ToolHubProps = {}) => {
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
+  const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const syntheticImagesById = useProjectStore((state) => state.datasetItems);
   const datasetsById = useProjectStore((state) => state.datasets);
@@ -82,12 +82,12 @@ export const ToolHub = ({
         .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
     [datasetsById]
   );
-  const openTool = (stage: StageName) => {
+  const openTool = (stage: ToolName) => {
     if (onOpenTool) {
       onOpenTool(stage);
       return;
     }
-    setCurrentStage(stage);
+    setCurrentTool(stage);
   };
 
   return (
@@ -132,7 +132,7 @@ export const ToolHub = ({
                     <Icon className="h-4 w-4" />
                   </span>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{STAGE_LABELS[tool]}</p>
+                    <p className="truncate text-sm font-medium">{TOOL_LABELS[tool]}</p>
                     <p className="text-xs text-muted-foreground">Project-wide</p>
                   </div>
                 </div>
@@ -143,7 +143,7 @@ export const ToolHub = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => openTool(tool as StageName)}
+                    onClick={() => openTool(tool as ToolName)}
                     className={`rounded px-3 py-1.5 text-xs font-medium sm:justify-self-end ${ready ? 'bg-primary text-primary-foreground hover:opacity-90' : 'border border-border hover:bg-secondary'}`}
                   >
                     Open

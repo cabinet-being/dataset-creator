@@ -33,7 +33,7 @@ DatasetCreator uses React 18, TypeScript, Vite, Tailwind CSS, Zustand, JSZip, Lu
 - Similarity review for finding duplicate or near-duplicate images.
 - Analysis views for image relationships, pairs, clusters, and graph layout.
 - Photopea-based editing for workspace images and PSD files.
-- Review stage for image, video, and PSD assets with active/inactive export status.
+- Review tool for image, video, and PSD assets with active/inactive export status.
 - Manual and bulk caption editing before export.
 - Local Danbooru-style ONNX auto-tagging from user-selected model files.
 - Training-ready export as matching PNG and TXT file pairs.

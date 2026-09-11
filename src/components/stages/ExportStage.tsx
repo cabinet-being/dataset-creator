@@ -69,7 +69,7 @@ export const ExportStage = ({ active = true }: ExportStageProps = {}) => {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log(`[tagging:model] model connected state on entering Stage 8: ${localTaggerStatus}`);
+      console.log(`[tagging:model] model connected state on entering Export tool: ${localTaggerStatus}`);
       console.log('[export] export keyword is added only during export rendering/output');
     }
   }, [localTaggerStatus]);

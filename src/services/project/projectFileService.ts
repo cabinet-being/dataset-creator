@@ -1,11 +1,11 @@
 import JSZip from 'jszip';
-import { STAGE_URL_SLUGS, URL_STAGE_ALIASES } from '../../lib/constants';
+import { TOOL_URL_SLUGS, URL_TOOL_ALIASES } from '../../lib/constants';
 import type {
   BrickColumnCount,
   ProjectState,
   SourceImage,
-  StageName,
-  SyntheticImage,
+  ToolName,
+  EditedAsset,
   TaggingConfig,
   WorkspaceSettings,
 } from '../../types';
@@ -51,14 +51,14 @@ type SourceImageManifest = {
   createdAt: string;
 };
 
-type LegacySyntheticImageManifest = Omit<SyntheticImage, 'imageData' | 'psdData' | 'createdAt' | 'deletedAt'> & {
+type LegacyEditedAssetManifest = Omit<EditedAsset, 'imageData' | 'psdData' | 'createdAt' | 'deletedAt'> & {
   imageDataPath: string;
   psdDataPath?: string;
   createdAt: string;
   deletedAt?: string;
 };
 
-type SyntheticImageManifest = {
+type EditedAssetManifest = {
   id: string;
   sourceImageId: string;
   fileName: string;
@@ -67,7 +67,7 @@ type SyntheticImageManifest = {
   width: number;
   height: number;
   tags?: string[];
-  aspectRatio: SyntheticImage['aspectRatio'];
+  aspectRatio: EditedAsset['aspectRatio'];
   excludedFromDataset?: boolean;
   createdAt: string;
 };
@@ -95,12 +95,12 @@ type ProjectFileManifest = {
     id: string;
     name: string;
     currentTool?: string;
-    currentStage?: StageName;
+    currentStage?: ToolName;
     taggingConfig: ProjectFileTaggingConfig;
     workspaceSettings?: ProjectFileWorkspaceSettings;
     datasets?: Record<string, DatasetManifest>;
     sourceImages?: Record<string, LegacySourceImageManifest>;
-    datasetItems?: Record<string, LegacySyntheticImageManifest>;
+    datasetItems?: Record<string, LegacyEditedAssetManifest>;
     sourceImageManifests?: Record<string, string>;
     syntheticImageManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
@@ -145,7 +145,7 @@ const getDefaultSourceManifestPath = (source: SourceImage): string =>
     `original.${getProjectDataFileExtension(source.fileName, source.mimeType)}`
   )}`;
 
-const getDefaultSyntheticManifestPath = (item: SyntheticImage): string =>
+const getDefaultEditedAssetManifestPath = (item: EditedAsset): string =>
   `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
 
 const getReusableProjectPath = (path: string | undefined): string | undefined => {
@@ -195,10 +195,10 @@ const createEmptyStageState = (): ProjectState['stageState'] => ({
   export: {},
 });
 
-const getToolSlug = (stage: StageName): string => STAGE_URL_SLUGS[stage] ?? stage;
+const getToolSlug = (stage: ToolName): string => TOOL_URL_SLUGS[stage] ?? stage;
 
-const getStageFromToolSlug = (tool?: string, fallback: StageName = 'hub'): StageName =>
-  ((tool ? URL_STAGE_ALIASES[tool] : undefined) ?? fallback) as StageName;
+const getStageFromToolSlug = (tool?: string, fallback: ToolName = 'hub'): ToolName =>
+  ((tool ? URL_TOOL_ALIASES[tool] : undefined) ?? fallback) as ToolName;
 
 const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggingConfig => {
   const { autoTaggingEndpoint: _autoTaggingEndpoint, ...serializableConfig } = taggingConfig;
@@ -279,7 +279,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   }
 
   for (const item of Object.values(project.datasetItems).filter((entry) => !entry.deleted)) {
-    const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, 'image.png', getDefaultSyntheticManifestPath(item));
+    const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, 'image.png', getDefaultEditedAssetManifestPath(item));
     const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), 'image.png');
     const psdDataPath = item.psdData
       ? getReusableProjectPath(item.psdDataPath) ?? joinPath(getParentPath(manifestPath), 'image.psd')
@@ -289,7 +289,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       zip.file(psdDataPath, item.psdData);
     }
 
-    const itemManifest: SyntheticImageManifest = {
+    const itemManifest: EditedAssetManifest = {
       id: item.id,
       sourceImageId: item.sourceImageId,
       fileName: imageDataPath.split('/').pop() ?? `${item.id}.png`,
@@ -422,13 +422,13 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     : undefined;
   const syntheticManifestEntries: Array<{
     manifestPath?: string;
-    manifest: SyntheticImageManifest | LegacySyntheticImageManifest;
+    manifest: EditedAssetManifest | LegacyEditedAssetManifest;
   }> = supportedSyntheticManifestPaths
     ? await Promise.all(
         supportedSyntheticManifestPaths.map(
           async (path) => ({
             manifestPath: path,
-            manifest: await readJsonFile<SyntheticImageManifest | LegacySyntheticImageManifest>(zip, path),
+            manifest: await readJsonFile<EditedAssetManifest | LegacyEditedAssetManifest>(zip, path),
           })
         )
       )
@@ -475,7 +475,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
     };
   }
 
-  const datasetItems: Record<string, SyntheticImage> = {};
+  const datasetItems: Record<string, EditedAsset> = {};
   for (const { manifestPath, manifest: item } of syntheticManifestEntries) {
     if ('deleted' in item && item.deleted) {
       continue;
@@ -483,7 +483,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
 
     const imageDataBuffer = await zip.file(item.imageDataPath)?.async('arraybuffer');
     if (!imageDataBuffer) {
-      throw new Error(`Project file is missing Synthetic data for ${item.id}`);
+      throw new Error(`Project file is missing edited asset data for ${item.id}`);
     }
 
     const imageData = new Blob([imageDataBuffer], { type: 'image/png' });

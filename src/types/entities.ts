@@ -10,7 +10,7 @@ export type WorkspaceImageKind = 'image' | 'synthetic' | 'video' | 'psd';
 
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
-export type StageName =
+export type ToolName =
   | 'hub'
   | 'import'
   | 'select'
@@ -81,9 +81,9 @@ export interface AugmentationConfig {
   rotationSeed?: number;
 }
 
-// ============ SYNTHETIC IMAGE ============
+// ============ EDITED ASSET ============
 
-export interface SyntheticImage {
+export interface EditedAsset {
   id: string;
   sourceImageId: string;
   imageData: Blob;
@@ -167,22 +167,15 @@ export interface ProjectState {
   id: string;
   name: string;
   sourceImages: Record<string, SourceImage>;
-  datasetItems: Record<string, SyntheticImage>;
+  datasetItems: Record<string, EditedAsset>;
   datasets: Record<string, Dataset>;
   cleanupOverlays: Record<string, CleanupOverlay>;
-  currentStage: StageName;
-  stageState: Record<StageName, unknown>;
+  currentStage: ToolName;
+  stageState: Record<ToolName, unknown>;
   taggingConfig: TaggingConfig;
   workspaceSettings: WorkspaceSettings;
   lastModified: Date;
   createdAt: Date;
-}
-
-export interface ProjectStageState {
-  stage: StageName;
-  selectedIds: Set<string>;
-  selectedImageId?: string;
-  viewMode?: string;
 }
 
 // ============ FACTORY FUNCTIONS ============
@@ -231,14 +224,14 @@ export const getImageFileExtension = (fileName: string, mimeType: string): strin
   return extensionByMimeType[mimeType] ?? '.png';
 };
 
-export const createSyntheticImage = (
+export const createEditedAsset = (
   sourceImageId: string,
   imageData: Blob,
   width: number,
   height: number,
   type: ImageType = 'cleaned',
   aspectRatio: AspectRatio = '1:1'
-): SyntheticImage => ({
+): EditedAsset => ({
   id: uuidv4(),
   sourceImageId,
   imageData,

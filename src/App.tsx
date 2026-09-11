@@ -43,11 +43,11 @@ import {
 import { useProjectStore } from './stores/useProjectStore';
 import { useUIStore } from './stores/useUIStore';
 import {
-  STAGES,
-  STAGE_LABELS,
-  STAGE_URL_SLUGS,
+  TOOLS,
+  TOOL_LABELS,
+  TOOL_URL_SLUGS,
   TOOL_DESCRIPTIONS,
-  URL_STAGE_ALIASES,
+  URL_TOOL_ALIASES,
 } from './lib/constants';
 import {
   createWorkspaceFileAssetId,
@@ -127,7 +127,7 @@ import {
   type ExplorerClipboardEntry,
   type ExplorerFileKind,
 } from './services/project/explorerFileService';
-import { type BrickColumnCount, type Dataset, type StageName } from './types';
+import { type BrickColumnCount, type Dataset, type ToolName } from './types';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
@@ -185,11 +185,11 @@ type WorkspaceTabState = {
 type ToolWorkspaceTab = {
   id: string;
   kind: 'tool';
-  stage: StageName;
+  stage: ToolName;
   nested?: ToolNestedView;
 } & WorkspaceTabState;
 
-type DatasetToolStage = Extract<StageName, 'select' | 'analysis' | 'review' | 'tagging'>;
+type DatasetToolStage = Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>;
 type DatasetBoardSortMode = 'manual' | 'name' | 'type' | 'captioned' | 'aspect';
 const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; label: string }> = [
   { value: 'manual', label: 'Manual order' },
@@ -268,7 +268,7 @@ type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTa
 type PersistedWorkspaceTab =
   | {
       kind: 'tool';
-      stage: StageName;
+      stage: ToolName;
       pinned?: boolean;
     }
   | {
@@ -283,7 +283,7 @@ type PersistedWorkspaceTab =
       pinned?: boolean;
     };
 
-const createToolTab = (stage: StageName): ToolWorkspaceTab => ({
+const createToolTab = (stage: ToolName): ToolWorkspaceTab => ({
   id: `tool:${stage}`,
   kind: 'tool',
   stage,
@@ -346,7 +346,7 @@ const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => 
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
   tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption' || tab.kind === 'file-analysis';
 
-const getInspectorContext = (tab: WorkspaceTab | null, activeStage: StageName | null): InspectorContext => {
+const getInspectorContext = (tab: WorkspaceTab | null, activeStage: ToolName | null): InspectorContext => {
   if (!tab) {
     return 'empty';
   }
@@ -426,7 +426,7 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
     const openTabs = Array.isArray(value.openTabs)
       ? value.openTabs
           .map((tab): PersistedWorkspaceTab | null => {
-            if (typeof tab === 'string' && isStageName(tab)) {
+            if (typeof tab === 'string' && isToolName(tab)) {
               return { kind: 'tool', stage: tab };
             }
             if (!tab || typeof tab !== 'object') {
@@ -434,7 +434,7 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
             }
             const entry = tab as { kind?: unknown; stage?: unknown; datasetId?: unknown; pinned?: unknown };
             const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
-            if (entry.kind === 'tool' && typeof entry.stage === 'string' && isStageName(entry.stage)) {
+            if (entry.kind === 'tool' && typeof entry.stage === 'string' && isToolName(entry.stage)) {
               return { kind: 'tool', stage: entry.stage, pinned };
             }
             if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
@@ -530,35 +530,35 @@ const ExportStage = lazy(() =>
   import('./components/stages/ExportStage').then((module) => ({ default: module.ExportStage }))
 );
 
-const isStageName = (value: string | null): value is StageName =>
-  Boolean(value && (STAGES as readonly string[]).includes(value));
+const isToolName = (value: string | null): value is ToolName =>
+  Boolean(value && (TOOLS as readonly string[]).includes(value));
 
-const getStageFromUrlSlug = (value: string | null): StageName | null => {
+const getToolFromUrlSlug = (value: string | null): ToolName | null => {
   if (!value) {
     return null;
   }
 
-  return (URL_STAGE_ALIASES[value] ?? null) as StageName | null;
+  return (URL_TOOL_ALIASES[value] ?? null) as ToolName | null;
 };
 
-const getUrlSlugForStage = (stage: StageName): string => STAGE_URL_SLUGS[stage] ?? stage;
+const getUrlSlugForTool = (stage: ToolName): string => TOOL_URL_SLUGS[stage] ?? stage;
 
-const readStageFromUrl = (): StageName | null => {
+const readToolFromUrl = (): ToolName | null => {
   if (typeof window === 'undefined') {
     return null;
   }
 
   const stage = new URL(window.location.href).searchParams.get('tool');
-  return getStageFromUrlSlug(stage) ?? (isStageName(stage) ? stage : null);
+  return getToolFromUrlSlug(stage) ?? (isToolName(stage) ? stage : null);
 };
 
-const writeStageToUrl = (stage: StageName, mode: 'push' | 'replace' = 'replace') => {
+const writeToolToUrl = (stage: ToolName, mode: 'push' | 'replace' = 'replace') => {
   if (typeof window === 'undefined') {
     return;
   }
 
   const url = new URL(window.location.href);
-  const stageSlug = getUrlSlugForStage(stage);
+  const stageSlug = getUrlSlugForTool(stage);
   if (url.searchParams.get('tool') === stageSlug) {
     return;
   }
@@ -583,7 +583,7 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   export: Download,
 };
 
-const TOOLS_MENU_STAGES = STAGES.filter((stage) => stage !== 'import' && stage !== 'export');
+const TOOLS_MENU_ITEMS = TOOLS.filter((stage) => stage !== 'import' && stage !== 'export');
 
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
@@ -604,12 +604,12 @@ const getAspectRatioLabel = (width: number, height: number): string => {
 type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 
 type RenderToolOptions = {
-  currentStage: StageName;
+  currentStage: ToolName;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   onOpenAssetContextMenu?: AssetContextMenuHandler;
   nested?: ToolNestedView;
   onOpenNestedFile?: (itemId: string) => void;
-  onOpenTool?: (stage: StageName) => void;
+  onOpenTool?: (stage: ToolName) => void;
   onOpenDataset?: (datasetId: string) => void;
   onOpenDatasetTool?: (datasetId: string, stage: DatasetToolStage) => void;
   onCreateDataset?: () => void;
@@ -1241,7 +1241,7 @@ function App() {
   const initializeProject = useProjectStore((state) => state.initializeProject);
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
-  const setCurrentStage = useProjectStore((state) => state.setCurrentStage);
+  const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const addSourceImage = useProjectStore((state) => state.addSourceImage);
@@ -1424,9 +1424,9 @@ function App() {
   }, [operationLogs.length, bottomPanelOpen]);
 
   useEffect(() => {
-    const stageFromUrl = readStageFromUrl();
+    const stageFromUrl = readToolFromUrl();
     if (stageFromUrl) {
-      setCurrentStage(stageFromUrl);
+      setCurrentTool(stageFromUrl);
       setOpenTabs((tabs) =>
         tabs.some((tab) => tab.kind === 'tool' && tab.stage === stageFromUrl)
           ? tabs
@@ -1437,9 +1437,9 @@ function App() {
     setIsUrlStageReady(true);
 
     const handlePopState = () => {
-      const nextStage = readStageFromUrl();
+      const nextStage = readToolFromUrl();
       if (nextStage) {
-        setCurrentStage(nextStage);
+        setCurrentTool(nextStage);
         setOpenTabs((tabs) =>
           tabs.some((tab) => tab.kind === 'tool' && tab.stage === nextStage)
             ? tabs
@@ -1451,11 +1451,11 @@ function App() {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [setCurrentStage]);
+  }, [setCurrentTool]);
 
   useEffect(() => {
     if (isUrlStageReady) {
-      writeStageToUrl(currentStage);
+      writeToolToUrl(currentStage);
     }
   }, [currentStage, isUrlStageReady]);
 
@@ -1552,10 +1552,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!(STAGES as readonly string[]).includes(currentStage)) {
-      setCurrentStage('hub');
+    if (!(TOOLS as readonly string[]).includes(currentStage)) {
+      setCurrentTool('hub');
     }
-  }, [currentStage, setCurrentStage]);
+  }, [currentStage, setCurrentTool]);
 
   useEffect(() => {
     if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen && !tabContextMenu) {
@@ -1742,7 +1742,7 @@ function App() {
           : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
     const label =
       tab.kind === 'tool'
-        ? STAGE_LABELS[tab.stage]
+        ? TOOL_LABELS[tab.stage]
         : tab.kind === 'dataset-tool'
           ? `${DATASET_TOOL_LABELS[tab.stage]}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'dataset'
@@ -1815,7 +1815,7 @@ function App() {
       setInspectorRenameValue(activeTab.name);
       return;
     }
-    setInspectorRenameValue(activeStage ? STAGE_LABELS[activeStage] : '');
+    setInspectorRenameValue(activeStage ? TOOL_LABELS[activeStage] : '');
   }, [activeDataset?.name, activeStage, activeTab]);
 
   useEffect(() => {
@@ -1939,12 +1939,12 @@ function App() {
   const runPsdCommand = (command: 'save' | 'saveCopy') => {
     window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
   };
-  const navigateToStage = (stage: StageName) => {
+  const navigateToTool = (stage: ToolName) => {
     const nextTab = createToolTab(stage);
     setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
     setActiveTabId(nextTab.id);
-    writeStageToUrl(stage, 'push');
-    setCurrentStage(stage);
+    writeToolToUrl(stage, 'push');
+    setCurrentTool(stage);
     setFileMenuOpen(false);
     setViewMenuOpen(false);
     setToolsMenuOpen(false);
@@ -1955,8 +1955,8 @@ function App() {
   const activateTab = (tab: WorkspaceTab) => {
     setActiveTabId(tab.id);
     if (tab.kind === 'tool') {
-      writeStageToUrl(tab.stage, 'push');
-      setCurrentStage(tab.stage);
+      writeToolToUrl(tab.stage, 'push');
+      setCurrentTool(tab.stage);
     }
     setFileMenuOpen(false);
     setViewMenuOpen(false);
@@ -3612,7 +3612,7 @@ function App() {
         : activeTab && isFileBackedTab(activeTab)
           ? activeTab.name
           : activeStage
-            ? STAGE_LABELS[activeStage]
+            ? TOOL_LABELS[activeStage]
             : 'Workspace';
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
     const inspectorActionGroups = getInspectorActionGroups();
@@ -3664,7 +3664,7 @@ function App() {
       }
 
       return [
-        { label: 'Object', value: STAGE_LABELS[activeTab.stage] },
+        { label: 'Object', value: TOOL_LABELS[activeTab.stage] },
         { label: 'Mode', value: activeTab.nested ? 'Nested item' : 'Project tool' },
         { label: 'Target', value: 'Project' },
       ];
@@ -5555,20 +5555,20 @@ function App() {
             </button>
             {toolsMenuOpen && (
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {TOOLS_MENU_STAGES.map((stage) => {
+                {TOOLS_MENU_ITEMS.map((stage) => {
                   const Icon = stage === 'hub' ? Archive : toolIcons[stage];
                   const active = activeTab?.kind === 'tool' && activeStage === stage;
                   return (
                     <button
                       type="button"
                       key={stage}
-                      onClick={() => navigateToStage(stage)}
+                      onClick={() => navigateToTool(stage)}
                       className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary ${
                         active ? 'bg-secondary/70' : ''
                       }`}
                     >
                       <Icon className="h-4 w-4" />
-                      <span className="flex-1">{STAGE_LABELS[stage]}</span>
+                      <span className="flex-1">{TOOL_LABELS[stage]}</span>
                       {active && <Check className="h-4 w-4" />}
                     </button>
                   );
@@ -5784,17 +5784,17 @@ function App() {
                   <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
                     Open tool
                   </p>
-                  {TOOLS_MENU_STAGES.map((stage) => {
+                  {TOOLS_MENU_ITEMS.map((stage) => {
                     const Icon = stage === 'hub' ? Archive : toolIcons[stage];
                     const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.stage === stage);
                     return (
                       <DropdownMenu.Item
                         key={stage}
-                        onSelect={() => navigateToStage(stage)}
+                        onSelect={() => navigateToTool(stage)}
                         className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-xs outline-none hover:bg-secondary"
                       >
                         <Icon className="h-3.5 w-3.5" />
-                        <span className="min-w-0 flex-1 truncate">{STAGE_LABELS[stage]}</span>
+                        <span className="min-w-0 flex-1 truncate">{TOOL_LABELS[stage]}</span>
                         {isOpen && <Check className="h-3.5 w-3.5 text-muted-foreground" />}
                       </DropdownMenu.Item>
                     );
@@ -6254,7 +6254,7 @@ function App() {
                     onOpenAssetContextMenu: openAssetExplorerContextMenu,
                     nested: activeToolNestedView,
                     onOpenNestedFile: openActiveToolNestedFile,
-                    onOpenTool: navigateToStage,
+                    onOpenTool: navigateToTool,
                     onOpenDataset: openDatasetTab,
                     onOpenDatasetTool: openDatasetToolTab,
                     onCreateDataset: createDatasetFromHub,

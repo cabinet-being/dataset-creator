@@ -204,7 +204,7 @@ const createAnalysisVisualItem = (
     width,
     height,
     aspectRatio: inferWorkspaceAspectRatio(width, height),
-    allowGeneratedPreviewUrl: true,
+    allowObjectPreviewUrl: true,
   };
 };
 

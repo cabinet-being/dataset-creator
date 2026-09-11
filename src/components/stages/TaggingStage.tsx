@@ -824,14 +824,14 @@ export const TaggingStage = ({
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log('[stage] current stage title rendered: Caption');
-      console.log(`[tagging:model] model connected state on entering Stage 7: ${localTaggerStatus}`);
+      console.log('[tool] current tool title rendered: Caption');
+      console.log(`[tagging:model] model connected state on entering Caption tool: ${localTaggerStatus}`);
     }
 
     return () => {
       if (import.meta.env.DEV) {
-        console.log(`[tagging:model] model connected state before leaving Stage 7: ${useLocalTaggerStore.getState().status}`);
-        console.log('[tagging:model] Stage 7 unmounted without implicit model disconnect');
+        console.log(`[tagging:model] model connected state before leaving Caption tool: ${useLocalTaggerStore.getState().status}`);
+        console.log('[tagging:model] Caption tool unmounted without implicit model disconnect');
       }
     };
   }, []);
@@ -851,7 +851,7 @@ export const TaggingStage = ({
         keyword &&
           items.some((item) => (item.tags ?? []).some((tag) => tag.trim().toLowerCase() === keyword))
       );
-      console.log(`[tagging] dataset keyword excluded from Stage 7 tag state: ${!keywordInEditableTags}`);
+      console.log(`[tagging] dataset keyword excluded from Caption tool tag state: ${!keywordInEditableTags}`);
     }
   }, [items, datasetTriggerWord]);
 

@@ -15,9 +15,9 @@ export const SIDEBAR_PRIMARY_TOOLS = [] as const;
 
 export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'analysis', 'review', 'tagging'] as const;
 
-export const STAGES = ['hub', ...WORKFLOW_TOOLS] as const;
+export const TOOLS = ['hub', ...WORKFLOW_TOOLS] as const;
 
-export const STAGE_URL_SLUGS: Record<(typeof STAGES)[number], string> = {
+export const TOOL_URL_SLUGS: Record<(typeof TOOLS)[number], string> = {
   hub: 'workspace',
   import: 'import',
   select: 'remove-duplicates',
@@ -28,7 +28,7 @@ export const STAGE_URL_SLUGS: Record<(typeof STAGES)[number], string> = {
   export: 'export',
 };
 
-export const URL_STAGE_ALIASES: Record<string, (typeof STAGES)[number]> = {
+export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
   workspace: 'hub',
   hub: 'hub',
   import: 'import',
@@ -45,7 +45,7 @@ export const URL_STAGE_ALIASES: Record<string, (typeof STAGES)[number]> = {
   export: 'export',
 };
 
-export const STAGE_LABELS: Record<string, string> = {
+export const TOOL_LABELS: Record<string, string> = {
   hub: 'Project Workspace',
   import: 'Import',
   select: 'Remove Duplicates',
