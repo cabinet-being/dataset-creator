@@ -13,21 +13,66 @@ type InternalFileViewerProps = {
   onSavePsd?: (payload: { psd: ArrayBuffer; preview?: ArrayBuffer }, saveCopy: boolean) => void | Promise<void>;
 };
 
+type ObjectUrlCacheEntry = {
+  url: string;
+  consumers: number;
+  revokeTimer?: number;
+};
+
+const objectUrlCache = new WeakMap<Blob, ObjectUrlCacheEntry>();
+
+const getObjectUrlCacheEntry = (file: Blob): ObjectUrlCacheEntry => {
+  const cached = objectUrlCache.get(file);
+  if (cached) {
+    if (cached.revokeTimer !== undefined) {
+      window.clearTimeout(cached.revokeTimer);
+      cached.revokeTimer = undefined;
+    }
+    return cached;
+  }
+
+  const entry: ObjectUrlCacheEntry = {
+    url: URL.createObjectURL(file),
+    consumers: 0,
+  };
+  objectUrlCache.set(file, entry);
+  return entry;
+};
+
+const releaseObjectUrlCacheEntry = (file: Blob) => {
+  const cached = objectUrlCache.get(file);
+  if (!cached) {
+    return;
+  }
+
+  cached.consumers = Math.max(0, cached.consumers - 1);
+  if (cached.consumers > 0 || cached.revokeTimer !== undefined) {
+    return;
+  }
+
+  cached.revokeTimer = window.setTimeout(() => {
+    if (cached.consumers === 0) {
+      URL.revokeObjectURL(cached.url);
+      objectUrlCache.delete(file);
+    }
+  }, 0);
+};
+
 const useObjectUrl = (file: Blob | null) => {
-  const [url, setUrl] = useState<string | null>(null);
+  const cacheEntry = useMemo(() => (file ? getObjectUrlCacheEntry(file) : null), [file]);
 
   useEffect(() => {
-    if (!file) {
-      setUrl(null);
+    if (!file || !cacheEntry) {
       return;
     }
 
-    const nextUrl = URL.createObjectURL(file);
-    setUrl(nextUrl);
-    return () => URL.revokeObjectURL(nextUrl);
-  }, [file]);
+    cacheEntry.consumers += 1;
+    return () => {
+      releaseObjectUrlCacheEntry(file);
+    };
+  }, [cacheEntry, file]);
 
-  return url;
+  return cacheEntry?.url ?? null;
 };
 
 const TextFileViewer = ({
@@ -111,6 +156,8 @@ const ImageFileViewer = ({
   const [zoom, setZoom] = useState(1);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  const [erroredUrl, setErroredUrl] = useState<string | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
@@ -140,6 +187,8 @@ const ImageFileViewer = ({
 
   useEffect(() => {
     setNaturalSize(null);
+    setLoadedUrl(null);
+    setErroredUrl(null);
     setZoom(1);
   }, [url]);
 
@@ -164,9 +213,8 @@ const ImageFileViewer = ({
     };
   }, [naturalSize, viewportSize.height, viewportSize.width, zoom]);
 
-  if (!url) {
-    return null;
-  }
+  const loaded = Boolean(url && loadedUrl === url);
+  const errored = Boolean(url && erroredUrl === url);
 
   return (
     <div ref={containerRef} className="relative h-full min-h-0 overflow-auto bg-background">
@@ -206,19 +254,35 @@ const ImageFileViewer = ({
           minHeight: imageLayout ? `${imageLayout.wrapperHeight}px` : '100%',
         }}
       >
-        <img
-          src={url}
-          alt={fileName}
-          onLoad={(event) => {
-            setNaturalSize({
-              width: event.currentTarget.naturalWidth,
-              height: event.currentTarget.naturalHeight,
-            });
-          }}
-          onContextMenu={onContextMenu}
-          className="block max-w-none object-contain"
-          style={imageLayout ? { width: `${imageLayout.width}px`, height: `${imageLayout.height}px` } : undefined}
-        />
+        {!loaded || errored ? (
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <div className="flex min-h-48 min-w-64 items-center justify-center rounded border border-border bg-secondary p-6 text-sm text-muted-foreground">
+              {errored ? 'Unable to load image' : 'Loading image...'}
+            </div>
+          </div>
+        ) : null}
+        {url ? (
+          <img
+            key={url}
+            src={url}
+            alt={fileName}
+            onLoad={(event) => {
+              setLoadedUrl(url);
+              setErroredUrl((current) => (current === url ? null : current));
+              setNaturalSize({
+                width: event.currentTarget.naturalWidth,
+                height: event.currentTarget.naturalHeight,
+              });
+            }}
+            onError={() => {
+              setLoadedUrl((current) => (current === url ? null : current));
+              setErroredUrl(url);
+            }}
+            onContextMenu={onContextMenu}
+            className={`block max-w-none object-contain ${loaded && !errored ? 'opacity-100' : 'opacity-0'}`}
+            style={imageLayout ? { width: `${imageLayout.width}px`, height: `${imageLayout.height}px` } : undefined}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -233,13 +297,15 @@ const VideoFileViewer = ({
 }) => {
   const url = useObjectUrl(file);
 
-  if (!url) {
-    return null;
-  }
-
   return (
     <div onContextMenu={onContextMenu} className="flex h-full min-h-0 items-center justify-center bg-background">
-      <video src={url} controls className="max-h-full max-w-full" />
+      {url ? (
+        <video src={url} controls className="max-h-full max-w-full" />
+      ) : (
+        <div className="rounded border border-border bg-secondary px-4 py-3 text-sm text-muted-foreground">
+          Loading video...
+        </div>
+      )}
     </div>
   );
 };

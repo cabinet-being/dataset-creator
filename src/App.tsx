@@ -131,7 +131,6 @@ import { type BrickColumnCount, type Dataset, type ToolName } from './types';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
-const DATASET_BOARD_DRAG_TYPE = 'application/x-dataset-creator-dataset-board-asset';
 const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
 const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
 type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'review' | 'analysis' | 'caption';
@@ -190,7 +189,7 @@ type ToolWorkspaceTab = {
 } & WorkspaceTabState;
 
 type DatasetToolName = Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>;
-type DatasetBoardSortMode = 'manual' | 'name' | 'type' | 'captioned' | 'aspect';
+type DatasetBoardSortMode = 'name' | 'type' | 'captioned' | 'aspect';
 type EmptyDatasetSuggestion = {
   signature: string;
   items: WorkspaceImage[];
@@ -198,7 +197,6 @@ type EmptyDatasetSuggestion = {
   totalCount: number;
 };
 const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; label: string }> = [
-  { value: 'manual', label: 'Manual order' },
   { value: 'name', label: 'Name' },
   { value: 'type', label: 'Type' },
   { value: 'captioned', label: 'Captioned' },
@@ -1378,9 +1376,7 @@ function App() {
   });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
   const [datasetWorkspaceFileAssets, setDatasetWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
-  const [datasetBoardSortMode, setDatasetBoardSortMode] = useState<DatasetBoardSortMode>('manual');
-  const [draggedDatasetAssetId, setDraggedDatasetAssetId] = useState<string | null>(null);
-  const [datasetDropTargetAssetId, setDatasetDropTargetAssetId] = useState<string | null>(null);
+  const [datasetBoardSortMode, setDatasetBoardSortMode] = useState<DatasetBoardSortMode>('name');
   const [datasetDropActive, setDatasetDropActive] = useState(false);
   const [dismissedEmptyDatasetSuggestionSignatures, setDismissedEmptyDatasetSuggestionSignatures] = useState<Set<string>>(
     () => new Set()
@@ -2960,10 +2956,6 @@ function App() {
     dataset: Dataset,
     sortMode: DatasetBoardSortMode
   ): WorkspaceImage[] => {
-    if (sortMode === 'manual') {
-      return items;
-    }
-
     return [...items].sort((left, right) => {
       if (sortMode === 'name') {
         return left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' });
@@ -3104,62 +3096,6 @@ function App() {
         ],
       ].filter((group) => group.length > 0),
     });
-  };
-
-  const saveDatasetBoardOrder = async (
-    dataset: Dataset,
-    items: WorkspaceImage[],
-    options: { notify?: boolean } = {}
-  ) => {
-    const orderedImageIds = items
-      .filter((item) => item.kind === 'image' && item.sourceImageId)
-      .map((item) => item.sourceImageId);
-    const orderedAssetPaths = items
-      .filter((item) => item.kind !== 'image' && item.assetPath)
-      .map((item) => item.assetPath as string);
-    const orderedKeys = items.map(getDatasetBoardAssetKey);
-    const nextAssetIds = [
-      ...orderedImageIds,
-      ...dataset.assetIds.filter((assetId) => !orderedImageIds.includes(assetId)),
-    ];
-    const nextAssetPaths = filterLegacyProjectAssetPaths([
-      ...orderedAssetPaths,
-      ...filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => !orderedAssetPaths.includes(assetPath)),
-    ]);
-
-    await updateDatasetFileBackedState(dataset, {
-      assetIds: nextAssetIds,
-      assetPaths: nextAssetPaths,
-      psdAssetPaths: collectDatasetPsdPathsFromAssetPaths(nextAssetPaths),
-      assetOrder: normalizeDatasetAssetOrder(orderedKeys, nextAssetIds, nextAssetPaths),
-    });
-
-    if (options.notify) {
-      addNotification('success', 'Dataset order updated');
-    }
-  };
-
-  const reorderDatasetBoardAsset = async (
-    dataset: Dataset,
-    items: WorkspaceImage[],
-    sourceKey: string,
-    targetKey: string
-  ) => {
-    if (sourceKey === targetKey) {
-      return;
-    }
-
-    const sourceIndex = items.findIndex((item) => getDatasetBoardAssetKey(item) === sourceKey);
-    const targetIndex = items.findIndex((item) => getDatasetBoardAssetKey(item) === targetKey);
-    if (sourceIndex < 0 || targetIndex < 0) {
-      return;
-    }
-
-    const nextItems = [...items];
-    const [movedItem] = nextItems.splice(sourceIndex, 1);
-    nextItems.splice(targetIndex, 0, movedItem);
-
-    await saveDatasetBoardOrder(dataset, nextItems);
   };
 
   const renderDatasetTool = (tab: DatasetToolWorkspaceTab) => {
@@ -3380,13 +3316,12 @@ function App() {
           .filter((group) => group.length > 0)
       : [];
     const datasetBoardItems = sortDatasetBoardItems(activeDatasetPreviewItems, dataset, datasetBoardSortMode);
-    const canReorderDatasetBoard = datasetBoardSortMode === 'manual';
 
     return (
       <div
         className="h-full min-h-0 overflow-auto p-6"
         onDragOver={(event) => {
-          if (event.dataTransfer.types.includes(DATASET_BOARD_DRAG_TYPE) || event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
+          if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
             return;
           }
           if (
@@ -3400,7 +3335,7 @@ function App() {
           }
         }}
         onDragEnter={(event) => {
-          if (event.dataTransfer.types.includes(DATASET_BOARD_DRAG_TYPE) || event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
+          if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
             return;
           }
           if (
@@ -3419,7 +3354,7 @@ function App() {
         }}
         onDrop={(event) => {
           setDatasetDropActive(false);
-          if (event.dataTransfer.types.includes(DATASET_BOARD_DRAG_TYPE) || event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
+          if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
             return;
           }
           const transferPath = event.dataTransfer.getData('text/plain');
@@ -3550,28 +3485,23 @@ function App() {
                 <div>
                   <p className="text-sm font-medium">Dataset contents</p>
                   <p className="text-xs text-muted-foreground">
-                    {canReorderDatasetBoard ? `${activeDatasetPreviewItems.length} assets · manual order` : `${activeDatasetPreviewItems.length} assets · sorted preview`}
+                    {activeDatasetPreviewItems.length} assets · sorted by {DATASET_BOARD_SORT_OPTIONS.find((option) => option.value === datasetBoardSortMode)?.label ?? 'Name'}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-secondary px-2 py-1 text-xs text-muted-foreground">
-                    {datasetBoardSortMode === 'manual' ? 'Manual' : 'Preview'}
-                  </span>
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    Sort
-                    <select
-                      value={datasetBoardSortMode}
-                      onChange={(event) => setDatasetBoardSortMode(event.target.value as DatasetBoardSortMode)}
-                      className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
-                    >
-                      {DATASET_BOARD_SORT_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  Sort
+                  <select
+                    value={datasetBoardSortMode}
+                    onChange={(event) => setDatasetBoardSortMode(event.target.value as DatasetBoardSortMode)}
+                    className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+                  >
+                    {DATASET_BOARD_SORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
               <BrickMasonry
                 items={datasetBoardItems}
@@ -3579,69 +3509,24 @@ function App() {
                 getEstimate={(item) => item.height / Math.max(1, item.width)}
                 className="p-3"
                 renderItem={(item) => (
-                  <div
-                    draggable={canReorderDatasetBoard}
-                    onDragStart={(event) => {
-                      if (!canReorderDatasetBoard) {
-                        return;
-                      }
-                      const key = getDatasetBoardAssetKey(item);
-                      setDraggedDatasetAssetId(key);
-                      event.dataTransfer.effectAllowed = 'move';
-                      event.dataTransfer.setData(DATASET_BOARD_DRAG_TYPE, key);
-                      event.dataTransfer.setData('text/plain', key);
-                    }}
-                    onDragOver={(event) => {
-                      if (!canReorderDatasetBoard || !draggedDatasetAssetId) {
-                        return;
-                      }
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = 'move';
-                      setDatasetDropTargetAssetId(getDatasetBoardAssetKey(item));
-                    }}
-                    onDrop={(event) => {
-                      if (!canReorderDatasetBoard) {
-                        return;
-                      }
-                      event.preventDefault();
-                      const sourceKey =
-                        draggedDatasetAssetId ||
-                        event.dataTransfer.getData(DATASET_BOARD_DRAG_TYPE) ||
-                        event.dataTransfer.getData('text/plain');
-                      setDraggedDatasetAssetId(null);
-                      setDatasetDropTargetAssetId(null);
-                      void reorderDatasetBoardAsset(dataset, datasetBoardItems, sourceKey, getDatasetBoardAssetKey(item));
-                    }}
-                    onDragEnd={() => {
-                      setDraggedDatasetAssetId(null);
-                      setDatasetDropTargetAssetId(null);
-                    }}
-                  >
-                    <WorkspacePreviewCard
-                      item={item}
-                      previewUrl={activeDatasetPreviewUrls[item.id]}
-                      className={`gallery-masonry-item ${
-                        draggedDatasetAssetId === getDatasetBoardAssetKey(item)
-                          ? 'opacity-50'
-                          : datasetDropTargetAssetId === getDatasetBoardAssetKey(item)
-                            ? 'ring-2 ring-primary'
-                            : ''
-                      }`}
-                      onOpenContextMenu={(_item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
-                      footer={
-                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-                          <div className="flex items-end justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
-                              <p className="text-xs text-gray-300">
-                                {item.label} · {item.width} x {item.height}
-                              </p>
-                            </div>
+                  <WorkspacePreviewCard
+                    item={item}
+                    previewUrl={activeDatasetPreviewUrls[item.id]}
+                    className="gallery-masonry-item"
+                    onOpenContextMenu={(_item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
+                    footer={
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+                        <div className="flex items-end justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
+                            <p className="text-xs text-gray-300">
+                              {item.label} · {item.width} x {item.height}
+                            </p>
                           </div>
                         </div>
-                      }
-                    />
-                  </div>
+                      </div>
+                    }
+                  />
                 )}
               />
             </div>
@@ -3743,10 +3628,6 @@ function App() {
   };
 
   const renderInspectorContent = () => {
-    const activeDatasetBoardItems =
-      activeDataset && activeDatasetPreviewItems.length > 0
-        ? sortDatasetBoardItems(activeDatasetPreviewItems, activeDataset, datasetBoardSortMode)
-        : [];
     const Icon =
       activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
         ? Layers3
@@ -4057,7 +3938,7 @@ function App() {
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">Board</span>
                     <span className="font-medium">
-                      {datasetBoardSortMode === 'manual' ? 'Manual order' : 'Sorted preview'}
+                      Sorted preview
                     </span>
                   </div>
                   <label className="block">
@@ -4074,18 +3955,6 @@ function App() {
                       ))}
                     </select>
                   </label>
-                  <button
-                    type="button"
-                    disabled={datasetBoardSortMode === 'manual' || activeDatasetBoardItems.length === 0}
-                    onClick={() => {
-                      void saveDatasetBoardOrder(activeDataset, activeDatasetBoardItems, { notify: true });
-                      setDatasetBoardSortMode('manual');
-                    }}
-                    className="mt-2 flex w-full items-center justify-center gap-2 rounded border border-border px-2 py-2 font-medium hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Grip className="h-3.5 w-3.5" />
-                    Apply as manual order
-                  </button>
                 </div>
               ) : null}
             </div>
