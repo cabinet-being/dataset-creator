@@ -1,3 +1,5 @@
+import { PROJECT_TYPE_PROFILES } from '../lib/projectProfiles';
+import type { ProjectType } from '../types';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import {
@@ -62,7 +64,7 @@ const normalizeDataset = (dataset: Dataset): Dataset => {
 
 interface ProjectStore extends ProjectState {
   // Project management
-  initializeProject: (name: string) => void;
+  initializeProject: (name: string, projectType: ProjectType) => void;
   loadProject: (project: ProjectState) => void;
   renameProject: (name: string) => void;
   setCurrentTool: (tool: ToolName) => void;
@@ -109,9 +111,9 @@ interface ProjectStore extends ProjectState {
 export const useProjectStore = create<ProjectStore>()(
   devtools(
       (set, get) => ({
-        ...createProject('Untitled Project'),
+        ...createProject('Untitled Project', 'character'),
         
-        initializeProject: (name: string) =>
+        initializeProject: (name: string, projectType: ProjectType) =>
           set((state) => {
             for (const image of Object.values(state.sourceImages)) {
               revokePreviewUrl(image.previewUrl);
@@ -120,7 +122,7 @@ export const useProjectStore = create<ProjectStore>()(
               revokePreviewUrl(item.previewUrl);
             }
 
-            return createProject(name);
+            return createProject(name, projectType);
           }),
 
         loadProject: (project: ProjectState) =>
@@ -132,7 +134,7 @@ export const useProjectStore = create<ProjectStore>()(
               revokePreviewUrl(item.previewUrl);
             }
 
-            const defaults = createProject(project.name);
+            const defaults = createProject(project.name, project.projectType);
             const supportedDatasetItems = Object.fromEntries(
               Object.entries(project.datasetItems ?? {}).filter(([, item]) => !isLegacyDatasetItem(item))
             );
@@ -170,7 +172,7 @@ export const useProjectStore = create<ProjectStore>()(
         setCurrentTool: (tool: ToolName) =>
           set((state) => ({
             ...state,
-            currentTool: tool,
+            currentTool: PROJECT_TYPE_PROFILES[state.projectType].enabledTools.includes(tool) ? tool : state.currentTool,
             lastModified: new Date(),
           })),
         
@@ -318,8 +320,9 @@ export const useProjectStore = create<ProjectStore>()(
         
         getSourceImages: () => Object.values(get().sourceImages),
 
-        createDataset: (name = 'New Dataset') => {
-          const dataset = createDataset(name);
+        createDataset: (name) => {
+          const profile = PROJECT_TYPE_PROFILES[get().projectType];
+          const dataset = { ...createDataset(name ?? profile.defaults.datasetName), triggerWord: profile.defaults.triggerWord };
           set((state) => ({
             ...state,
             datasets: {

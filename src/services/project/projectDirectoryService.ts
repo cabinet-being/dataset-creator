@@ -1,7 +1,9 @@
+import { resolveProjectType, type ProjectTypeResolver } from '../../lib/projectProfiles';
 import { URL_TOOL_ALIASES } from '../../lib/constants';
 import {
   createProject,
   type ProjectState,
+  type ProjectType,
   type SourceImage,
   type ToolName,
   type EditedAsset,
@@ -51,6 +53,7 @@ type DirectoryProjectManifest = {
   project: {
     id: string;
     name: string;
+    projectType?: ProjectType;
     currentTool: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
@@ -342,6 +345,7 @@ const getProjectManifest = (
   project: {
     id: project.id,
     name: project.name,
+    projectType: project.projectType,
     currentTool: project.currentTool,
     taggingConfig: {
       datasetKeyword: project.taggingConfig.datasetKeyword,
@@ -898,7 +902,8 @@ const readOptionalProjectChildren = async <T>(
 };
 
 export const readProjectDirectory = async (
-  directory: ProjectDirectoryHandle
+  directory: ProjectDirectoryHandle,
+  selectProjectType?: ProjectTypeResolver
 ): Promise<ProjectState> => {
   const manifestName = await getExistingManifestName(directory);
   const manifest = await readJsonFile<DirectoryProjectManifest>(
@@ -913,7 +918,15 @@ export const readProjectDirectory = async (
     throw new Error('The project manifest is missing required project fields.');
   }
 
-  const defaults = createProject(manifest.project.name);
+  const projectType = await resolveProjectType(manifest.project.projectType, manifest.project.name, selectProjectType);
+  if (manifest.project.projectType === undefined) {
+    manifest.project.projectType = projectType;
+    const handle = await directory.getFileHandle(manifestName);
+    const writable = await handle.createWritable();
+    await writable.write(JSON.stringify(manifest, null, 2));
+    await writable.close();
+  }
+  const defaults = createProject(manifest.project.name, projectType);
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
     `syn${'thetic'}ImageManifests`

@@ -1,3 +1,6 @@
+import { ProjectSetupDialog } from './components/ProjectSetupDialog';
+import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
+import type { ProjectType } from './types';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
@@ -1244,6 +1247,11 @@ function App() {
   const projectId = useProjectStore((state) => state.id);
   const projectName = useProjectStore((state) => state.name);
   const currentTool = useProjectStore((state) => state.currentTool);
+  const profile = useProjectStore((state) => PROJECT_TYPE_PROFILES[state.projectType]);
+  const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType } | null) => void } | null>(null);
+  const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType } | null>((resolve) => {
+    setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
+  });
   const initializeProject = useProjectStore((state) => state.initializeProject);
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
@@ -1999,6 +2007,7 @@ function App() {
     window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
   };
   const navigateToTool = (tool: ToolName) => {
+    if (!profile.enabledTools.includes(tool)) return;
     const nextTab = createToolTab(tool);
     setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
     setActiveTabId(nextTab.id);
@@ -2821,7 +2830,7 @@ function App() {
     const assetPaths = filterLegacyProjectAssetPaths([...new Set([...(source?.assetPaths ?? []), ...(source?.psdAssetPaths ?? [])])]);
     const dataset = {
       ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
-      triggerWord: source?.triggerWord ?? '',
+      triggerWord: source?.triggerWord ?? profile.defaults.triggerWord,
       assetIds,
       assetPaths,
       psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(source?.psdAssetPaths ?? [])]),
@@ -2866,6 +2875,7 @@ function App() {
   };
 
   const openDatasetToolTab = (datasetId: string, tool: DatasetToolName) => {
+    if (!profile.enabledTools.includes(tool)) return;
     const dataset = useProjectStore.getState().datasets[datasetId];
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
@@ -4414,13 +4424,13 @@ function App() {
       mode: 'create',
       parentPath,
       kind: 'dataset',
-      value: getUniqueDatasetName('New Dataset', parentPath),
+      value: getUniqueDatasetName(profile.defaults.datasetName, parentPath),
     });
   };
 
   const createDatasetFromHub = async () => {
     try {
-      const dataset = await createDatasetFileInDirectory('Project', getUniqueDatasetName('New Dataset', 'Project'));
+      const dataset = await createDatasetFileInDirectory('Project', getUniqueDatasetName(profile.defaults.datasetName, 'Project'));
       setExpandedExplorerPaths((paths) => new Set([...paths, 'Project']));
       refreshExplorer();
       openDatasetTab(dataset.id);
@@ -4532,7 +4542,7 @@ function App() {
       if (edit.kind === 'dataset' && edit.mode === 'create') {
         const dataset = await createDatasetFileInDirectory(
           edit.parentPath,
-          edit.value.trim() || getUniqueDatasetName('New Dataset', edit.parentPath)
+          edit.value.trim() || getUniqueDatasetName(profile.defaults.datasetName, edit.parentPath)
         );
         setSelectedExplorerPaths(new Set([dataset.filePath!]));
         setSelectionAnchorPath(dataset.filePath!);
@@ -5213,14 +5223,14 @@ function App() {
     projectOperationBusyRef.current = true;
     setIsProjectDirectoryBusy(true);
     try {
-      logger.info('selecting parent directory');
-      const parentDirectory = await pickProjectDirectory();
-      const nextName = window.prompt('Project name', 'Untitled Project')?.trim();
-      if (!nextName) {
+      const setup = await requestProjectSetup('Untitled Project', false);
+      if (!setup) {
         logger.warning('new project canceled');
         return;
       }
 
+      const { name: nextName, projectType } = setup;
+      const parentDirectory = await pickProjectDirectory();
       logger.info(`creating project directory ${nextName}`);
       const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
       if (
@@ -5233,7 +5243,7 @@ function App() {
       projectSessionRef.current += 1;
       autoSaveQueueRef.current = Promise.resolve();
       setProjectDirectory(undefined);
-      initializeProject(nextName);
+      initializeProject(nextName, projectType);
       const project = useProjectStore.getState();
       logger.info('writing project manifest and folders');
       await clearProjectDirectory(directory);
@@ -5256,7 +5266,11 @@ function App() {
   const openProjectDirectory = async (directory: ProjectDirectoryHandle) => {
     const logger = createOperationLogger('Project');
     logger.info(`opening project directory ${directory.name}`);
-    const project = await readProjectDirectory(directory);
+    const project = await readProjectDirectory(directory, async (name) => {
+      const setup = await requestProjectSetup(name, true);
+      if (!setup) throw new DOMException('Project opening canceled', 'AbortError');
+      return setup.projectType;
+    });
     projectSessionRef.current += 1;
     autoSaveQueueRef.current = Promise.resolve();
     setProjectDirectory(undefined);
@@ -5466,6 +5480,7 @@ function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
+      <>{projectSetup && <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} />}</>
       <PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
@@ -5579,7 +5594,7 @@ function App() {
             </button>
             {toolsMenuOpen && (
               <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {TOOLS_MENU_ITEMS.map((tool) => {
+                {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => {
                   const Icon = tool === 'hub' ? Archive : toolIcons[tool];
                   const active = activeTab?.kind === 'tool' && activeTool === tool;
                   return (
@@ -5808,7 +5823,7 @@ function App() {
                   <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
                     Open tool
                   </p>
-                  {TOOLS_MENU_ITEMS.map((tool) => {
+                  {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => {
                     const Icon = tool === 'hub' ? Archive : toolIcons[tool];
                     const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.tool === tool);
                     return (
@@ -6496,6 +6511,7 @@ function App() {
               <div className="rounded border border-border bg-background p-3">
                 <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Current project</p>
                 <p className="mt-1 truncate font-semibold">{projectName}</p>
+                <p className="mt-1 text-muted-foreground">{profile.label} project</p>
                 <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
               </div>
               <div>

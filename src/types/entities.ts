@@ -1,3 +1,4 @@
+import { PROJECT_TYPE_PROFILES } from '../lib/projectProfiles';
 import { v4 as uuidv4 } from 'uuid';
 
 // ============ ENUMS ============
@@ -163,7 +164,10 @@ export interface SimilarityCluster {
 
 // ============ PROJECT ============
 
+export type ProjectType = 'character' | 'style' | 'concept';
+
 export interface ProjectState {
+  projectType: ProjectType;
   id: string;
   name: string;
   sourceImages: Record<string, SourceImage>;
@@ -281,7 +285,8 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   updatedAt: new Date(),
 });
 
-export const createProject = (name: string): ProjectState => ({
+export const createProject = (name: string, projectType: ProjectType): ProjectState => ({
+  projectType,
   id: uuidv4(),
   name,
   sourceImages: {},
@@ -300,7 +305,7 @@ export const createProject = (name: string): ProjectState => ({
     export: {},
   },
   taggingConfig: {
-    datasetKeyword: 'dataset',
+    datasetKeyword: PROJECT_TYPE_PROFILES[projectType].defaults.datasetKeyword,
     threshold: 0.5,
     maxTags: 15,
     insertMode: 'append',

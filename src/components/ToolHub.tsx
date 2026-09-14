@@ -1,3 +1,4 @@
+import { PROJECT_TYPE_PROFILES } from '../lib/projectProfiles';
 import {
   Archive,
   BarChart3,
@@ -59,6 +60,7 @@ export const ToolHub = ({
   onCreateDataset,
   onExportDataset,
 }: ToolHubProps = {}) => {
+  const profile = useProjectStore((state) => PROJECT_TYPE_PROFILES[state.projectType]);
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
@@ -97,7 +99,7 @@ export const ToolHub = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <Archive className="h-4 w-4 text-muted-foreground" />
-              <h1 className="text-base font-semibold">Project Workspace</h1>
+              <h1 className="text-base font-semibold">{profile.labels.workspace}</h1>
               <span className="rounded bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Project tool</span>
             </div>
             <p className="mt-1 truncate text-xs text-muted-foreground">Tools and project assets</p>
@@ -117,7 +119,7 @@ export const ToolHub = ({
             <span>Status</span>
             <span className="text-right">Action</span>
           </div>
-          {HUB_TOOL_CARDS.map((tool) => {
+          {HUB_TOOL_CARDS.filter((tool) => profile.enabledTools.includes(tool as ToolName)).map((tool) => {
             const Icon = toolIcons[tool];
             const requirement = TOOL_REQUIREMENTS[tool];
             const ready =
@@ -256,7 +258,7 @@ export const ToolHub = ({
           ) : (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">
               <Wand2 className="mx-auto mb-2 h-5 w-5 opacity-70" />
-              <p>No Datasets</p>
+              <p>{profile.labels.emptyDatasets}</p>
               {onCreateDataset ? (
                 <button
                   type="button"

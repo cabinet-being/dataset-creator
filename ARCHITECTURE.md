@@ -241,3 +241,32 @@ Offload to Web Workers:
 - Batch processing (v2) - multiple projects
 - Advanced ML models (v2) - better embeddings/tagging
 - Plugin system (v3) - custom augmentations
+
+## Project types
+
+`ProjectState.projectType` is required and is one of `character`, `style`, or
+`concept`. `createProject(name, projectType)` and the store's
+`initializeProject(name, projectType)` require an explicit selection. The initial
+unsaved workspace uses the character baseline; saved legacy projects never
+silently inherit that type.
+
+`src/lib/projectProfiles.ts` owns labels, descriptions, enabled tools, dataset
+and trigger-word defaults, empty-state copy, and extension flags. All three types
+currently enable the full workflow. Tools and datasets share the same store and
+components. Dataset remains the file-board entity. Existing dataset names,
+trigger words, and captions are preserved when selecting a legacy project's type.
+
+Both manifest serializers persist `project.projectType`. Readers reject unknown
+types and require a `ProjectTypeResolver` callback for missing types. The directory
+open flow uses `ProjectSetupDialog` and saves the selection before loading state;
+canceling leaves the active project and legacy manifest unchanged. Migration
+patches only the original manifest, retaining unrelated metadata and archive files.
+
+The current application menu opens directories. The separate `.dcproj` reader
+accepts `{ selectProjectType, handle }` for legacy migration; a writable handle is
+required to persist the selection in the original ZIP. Typed archives remain
+readable without a handle. Any future archive-opening UI should use the shared
+dialog as its resolver and pass the file picker's handle.
+
+Run `npm run test:project-types` for directory/ZIP round trips and migration
+regressions, and `npm run build` for type checking and production bundling.

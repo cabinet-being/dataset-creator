@@ -1,8 +1,10 @@
+import { resolveProjectType, type ProjectTypeResolver } from '../../lib/projectProfiles';
 import JSZip from 'jszip';
 import { TOOL_URL_SLUGS, URL_TOOL_ALIASES } from '../../lib/constants';
 import type {
   BrickColumnCount,
   ProjectState,
+  ProjectType,
   SourceImage,
   ToolName,
   EditedAsset,
@@ -94,6 +96,7 @@ type ProjectFileManifest = {
   project: {
     id: string;
     name: string;
+    projectType?: ProjectType;
     currentTool?: string;
     taggingConfig: ProjectFileTaggingConfig;
     workspaceSettings?: ProjectFileWorkspaceSettings;
@@ -314,6 +317,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
     project: {
       id: project.id,
       name: project.name,
+      projectType: project.projectType,
       currentTool: getToolSlug(project.currentTool),
       sourceImageManifests,
       editedAssetManifests,
@@ -393,7 +397,7 @@ export const pickProjectFileForSave = async (
   }) as Promise<ProjectFileHandle>;
 };
 
-export const readProjectFile = async (file: File): Promise<ProjectState> => {
+export const readProjectFile = async (file: File, options?: { selectProjectType?: ProjectTypeResolver; handle?: ProjectFileHandle }): Promise<ProjectState> => {
   const zip = await JSZip.loadAsync(file);
   const manifestFile = zip.file('manifest.json');
   if (!manifestFile) {
@@ -403,6 +407,16 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
   const manifest = JSON.parse(await manifestFile.async('string')) as ProjectFileManifest;
   if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3, 4].includes(manifest.version)) {
     throw new Error('Unsupported project file');
+  }
+
+  const projectType = await resolveProjectType(manifest.project.projectType, manifest.project.name, options?.selectProjectType);
+  if (manifest.project.projectType === undefined) {
+    if (!options?.handle) throw new Error('A writable project file handle is required to save the selected project type.');
+    manifest.project.projectType = projectType;
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+    const writable = await options.handle.createWritable();
+    await writable.write(await zip.generateAsync({ type: 'blob', mimeType: PROJECT_FILE_MIME_TYPE }));
+    await writable.close();
   }
 
   const sourceManifestEntries: Array<{
@@ -549,6 +563,7 @@ export const readProjectFile = async (file: File): Promise<ProjectState> => {
 
   return {
     ...projectMetadata,
+    projectType,
     sourceImages,
     datasetItems,
     datasets: {},
