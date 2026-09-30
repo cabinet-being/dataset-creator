@@ -947,6 +947,7 @@ export const AnalysisTool = ({
         | undefined) ?? {}
   );
   const { addNotification } = useUIStore();
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const analysisInspectorRoot = useInspectorPortalRoot('analysis-inspector-root', active);
   const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
   const traitCacheRef = useRef<Record<string, TraitCacheEntry>>({});
@@ -1009,7 +1010,7 @@ export const AnalysisTool = ({
     }
 
     let canceled = false;
-    const paths = targetMode === 'dataset' ? datasetFileAssetPaths : undefined;
+    const paths = targetMode === 'dataset' ? datasetFileAssetPaths : targetMode === 'file' ? [] : undefined;
 
     const loadFileAssets = async () => {
       try {
@@ -1045,7 +1046,7 @@ export const AnalysisTool = ({
     return () => {
       canceled = true;
     };
-  }, [active, addNotification, datasetFileAssetPaths, projectDirectoryHandle, targetMode]);
+  }, [active, addNotification, assetPreviewRefreshKey, datasetFileAssetPaths, projectDirectoryHandle, targetMode]);
 
   const baseItems = useMemo(
     () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupToolState.workingEdits, []),
@@ -1067,8 +1068,12 @@ export const AnalysisTool = ({
     if (!fileTargetItem) {
       return baseItems;
     }
-    return baseItems.some((item) => item.id === fileTargetItem.id) ? baseItems : [fileTargetItem, ...baseItems];
-  }, [baseItems, fileTargetItem]);
+    return targetMode === 'file'
+      ? [fileTargetItem]
+      : baseItems.some((item) => item.id === fileTargetItem.id)
+        ? baseItems
+        : [fileTargetItem, ...baseItems];
+  }, [baseItems, fileTargetItem, targetMode]);
   const psdPreviewRequests = useMemo(
     () =>
       items

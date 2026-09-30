@@ -10,6 +10,7 @@ import {
   createExportFilePlan,
   saveDirectoryViaFilesystemAPI,
 } from '../../services/export/exportService';
+import { exportProjectDatasetAsZip, getProjectDatasetAssets } from '../../services/export/datasetExportService';
 import { createOperationLogger } from '../../services/logging/applicationLog';
 import { toWorkspaceImages, getWorkspaceKindBadgeClass } from '../../lib/workspaceImages';
 import { AlertCircle, CheckCircle2, Download, FolderOpen } from 'lucide-react';
@@ -34,9 +35,12 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
         | undefined) ?? {}
   );
   const { addNotification } = useUIStore();
+  const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const localTaggerStatus = useLocalTaggerStore((state) => state.status);
 
   const [isExporting, setIsExporting] = useState(false);
+  const [projectDatasetCount, setProjectDatasetCount] = useState<number | null>(null);
   const [exportMethod, setExportMethod] = useState<'zip' | 'directory'>('zip');
   const exportInspectorRoot = useInspectorPortalRoot('export-inspector-root', active);
 
@@ -68,6 +72,24 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
   );
 
   useEffect(() => {
+    let activeRequest = true;
+    if (!projectDirectoryHandle) {
+      setProjectDatasetCount(null);
+      return;
+    }
+    void getProjectDatasetAssets(projectDirectoryHandle)
+      .then((assets) => {
+        if (activeRequest) setProjectDatasetCount(assets.length);
+      })
+      .catch(() => {
+        if (activeRequest) setProjectDatasetCount(0);
+      });
+    return () => {
+      activeRequest = false;
+    };
+  }, [assetPreviewRefreshKey, projectDirectoryHandle]);
+
+  useEffect(() => {
     if (import.meta.env.DEV) {
       console.log(`[tagging:model] model connected state on entering Export tool: ${localTaggerStatus}`);
       console.log('[export] export keyword is added only during export rendering/output');
@@ -75,6 +97,27 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
   }, [localTaggerStatus]);
 
   const handleExport = async () => {
+    if (projectDirectoryHandle) {
+      setIsExporting(true);
+      const logger = createOperationLogger('Export');
+      try {
+        const { blob, count } = await exportProjectDatasetAsZip(
+          projectDirectoryHandle,
+          taggingConfig.blacklist,
+          logger
+        );
+        downloadZipFile(blob, `dataset-${new Date().toISOString().split('T')[0]}.zip`);
+        setProjectDatasetCount(count);
+        addNotification('success', `Exported ${count} dataset image${count !== 1 ? 's' : ''} as ZIP`);
+      } catch (error) {
+        logger.error(error instanceof Error ? error.message : 'failed to export dataset');
+        addNotification('error', error instanceof Error ? error.message : 'Failed to export dataset');
+      } finally {
+        setIsExporting(false);
+      }
+      return;
+    }
+
     if (exportItems.length === 0) {
       createOperationLogger('Export').warning('no images to export');
       addNotification('warning', 'No images to export');
@@ -137,7 +180,7 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded border border-border bg-background p-2">
           <p className="text-muted-foreground">Assets</p>
-          <p className="mt-1 text-lg font-semibold">{exportItems.length}</p>
+          <p className="mt-1 text-lg font-semibold">{projectDirectoryHandle ? projectDatasetCount ?? '…' : exportItems.length}</p>
         </div>
         <div className="rounded border border-border bg-background p-2">
           <p className="text-muted-foreground">Size</p>
@@ -203,11 +246,11 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
       <button
         type="button"
         onClick={handleExport}
-        disabled={isExporting || exportItems.length === 0}
+        disabled={isExporting || (projectDirectoryHandle ? projectDatasetCount === 0 : exportItems.length === 0)}
         className="flex w-full items-center justify-center gap-2 rounded bg-primary px-3 py-2 font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Download className="h-3.5 w-3.5" />
-        {isExporting ? 'Exporting...' : `Export ${exportItems.length}`}
+        {isExporting ? 'Exporting...' : `Export ${projectDirectoryHandle ? projectDatasetCount ?? 0 : exportItems.length}`}
       </button>
     </div>
   );
@@ -218,7 +261,7 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
     </aside>
   );
 
-  if (items.length === 0) {
+  if (!projectDirectoryHandle && items.length === 0) {
     return (
       <div className="space-y-4">
         {exportInspectorPortal}

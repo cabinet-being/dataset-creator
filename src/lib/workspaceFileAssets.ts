@@ -8,6 +8,7 @@ import {
 import { requestPhotopeaPsdPreview } from '../services/psd/photopeaPreviewQueue';
 import { createPsdPreview } from '../services/psd/psdPreviewService';
 import { filterLegacyProjectAssetPaths, LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from '../services/project/projectPathFilters';
+import { PROJECT_SHARED_DIRECTORY } from '../services/project/projectLayoutService';
 import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspaceImages';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
@@ -123,11 +124,23 @@ const collectAssetPaths = async (
   return paths;
 };
 
+const collectSharedAssetPaths = async (root: ProjectDirectoryHandle): Promise<string[]> => {
+  try {
+    let sharedDirectory = root;
+    for (const part of PROJECT_SHARED_DIRECTORY.split('/')) {
+      sharedDirectory = await sharedDirectory.getDirectoryHandle(part);
+    }
+    return collectAssetPaths(sharedDirectory, `Project/${PROJECT_SHARED_DIRECTORY}`);
+  } catch {
+    return [];
+  }
+};
+
 export const collectWorkspaceFileAssets = async (
   root: ProjectDirectoryHandle,
   paths?: string[]
 ): Promise<WorkspaceFileAsset[]> => {
-  const requestedAssetPaths = paths ? [...new Set(paths)] : await collectAssetPaths(root);
+  const requestedAssetPaths = paths ? [...new Set(paths)] : await collectSharedAssetPaths(root);
   const assetPaths = paths ? filterLegacyProjectAssetPaths(requestedAssetPaths) : requestedAssetPaths;
   const filteredCount = requestedAssetPaths.length - assetPaths.length;
   if (filteredCount > 0) {

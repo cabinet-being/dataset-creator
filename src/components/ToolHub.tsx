@@ -6,11 +6,9 @@ import {
   CheckCircle2,
   Download,
   Layers3,
-  Plus,
   ScanSearch,
   Tags,
   Upload,
-  Wand2,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { useMemo } from 'react';
@@ -47,24 +45,15 @@ const getRequirementLabel = (
 
 type ToolHubProps = {
   onOpenTool?: (tool: ToolName) => void;
-  onOpenDataset?: (datasetId: string) => void;
-  onOpenDatasetTool?: (datasetId: string, tool: Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>) => void;
-  onCreateDataset?: () => void;
-  onExportDataset?: (datasetId: string) => void;
 };
 
 export const ToolHub = ({
   onOpenTool,
-  onOpenDataset,
-  onOpenDatasetTool,
-  onCreateDataset,
-  onExportDataset,
 }: ToolHubProps = {}) => {
   const profile = useProjectStore((state) => PROJECT_TYPE_PROFILES[state.projectType]);
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
-  const datasetsById = useProjectStore((state) => state.datasets);
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const editedAssets = useMemo(
     () => Object.values(editedAssetsById).filter((item) => !item.deleted),
@@ -77,13 +66,6 @@ export const ToolHub = ({
     [sourceImages, editedAssets]
   );
   const workspaceCount = workspaceImages.length;
-  const datasetCount = Object.keys(datasetsById).length;
-  const datasets = useMemo(
-    () =>
-      Object.values(datasetsById)
-        .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
-    [datasetsById]
-  );
   const openTool = (tool: ToolName) => {
     if (onOpenTool) {
       onOpenTool(tool);
@@ -161,115 +143,15 @@ export const ToolHub = ({
         <div className="flex h-11 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Layers3 className="h-4 w-4 text-muted-foreground" />
-            Datasets
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">{datasetCount}</span>
-            <button
-              type="button"
-              onClick={onCreateDataset}
-              className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!onCreateDataset}
-              title="New Dataset"
-              aria-label="New Dataset"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
+            Dataset output
           </div>
         </div>
-        <div className="max-h-[32rem] divide-y divide-border overflow-auto">
-          {datasets.length > 0 ? (
-            datasets.map((dataset) => {
-              const fileAssetCount = new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])]).size;
-              return (
-                <div key={dataset.id} className="px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => onOpenDataset?.(dataset.id)}
-                      className="min-w-0 truncate text-left text-sm font-medium hover:underline"
-                    >
-                      {dataset.name}
-                    </button>
-                    <span className="shrink-0 rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
-                      {dataset.assetIds.length + fileAssetCount}
-                    </span>
-                  </div>
-                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                    <span className="min-w-0 flex-1 truncate">{dataset.filePath ?? 'Unsaved Dataset'}</span>
-                    <span className="shrink-0">
-                      {dataset.assetIds.length} source{dataset.assetIds.length !== 1 ? 's' : ''}
-                    </span>
-                    <span className="shrink-0">
-                      {fileAssetCount} file{fileAssetCount !== 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  <div className="mt-2 grid grid-cols-5 gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onOpenDatasetTool?.(dataset.id, 'select')}
-                      className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary"
-                      title="Remove Duplicates"
-                      aria-label={`Remove duplicates in ${dataset.name}`}
-                    >
-                      <ScanSearch className="mx-auto h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onOpenDatasetTool?.(dataset.id, 'review')}
-                      className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary"
-                      title="Review"
-                      aria-label={`Review ${dataset.name}`}
-                    >
-                      <Layers3 className="mx-auto h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onOpenDatasetTool?.(dataset.id, 'tagging')}
-                      className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary"
-                      title="Caption"
-                      aria-label={`Caption ${dataset.name}`}
-                    >
-                      <Tags className="mx-auto h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onOpenDatasetTool?.(dataset.id, 'analysis')}
-                      className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary"
-                      title="Analysis"
-                      aria-label={`Analyze ${dataset.name}`}
-                    >
-                      <BarChart3 className="mx-auto h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onExportDataset?.(dataset.id)}
-                      className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
-                      disabled={!onExportDataset}
-                      title="Export"
-                      aria-label={`Export ${dataset.name}`}
-                    >
-                      <Download className="mx-auto h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              <Wand2 className="mx-auto mb-2 h-5 w-5 opacity-70" />
-              <p>{profile.labels.emptyDatasets}</p>
-              {onCreateDataset ? (
-                <button
-                  type="button"
-                  onClick={onCreateDataset}
-                  className="mt-3 rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
-                >
-                  New Dataset
-                </button>
-              ) : null}
-            </div>
-          )}
+        <div className="space-y-3 px-4 py-4 text-sm text-muted-foreground">
+          <p>Each project contains one dataset. Put final images in <code>dataset/</code>.</p>
+          <p>Use <code>src/shared/</code> for files visible to global tools and <code>src/assets/</code> for private working files.</p>
+          <button type="button" onClick={() => openTool('export')} className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">
+            Open export
+          </button>
         </div>
       </section>
     </div>

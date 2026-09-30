@@ -6,6 +6,7 @@ import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from './proje
 import { isInternalProjectFileName, isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
 import { snapshotFile } from './fileSnapshotService';
 import { LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from './projectPathFilters';
+import { PROJECT_SHARED_DIRECTORY } from './projectLayoutService';
 
 type IndexedAssetManifest = {
   id?: string;
@@ -132,7 +133,20 @@ export const indexProjectAssets = async (
   let createdManifestCount = 0;
 
   logger.info('Indexing project...');
-  const assetFiles = await collectAssetFiles(root);
+  let sharedDirectory: ProjectDirectoryHandle;
+  try {
+    sharedDirectory = await PROJECT_SHARED_DIRECTORY
+      .split('/')
+      .filter(Boolean)
+      .reduce<Promise<ProjectDirectoryHandle>>(
+        async (currentDirectory, part) => (await currentDirectory).getDirectoryHandle(part),
+        Promise.resolve(root)
+      );
+  } catch {
+    logger.warning('Shared workspace is unavailable; no global assets were indexed.');
+    return { discoveredCount: 0, indexedCount: 0, createdManifestCount: 0 };
+  }
+  const assetFiles = await collectAssetFiles(sharedDirectory, PROJECT_SHARED_DIRECTORY);
   logger.info(`Discovered ${assetFiles.length} supported file${assetFiles.length !== 1 ? 's' : ''}`);
 
   for (let index = 0; index < assetFiles.length; index += 1) {

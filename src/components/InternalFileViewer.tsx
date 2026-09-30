@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
-import { AlertCircle, FileImage, FileJson, FileText, Minus, Plus, Video } from 'lucide-react';
+import { AlertCircle, FileImage, FileJson, FileText, Minus, MoreHorizontal, Plus, Video } from 'lucide-react';
 import type { ExplorerFileKind } from '../services/project/explorerFileService';
 import { PhotopeaBlobViewer } from './photopea/PhotopeaFrame';
 
@@ -320,23 +320,6 @@ const ViewerError = ({ message }: { message: string }) => (
   </div>
 );
 
-const getFileKindLabel = (fileKind: ExplorerFileKind): string => {
-  switch (fileKind) {
-    case 'image':
-      return 'Image file';
-    case 'psd':
-      return 'PSD file';
-    case 'video':
-      return 'Video file';
-    case 'json':
-      return 'JSON file';
-    case 'text':
-      return 'Text file';
-    default:
-      return 'File';
-  }
-};
-
 const getFileKindIcon = (fileKind: ExplorerFileKind) => {
   switch (fileKind) {
     case 'image':
@@ -389,9 +372,17 @@ export const InternalFileViewer = ({
           <FileKindIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-medium">{fileName}</span>
         </div>
-        <span className="shrink-0 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground">
-          {getFileKindLabel(fileKind)}
-        </span>
+        {onContextMenu ? (
+          <button
+            type="button"
+            onClick={(event) => onContextMenu(event)}
+            className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+            title="File actions"
+            aria-label="File actions"
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1">{content}</div>
     </div>

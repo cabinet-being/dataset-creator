@@ -14,6 +14,15 @@ import { createThumbnail } from '../image/imageProcessor';
 import { getAssetManifestName } from './assetManifestService';
 import { snapshotFileIfNeeded } from './fileSnapshotService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
+import {
+  DATASET_MANIFEST_FILE,
+  PROJECT_DATASET_DIRECTORY,
+  PROJECT_SHARED_DIRECTORY,
+  ensureProjectLayout,
+  isProjectWorkspacePath,
+  readDatasetManifest,
+  writeDatasetManifest,
+} from './projectLayoutService';
 
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
@@ -57,25 +66,12 @@ type DirectoryProjectManifest = {
     currentTool: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
-    datasets?: Record<string, DatasetManifest>;
     sourceImageManifests?: Record<string, string>;
     editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
     lastModified: string;
     createdAt: string;
   };
-};
-
-type DatasetManifest = {
-  id: string;
-  name: string;
-  parentPath?: string;
-  triggerWord: string;
-  assetIds: string[];
-  assetPaths?: string[];
-  assetOrder?: string[];
-  createdAt: string;
-  updatedAt: string;
 };
 
 type SourceManifest = {
@@ -186,8 +182,9 @@ const getExistingManifestName = async (directory: ProjectDirectoryHandle): Promi
     if (!isNotFoundError(error)) {
       throw new Error(`Unable to access the project manifest: ${getErrorMessage(error)}`);
     }
-    throw new Error(
-      'The selected directory does not contain a supported Dataset Creator project.'
+    throw new DOMException(
+      'The selected directory does not contain a supported Dataset Creator project.',
+      'NotFoundError'
     );
   }
 };
@@ -362,13 +359,13 @@ const getProjectManifest = (
   },
 });
 
-const getDefaultSourceManifestPath = (source: SourceImage): string =>
-  `.dataset-creator-data/source-images/${source.id}/${getAssetManifestName(
-    `original.${getFileExtension(source.fileName, source.mimeType)}`
-  )}`;
+const getDefaultSourceManifestPath = (source: SourceImage): string => {
+  const fileName = `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`;
+  return joinPath(PROJECT_SHARED_DIRECTORY, getAssetManifestName(fileName));
+};
 
 const getDefaultEditedAssetManifestPath = (item: EditedAsset): string =>
-  `.dataset-creator-data/generated-images/${item.id}/${getAssetManifestName('image.png')}`;
+  joinPath(PROJECT_DATASET_DIRECTORY, getAssetManifestName(`${item.id}.png`));
 
 const getPreviewCachePath = (kind: ProjectPreviewKind, id: string): string => {
   const cacheKind = kind === 'psd' ? 'psd-v2' : kind;
@@ -493,7 +490,7 @@ const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): P
   );
   const originalFilePath = source.originalFilePath
     ? toProjectRelativePath(source.originalFilePath)
-    : joinPath(getParentPath(manifestPath), defaultOriginalFileName);
+    : joinPath(getParentPath(manifestPath), `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`);
   const originalFileNameOnDisk = getFileName(originalFilePath);
   await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
   await writeProjectPreview(root, 'source', source.id, source.originalFile);
@@ -524,7 +521,7 @@ const writeSourceChanges = async (
       ? toProjectRelativePath(source.originalFilePath)
       : previousSource?.originalFilePath
         ? toProjectRelativePath(previousSource.originalFilePath)
-        : joinPath(getParentPath(manifestPath), defaultOriginalFileName);
+        : joinPath(getParentPath(manifestPath), `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`);
   const originalFileNameOnDisk = getFileName(originalFilePath);
   if (!previousSource || source.originalFile !== previousSource.originalFile) {
     await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
@@ -545,7 +542,7 @@ const writeSourceChanges = async (
 const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset): Promise<string> => {
   const defaultImageFileName = 'image.png';
   const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultEditedAssetManifestPath(item));
-  const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), defaultImageFileName);
+  const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), `${item.id}.png`);
   const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
     ? getReusableProjectPath(item.psdDataPath) ?? joinPath(getParentPath(manifestPath), 'image.psd')
@@ -581,7 +578,7 @@ const writeEditedAssetChanges = async (
   const imageDataPath =
     getReusableProjectPath(item.imageDataPath) ??
     getReusableProjectPath(previousItem?.imageDataPath) ??
-    joinPath(getParentPath(manifestPath), defaultImageFileName);
+    joinPath(getParentPath(manifestPath), `${item.id}.png`);
   const imageFileName = getFileName(imageDataPath);
   const psdDataPath = item.psdData
     ? getReusableProjectPath(item.psdDataPath) ??
@@ -615,8 +612,18 @@ const writeEditedAssetChanges = async (
   return manifestPath;
 };
 
-const removeProjectEntryAtPath = async (root: ProjectDirectoryHandle, manifestPath: string) => {
-  const entryPath = getParentPath(toProjectRelativePath(manifestPath)) || toProjectRelativePath(manifestPath);
+const removeProjectEntryAtPath = async (
+  root: ProjectDirectoryHandle,
+  manifestPath: string,
+  assetPaths: Array<string | undefined> = []
+) => {
+  const relativeManifestPath = toProjectRelativePath(manifestPath);
+  if (!relativeManifestPath.startsWith('.dataset-creator-data/')) {
+    await removeProjectFileAtPath(root, relativeManifestPath);
+    await Promise.all(assetPaths.filter((path): path is string => Boolean(path)).map((path) => removeProjectFileAtPath(root, path)));
+    return;
+  }
+  const entryPath = getParentPath(relativeManifestPath) || relativeManifestPath;
   const parentPath = getParentPath(entryPath);
   const name = getFileName(entryPath);
   try {
@@ -643,6 +650,7 @@ export const createProjectDirectory = async (
   directory: ProjectDirectoryHandle,
   project: ProjectState
 ) => {
+  await ensureProjectLayout(directory, project);
   const sourceImageManifests: Record<string, string> = {};
   const editedAssetManifests: Record<string, string> = {};
 
@@ -659,6 +667,16 @@ export const createProjectDirectory = async (
     PROJECT_DIRECTORY_MANIFEST,
     JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
   );
+  const datasetManifest = await readDatasetManifest(directory);
+  if (datasetManifest) {
+    await writeDatasetManifest(directory, {
+      ...datasetManifest,
+      name: project.name,
+      projectType: project.projectType,
+      triggerWord: project.taggingConfig.datasetKeyword,
+      updatedAt: new Date().toISOString(),
+    });
+  }
 };
 
 export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
@@ -672,7 +690,17 @@ export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHan
 
 export const clearProjectDirectory = async (directory: ProjectDirectoryHandle) => {
   await Promise.all(
-    ['.dataset-creator-data', PROJECT_DIRECTORY_CACHE, 'sources', 'edited', PROJECT_DIRECTORY_MANIFEST].map(async (entry) => {
+    [
+      '.dataset-creator-data',
+      PROJECT_DIRECTORY_CACHE,
+      'sources',
+      'edited',
+      PROJECT_DIRECTORY_MANIFEST,
+      DATASET_MANIFEST_FILE,
+      PROJECT_DATASET_DIRECTORY,
+      'src',
+      '.git',
+    ].map(async (entry) => {
       try {
         await directory.removeEntry(entry, { recursive: true });
       } catch {
@@ -687,6 +715,7 @@ export const writeProjectDirectoryChanges = async (
   previousProject: ProjectState | undefined,
   directory: ProjectDirectoryHandle
 ) => {
+  await ensureProjectLayout(directory, project);
   const metadataChanged =
     !previousProject ||
     project.id !== previousProject.id ||
@@ -694,7 +723,6 @@ export const writeProjectDirectoryChanges = async (
     project.currentTool !== previousProject.currentTool ||
     project.taggingConfig !== previousProject.taggingConfig ||
     project.workspaceSettings !== previousProject.workspaceSettings ||
-    project.datasets !== previousProject.datasets ||
     project.lastModified !== previousProject.lastModified;
 
   if (metadataChanged) {
@@ -717,7 +745,7 @@ export const writeProjectDirectoryChanges = async (
       .map(async (id) => {
         await removeProjectPreview(directory, 'source', id);
         if (previousSources[id]?.manifestPath) {
-          await removeProjectEntryAtPath(directory, previousSources[id].manifestPath);
+          await removeProjectEntryAtPath(directory, previousSources[id].manifestPath, [previousSources[id].originalFilePath]);
         }
       }),
     ...Object.entries(project.datasetItems)
@@ -730,7 +758,10 @@ export const writeProjectDirectoryChanges = async (
       .map(async (id) => {
         await removeProjectPreview(directory, 'edited', id);
         if (previousEditedAssets[id]?.manifestPath) {
-          await removeProjectEntryAtPath(directory, previousEditedAssets[id].manifestPath);
+          await removeProjectEntryAtPath(directory, previousEditedAssets[id].manifestPath, [
+            previousEditedAssets[id].imageDataPath,
+            previousEditedAssets[id].psdDataPath,
+          ]);
         }
       }),
   ]);
@@ -751,6 +782,16 @@ export const writeProjectDirectoryChanges = async (
     PROJECT_DIRECTORY_MANIFEST,
     JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
   );
+  const datasetManifest = await readDatasetManifest(directory);
+  if (datasetManifest) {
+    await writeDatasetManifest(directory, {
+      ...datasetManifest,
+      name: project.name,
+      projectType: project.projectType,
+      triggerWord: project.taggingConfig.datasetKeyword,
+      updatedAt: new Date().toISOString(),
+    });
+  }
 };
 
 const readSource = async (
@@ -905,7 +946,18 @@ export const readProjectDirectory = async (
   directory: ProjectDirectoryHandle,
   selectProjectType?: ProjectTypeResolver
 ): Promise<ProjectState> => {
-  const manifestName = await getExistingManifestName(directory);
+  let manifestName: string;
+  try {
+    manifestName = await getExistingManifestName(directory);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+    const projectType = await resolveProjectType(undefined, directory.name, selectProjectType);
+    const project = createProject(directory.name, projectType);
+    await createProjectDirectory(directory, project);
+    return project;
+  }
   const manifest = await readJsonFile<DirectoryProjectManifest>(
     directory,
     manifestName,
@@ -927,6 +979,13 @@ export const readProjectDirectory = async (
     await writable.close();
   }
   const defaults = createProject(manifest.project.name, projectType);
+  const datasetManifest = await ensureProjectLayout(directory, {
+    ...defaults,
+    taggingConfig: {
+      ...defaults.taggingConfig,
+      ...manifest.project.taggingConfig,
+    },
+  });
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
     `syn${'thetic'}ImageManifests`
@@ -960,7 +1019,9 @@ export const readProjectDirectory = async (
         )
       : readOptionalProjectChildren(directory, 'generated', (entry) => readEditedAsset(entry)),
   ]);
-  const sources = sourceResults.filter((source): source is SourceImage => Boolean(source));
+  const sources = sourceResults
+    .filter((source): source is SourceImage => Boolean(source))
+    .filter((source) => isProjectWorkspacePath(source.originalFilePath ?? '', 'shared'));
   const edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
 
   const sourceIds = new Set(sources.map((source) => source.id));
@@ -986,6 +1047,7 @@ export const readProjectDirectory = async (
     taggingConfig: {
       ...defaults.taggingConfig,
       ...manifest.project.taggingConfig,
+      datasetKeyword: datasetManifest.triggerWord || manifest.project.taggingConfig.datasetKeyword || defaults.taggingConfig.datasetKeyword,
     },
     workspaceSettings: {
       ...defaults.workspaceSettings,

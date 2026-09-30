@@ -19,6 +19,7 @@ import {
   FilePlus,
   FolderOpen,
   Grip,
+  GitBranch,
   Check,
   Layers3,
   Copy,
@@ -112,7 +113,7 @@ import {
 import { CleanupTool as CleanupToolComponent } from './components/tools/CleanupTool';
 import { FinalReviewTool } from './components/tools/FinalReviewTool';
 import { TaggingTool as TaggingToolComponent } from './components/tools/TaggingTool';
-import { PhotopeaPsdPreviewWorker, PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
+import { PhotopeaBlobViewer, PhotopeaPsdPreviewWorker, PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
 import {
   canOpenExplorerFile,
   copyExplorerEntries,
@@ -131,6 +132,14 @@ import {
   type ExplorerFileKind,
 } from './services/project/explorerFileService';
 import { type BrickColumnCount, type Dataset, type ToolName } from './types';
+import { createProjectVersion, listProjectVersions, restoreProjectVersion, type ProjectVersion } from './services/project/projectVersionService';
+import {
+  DATASET_MANIFEST_FILE,
+  PROJECT_DATASET_DIRECTORY,
+  PROJECT_GIT_DIRECTORY,
+  PROJECT_SHARED_DIRECTORY,
+  isProjectWorkspacePath,
+} from './services/project/projectLayoutService';
 import './App.css';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
@@ -619,10 +628,7 @@ type RenderToolOptions = {
   nested?: ToolNestedView;
   onOpenNestedFile?: (itemId: string) => void;
   onOpenTool?: (tool: ToolName) => void;
-  onOpenDataset?: (datasetId: string) => void;
-  onOpenDatasetTool?: (datasetId: string, tool: DatasetToolName) => void;
-  onCreateDataset?: () => void;
-  onExportDataset?: (datasetId: string) => void;
+  onImportFiles?: (files: ImportInputFile[]) => Promise<number>;
 };
 
 const renderTool = ({
@@ -632,24 +638,15 @@ const renderTool = ({
   nested,
   onOpenNestedFile,
   onOpenTool,
-  onOpenDataset,
-  onOpenDatasetTool,
-  onCreateDataset,
-  onExportDataset,
+  onImportFiles,
 }: RenderToolOptions) => {
   switch (currentTool) {
     case 'hub':
       return (
-        <ToolHub
-          onOpenTool={onOpenTool}
-          onOpenDataset={onOpenDataset}
-          onOpenDatasetTool={onOpenDatasetTool}
-          onCreateDataset={onCreateDataset}
-          onExportDataset={onExportDataset}
-        />
+        <ToolHub onOpenTool={onOpenTool} />
       );
     case 'import':
-      return <ImportTool />;
+      return <ImportTool onImportFiles={onImportFiles} />;
     case 'select':
       return <SimilarityReviewTool />;
     case 'clean':
@@ -682,13 +679,7 @@ const renderTool = ({
       return <ExportTool />;
     default:
       return (
-        <ToolHub
-          onOpenTool={onOpenTool}
-          onOpenDataset={onOpenDataset}
-          onOpenDatasetTool={onOpenDatasetTool}
-          onCreateDataset={onCreateDataset}
-          onExportDataset={onExportDataset}
-        />
+        <ToolHub onOpenTool={onOpenTool} />
       );
   }
 };
@@ -930,7 +921,12 @@ const readExplorerDirectory = async (
     if (isHiddenExplorerManifestName(entryName)) {
       continue;
     }
-    if (entryName === '.cache' || entryName === '.dataset-creator-data') {
+    if (
+      entryName === '.cache' ||
+      entryName === '.dataset-creator-data' ||
+      entryName === PROJECT_GIT_DIRECTORY ||
+      (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
+    ) {
       continue;
     }
     if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
@@ -939,8 +935,6 @@ const readExplorerDirectory = async (
     const childPath = `${path}/${entryName}`;
     if ('entries' in entry) {
       children.push(await readExplorerDirectory(entry, entryName, childPath));
-    } else if (isDatasetFileName(entryName)) {
-      children.push({ name: getDatasetDisplayName(entryName), path: childPath, kind: 'dataset' });
     } else if (isSupportedProjectAsset(entryName)) {
       children.push({ name: entryName, path: childPath, kind: 'file' });
     }
@@ -1009,6 +1003,7 @@ type ExplorerTreeProps = {
   node: ExplorerTreeNode;
   expandedPaths: Set<string>;
   selectedPaths: Set<string>;
+  dropTargetPath: string | null;
   inlineEdit: {
     mode: 'create' | 'rename';
     parentPath: string;
@@ -1025,6 +1020,7 @@ type ExplorerTreeProps = {
   onInlineCancel: () => void;
   onDragStartItem: (node: ExplorerTreeNode) => void;
   onDragEndItems: () => void;
+  onDropTargetChange: (path: string | null) => void;
   onDropItems: (node: ExplorerTreeNode, event: DragEvent) => void;
   depth?: number;
 };
@@ -1055,6 +1051,7 @@ const ExplorerTree = ({
   node,
   expandedPaths,
   selectedPaths,
+  dropTargetPath,
   inlineEdit,
   focusedPath,
   onToggle,
@@ -1065,6 +1062,7 @@ const ExplorerTree = ({
   onInlineCancel,
   onDragStartItem,
   onDragEndItems,
+  onDropTargetChange,
   onDropItems,
   depth = 0,
 }: ExplorerTreeProps) => {
@@ -1072,6 +1070,7 @@ const ExplorerTree = ({
   const isExpanded = isFolder && expandedPaths.has(node.path);
   const isSelected = selectedPaths.has(node.path);
   const isFocused = focusedPath === node.path;
+  const isDropTarget = isFolder && dropTargetPath === node.path;
   const isRenaming = inlineEdit?.mode === 'rename' && inlineEdit.path === node.path;
   const Icon = getExplorerIcon(node);
 
@@ -1100,7 +1099,9 @@ const ExplorerTree = ({
         onDragOver={(event) => {
           if (node.kind === 'folder') {
             event.preventDefault();
+            event.stopPropagation();
             event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
+            onDropTargetChange(node.path);
           }
         }}
         onDrop={(event) => {
@@ -1108,11 +1109,15 @@ const ExplorerTree = ({
             return;
           }
           event.preventDefault();
+          event.stopPropagation();
+          onDropTargetChange(null);
           onDropItems(node, event);
         }}
         className={`flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary ${
           isSelected ? 'bg-primary/15 text-foreground' : ''
-        } ${isFocused ? 'outline outline-1 outline-primary/60' : ''}`}
+        } ${isFocused ? 'outline outline-1 outline-primary/60' : ''} ${
+          isDropTarget ? 'bg-primary/20 text-foreground ring-1 ring-inset ring-primary' : ''
+        }`}
         style={{ paddingLeft: 4 + depth * 12 }}
         title={node.path}
       >
@@ -1155,6 +1160,7 @@ const ExplorerTree = ({
         ) : (
           <span className="min-w-0 flex-1 truncate">{node.name}</span>
         )}
+        {isDropTarget ? <span className="ml-auto shrink-0 text-[10px] font-medium text-primary">Import here</span> : null}
       </button>
       {inlineEdit?.mode === 'create' && inlineEdit.parentPath === node.path && (
         <div style={{ paddingLeft: 4 + (depth + 1) * 12 }} className="flex h-7 items-center gap-1">
@@ -1191,6 +1197,7 @@ const ExplorerTree = ({
             node={child}
             expandedPaths={expandedPaths}
             selectedPaths={selectedPaths}
+            dropTargetPath={dropTargetPath}
             inlineEdit={inlineEdit}
             focusedPath={focusedPath}
             onToggle={onToggle}
@@ -1201,6 +1208,7 @@ const ExplorerTree = ({
             onInlineCancel={onInlineCancel}
             onDragStartItem={onDragStartItem}
             onDragEndItems={onDragEndItems}
+            onDropTargetChange={onDropTargetChange}
             onDropItems={onDropItems}
             depth={depth + 1}
           />
@@ -1220,7 +1228,7 @@ const EmptyWorkspacePlaceholder = ({
     <div className="max-w-sm px-6 text-muted-foreground">
       <Archive className="mx-auto mb-3 h-8 w-8 opacity-60" />
       <p className="text-sm font-medium text-foreground">Workspace is ready</p>
-      <p className="mt-1 text-xs">Open a tool, Dataset, or file when you need it.</p>
+      <p className="mt-1 text-xs">Open a tool or file when you need it.</p>
       <div className="mt-4 flex justify-center gap-2">
         <button
           type="button"
@@ -1297,6 +1305,10 @@ function App() {
   const [windowsMenuOpen, setWindowsMenuOpen] = useState(false);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
+  const [isVersionDialogOpen, setIsVersionDialogOpen] = useState(false);
+  const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
+  const [currentProjectVersionId, setCurrentProjectVersionId] = useState<string | undefined>();
+  const [newVersionName, setNewVersionName] = useState('');
   const [isUrlToolReady, setIsUrlToolReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
@@ -1315,6 +1327,7 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
   const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
+  const [explorerDropTargetPath, setExplorerDropTargetPath] = useState<string | null>(null);
   const visibleExplorerTree = useMemo(() => sanitizeExplorerTree(explorerTree), [explorerTree]);
   const [, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
   const [explorerError, setExplorerError] = useState<string | null>(null);
@@ -1980,7 +1993,7 @@ function App() {
     }
     setActiveTabId(openTabs[0]?.id ?? null);
   }, [activeTabId, openTabs]);
-  const showEditToolbar = (activeTool === 'clean' || activeTab?.kind === 'file-edit') && editToolbar.visible;
+  const showEditToolbar = activeTool === 'clean' && editToolbar.visible;
   const showHeaderEditToolbar = activeTool === 'clean' && editToolbar.visible;
   const showTaggingToolbar = activeTool === 'tagging' || activeTab?.kind === 'file-caption';
   const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
@@ -2002,6 +2015,9 @@ function App() {
 
   const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
     window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
+    if (command === 'save' || command === 'saveCopy') {
+      window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
+    }
   };
   const runPsdCommand = (command: 'save' | 'saveCopy') => {
     window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
@@ -2707,7 +2723,7 @@ function App() {
   const collectDatasetPsdPathsFromAssetPaths = (assetPaths: string[]): string[] =>
     filterLegacyProjectAssetPaths(assetPaths).filter((path) => getExplorerFileKind(path.split('/').pop() ?? path) === 'psd');
 
-  const indexProjectAssetsForDatasetDrop = async () => {
+  const indexSharedWorkspaceAssets = async () => {
     if (!projectDirectoryHandle) {
       return;
     }
@@ -2726,6 +2742,7 @@ function App() {
     });
     await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, projectDirectoryHandle);
     refreshExplorer();
+    useUIStore.getState().refreshAssetPreviews();
   };
 
   const importDroppedFilesIntoDataset = async (
@@ -3067,7 +3084,7 @@ function App() {
     const fileKind = getExplorerFileKind(node.name);
     const workspaceImageId = findWorkspaceImageIdForPath(node.path);
     const canOpenFileInTab = canOpenExplorerFile(fileKind);
-    const canOpenInPhotopea = isExplorerImageFileName(node.name) && Boolean(workspaceImageId);
+    const canOpenInPhotopea = isExplorerImageFileName(node.name);
     const canOpenInCaption = (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
     const canOpenInAnalysis = fileKind === 'image' || fileKind === 'psd' || fileKind === 'video';
 
@@ -3224,8 +3241,8 @@ function App() {
   const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption' | 'analysis') => {
     try {
       const imageId = findWorkspaceImageIdForPath(node.path);
-      if (mode !== 'analysis' && !imageId) {
-        addNotification('warning', `${mode === 'edit' ? 'Photopea' : 'Caption'} is available for project workspace images.`);
+      if (mode === 'caption' && !imageId) {
+        addNotification('warning', 'Caption is available for project workspace images.');
         return;
       }
 
@@ -3269,7 +3286,16 @@ function App() {
       }
 
       const { directory, name } = await getExplorerParentDirectory(projectDirectoryHandle, tab.path);
-      const targetName = saveCopy ? await getUniqueExplorerName(directory, `${name.replace(/\.psd$/i, '')} Copy.psd`) : name;
+      const sourceStem = name.replace(/\.[^.]+$/, '');
+      const shouldCreatePsd = tab.fileKind !== 'psd';
+      const requestedName = saveCopy
+        ? `${sourceStem} Copy.psd`
+        : shouldCreatePsd
+          ? `${sourceStem}.psd`
+          : name;
+      const targetName = saveCopy || shouldCreatePsd
+        ? await getUniqueExplorerName(directory, requestedName)
+        : requestedName;
       const nextBlob = new Blob([payload.psd], { type: 'image/vnd.adobe.photoshop' });
       const handle = await directory.getFileHandle(targetName, { create: true });
       const writable = await handle.createWritable();
@@ -3283,9 +3309,10 @@ function App() {
       }
       const nextTab: FileWorkspaceTab = {
         ...tab,
-        id: createFileTabId(nextPath),
+        id: createFileModeTabId('edit', nextPath),
         path: nextPath,
         name: targetName,
+        fileKind: 'psd',
         file: new globalThis.File([nextBlob], targetName, { type: 'image/vnd.adobe.photoshop' }),
       };
 
@@ -3293,13 +3320,13 @@ function App() {
         if (saveCopy) {
           return tabs.some((entry) => entry.id === nextTab.id) ? tabs : [...tabs, nextTab];
         }
-        return tabs.map((entry) => (entry.id === tab.id ? { ...entry, file: nextTab.file } : entry));
+        return tabs.map((entry) => (entry.id === tab.id ? nextTab : entry));
       });
-      if (saveCopy) {
+      if (saveCopy || nextPath !== tab.path) {
         setActiveTabId(nextTab.id);
       }
       refreshExplorer();
-      addNotification('success', saveCopy ? `Saved PSD copy "${targetName}"` : `Saved "${name}"`);
+      addNotification('success', saveCopy ? `Saved PSD copy "${targetName}"` : `Saved "${targetName}"`);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to save PSD file');
     }
@@ -3387,7 +3414,7 @@ function App() {
               ? collectDatasetAssetPathsFromExplorerEntries(droppedEntries)
               : [];
             if (droppedEntries?.length && assetIds.length === 0 && assetPaths.length === 0) {
-              await indexProjectAssetsForDatasetDrop();
+              await indexSharedWorkspaceAssets();
               assetIds = collectDatasetAssetIdsFromExplorerEntries(droppedEntries);
               assetPaths = collectDatasetAssetPathsFromExplorerEntries(droppedEntries);
             }
@@ -3605,38 +3632,6 @@ function App() {
     );
   };
 
-  const getInspectorActionGroups = (): ContextActionGroup[] => {
-    if (activeTab && isFileBackedTab(activeTab)) {
-      const node = findExplorerNodeByPath(activeTab.path);
-      if (!node) {
-        return [];
-      }
-      const primaryActionIds =
-        activeTab.kind === 'file-view'
-          ? new Set(['photopea', 'caption'])
-          : new Set(['open', 'photopea', 'caption']);
-      return getFileContextActionGroups(node)
-        .map((group) => group.filter((action) => primaryActionIds.has(action.id)))
-        .filter((group) => group.length > 0);
-    }
-
-    if ((activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool') && activeDataset?.filePath) {
-      const node = findExplorerNodeByPath(activeDataset.filePath);
-      if (!node) {
-        return [];
-      }
-      const primaryActionIds =
-        activeTab.kind === 'dataset'
-          ? new Set(['select', 'review', 'caption', 'analysis', 'export'])
-          : new Set(['open', 'select', 'review', 'caption', 'analysis', 'export']);
-      return getDatasetContextActionGroups(node)
-        .map((group) => group.filter((action) => primaryActionIds.has(action.id)))
-        .filter((group) => group.length > 0);
-    }
-
-    return [];
-  };
-
   const renderInspectorContent = () => {
     const Icon =
       activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
@@ -3661,7 +3656,6 @@ function App() {
             ? TOOL_LABELS[activeTool]
             : 'Workspace';
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
-    const inspectorActionGroups = getInspectorActionGroups();
     const objectDetails = (() => {
       if (!activeTab) {
         return [
@@ -3779,44 +3773,6 @@ function App() {
             ))}
           </div>
         </InspectorSection>
-
-        {!activeTab ? (
-          <InspectorSection
-            title="Actions"
-            open={inspectorSectionsOpen.actions}
-            onOpenChange={(open) => setInspectorSectionOpen('actions', open)}
-          >
-            <div className="grid gap-2">
-              <button
-                type="button"
-                onClick={() => setTabMenuOpen(true)}
-                className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>Open tool</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleOpenProject()}
-                disabled={isProjectDirectoryBusy}
-                className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <FolderOpen className="h-3.5 w-3.5" />
-                <span>Open project</span>
-              </button>
-            </div>
-          </InspectorSection>
-        ) : null}
-
-        {inspectorActionGroups.length > 0 ? (
-          <InspectorSection
-            title="Actions"
-            open={inspectorSectionsOpen.actions}
-            onOpenChange={(open) => setInspectorSectionOpen('actions', open)}
-          >
-            <ContextActionGroups groups={inspectorActionGroups} mode="inspector" />
-          </InspectorSection>
-        ) : null}
 
         {showFileInspector && fileInspectorMetadata && activeTab && isFileBackedTab(activeTab) ? (
           <InspectorSection
@@ -4073,12 +4029,27 @@ function App() {
   const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
 
   const getFileTabIdForPath = (tab: FileWorkspaceTab, path: string): string => {
-    const mode = tab.kind === 'file-edit' ? 'edit' : tab.kind === 'file-caption' ? 'caption' : null;
+    const mode = tab.kind === 'file-edit'
+      ? 'edit'
+      : tab.kind === 'file-caption'
+        ? 'caption'
+        : tab.kind === 'file-analysis'
+          ? 'analysis'
+          : null;
     return mode ? createFileModeTabId(mode, path) : createFileTabId(path);
   };
 
   const updateFileTabsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
     const activeFileTab = activeTab && isFileBackedTab(activeTab) ? activeTab : null;
+    const movedTabs = openTabs.flatMap((tab) => {
+      if (!isFileBackedTab(tab)) {
+        return [];
+      }
+      const nextPath = applyExplorerPathMoves(tab.path, moves);
+      return nextPath === tab.path
+        ? []
+        : [{ id: getFileTabIdForPath(tab, nextPath), path: nextPath }];
+    });
     setOpenTabs((tabs) =>
       tabs.map((tab) => {
         if (!isFileBackedTab(tab)) {
@@ -4105,6 +4076,28 @@ function App() {
       if (nextPath !== activeFileTab.path) {
         setActiveTabId(getFileTabIdForPath(activeFileTab, nextPath));
       }
+    }
+    if (projectDirectoryHandle && movedTabs.length > 0) {
+      void Promise.all(
+        movedTabs.map(async ({ id, path }) => ({ id, path, file: await readExplorerFile(projectDirectoryHandle, path) }))
+      ).then((refreshedTabs) => {
+        setOpenTabs((tabs) =>
+          tabs.map((tab) => {
+            if (!isFileBackedTab(tab)) {
+              return tab;
+            }
+            const refreshed = refreshedTabs.find((candidate) => candidate.id === tab.id && candidate.path === tab.path);
+            if (!refreshed?.file) {
+              return tab;
+            }
+            return {
+              ...tab,
+              file: refreshed.file,
+              fileKind: getExplorerFileKind(tab.name, 'type' in refreshed.file ? refreshed.file.type : undefined),
+            };
+          })
+        );
+      });
     }
   };
 
@@ -4163,6 +4156,10 @@ function App() {
       const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
       const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves);
       if (originalFilePath !== source.originalFilePath || manifestPath !== source.manifestPath) {
+        if (!isProjectWorkspacePath(originalFilePath ?? '', 'shared')) {
+          removeSourceImage(source.id);
+          continue;
+        }
         const fileNameChanged = originalFilePath && originalFilePath !== source.originalFilePath;
         const fileName = fileNameChanged ? originalFilePath.split('/').pop() ?? source.fileName : source.fileName;
         updateSourceImage(source.id, {
@@ -4344,12 +4341,16 @@ function App() {
     if (entries.length === 0) {
       return;
     }
-    const activeFileTabDeleted =
-      activeTab &&
-      isFileBackedTab(activeTab) &&
-      entries.filter(isFilesystemExplorerEntry).some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
-
-    if (!window.confirm(`Delete ${entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`}? This cannot be undone.`)) {
+    const datasetFiles = entries.filter(
+      (entry) =>
+        entry.kind === 'file' &&
+        entry.path.startsWith(`Project/${PROJECT_DATASET_DIRECTORY}/`) &&
+        isExplorerImageFileName(entry.name)
+    );
+    const confirmation = datasetFiles.length > 0 && datasetFiles.length === entries.length
+      ? `Remove ${datasetFiles.length === 1 ? `"${datasetFiles[0].name}"` : `${datasetFiles.length} images`} from the Dataset and move them to shared?`
+      : `Delete ${entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`}? This cannot be undone.`;
+    if (!window.confirm(confirmation)) {
       return;
     }
 
@@ -4360,7 +4361,26 @@ function App() {
       if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
         return;
       }
-      for (const entry of filesystemEntries) {
+      const filesToReturnToShared = filesystemEntries.filter((entry) => datasetFiles.some((datasetFile) => datasetFile.path === entry.path));
+      if (filesToReturnToShared.length > 0) {
+        const moves = await moveExplorerEntries(directory!, filesToReturnToShared, `Project/${PROJECT_SHARED_DIRECTORY}`);
+        updateFileTabsForPathMoves(moves);
+        await updateWorkspacePathsForPathMoves(moves);
+        await indexProjectAssets(directory!, {
+          existingSourceImages: useProjectStore.getState().sourceImages,
+          onAssetIndexed: ({ sourceImage }) => {
+            if (sourceImage && !useProjectStore.getState().sourceImages[sourceImage.id]) {
+              addSourceImage(sourceImage);
+            }
+          },
+        });
+      }
+      const deletedFilesystemEntries = filesystemEntries.filter((entry) => !filesToReturnToShared.some((moved) => moved.path === entry.path));
+      const activeFileTabDeleted =
+        activeTab &&
+        isFileBackedTab(activeTab) &&
+        deletedFilesystemEntries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
+      for (const entry of deletedFilesystemEntries) {
         await deleteExplorerEntry(directory!, entry.path, true);
       }
       const deletedDatasetIds: string[] = [];
@@ -4372,12 +4392,12 @@ function App() {
           deletedDatasetIds.push(dataset.id);
         }
       }
-      await removeWorkspaceReferencesForDeletedEntries(filesystemEntries);
+      await removeWorkspaceReferencesForDeletedEntries(deletedFilesystemEntries);
       setOpenTabs((tabs) =>
         tabs.filter(
           (tab) =>
             (isFileBackedTab(tab) &&
-              !filesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
+              !deletedFilesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
             (tab.kind === 'dataset' &&
               !deletedDatasetIds.includes(tab.datasetId)) ||
             (tab.kind === 'dataset-tool' &&
@@ -4419,27 +4439,6 @@ function App() {
     setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
   };
 
-  const handleExplorerNewDataset = (parentPath = 'Project') => {
-    setInlineExplorerEdit({
-      mode: 'create',
-      parentPath,
-      kind: 'dataset',
-      value: getUniqueDatasetName(profile.defaults.datasetName, parentPath),
-    });
-  };
-
-  const createDatasetFromHub = async () => {
-    try {
-      const dataset = await createDatasetFileInDirectory('Project', getUniqueDatasetName(profile.defaults.datasetName, 'Project'));
-      setExpandedExplorerPaths((paths) => new Set([...paths, 'Project']));
-      refreshExplorer();
-      openDatasetTab(dataset.id);
-      addNotification('success', 'Dataset created');
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to create Dataset');
-    }
-  };
-
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
     if (node.kind !== 'folder' || !explorerClipboard) {
       return;
@@ -4448,6 +4447,7 @@ function App() {
     try {
       const filesystemEntries = explorerClipboard.entries.filter(isFilesystemExplorerEntry);
       const datasetEntries = explorerClipboard.entries.filter((entry) => entry.kind === 'dataset');
+      let movedIntoSharedWorkspace = false;
       if (filesystemEntries.length > 0) {
         const directory = requireProjectDirectory();
         if (!directory) {
@@ -4462,6 +4462,10 @@ function App() {
           await updateWorkspacePathsForPathMoves(moves);
           updateExplorerClipboardForPathMoves(moves);
         }
+        movedIntoSharedWorkspace = moves.some((move) => isProjectWorkspacePath(move.to, 'shared'));
+      }
+      if (movedIntoSharedWorkspace) {
+        await indexSharedWorkspaceAssets();
       }
       if (explorerClipboard.mode === 'copy') {
         for (const entry of datasetEntries) {
@@ -4615,6 +4619,9 @@ function App() {
         updateFileTabsForPathMoves(moves);
         await updateWorkspacePathsForPathMoves(moves);
         updateExplorerClipboardForPathMoves(moves);
+        if (moves.some((move) => isProjectWorkspacePath(move.to, 'shared'))) {
+          await indexSharedWorkspaceAssets();
+        }
       }
       const datasetMoves = datasetEntries.length > 0
         ? await moveExplorerEntries(directory!, datasetEntries.map(toPhysicalExplorerEntry), destinationPath)
@@ -4650,13 +4657,14 @@ function App() {
     }
   };
 
-  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string) => {
+  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string): Promise<number> => {
     const directory = requireProjectDirectory();
     if (!directory || files.length === 0) {
-      return;
+      return 0;
     }
 
     try {
+      const importsIntoSharedWorkspace = isProjectWorkspacePath(destinationPath, 'shared');
       let importedImageCount = 0;
       let importedAssetCount = 0;
       const result = await importImageFiles(files, {
@@ -4666,6 +4674,9 @@ function App() {
           explorerPath: destinationPath,
         },
         onImageImported: async (image) => {
+          if (!importsIntoSharedWorkspace) {
+            return;
+          }
           const previousProject = useProjectStore.getState();
           addSourceImage(image);
           importedImageCount += 1;
@@ -4692,9 +4703,14 @@ function App() {
         );
         setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
         refreshExplorer();
+        if (importsIntoSharedWorkspace) {
+          useUIStore.getState().refreshAssetPreviews();
+        }
       }
+      return result.importedAssets.length || result.importedImages.length;
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to import files');
+      return 0;
     }
   };
 
@@ -4860,20 +4876,6 @@ function App() {
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to export Dataset');
     }
-  };
-
-  const exportDatasetById = (datasetId: string) => {
-    const dataset = useProjectStore.getState().datasets[datasetId];
-    if (!dataset?.filePath) {
-      addNotification('error', 'Dataset file is no longer available');
-      return;
-    }
-    void handleDatasetExport({
-      name: dataset.name,
-      path: dataset.filePath,
-      kind: 'dataset',
-      datasetId: dataset.id,
-    });
   };
 
   const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
@@ -5275,10 +5277,6 @@ function App() {
     autoSaveQueueRef.current = Promise.resolve();
     setProjectDirectory(undefined);
     loadProject(project);
-    const datasets = await readProjectDatasetsFromDirectory(directory);
-    for (const dataset of datasets) {
-      upsertProjectDataset(dataset);
-    }
     applyWorkspaceTabsForProject(project.id);
     setProjectDirectory({ handle: directory, name: directory.name });
     logger.success(`opened project directory ${directory.name}`);
@@ -5338,6 +5336,53 @@ function App() {
     addNotification('success', 'Project renamed');
   };
 
+  const openProjectVersions = async () => {
+    if (!projectDirectoryHandle) {
+      addNotification('warning', 'Open a project directory before managing versions');
+      return;
+    }
+    try {
+      const { currentId, versions } = await listProjectVersions(projectDirectoryHandle);
+      setCurrentProjectVersionId(currentId);
+      setProjectVersions(versions);
+      setIsVersionDialogOpen(true);
+      setFileMenuOpen(false);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to read project versions');
+    }
+  };
+
+  const handleCreateProjectVersion = async () => {
+    if (!projectDirectoryHandle || !newVersionName.trim()) {
+      return;
+    }
+    try {
+      await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, projectDirectoryHandle);
+      const version = await createProjectVersion(projectDirectoryHandle, newVersionName);
+      setProjectVersions((versions) => [...versions, version]);
+      setCurrentProjectVersionId(version.id);
+      setNewVersionName('');
+      addNotification('success', `Created version ${version.name}`);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to create project version');
+    }
+  };
+
+  const handleRestoreProjectVersion = async (version: ProjectVersion) => {
+    if (!projectDirectoryHandle || !window.confirm(`Restore project version "${version.name}"? Current unsaved changes will be replaced.`)) {
+      return;
+    }
+    try {
+      await restoreProjectVersion(projectDirectoryHandle, version.id);
+      await openProjectDirectory(projectDirectoryHandle);
+      setCurrentProjectVersionId(version.id);
+      setIsVersionDialogOpen(false);
+      addNotification('success', `Restored version ${version.name}`);
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Failed to restore project version');
+    }
+  };
+
   const closeTopMenus = () => {
     setFileMenuOpen(false);
     setViewMenuOpen(false);
@@ -5365,8 +5410,30 @@ function App() {
     const workspaceImageId = findWorkspaceImageIdForPath(node.path);
     const canOpenFileInTab = isSingleFileSelection && canOpenExplorerFile(fileKind);
     const canOpenInAnalysis = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd' || fileKind === 'video');
-    const canOpenInPhotopea = isSingleFileSelection && isExplorerImageFileName(node.name) && Boolean(workspaceImageId);
+    const canOpenInPhotopea = isSingleFileSelection && isExplorerImageFileName(node.name);
     const canOpenInCaption = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
+    const sharedImages = contextEntries.filter(
+      (entry): entry is FilesystemExplorerItemEntry =>
+        entry.kind === 'file' &&
+        entry.path.startsWith(`Project/${PROJECT_SHARED_DIRECTORY}/`) &&
+        isExplorerImageFileName(entry.name)
+    );
+    const canAddToDataset = sharedImages.length > 0 && sharedImages.length === contextEntries.length;
+
+    const addToDataset = async () => {
+      const directory = requireProjectDirectory();
+      if (!directory) return;
+      const sourceIds = Object.values(sourceImagesById)
+        .filter((source) => sharedImages.some((entry) => source.originalFilePath === entry.path.replace(/^Project\//, '')))
+        .map((source) => source.id);
+      const moves = await moveExplorerEntries(directory, sharedImages, `Project/${PROJECT_DATASET_DIRECTORY}`);
+      updateFileTabsForPathMoves(moves);
+      await updateWorkspacePathsForPathMoves(moves);
+      for (const id of sourceIds) removeSourceImage(id);
+      setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
+      refreshExplorer();
+      addNotification('success', `Added ${moves.length} image${moves.length !== 1 ? 's' : ''} to the Dataset`);
+    };
 
     return [
       [
@@ -5374,6 +5441,9 @@ function App() {
           ? createExplorerAction({ id: 'open', label: 'Open', icon: File, onSelect: () => openExplorerFile(node) })
           : null,
       ].filter((action): action is ContextAction => Boolean(action)),
+      canAddToDataset
+        ? [createExplorerAction({ id: 'add-to-dataset', label: 'Add to Dataset', icon: Layers3, onSelect: addToDataset })]
+        : [],
       [
         canOpenInPhotopea
           ? createExplorerAction({ id: 'photopea', label: 'Photopea', icon: Edit3, onSelect: () => openFileModeTab(node, 'edit') })
@@ -5430,7 +5500,6 @@ function App() {
       node.kind === 'folder'
         ? [
             createExplorerAction({ id: 'new-folder', label: 'New Folder', icon: FilePlus, onSelect: () => handleExplorerNewFolder(node) }),
-            createExplorerAction({ id: 'new-dataset', label: 'New Dataset', icon: Layers3, onSelect: () => handleExplorerNewDataset(node.path) }),
             createExplorerAction({
               id: 'import',
               label: 'Import',
@@ -5481,8 +5550,30 @@ function App() {
   return (
     <div className="flex h-screen bg-background text-foreground">
       <>{projectSetup && <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} />}</>
+      <Dialog.Root open={isVersionDialogOpen} onOpenChange={setIsVersionDialogOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[2100] bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[2101] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-xl">
+            <Dialog.Title className="text-lg font-semibold">Project versions</Dialog.Title>
+            <Dialog.Description className="mt-1 text-sm text-muted-foreground">Versions are tagged snapshots. Creating one from a restored version makes a child branch.</Dialog.Description>
+            <div className="mt-4 flex gap-2">
+              <input value={newVersionName} onChange={(event) => setNewVersionName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void handleCreateProjectVersion(); }} placeholder="Version name" className="min-w-0 flex-1 rounded border border-border bg-background px-3 py-2 text-sm" />
+              <button type="button" onClick={() => void handleCreateProjectVersion()} disabled={!newVersionName.trim()} className="rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40">Create</button>
+            </div>
+            <div className="mt-4 max-h-72 divide-y divide-border overflow-auto rounded border border-border">
+              {projectVersions.length > 0 ? projectVersions.map((version) => (
+                <div key={version.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                  <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1"><p className="truncate font-medium">{version.name}{version.id === currentProjectVersionId ? ' (current)' : ''}</p><p className="text-xs text-muted-foreground">{new Date(version.createdAt).toLocaleString()}</p></div>
+                  <button type="button" onClick={() => void handleRestoreProjectVersion(version)} disabled={version.id === currentProjectVersionId} className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary disabled:opacity-40">Restore</button>
+                </div>
+              )) : <p className="px-3 py-6 text-center text-sm text-muted-foreground">No versions yet.</p>}
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
       <PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
           {(fileMenuOpen || viewMenuOpen || toolsMenuOpen || windowsMenuOpen) && (
             <button
@@ -5535,6 +5626,15 @@ function App() {
                 >
                   <Pencil className="h-4 w-4" />
                   <span className="flex-1">Rename</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!projectDirectoryHandle}
+                  onClick={() => void openProjectVersions()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <GitBranch className="h-4 w-4" />
+                  <span className="flex-1">Versions</span>
                 </button>
               </div>
             )}
@@ -5705,7 +5805,14 @@ function App() {
           </button>
         </div>
 
-        <div className="workspace-tab-strip relative flex h-9 shrink-0 items-stretch border-b border-border bg-background">
+        <div
+          className="workspace-tab-strip absolute z-20 flex h-9 items-stretch border-b border-border bg-background"
+          style={{
+            top: '2.25rem',
+            left: leftPanelOpen ? leftPanelWidth : 0,
+            right: rightPanelOpen ? rightPanelWidth : 0,
+          }}
+        >
           <div className="workspace-tab-scroll flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
             {openTabs.map((tab) => {
               const { Icon, label, title } = getWorkspaceTabChrome(tab);
@@ -6135,9 +6242,16 @@ function App() {
                 onDragOver={(event) => {
                   event.preventDefault();
                   event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
+                  setExplorerDropTargetPath('Project');
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    setExplorerDropTargetPath(null);
+                  }
                 }}
                 onDrop={(event) => {
                   event.preventDefault();
+                  setExplorerDropTargetPath(null);
                   handleExplorerDrop(event, 'Project');
                 }}
               >
@@ -6151,6 +6265,7 @@ function App() {
                     node={visibleExplorerTree}
                     expandedPaths={expandedExplorerPaths}
                     selectedPaths={selectedExplorerPaths}
+                    dropTargetPath={explorerDropTargetPath}
                     inlineEdit={inlineExplorerEdit}
                     focusedPath={focusedExplorerPath}
                     onToggle={toggleExplorerPath}
@@ -6167,7 +6282,11 @@ function App() {
                     onInlineCommit={() => void commitInlineExplorerEdit()}
                     onInlineCancel={cancelInlineExplorerEdit}
                     onDragStartItem={startExplorerDrag}
-                    onDragEndItems={() => setCurrentDraggedExplorerEntries(null)}
+                    onDragEndItems={() => {
+                      setCurrentDraggedExplorerEntries(null);
+                      setExplorerDropTargetPath(null);
+                    }}
+                    onDropTargetChange={setExplorerDropTargetPath}
                     onDropItems={(node, event) => handleExplorerDrop(event, node.path)}
                   />
                 ) : (
@@ -6198,7 +6317,7 @@ function App() {
               )}
             </aside>
           )}
-          <section className="flex min-w-0 flex-1 flex-col">
+          <section className="flex min-w-0 flex-1 flex-col pt-9">
         <div className="flex min-h-0 flex-1 flex-col">
           <div
             className={showEditToolbar || showFullscreenTagging || (activeTab && isFileBackedTab(activeTab)) ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
@@ -6266,11 +6385,11 @@ function App() {
                           }}
                         />
                       ) : tab.kind === 'file-edit' ? (
-                        <CleanupToolComponent
-                          selectedImageId={tab.workspaceImageId}
-                          singleFileMode
+                        <PhotopeaBlobViewer
+                          file={tab.file}
+                          fileName={tab.name}
                           active={isActiveFileTab}
-                          projectDirectoryHandle={projectDirectoryHandle}
+                          onSavePsd={(buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)}
                         />
                       ) : (
                         <TaggingToolComponent
@@ -6294,10 +6413,7 @@ function App() {
                     nested: activeToolNestedView,
                     onOpenNestedFile: openActiveToolNestedFile,
                     onOpenTool: navigateToTool,
-                    onOpenDataset: openDatasetTab,
-                    onOpenDatasetTool: openDatasetToolTab,
-                    onCreateDataset: createDatasetFromHub,
-                    onExportDataset: exportDatasetById,
+                    onImportFiles: (files) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`),
                   })
                 ) : (
                   <EmptyWorkspacePlaceholder

@@ -22,7 +22,11 @@ import {
 
 import { FolderOpen, ImageIcon, RotateCcw, Trash2, Upload } from 'lucide-react';
 
-export const ImportTool = () => {
+type ImportToolProps = {
+  onImportFiles?: (files: ImportInputFile[]) => Promise<number>;
+};
+
+export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
   const {
     addSourceImage,
     removeSourceImage,
@@ -77,6 +81,9 @@ export const ImportTool = () => {
       logDev('import', 'received files', files.length);
 
       try {
+        if (onImportFiles) {
+          return await onImportFiles(files);
+        }
         const result = await importImageFiles(files, {
           logger: importLogger.current,
           onImageImported: (image) => {
@@ -107,7 +114,7 @@ export const ImportTool = () => {
         setIsLoading(false);
       }
     },
-    [addNotification, addSourceImage, logDev]
+    [addNotification, addSourceImage, logDev, onImportFiles]
   );
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
