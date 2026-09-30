@@ -161,6 +161,7 @@ type AnalysisToolProps = {
   active?: boolean;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   fileTarget?: AnalysisFileTarget;
+  fileTargets?: AnalysisFileTarget[];
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
   onUpdateDataset?: (
     updates: Partial<Pick<Dataset, 'assetIds' | 'assetOrder' | 'captionOverrides'>>
@@ -934,6 +935,7 @@ export const AnalysisTool = ({
   active = true,
   projectDirectoryHandle,
   fileTarget,
+  fileTargets,
   onOpenAssetContextMenu,
   onUpdateDataset,
 }: AnalysisToolProps = {}) => {
@@ -957,13 +959,14 @@ export const AnalysisTool = ({
   const [similarSort, setSimilarSort] = useState<SimilarGroupSort>('risk');
   const [similarFilter, setSimilarFilter] = useState<SimilarGroupFilter>('all');
   const [overusedThreshold, setOverusedThreshold] = useState(TAG_OVERUSED_PERCENT);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(fileTarget?.workspaceImageId ?? null);
+  const scopedFileTargets = fileTargets?.length ? fileTargets : fileTarget ? [fileTarget] : [];
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(scopedFileTargets[0]?.workspaceImageId ?? null);
   const [itemEmbeddings, setItemEmbeddings] = useState<Record<string, Float32Array>>({});
   const [visualTraitsById, setVisualTraitsById] = useState<Record<string, VisualTraits>>({});
   const [workspaceFileAssets, setWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const [psdPreviewBlobsById, setPsdPreviewBlobsById] = useState<Record<string, PsdPreviewCacheEntry>>({});
 
-  const targetMode: AnalysisTargetMode = fileTarget ? 'file' : dataset ? 'dataset' : 'project';
+  const targetMode: AnalysisTargetMode = scopedFileTargets.length > 0 ? 'file' : dataset ? 'dataset' : 'project';
   const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) => !image.hidden), [sourceImagesById]);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const datasetFileAssetPaths = useMemo(
@@ -985,7 +988,7 @@ export const AnalysisTool = ({
         [...(dataset?.assetIds ?? [])].sort().join(','),
         datasetFileAssetPaths.join(','),
         getCaptionOverridesSignature(dataset?.captionOverrides),
-        fileTarget?.path ?? '',
+        scopedFileTargets.map((target) => target.path).sort().join(','),
       ].join('::'),
     [
       dataset?.assetIds,
@@ -994,7 +997,7 @@ export const AnalysisTool = ({
       dataset?.overwriteCaptions,
       dataset?.updatedAt,
       datasetFileAssetPaths,
-      fileTarget?.path,
+      scopedFileTargets,
       targetMode,
     ]
   );
@@ -1052,28 +1055,28 @@ export const AnalysisTool = ({
     () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupToolState.workingEdits, []),
     [cleanupToolState.workingEdits, sourceImages, workspaceFileAssets]
   );
-  const fileTargetItem = useMemo(() => {
-    if (!fileTarget) {
-      return null;
-    }
-    const existingItem = baseItems.find(
-      (item) =>
-        item.id === fileTarget.workspaceImageId ||
-        item.assetPath === fileTarget.path ||
-        getProjectRelativePath(item.assetPath ?? '') === getProjectRelativePath(fileTarget.path)
-    );
-    return createFileTargetItem(fileTarget, existingItem);
-  }, [baseItems, fileTarget]);
+  const fileTargetItems = useMemo(
+    () => scopedFileTargets.map((target) => {
+      const existingItem = baseItems.find(
+        (item) =>
+          item.id === target.workspaceImageId ||
+          item.assetPath === target.path ||
+          getProjectRelativePath(item.assetPath ?? '') === getProjectRelativePath(target.path)
+      );
+      return createFileTargetItem(target, existingItem);
+    }),
+    [baseItems, scopedFileTargets]
+  );
   const items = useMemo(() => {
-    if (!fileTargetItem) {
+    if (fileTargetItems.length === 0) {
       return baseItems;
     }
-    return targetMode === 'file'
-      ? [fileTargetItem]
-      : baseItems.some((item) => item.id === fileTargetItem.id)
-        ? baseItems
-        : [fileTargetItem, ...baseItems];
-  }, [baseItems, fileTargetItem, targetMode]);
+    if (targetMode === 'file') {
+      return fileTargetItems;
+    }
+    const targetIds = new Set(fileTargetItems.map((item) => item.id));
+    return [...fileTargetItems, ...baseItems.filter((item) => !targetIds.has(item.id))];
+  }, [baseItems, fileTargetItems, targetMode]);
   const psdPreviewRequests = useMemo(
     () =>
       items
@@ -1180,8 +1183,8 @@ export const AnalysisTool = ({
   );
 
   useEffect(() => {
-    setSelectedItemId(fileTargetItem?.id ?? null);
-  }, [fileTargetItem?.id, targetMode]);
+    setSelectedItemId(fileTargetItems[0]?.id ?? null);
+  }, [fileTargetItems, targetMode]);
 
   useEffect(() => {
     const activeIds = new Set(activeAnalysisItemIds);
@@ -1541,13 +1544,17 @@ export const AnalysisTool = ({
 
   const targetTitle =
     targetMode === 'file'
-      ? `File Analysis: ${fileTarget?.name ?? 'Asset'}`
+      ? scopedFileTargets.length === 1
+        ? `File Analysis: ${scopedFileTargets[0]?.name ?? 'Asset'}`
+        : `Selection Analysis: ${scopedFileTargets.length} files`
       : targetMode === 'dataset'
         ? `Dataset Analysis: ${dataset?.name ?? 'Dataset'}`
         : 'Project Analysis';
   const targetDescription =
     targetMode === 'file'
-      ? 'Visual traits, nearest groups, and caption health for one asset.'
+      ? scopedFileTargets.length === 1
+        ? 'Visual traits, nearest groups, and caption health for one asset.'
+        : 'Visual traits, nearest groups, and caption health for the selected files.'
       : targetMode === 'dataset'
         ? 'Duplicate groups, coverage pressure, and tag health for this Dataset.'
         : 'Project-wide duplicate groups, similar groups, and dataset candidates.';
@@ -1582,7 +1589,11 @@ export const AnalysisTool = ({
       <div className="rounded-md border border-border bg-background p-3">
         <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Target</p>
         <p className="mt-1 truncate text-sm font-semibold">
-          {targetMode === 'file' ? fileTarget?.name : targetMode === 'dataset' ? dataset?.name : 'Project'}
+          {targetMode === 'file'
+            ? scopedFileTargets.length === 1
+              ? scopedFileTargets[0]?.name
+              : `${scopedFileTargets.length} selected files`
+            : targetMode === 'dataset' ? dataset?.name : 'Project'}
         </p>
         <p className="mt-1 text-muted-foreground">{targetDescription}</p>
       </div>

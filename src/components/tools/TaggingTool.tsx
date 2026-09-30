@@ -609,6 +609,7 @@ const CaptionScopeControls = ({
 
 type TaggingToolProps = {
   selectedItemId?: string | null;
+  scopedItemIds?: string[];
   singleFileMode?: boolean;
   active?: boolean;
   datasetId?: string;
@@ -621,6 +622,7 @@ type TaggingToolProps = {
 
 export const TaggingTool = ({
   selectedItemId: selectedItemIdProp,
+  scopedItemIds,
   singleFileMode = false,
   active = true,
   datasetId,
@@ -689,6 +691,10 @@ export const TaggingTool = ({
     () => new Set([...(dataset?.assetPaths ?? []), ...(dataset?.psdAssetPaths ?? [])]),
     [dataset?.assetPaths, dataset?.psdAssetPaths]
   );
+  const scopedItemIdSet = useMemo(
+    () => (scopedItemIds?.length ? new Set(scopedItemIds) : null),
+    [scopedItemIds]
+  );
   const sourceImages = useMemo(
     () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
     [datasetAssetIds, datasetId, sourceImagesById]
@@ -716,10 +722,13 @@ export const TaggingTool = ({
       };
     });
 
-    return dataset
+    const orderedItems = dataset
       ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder, dataset.assetIds)
       : nextItems;
-  }, [cleanupToolState.workingEdits, dataset, datasetId, fileAssets, sourceImages, editedAssets]);
+    return scopedItemIdSet
+      ? orderedItems.filter((item) => scopedItemIdSet.has(item.id))
+      : orderedItems;
+  }, [cleanupToolState.workingEdits, dataset, datasetId, fileAssets, sourceImages, editedAssets, scopedItemIdSet]);
   const previewUrls = useWorkspacePreviewUrls(items);
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedItemId) ?? null,

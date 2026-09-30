@@ -273,6 +273,14 @@ type FileWorkspaceTab = {
   workspaceImageId?: string;
 } & WorkspaceTabState;
 
+type AnalysisScopeTarget = {
+  path: string;
+  name: string;
+  fileKind: ExplorerFileKind;
+  file: File | Blob;
+  workspaceImageId?: string;
+};
+
 type DatasetWorkspaceTab = {
   id: string;
   kind: 'dataset';
@@ -629,6 +637,8 @@ type RenderToolOptions = {
   onOpenNestedFile?: (itemId: string) => void;
   onOpenTool?: (tool: ToolName) => void;
   onImportFiles?: (files: ImportInputFile[]) => Promise<number>;
+  analysisFileTargets?: AnalysisScopeTarget[] | null;
+  taggingItemScope?: string[] | null;
 };
 
 const renderTool = ({
@@ -639,6 +649,8 @@ const renderTool = ({
   onOpenNestedFile,
   onOpenTool,
   onImportFiles,
+  analysisFileTargets,
+  taggingItemScope,
 }: RenderToolOptions) => {
   switch (currentTool) {
     case 'hub':
@@ -663,6 +675,7 @@ const renderTool = ({
           active
           projectDirectoryHandle={projectDirectoryHandle}
           onOpenAssetContextMenu={onOpenAssetContextMenu}
+          fileTargets={analysisFileTargets ?? undefined}
         />
       );
     case 'review':
@@ -670,6 +683,7 @@ const renderTool = ({
     case 'tagging':
       return (
         <TaggingToolComponent
+          scopedItemIds={taggingItemScope ?? undefined}
           selectedItemId={nested?.itemId ?? null}
           onOpenItem={onOpenNestedFile}
           onOpenAssetContextMenu={onOpenAssetContextMenu}
@@ -896,6 +910,14 @@ type ExplorerClipboard = {
   entries: ExplorerItemEntry[];
 };
 
+type ExplorerMarquee = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+};
+
 type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file' };
 
 const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is FilesystemExplorerItemEntry =>
@@ -1079,6 +1101,7 @@ const ExplorerTree = ({
       <button
         type="button"
         data-explorer-row
+        data-explorer-path={node.path}
         draggable={!isRenaming}
         onClick={(event) => {
           onSelect(node, event);
@@ -1406,6 +1429,9 @@ function App() {
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const [focusedExplorerPath, setFocusedExplorerPath] = useState<string | null>(null);
+  const [explorerMarquee, setExplorerMarquee] = useState<ExplorerMarquee | null>(null);
+  const [analysisFileTargets, setAnalysisFileTargets] = useState<AnalysisScopeTarget[] | null>(null);
+  const [taggingItemScope, setTaggingItemScope] = useState<string[] | null>(null);
   const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerItemEntry[] | null>(null);
   const draggedExplorerEntriesRef = useRef<ExplorerItemEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
@@ -2022,8 +2048,13 @@ function App() {
   const runPsdCommand = (command: 'save' | 'saveCopy') => {
     window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
   };
-  const navigateToTool = (tool: ToolName) => {
+  const navigateToTool = (
+    tool: ToolName,
+    scopes?: { analysisFiles?: AnalysisScopeTarget[]; taggingItemIds?: string[] }
+  ) => {
     if (!profile.enabledTools.includes(tool)) return;
+    setAnalysisFileTargets(tool === 'analysis' ? scopes?.analysisFiles ?? null : null);
+    setTaggingItemScope(tool === 'tagging' ? scopes?.taggingItemIds ?? null : null);
     const nextTab = createToolTab(tool);
     setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
     setActiveTabId(nextTab.id);
@@ -3271,6 +3302,55 @@ function App() {
       setActiveTabId(tab.id);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : `Failed to open ${mode === 'edit' ? 'Photopea' : mode === 'analysis' ? 'Analysis' : 'Caption'}`);
+    }
+  };
+
+  const openExplorerFilesInAnalysis = async (nodes: ExplorerTreeNode[]) => {
+    if (nodes.length === 1) {
+      return openFileModeTab(nodes[0], 'analysis');
+    }
+    if (!projectDirectoryHandle) {
+      addNotification('warning', 'Open a project directory before opening Explorer files.');
+      return;
+    }
+
+    const targets: AnalysisScopeTarget[] = [];
+    for (const node of nodes) {
+      const file = await readExplorerFile(projectDirectoryHandle, node.path);
+      if (!file) {
+        addNotification('warning', `${node.name} is no longer available`);
+        continue;
+      }
+      targets.push({
+        path: node.path,
+        name: node.name,
+        fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
+        file,
+        workspaceImageId: findWorkspaceImageIdForPath(node.path) ?? undefined,
+      });
+    }
+
+    if (targets.length > 0) {
+      navigateToTool('analysis', { analysisFiles: targets });
+    }
+  };
+
+  const openExplorerFilesInCaption = async (nodes: ExplorerTreeNode[]) => {
+    if (nodes.length === 1) {
+      return openFileModeTab(nodes[0], 'caption');
+    }
+
+    const itemIds = nodes
+      .map((node) => findWorkspaceImageIdForPath(node.path))
+      .filter((id): id is string => Boolean(id));
+    if (itemIds.length === nodes.length) {
+      navigateToTool('tagging', { taggingItemIds: itemIds });
+    }
+  };
+
+  const openExplorerFilesInPhotopea = async (nodes: ExplorerTreeNode[]) => {
+    for (const node of nodes) {
+      await openFileModeTab(node, 'edit');
     }
   };
 
@@ -4967,6 +5047,15 @@ function App() {
         return;
       }
 
+      if (event.key === 'Escape' && selectedExplorerPaths.size > 0) {
+        event.preventDefault();
+        setSelectedExplorerPaths(new Set());
+        setSelectionAnchorPath(null);
+        setFocusedExplorerPath(null);
+        setExplorerContextMenu(null);
+        return;
+      }
+
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         moveExplorerKeyboardFocus(1, event.shiftKey);
@@ -5403,22 +5492,49 @@ function App() {
     },
   });
 
+  const getExplorerToolScopeFileNodes = (node: ExplorerTreeNode): ExplorerTreeNode[] => {
+    const scopePaths = new Set<string>();
+    const allNodes = getAllExplorerNodes();
+
+    for (const entry of getContextEntries(node)) {
+      if (entry.kind === 'file') {
+        scopePaths.add(entry.path);
+        continue;
+      }
+      if (entry.kind === 'folder') {
+        allNodes
+          .filter((candidate) => candidate.kind === 'file' && candidate.path.startsWith(`${entry.path}/`))
+          .forEach((candidate) => scopePaths.add(candidate.path));
+      }
+    }
+
+    return allNodes.filter((entry) => entry.kind === 'file' && scopePaths.has(entry.path));
+  };
+
   const getFileContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
     const contextEntries = getContextEntries(node);
-    const isSingleFileSelection = contextEntries.length === 1;
-    const fileKind = getExplorerFileKind(node.name);
-    const workspaceImageId = findWorkspaceImageIdForPath(node.path);
-    const canOpenFileInTab = isSingleFileSelection && canOpenExplorerFile(fileKind);
-    const canOpenInAnalysis = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd' || fileKind === 'video');
-    const canOpenInPhotopea = isSingleFileSelection && isExplorerImageFileName(node.name);
-    const canOpenInCaption = isSingleFileSelection && (fileKind === 'image' || fileKind === 'psd') && Boolean(workspaceImageId);
-    const sharedImages = contextEntries.filter(
+    const selectedFileNodes = getExplorerToolScopeFileNodes(node);
+    const selectedFiles = selectedFileNodes.map(createExplorerEntryForNode) as FilesystemExplorerItemEntry[];
+    const selectedFileNode = selectedFileNodes.length === 1 ? selectedFileNodes[0] : null;
+    const selectedFileKind = selectedFileNode ? getExplorerFileKind(selectedFileNode.name) : null;
+    const isSingleFileSelection = Boolean(selectedFileNode);
+    const canOpenFileInTab = isSingleFileSelection && selectedFileKind !== null && canOpenExplorerFile(selectedFileKind);
+    const hasCompleteFileSelection = selectedFileNodes.length > 0 && selectedFileNodes.length === selectedFiles.length;
+    const canOpenInAnalysis = hasCompleteFileSelection && selectedFileNodes.every((entry) => {
+      const kind = getExplorerFileKind(entry.name);
+      return kind === 'image' || kind === 'psd' || kind === 'video';
+    });
+    const canOpenInPhotopea = hasCompleteFileSelection && selectedFileNodes.every((entry) => isExplorerImageFileName(entry.name));
+    const canOpenInCaption = hasCompleteFileSelection && selectedFileNodes.every((entry) => {
+      const kind = getExplorerFileKind(entry.name);
+      return (kind === 'image' || kind === 'psd') && Boolean(findWorkspaceImageIdForPath(entry.path));
+    });
+    const sharedImages = selectedFiles.filter(
       (entry): entry is FilesystemExplorerItemEntry =>
-        entry.kind === 'file' &&
         entry.path.startsWith(`Project/${PROJECT_SHARED_DIRECTORY}/`) &&
         isExplorerImageFileName(entry.name)
     );
-    const canAddToDataset = sharedImages.length > 0 && sharedImages.length === contextEntries.length;
+    const canAddToDataset = sharedImages.length > 0 && sharedImages.length === selectedFiles.length;
 
     const addToDataset = async () => {
       const directory = requireProjectDirectory();
@@ -5438,7 +5554,9 @@ function App() {
     return [
       [
         canOpenFileInTab
-          ? createExplorerAction({ id: 'open', label: 'Open', icon: File, onSelect: () => openExplorerFile(node) })
+          ? createExplorerAction({ id: 'open', label: 'Open', icon: File, onSelect: () => {
+            if (selectedFileNode) return openExplorerFile(selectedFileNode);
+          } })
           : null,
       ].filter((action): action is ContextAction => Boolean(action)),
       canAddToDataset
@@ -5446,13 +5564,19 @@ function App() {
         : [],
       [
         canOpenInPhotopea
-          ? createExplorerAction({ id: 'photopea', label: 'Photopea', icon: Edit3, onSelect: () => openFileModeTab(node, 'edit') })
+          ? createExplorerAction({ id: 'photopea', label: 'Photopea', icon: Edit3, onSelect: () => {
+            return openExplorerFilesInPhotopea(selectedFileNodes);
+          } })
           : null,
         canOpenInCaption
-          ? createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openFileModeTab(node, 'caption') })
+          ? createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => {
+            return openExplorerFilesInCaption(selectedFileNodes);
+          } })
           : null,
         canOpenInAnalysis
-          ? createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openFileModeTab(node, 'analysis') })
+          ? createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => {
+            return openExplorerFilesInAnalysis(selectedFileNodes);
+          } })
           : null,
       ].filter((action): action is ContextAction => Boolean(action)),
       [
@@ -5496,6 +5620,11 @@ function App() {
 
   const getDirectoryContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
     const contextEntries = getContextEntries(node);
+    const fileToolActionGroups = getExplorerToolScopeFileNodes(node).length > 0
+      ? getFileContextActionGroups(node)
+        .map((group) => group.filter((action) => !['cut', 'copy', 'duplicate', 'rename', 'delete'].includes(action.id)))
+        .filter((group) => group.length > 0)
+      : [];
     const creationActions: ContextActionGroup =
       node.kind === 'folder'
         ? [
@@ -5512,6 +5641,7 @@ function App() {
 
     if (node.path === 'Project') {
       return [
+        ...fileToolActionGroups,
         creationActions,
         explorerClipboard
           ? [createExplorerAction({ id: 'paste', label: 'Paste', icon: Copy, onSelect: () => handleExplorerPaste(node) })]
@@ -5520,6 +5650,7 @@ function App() {
     }
 
     return [
+      ...fileToolActionGroups,
       creationActions,
       [
         createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
@@ -6231,6 +6362,69 @@ function App() {
                 ref={explorerPanelRef}
                 className="min-h-0 flex-1 overflow-auto p-2"
                 tabIndex={0}
+                onPointerDown={(event) => {
+                  if (
+                    event.button !== 0 ||
+                    (event.target as HTMLElement).closest('[data-explorer-row], input, button, [contenteditable="true"]')
+                  ) {
+                    return;
+                  }
+                  event.currentTarget.focus();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setExplorerContextMenu(null);
+                  setSelectedExplorerPaths(new Set());
+                  setSelectionAnchorPath(null);
+                  setFocusedExplorerPath(null);
+                  setExplorerMarquee({
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    currentX: event.clientX,
+                    currentY: event.clientY,
+                  });
+                }}
+                onPointerMove={(event) => {
+                  if (!explorerMarquee || explorerMarquee.pointerId !== event.pointerId) {
+                    return;
+                  }
+
+                  const nextMarquee = {
+                    ...explorerMarquee,
+                    currentX: event.clientX,
+                    currentY: event.clientY,
+                  };
+                  const left = Math.min(nextMarquee.startX, nextMarquee.currentX);
+                  const right = Math.max(nextMarquee.startX, nextMarquee.currentX);
+                  const top = Math.min(nextMarquee.startY, nextMarquee.currentY);
+                  const bottom = Math.max(nextMarquee.startY, nextMarquee.currentY);
+                  const paths = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-explorer-row][data-explorer-path]'))
+                    .filter((row) => {
+                      const bounds = row.getBoundingClientRect();
+                      return bounds.left < right && bounds.right > left && bounds.top < bottom && bounds.bottom > top;
+                    })
+                    .map((row) => row.dataset.explorerPath)
+                    .filter((path): path is string => Boolean(path) && path !== 'Project');
+
+                  setExplorerMarquee(nextMarquee);
+                  setSelectedExplorerPaths(new Set(paths));
+                  setSelectionAnchorPath(paths[0] ?? null);
+                  setFocusedExplorerPath(paths[0] ?? null);
+                }}
+                onPointerUp={(event) => {
+                  if (!explorerMarquee || explorerMarquee.pointerId !== event.pointerId) {
+                    return;
+                  }
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  setExplorerMarquee(null);
+                }}
+                onPointerCancel={(event) => {
+                  if (!explorerMarquee || explorerMarquee.pointerId !== event.pointerId) {
+                    return;
+                  }
+                  setExplorerMarquee(null);
+                }}
                 onContextMenu={(event) => {
                   if ((event.target as HTMLElement).closest('[data-explorer-row]')) {
                     return;
@@ -6291,6 +6485,18 @@ function App() {
                   />
                 ) : (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
+                )}
+                {explorerMarquee && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none fixed z-[900] border border-primary bg-primary/15"
+                    style={{
+                      left: Math.min(explorerMarquee.startX, explorerMarquee.currentX),
+                      top: Math.min(explorerMarquee.startY, explorerMarquee.currentY),
+                      width: Math.abs(explorerMarquee.currentX - explorerMarquee.startX),
+                      height: Math.abs(explorerMarquee.currentY - explorerMarquee.startY),
+                    }}
+                  />
                 )}
               </div>
               {explorerContextMenu && (
@@ -6414,6 +6620,8 @@ function App() {
                     onOpenNestedFile: openActiveToolNestedFile,
                     onOpenTool: navigateToTool,
                     onImportFiles: (files) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`),
+                    analysisFileTargets,
+                    taggingItemScope,
                   })
                 ) : (
                   <EmptyWorkspacePlaceholder
