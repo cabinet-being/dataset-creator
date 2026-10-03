@@ -8,7 +8,7 @@ export interface ProjectTypeProfile {
   labels: { workspace: string; emptyDatasets: string };
   flags: Readonly<Record<string, boolean>>;
 }
-const tools: readonly ToolName[] = ['hub', 'import', 'select', 'clean', 'analysis', 'review', 'tagging', 'export'];
+const tools: readonly ToolName[] = ['import', 'select', 'clean', 'analysis', 'review', 'tagging', 'export'];
 export const PROJECT_TYPE_PROFILES: Record<ProjectType, ProjectTypeProfile> = {
   character: {
     label: 'Character', description: 'Build datasets around a consistent character or identity.', enabledTools: tools,

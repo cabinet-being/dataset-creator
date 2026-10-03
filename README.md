@@ -27,7 +27,7 @@ DatasetCreator uses React 18, TypeScript, Vite, Tailwind CSS, Zustand, JSZip, Lu
 
 - File, folder, drag-and-drop, and ZIP import for local project assets.
 - Supported assets: BMP, GIF, JPEG/JPG, PNG, WebP, TXT, JSON, PSD, MP4, and WebM.
-- Workspace shell with Explorer, Inspector, Output panel, draggable tabs, and floating inspector.
+- Workspace shell with an Explorer/Versions activity bar, resizable docked groups, draggable tabs, and floating windows.
 - Project directory support with `manifest.json`, cached previews, and auto-save.
 - Dataset manifests stored as `*.dataset.json` files.
 - Similarity review for finding duplicate or near-duplicate images.
@@ -115,6 +115,17 @@ Preview a production build locally:
 npm run preview
 ```
 
+### Workspace layout
+
+- Explorer stays in the left sidebar. Other windows and editor tabs can be placed beside it or stacked with it.
+- Drag a tab or a group's grip onto another group: the highlighted edge creates a split, and the center combines tabs. Press Escape to cancel.
+- Drag a divider to resize neighboring groups. Layout, active tabs, pinned tabs, and floating-window geometry are saved locally.
+- Use the header pin button to detach a group or return it to its previous docked position. Floating windows support resize, minimize, and close; hold Alt while dragging to move them without docking.
+- The Windows menu opens Explorer, Inspector, Output, Project, and Dataset. These are the same windows whether docked or floating.
+- A pinned tab stays on the left of its group and cannot be closed until unpinned, including through bulk-close actions.
+
+Run layout and project regression checks with `npm run test:workspace-layout` and `npm run test:project-types`.
+
 ## Project Structure
 
 ```mermaid
@@ -181,7 +192,7 @@ The Vite configuration lives in `vite.config.ts`. The current base path is:
 base: '/DatasetCreator/'
 ```
 
-Styling is configured through `tailwind.config.ts`, `postcss.config.js`, `src/index.css`, and `src/App.css`. UI component metadata is kept in `components.json`.
+Styling is configured through `tailwind.config.ts`, `postcss.config.js`, `src/index.css`, and `src/components/workspace/workspace.css`. UI component metadata is kept in `components.json`.
 
 Browser storage is handled by the persistence service under `src/services/persistence`. Project directory reads and writes use the File System Access API where supported. For reliable local folder access and model loading, use `localhost` during development or HTTPS in hosted environments.
 

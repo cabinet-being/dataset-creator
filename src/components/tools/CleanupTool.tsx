@@ -527,6 +527,7 @@ export const CleanupTool = ({
 
   useEffect(() => {
     const handleEditCommand = (event: Event) => {
+      if (!active) return;
       const command = (event as CustomEvent<'back' | 'save' | 'saveCopy' | 'cancel'>).detail;
       switch (command) {
         case 'back':
@@ -546,7 +547,7 @@ export const CleanupTool = ({
 
     window.addEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
     return () => window.removeEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
-  }, [closeEditor, isProcessing, requestPhotopeaSave]);
+  }, [active, closeEditor, isProcessing, requestPhotopeaSave]);
 
   if (workspaceImages.length === 0 || (singleFileMode && !selectedImage)) {
     return (

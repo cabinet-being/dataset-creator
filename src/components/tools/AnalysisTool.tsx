@@ -931,7 +931,6 @@ const sortSimilarGroups = (groups: SimilarGroup[], sort: SimilarGroupSort): Simi
   });
 
 export const AnalysisTool = ({
-  datasetId,
   active = true,
   projectDirectoryHandle,
   fileTarget,
@@ -941,7 +940,7 @@ export const AnalysisTool = ({
 }: AnalysisToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
-  const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
+  const dataset = useProjectStore((state) => state.dataset);
   const cleanupToolState = useProjectStore(
     (state) =>
       (state.toolState.clean as

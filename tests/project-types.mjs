@@ -50,13 +50,13 @@ try {
     assert.equal(project.projectType, type);
     useProjectStore.getState().initializeProject('Store test', type);
     assert.equal(useProjectStore.getState().projectType, type);
-    const dataset = useProjectStore.getState().createDataset();
+    const dataset = useProjectStore.getState().dataset;
     assert.equal(dataset.name, PROJECT_TYPE_PROFILES[type].defaults.datasetName);
     assert.equal(dataset.triggerWord, PROJECT_TYPE_PROFILES[type].defaults.triggerWord);
     useProjectStore.getState().loadProject(project);
     assert.equal(useProjectStore.getState().projectType, type);
     assert.equal(project.taggingConfig.datasetKeyword, PROJECT_TYPE_PROFILES[type].defaults.datasetKeyword);
-    assert.equal(PROJECT_TYPE_PROFILES[type].enabledTools.length, 8);
+    assert.equal(PROJECT_TYPE_PROFILES[type].enabledTools.length, 7);
     const dir = directory();
     await createProjectDirectory(dir, project);
     assert.equal((await readManifest(dir)).project.projectType, type);
@@ -69,6 +69,7 @@ try {
   }
   const layoutProject = createProject('Structured project', 'character');
   layoutProject.taggingConfig.datasetKeyword = 'trigger';
+  layoutProject.dataset.triggerWord = 'trigger';
   const layoutDirectory = directory();
   await createProjectDirectory(layoutDirectory, layoutProject);
   for (const path of REQUIRED_PROJECT_DIRECTORIES) {
@@ -77,6 +78,29 @@ try {
     assert.ok(current);
   }
   assert.equal((await readDatasetManifest(layoutDirectory)).triggerWord, 'trigger');
+  assert.equal((await readDatasetManifest(layoutDirectory)).version, 3);
+  const globalDatasetZip = await JSZip.loadAsync(await (await createProjectFileBlob(layoutProject)).arrayBuffer());
+  assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.datasets, undefined);
+  assert.equal(JSON.parse(await globalDatasetZip.file('dataset.json').async('string')).version, 3);
+  assert.equal(JSON.parse(await globalDatasetZip.file('dataset.json').async('string')).triggerWord, 'trigger');
+  const migrationDirectory = directory();
+  await createProjectDirectory(migrationDirectory, createProject('Dataset migration', 'character'));
+  const migrationDatasetDirectory = await migrationDirectory.getDirectoryHandle('dataset');
+  const migrationImageWriter = await (await migrationDatasetDirectory.getFileHandle('legacy.png', { create: true })).createWritable();
+  await migrationImageWriter.write(new Blob(['png'], { type: 'image/png' })); await migrationImageWriter.close();
+  const legacyDatasetWriter = await (await migrationDatasetDirectory.getFileHandle('ignored.dataset.json', { create: true })).createWritable();
+  await legacyDatasetWriter.write(JSON.stringify({ name: 'Ignored legacy Dataset' })); await legacyDatasetWriter.close();
+  const rootDatasetWriter = await (await migrationDirectory.getFileHandle(DATASET_MANIFEST_FILE)).createWritable();
+  await rootDatasetWriter.write(JSON.stringify({
+    format: 'dataset-creator-dataset', version: 2, name: 'Legacy Dataset', projectType: 'character',
+    description: '', triggerWord: 'legacy', imageCount: 0, classCount: 0, classRepeats: {}, updatedAt: new Date().toISOString(),
+  })); await rootDatasetWriter.close();
+  const migratedProject = await readProjectDirectory(migrationDirectory);
+  const migratedDataset = await readDatasetManifest(migrationDirectory);
+  assert.equal(migratedDataset.version, 3);
+  assert.deepEqual(migratedDataset.assetPaths, ['Project/dataset/legacy.png']);
+  assert.equal(migratedProject.dataset.name, 'Legacy Dataset');
+  assert.deepEqual(migratedProject.dataset.assetPaths, ['Project/dataset/legacy.png']);
   await layoutDirectory.removeEntry('dataset', { recursive: true });
   await (await layoutDirectory.getDirectoryHandle('src')).removeEntry('assets', { recursive: true });
   await layoutDirectory.removeEntry(DATASET_MANIFEST_FILE);
@@ -151,5 +175,5 @@ try {
   assert.equal(await (await JSZip.loadAsync(saved)).file('unrelated.txt').async('string'), 'preserve me');
   await assert.rejects(resolveProjectType('invalid', 'Invalid'), /Unsupported/);
   await assert.rejects(resolveProjectType(null, 'Invalid'), /Unsupported/);
-  console.log('PASS: project types, required layout repair, shared-only indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
+  console.log('PASS: project types, global Dataset migration, required layout repair, shared-only indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }

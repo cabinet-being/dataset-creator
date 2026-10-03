@@ -225,6 +225,8 @@ export const PhotopeaBlobViewer = ({
   const pendingPsdRef = useRef<ArrayBuffer | null>(null);
   const readyRef = useRef(false);
   const [status, setStatus] = useState('Loading Photopea...');
+  const onSavePsdRef = useRef(onSavePsd);
+  onSavePsdRef.current = onSavePsd;
 
   useEffect(() => {
     openedRef.current = false;
@@ -284,7 +286,7 @@ export const PhotopeaBlobViewer = ({
           }
 
           setStatus(command === 'saveCopy' ? 'Saving PSD copy...' : 'Saving PSD...');
-          void Promise.resolve(onSavePsd?.({ psd, preview }, command === 'saveCopy'))
+          void Promise.resolve(onSavePsdRef.current?.({ psd, preview }, command === 'saveCopy'))
             .then(() => setStatus(command === 'saveCopy' ? 'Saved PSD copy.' : 'Saved PSD.'))
             .catch(() => setStatus(command === 'saveCopy' ? 'Unable to save PSD copy.' : 'Unable to save PSD.'));
           return;
@@ -306,7 +308,7 @@ export const PhotopeaBlobViewer = ({
           .catch(() => setStatus('Unable to open PSD in Photopea.'));
       }
 
-      if (event.data === 'Save' && onSavePsd && readyRef.current) {
+      if (event.data === 'Save' && onSavePsdRef.current && readyRef.current) {
         const photopeaWindow = iframeRef.current?.contentWindow;
         if (!photopeaWindow) {
           setStatus('Photopea is not available.');
@@ -323,7 +325,7 @@ export const PhotopeaBlobViewer = ({
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [file, fileName, onSavePsd]);
+  }, [file, fileName]);
 
   useEffect(() => {
     if (!active || !onSavePsd) {

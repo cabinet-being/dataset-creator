@@ -646,14 +646,11 @@ export const TaggingTool = ({
     (state) => (state.toolState.tagging as { selectedItemId?: string } | undefined)?.selectedItemId
   );
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
-  const datasetsById = useProjectStore((state) => state.datasets);
-  const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
+  const dataset = useProjectStore((state) => state.dataset);
   const datasetTriggerWord = useMemo(
     () =>
-      dataset?.triggerWord.trim() ||
-      Object.values(datasetsById).find((entry) => entry.triggerWord.trim())?.triggerWord.trim() ||
-      '',
-    [dataset?.triggerWord, datasetsById]
+      dataset.triggerWord.trim(),
+    [dataset.triggerWord]
   );
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const { addNotification, taggingModals, setTaggingModal } = useUIStore();
@@ -914,7 +911,7 @@ export const TaggingTool = ({
       }
 
       if (dataset && onUpdateDataset) {
-        const latestDataset = useProjectStore.getState().datasets[dataset.id] ?? dataset;
+        const latestDataset = useProjectStore.getState().dataset;
         if (!latestDataset.overwriteCaptions) {
           addNotification('warning', DATASET_OVERWRITE_CAPTIONS_WARNING);
           return false;
@@ -1357,7 +1354,7 @@ export const TaggingTool = ({
 
       for (let index = 0; index < autoCaptionScopeItems.length; index += 1) {
         const item = autoCaptionScopeItems[index];
-        const latestDataset = dataset ? useProjectStore.getState().datasets[dataset.id] : null;
+        const latestDataset = useProjectStore.getState().dataset;
         if (autoTaggingRunTokenRef.current !== runToken || (latestDataset && !latestDataset.overwriteCaptions)) {
           autoTaggingRunTokenRef.current += 1;
           setAutoTaggingProgress({ completed: 0, total: 0 });

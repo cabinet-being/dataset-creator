@@ -15,10 +15,9 @@ export const SIDEBAR_PRIMARY_TOOLS = [] as const;
 
 export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'analysis', 'review', 'tagging'] as const;
 
-export const TOOLS = ['hub', ...WORKFLOW_TOOLS] as const;
+export const TOOLS = [...WORKFLOW_TOOLS] as const;
 
 export const TOOL_URL_SLUGS: Record<(typeof TOOLS)[number], string> = {
-  hub: 'workspace',
   import: 'import',
   select: 'remove-duplicates',
   clean: 'photopea',
@@ -29,8 +28,6 @@ export const TOOL_URL_SLUGS: Record<(typeof TOOLS)[number], string> = {
 };
 
 export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
-  workspace: 'hub',
-  hub: 'hub',
   import: 'import',
   'remove-duplicates': 'select',
   select: 'select',
@@ -46,7 +43,6 @@ export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
 };
 
 export const TOOL_LABELS: Record<string, string> = {
-  hub: 'Project Workspace',
   import: 'Import',
   select: 'Remove Duplicates',
   clean: 'Photopea',

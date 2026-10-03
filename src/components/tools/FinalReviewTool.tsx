@@ -159,7 +159,7 @@ export const FinalReviewTool = ({
 }: FinalReviewToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
-  const dataset = useProjectStore((state) => (datasetId ? state.datasets[datasetId] : undefined));
+  const dataset = useProjectStore((state) => state.dataset);
   const cleanupToolState = useProjectStore(
     (state) =>
       (state.toolState.clean as

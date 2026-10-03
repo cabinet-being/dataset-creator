@@ -23,10 +23,10 @@ export const ExportTool = ({ active = true }: ExportToolProps = {}) => {
   const { taggingConfig } = useProjectStore();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
-  const datasetsById = useProjectStore((state) => state.datasets);
+  const dataset = useProjectStore((state) => state.dataset);
   const datasetTriggerWord = useMemo(
-    () => Object.values(datasetsById).find((dataset) => dataset.triggerWord.trim())?.triggerWord.trim() ?? '',
-    [datasetsById]
+    () => dataset.triggerWord.trim(),
+    [dataset.triggerWord]
   );
   const cleanupToolState = useProjectStore(
     (state) =>

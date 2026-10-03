@@ -281,7 +281,7 @@ const getFileExtension = (fileName: string, mimeType: string): string => {
 };
 
 const getToolFromSlug = (value: string | undefined): ToolName =>
-  ((value ? URL_TOOL_ALIASES[value] : undefined) ?? 'hub') as ToolName;
+  ((value ? URL_TOOL_ALIASES[value] : undefined) ?? 'import') as ToolName;
 
 const serializeSourceManifest = (
   source: SourceImage,
@@ -671,9 +671,18 @@ export const createProjectDirectory = async (
   if (datasetManifest) {
     await writeDatasetManifest(directory, {
       ...datasetManifest,
-      name: project.name,
+      version: 3,
+      name: project.dataset.name,
       projectType: project.projectType,
-      triggerWord: project.taggingConfig.datasetKeyword,
+      triggerWord: project.dataset.triggerWord,
+      imageCount: project.dataset.assetIds.length + project.dataset.assetPaths.length,
+      assetIds: project.dataset.assetIds,
+      assetPaths: project.dataset.assetPaths,
+      psdAssetPaths: project.dataset.psdAssetPaths,
+      assetOrder: project.dataset.assetOrder,
+      overwriteCaptions: project.dataset.overwriteCaptions,
+      captionOverrides: project.dataset.captionOverrides,
+      createdAt: project.dataset.createdAt.toISOString(),
       updatedAt: new Date().toISOString(),
     });
   }
@@ -786,9 +795,18 @@ export const writeProjectDirectoryChanges = async (
   if (datasetManifest) {
     await writeDatasetManifest(directory, {
       ...datasetManifest,
-      name: project.name,
+      version: 3,
+      name: project.dataset.name,
       projectType: project.projectType,
-      triggerWord: project.taggingConfig.datasetKeyword,
+      triggerWord: project.dataset.triggerWord,
+      imageCount: project.dataset.assetIds.length + project.dataset.assetPaths.length,
+      assetIds: project.dataset.assetIds,
+      assetPaths: project.dataset.assetPaths,
+      psdAssetPaths: project.dataset.psdAssetPaths,
+      assetOrder: project.dataset.assetOrder,
+      overwriteCaptions: project.dataset.overwriteCaptions,
+      captionOverrides: project.dataset.captionOverrides,
+      createdAt: project.dataset.createdAt.toISOString(),
       updatedAt: new Date().toISOString(),
     });
   }
@@ -1034,7 +1052,7 @@ export const readProjectDirectory = async (
 
   const projectRecord = manifest.project as Record<string, unknown>;
   const legacyCurrentTool = projectRecord[`currentSta${'ge'}`];
-  const currentTool = manifest.project.currentTool ?? (typeof legacyCurrentTool === 'string' ? getToolFromSlug(legacyCurrentTool) : 'hub');
+  const currentTool = manifest.project.currentTool ?? (typeof legacyCurrentTool === 'string' ? getToolFromSlug(legacyCurrentTool) : 'import');
 
   return {
     ...defaults,
@@ -1043,7 +1061,19 @@ export const readProjectDirectory = async (
     currentTool,
     sourceImages: Object.fromEntries(sources.map((source) => [source.id, source])),
     datasetItems: Object.fromEntries(edited.map((item) => [item.id, item])),
-    datasets: {},
+    dataset: {
+      ...defaults.dataset,
+      name: datasetManifest.name || defaults.dataset.name,
+      triggerWord: datasetManifest.triggerWord || defaults.dataset.triggerWord,
+      assetIds: datasetManifest.assetIds ?? [],
+      assetPaths: datasetManifest.assetPaths ?? [],
+      psdAssetPaths: datasetManifest.psdAssetPaths ?? [],
+      assetOrder: datasetManifest.assetOrder ?? [],
+      overwriteCaptions: datasetManifest.overwriteCaptions ?? false,
+      captionOverrides: datasetManifest.captionOverrides ?? {},
+      createdAt: datasetManifest.createdAt ? toDate(datasetManifest.createdAt, defaults.dataset.createdAt) : defaults.dataset.createdAt,
+      updatedAt: toDate(datasetManifest.updatedAt, defaults.dataset.updatedAt),
+    },
     taggingConfig: {
       ...defaults.taggingConfig,
       ...manifest.project.taggingConfig,

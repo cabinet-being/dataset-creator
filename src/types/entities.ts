@@ -12,7 +12,6 @@ export type WorkspaceImageKind = 'image' | 'edited' | 'video' | 'psd';
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
 export type ToolName =
-  | 'hub'
   | 'import'
   | 'select'
   | 'clean'
@@ -172,7 +171,7 @@ export interface ProjectState {
   name: string;
   sourceImages: Record<string, SourceImage>;
   datasetItems: Record<string, EditedAsset>;
-  datasets: Record<string, Dataset>;
+  dataset: Dataset;
   cleanupOverlays: Record<string, CleanupOverlay>;
   currentTool: ToolName;
   toolState: Record<ToolName, unknown>;
@@ -271,7 +270,7 @@ export const createCleanupOverlay = (imageId: string): CleanupOverlay => ({
 });
 
 export const createDataset = (name = 'New Dataset'): Dataset => ({
-  id: uuidv4(),
+  id: 'global',
   name,
   parentPath: 'Project',
   triggerWord: '',
@@ -291,11 +290,13 @@ export const createProject = (name: string, projectType: ProjectType): ProjectSt
   name,
   sourceImages: {},
   datasetItems: {},
-  datasets: {},
+  dataset: {
+    ...createDataset(PROJECT_TYPE_PROFILES[projectType].defaults.datasetName),
+    triggerWord: PROJECT_TYPE_PROFILES[projectType].defaults.triggerWord,
+  },
   cleanupOverlays: {},
-  currentTool: 'hub',
+  currentTool: 'import',
   toolState: {
-    hub: {},
     import: {},
     select: {},
     clean: {},

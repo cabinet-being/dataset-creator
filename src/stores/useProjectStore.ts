@@ -144,16 +144,13 @@ export const useProjectStore = create<ProjectStore>()(
               }
             }
 
+            const legacyDatasets = (project as ProjectState & { datasets?: Record<string, Dataset> }).datasets;
+            const fallbackDataset = Object.values(legacyDatasets ?? {})[0] ?? createDataset(project.name);
             return {
               ...defaults,
               ...project,
               datasetItems: supportedDatasetItems,
-              datasets: Object.fromEntries(
-                Object.entries(project.datasets ?? {}).map(([id, dataset]) => [
-                  id,
-                  normalizeDataset(dataset),
-                ])
-              ),
+              dataset: normalizeDataset(project.dataset ?? fallbackDataset),
               workspaceSettings: {
                 ...defaults.workspaceSettings,
                 ...project.workspaceSettings,
@@ -252,24 +249,17 @@ export const useProjectStore = create<ProjectStore>()(
             const remainingDatasetItems = Object.fromEntries(
               Object.entries(state.datasetItems).filter(([, item]) => item.sourceImageId !== id)
             );
-            const datasets = Object.fromEntries(
-              Object.entries(state.datasets).map(([datasetId, dataset]) => {
-                const assetIds = dataset.assetIds.filter((assetId) => assetId !== id);
-                return [
-                  datasetId,
-                  {
-                  ...dataset,
-                  assetIds,
-                  assetOrder: normalizeDatasetAssetOrder(
-                    (dataset.assetOrder ?? []).filter((key) => key !== createDatasetImageAssetKey(id)),
-                    assetIds,
-                    dataset.assetPaths
-                  ),
-                  updatedAt: new Date(),
-                },
-                ];
-              })
-            );
+            const assetIds = state.dataset.assetIds.filter((assetId) => assetId !== id);
+            const dataset = {
+              ...state.dataset,
+              assetIds,
+              assetOrder: normalizeDatasetAssetOrder(
+                (state.dataset.assetOrder ?? []).filter((key) => key !== createDatasetImageAssetKey(id)),
+                assetIds,
+                state.dataset.assetPaths
+              ),
+              updatedAt: new Date(),
+            };
             void dbDelete(OBJECT_STORES.SOURCE_IMAGES, id);
             for (const item of Object.values(state.datasetItems)) {
               if (item.sourceImageId === id) {
@@ -280,7 +270,7 @@ export const useProjectStore = create<ProjectStore>()(
               ...state,
               sourceImages: rest,
               datasetItems: remainingDatasetItems,
-              datasets,
+              dataset,
               lastModified: new Date(),
             };
           }),
@@ -320,36 +310,18 @@ export const useProjectStore = create<ProjectStore>()(
         
         getSourceImages: () => Object.values(get().sourceImages),
 
-        createDataset: (name) => {
-          const profile = PROJECT_TYPE_PROFILES[get().projectType];
-          const dataset = { ...createDataset(name ?? profile.defaults.datasetName), triggerWord: profile.defaults.triggerWord };
-          set((state) => ({
-            ...state,
-            datasets: {
-              ...state.datasets,
-              [dataset.id]: dataset,
-            },
-            lastModified: new Date(),
-          }));
-          return dataset;
-        },
+        createDataset: () => get().dataset,
 
         upsertDataset: (dataset) =>
           set((state) => ({
             ...state,
-            datasets: {
-              ...state.datasets,
-              [dataset.id]: normalizeDataset(dataset),
-            },
+            dataset: normalizeDataset({ ...dataset, id: 'global' }),
             lastModified: new Date(),
           })),
 
-        updateDataset: (id, updates) =>
+        updateDataset: (_id, updates) =>
           set((state) => {
-            const dataset = state.datasets[id];
-            if (!dataset) {
-              return state;
-            }
+            const dataset = state.dataset;
 
             const assetIds = updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds;
             const assetPaths = updates.assetPaths
@@ -366,40 +338,27 @@ export const useProjectStore = create<ProjectStore>()(
 
             return {
               ...state,
-              datasets: {
-                ...state.datasets,
-                [id]: {
-                  ...dataset,
-                  ...updates,
-                  assetIds,
-                  assetPaths,
-                  psdAssetPaths: normalizedPsdAssetPaths,
-                  assetOrder: normalizeDatasetAssetOrder(updates.assetOrder ?? dataset.assetOrder, assetIds, assetPaths),
-                  overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
-                  captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
-                  updatedAt: new Date(),
-                },
+              dataset: {
+                ...dataset,
+                ...updates,
+                id: 'global',
+                assetIds,
+                assetPaths,
+                psdAssetPaths: normalizedPsdAssetPaths,
+                assetOrder: normalizeDatasetAssetOrder(updates.assetOrder ?? dataset.assetOrder, assetIds, assetPaths),
+                overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
+                captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
+                updatedAt: new Date(),
               },
               lastModified: new Date(),
             };
           }),
 
-        removeDataset: (id) =>
-          set((state) => {
-            const { [id]: _, ...datasets } = state.datasets;
-            return {
-              ...state,
-              datasets,
-              lastModified: new Date(),
-            };
-          }),
+        removeDataset: () => undefined,
 
-        addAssetsToDataset: (id, assetIds) =>
+        addAssetsToDataset: (_id, assetIds) =>
           set((state) => {
-            const dataset = state.datasets[id];
-            if (!dataset) {
-              return state;
-            }
+            const dataset = state.dataset;
             const existingAssetIds = new Set(Object.keys(state.sourceImages));
             const nextAssetIds = [
               ...new Set([
@@ -417,14 +376,11 @@ export const useProjectStore = create<ProjectStore>()(
             );
             return {
               ...state,
-              datasets: {
-                ...state.datasets,
-                [id]: {
-                  ...dataset,
-                  assetIds: nextAssetIds,
-                  assetOrder: nextAssetOrder,
-                  updatedAt: new Date(),
-                },
+              dataset: {
+                ...dataset,
+                assetIds: nextAssetIds,
+                assetOrder: nextAssetOrder,
+                updatedAt: new Date(),
               },
               lastModified: new Date(),
             };

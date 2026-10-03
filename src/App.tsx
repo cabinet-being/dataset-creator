@@ -2,12 +2,10 @@ import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
 import type { ProjectType } from './types';
 import * as Dialog from '@radix-ui/react-dialog';
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ComponentType, DragEvent, MouseEvent, ReactNode } from 'react';
 import {
   AlertCircle,
-  Archive,
   ArrowLeft,
   BarChart3,
   Brush,
@@ -18,15 +16,12 @@ import {
   File,
   FilePlus,
   FolderOpen,
-  Grip,
   GitBranch,
   Check,
   Layers3,
   Copy,
   Edit3,
   FileJson,
-  Maximize2,
-  Minimize2,
   Moon,
   PanelBottom,
   PanelLeft,
@@ -140,7 +135,9 @@ import {
   PROJECT_SHARED_DIRECTORY,
   isProjectWorkspacePath,
 } from './services/project/projectLayoutService';
-import './App.css';
+import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
+import { useDockWorkspace } from './hooks/useDockWorkspace';
+import { EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource } from './lib/workspaceLayout';
 
 const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
@@ -287,7 +284,14 @@ type DatasetWorkspaceTab = {
   datasetId: string;
 } & WorkspaceTabState;
 
-type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab;
+type WorkspaceWindowId = 'inspector' | 'output' | 'project' | 'dataset';
+type WindowWorkspaceTab = {
+  id: `window:${WorkspaceWindowId}`;
+  kind: 'window';
+  window: WorkspaceWindowId;
+} & WorkspaceTabState;
+
+type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab | WindowWorkspaceTab;
 
 type PersistedWorkspaceTab =
   | {
@@ -304,6 +308,11 @@ type PersistedWorkspaceTab =
       kind: 'dataset-tool';
       datasetId: string;
       tool: DatasetToolName;
+      pinned?: boolean;
+    }
+  | {
+      kind: 'window';
+      window: WindowWorkspaceTab['window'];
       pinned?: boolean;
     };
 
@@ -333,6 +342,15 @@ const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceT
       pinned: tab.pinned,
     };
   }
+  if (tab.kind === 'window') {
+    const workspaceTab: WindowWorkspaceTab = {
+      id: `window:${tab.window}`,
+      kind: 'window',
+      window: tab.window,
+      pinned: tab.pinned,
+    };
+    return workspaceTab;
+  }
   return {
     id: createDatasetToolTabId(tab.datasetId, tab.tool),
     kind: 'dataset-tool',
@@ -352,6 +370,9 @@ const persistWorkspaceTab = (tab: WorkspaceTab): PersistedWorkspaceTab | null =>
   if (tab.kind === 'dataset-tool') {
     return { kind: 'dataset-tool', datasetId: tab.datasetId, tool: tab.tool, pinned: tab.pinned };
   }
+  if (tab.kind === 'window') {
+    return { kind: 'window', window: tab.window, pinned: tab.pinned };
+  }
   return null;
 };
 
@@ -365,6 +386,11 @@ const dedupeWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => {
     return true;
   });
 };
+
+const orderWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => [
+  ...tabs.filter((tab) => tab.pinned),
+  ...tabs.filter((tab) => !tab.pinned),
+];
 
 const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
 const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
@@ -417,9 +443,14 @@ type WorkspaceLayout = {
   rightPanelWidth: number;
   bottomPanelHeight: number;
   projectWindow: FloatingPanelState;
+  datasetWindow: FloatingPanelState;
   inspectorWindow: FloatingPanelState;
+  outputWindow: FloatingPanelState;
   projectWindowOpen: boolean;
+  datasetWindowOpen: boolean;
   inspectorWindowOpen: boolean;
+  outputWindowOpen: boolean;
+  activeActivityView: 'explorer' | 'versions';
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -456,7 +487,7 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
             if (!tab || typeof tab !== 'object') {
               return null;
             }
-            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; pinned?: unknown } & Record<string, unknown>;
+            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; window?: unknown; pinned?: unknown } & Record<string, unknown>;
             const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
             const legacyTool = entry[`sta${'ge'}`];
             const entryTool = typeof entry.tool === 'string' ? entry.tool : legacyTool;
@@ -468,6 +499,9 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
             }
             if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolName(entryTool)) {
               return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: entryTool, pinned };
+            }
+            if (entry.kind === 'window' && (entry.window === 'inspector' || entry.window === 'output' || entry.window === 'project' || entry.window === 'dataset')) {
+              return { kind: 'window', window: entry.window, pinned };
             }
             return null;
           })
@@ -501,6 +535,9 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
                 if (entry.kind === 'dataset' && tab.kind === 'dataset') {
                   return entry.datasetId === tab.datasetId;
                 }
+                if (entry.kind === 'window' && tab.kind === 'window') {
+                  return entry.window === tab.window;
+                }
                 return (
                   entry.kind === 'dataset-tool' &&
                   tab.kind === 'dataset-tool' &&
@@ -525,6 +562,13 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
         height: 360,
         minimized: false,
       }),
+      datasetWindow: readPanel(value.datasetWindow, {
+        x: 150,
+        y: 132,
+        width: 320,
+        height: 380,
+        minimized: false,
+      }),
       inspectorWindow: readPanel(value.inspectorWindow, {
         x: 420,
         y: 144,
@@ -532,15 +576,24 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
         height: 330,
         minimized: false,
       }),
+      outputWindow: readPanel(value.outputWindow, {
+        x: 320,
+        y: 420,
+        width: 620,
+        height: 260,
+        minimized: false,
+      }),
       projectWindowOpen: typeof value.projectWindowOpen === 'boolean' ? value.projectWindowOpen : undefined,
+      datasetWindowOpen: typeof value.datasetWindowOpen === 'boolean' ? value.datasetWindowOpen : undefined,
       inspectorWindowOpen: typeof value.inspectorWindowOpen === 'boolean' ? value.inspectorWindowOpen : undefined,
+      outputWindowOpen: typeof value.outputWindowOpen === 'boolean' ? value.outputWindowOpen : undefined,
+      activeActivityView: value.activeActivityView === 'versions' ? 'versions' : 'explorer',
     };
   } catch {
     return {};
   }
 };
 
-const ToolHub = lazy(() => import('./components/ToolHub').then((module) => ({ default: module.ToolHub })));
 const ImportTool = lazy(() =>
   import('./components/tools/ImportTool').then((module) => ({ default: module.ImportTool }))
 );
@@ -630,33 +683,29 @@ const getAspectRatioLabel = (width: number, height: number): string => {
 type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 
 type RenderToolOptions = {
+  active?: boolean;
   currentTool: ToolName;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   onOpenAssetContextMenu?: AssetContextMenuHandler;
   nested?: ToolNestedView;
   onOpenNestedFile?: (itemId: string) => void;
-  onOpenTool?: (tool: ToolName) => void;
   onImportFiles?: (files: ImportInputFile[]) => Promise<number>;
   analysisFileTargets?: AnalysisScopeTarget[] | null;
   taggingItemScope?: string[] | null;
 };
 
 const renderTool = ({
+  active = true,
   currentTool,
   projectDirectoryHandle,
   onOpenAssetContextMenu,
   nested,
   onOpenNestedFile,
-  onOpenTool,
   onImportFiles,
   analysisFileTargets,
   taggingItemScope,
 }: RenderToolOptions) => {
   switch (currentTool) {
-    case 'hub':
-      return (
-        <ToolHub onOpenTool={onOpenTool} />
-      );
     case 'import':
       return <ImportTool onImportFiles={onImportFiles} />;
     case 'select':
@@ -664,6 +713,7 @@ const renderTool = ({
     case 'clean':
       return (
         <CleanupToolComponent
+          active={active}
           selectedImageId={nested?.itemId ?? null}
           onSelectImage={onOpenNestedFile}
           projectDirectoryHandle={projectDirectoryHandle}
@@ -672,17 +722,18 @@ const renderTool = ({
     case 'analysis':
       return (
         <AnalysisTool
-          active
+          active={active}
           projectDirectoryHandle={projectDirectoryHandle}
           onOpenAssetContextMenu={onOpenAssetContextMenu}
           fileTargets={analysisFileTargets ?? undefined}
         />
       );
     case 'review':
-      return <FinalReviewTool active onOpenAssetContextMenu={onOpenAssetContextMenu} />;
+      return <FinalReviewTool active={active} onOpenAssetContextMenu={onOpenAssetContextMenu} />;
     case 'tagging':
       return (
         <TaggingToolComponent
+          active={active}
           scopedItemIds={taggingItemScope ?? undefined}
           selectedItemId={nested?.itemId ?? null}
           onOpenItem={onOpenNestedFile}
@@ -690,11 +741,9 @@ const renderTool = ({
         />
       );
     case 'export':
-      return <ExportTool />;
+      return <ExportTool active={active} />;
     default:
-      return (
-        <ToolHub onOpenTool={onOpenTool} />
-      );
+      return null;
   }
 };
 
@@ -704,189 +753,6 @@ type FloatingPanelState = {
   width: number;
   height: number;
   minimized: boolean;
-};
-
-type FloatingWorkspacePanelProps = {
-  title: string;
-  icon: ComponentType<{ className?: string }>;
-  panel: FloatingPanelState;
-  zIndex: number;
-  onChange: (next: FloatingPanelState) => void;
-  onFocus: () => void;
-  onClose: () => void;
-  children: ReactNode;
-};
-
-const FloatingWorkspacePanel = ({
-  title,
-  icon: Icon,
-  panel,
-  zIndex,
-  onChange,
-  onFocus,
-  onClose,
-  children,
-}: FloatingWorkspacePanelProps) => {
-  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
-  const resizeRef = useRef<{
-    startX: number;
-    startY: number;
-    originWidth: number;
-    originHeight: number;
-  } | null>(null);
-  const panelHeight = panel.minimized ? 38 : panel.height;
-
-  useEffect(() => {
-    const clampPanelToViewport = () => {
-      const width = Math.max(240, Math.min(panel.width, Math.max(240, window.innerWidth - 16)));
-      const height = panel.minimized
-        ? panel.height
-        : Math.max(150, Math.min(panel.height, Math.max(150, window.innerHeight - 16)));
-      const visibleHeight = panel.minimized ? 38 : height;
-      const x = Math.max(8, Math.min(Math.max(8, window.innerWidth - width - 8), panel.x));
-      const y = Math.max(8, Math.min(Math.max(8, window.innerHeight - visibleHeight - 8), panel.y));
-
-      if (x !== panel.x || y !== panel.y || width !== panel.width || height !== panel.height) {
-        onChange({ ...panel, x, y, width, height });
-      }
-    };
-
-    clampPanelToViewport();
-    window.addEventListener('resize', clampPanelToViewport);
-    return () => window.removeEventListener('resize', clampPanelToViewport);
-  }, [onChange, panel]);
-
-  useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
-      if (dragRef.current) {
-        const drag = dragRef.current;
-        onChange({
-          ...panel,
-          x: Math.max(
-            8,
-            Math.min(
-              Math.max(8, window.innerWidth - panel.width - 8),
-              drag.originX + event.clientX - drag.startX
-            )
-          ),
-          y: Math.max(
-            8,
-            Math.min(
-              Math.max(8, window.innerHeight - panelHeight - 8),
-              drag.originY + event.clientY - drag.startY
-            )
-          ),
-        });
-      }
-
-      if (resizeRef.current) {
-        const resize = resizeRef.current;
-        onChange({
-          ...panel,
-          width: Math.max(
-            240,
-            Math.min(
-              Math.max(240, window.innerWidth - panel.x - 8),
-              resize.originWidth + event.clientX - resize.startX
-            )
-          ),
-          height: Math.max(
-            150,
-            Math.min(
-              Math.max(150, window.innerHeight - panel.y - 8),
-              resize.originHeight + event.clientY - resize.startY
-            )
-          ),
-        });
-      }
-    };
-
-    const stopPointerAction = () => {
-      dragRef.current = null;
-      resizeRef.current = null;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', stopPointerAction);
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', stopPointerAction);
-    };
-  }, [onChange, panel]);
-
-  return (
-    <section
-      className="workspace-floating-panel fixed z-[1200] flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-2xl"
-      style={{
-        left: panel.x,
-      top: panel.y,
-      width: panel.width,
-      height: panelHeight,
-      zIndex,
-    }}
-      onPointerDown={onFocus}
-    >
-      <header
-        className="flex h-9 shrink-0 cursor-move items-center gap-2 border-b border-border bg-secondary/80 px-2"
-        onPointerDown={(event) => {
-          if ((event.target as HTMLElement).closest('button')) {
-            return;
-          }
-          dragRef.current = {
-            startX: event.clientX,
-            startY: event.clientY,
-            originX: panel.x,
-            originY: panel.y,
-          };
-          document.body.style.cursor = 'move';
-          document.body.style.userSelect = 'none';
-        }}
-      >
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold">{title}</span>
-        <button
-          type="button"
-          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          onClick={() => onChange({ ...panel, minimized: !panel.minimized })}
-          title={panel.minimized ? 'Restore panel' : 'Minimize panel'}
-        >
-          {panel.minimized ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
-        </button>
-        <button
-          type="button"
-          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          onClick={onClose}
-          title="Close panel"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </header>
-      {!panel.minimized && <div className="min-h-0 flex-1 overflow-auto p-3">{children}</div>}
-      {!panel.minimized && (
-        <button
-          type="button"
-          aria-label="Resize panel"
-          className="absolute bottom-0 right-0 h-4 w-4 cursor-se-resize text-muted-foreground"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            resizeRef.current = {
-              startX: event.clientX,
-              startY: event.clientY,
-              originWidth: panel.width,
-              originHeight: panel.height,
-            };
-            document.body.style.cursor = 'se-resize';
-            document.body.style.userSelect = 'none';
-          }}
-        >
-          <Grip className="h-4 w-4" />
-        </button>
-      )}
-    </section>
-  );
 };
 
 type ExplorerTreeNode = {
@@ -947,6 +813,7 @@ const readExplorerDirectory = async (
       entryName === '.cache' ||
       entryName === '.dataset-creator-data' ||
       entryName === PROJECT_GIT_DIRECTORY ||
+      isDatasetFileName(entryName) ||
       (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
     ) {
       continue;
@@ -1240,40 +1107,6 @@ const ExplorerTree = ({
   );
 };
 
-const EmptyWorkspacePlaceholder = ({
-  onOpenTool,
-  onOpenProject,
-}: {
-  onOpenTool: () => void;
-  onOpenProject: () => void;
-}) => (
-  <div className="flex h-full min-h-[20rem] items-center justify-center text-center">
-    <div className="max-w-sm px-6 text-muted-foreground">
-      <Archive className="mx-auto mb-3 h-8 w-8 opacity-60" />
-      <p className="text-sm font-medium text-foreground">Workspace is ready</p>
-      <p className="mt-1 text-xs">Open a tool or file when you need it.</p>
-      <div className="mt-4 flex justify-center gap-2">
-        <button
-          type="button"
-          onClick={onOpenTool}
-          className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Open Tool
-        </button>
-        <button
-          type="button"
-          onClick={onOpenProject}
-          className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary"
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-          Open Project
-        </button>
-      </div>
-    </div>
-  </div>
-);
-
 function App() {
   const projectId = useProjectStore((state) => state.id);
   const projectName = useProjectStore((state) => state.name);
@@ -1298,7 +1131,11 @@ function App() {
   const removeProjectDataset = useProjectStore((state) => state.removeDataset);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
-  const datasetsById = useProjectStore((state) => state.datasets);
+  const globalDataset = useProjectStore((state) => state.dataset);
+  const datasetsById = useMemo<Record<string, Dataset>>(
+    () => ({ [globalDataset.id]: globalDataset }),
+    [globalDataset]
+  );
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const datasetItems = useMemo(
     () => Object.values(datasetItemsById).filter((item) => !item.deleted),
@@ -1308,11 +1145,19 @@ function App() {
     () => toWorkspaceImages(sourceImages, datasetItems),
     [datasetItems, sourceImages]
   );
+  const globalDatasetTags = useMemo(
+    () => [...new Set(Object.values(globalDataset.captionOverrides).flat())].sort((left, right) => left.localeCompare(right)),
+    [globalDataset.captionOverrides]
+  );
+  const projectTags = useMemo(
+    () => [...new Set([...sourceImages.flatMap((image) => image.tags ?? []), ...globalDatasetTags])]
+      .sort((left, right) => left.localeCompare(right)),
+    [globalDatasetTags, sourceImages]
+  );
   const {
     darkMode,
     setDarkMode,
     editToolbar,
-    taggingToolbar,
     addNotification,
     notifications,
     operationLogs,
@@ -1328,14 +1173,13 @@ function App() {
   const [windowsMenuOpen, setWindowsMenuOpen] = useState(false);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
-  const [isVersionDialogOpen, setIsVersionDialogOpen] = useState(false);
   const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
   const [currentProjectVersionId, setCurrentProjectVersionId] = useState<string | undefined>();
   const [newVersionName, setNewVersionName] = useState('');
   const [isUrlToolReady, setIsUrlToolReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
-    getRestorableWorkspaceTabs(storedWorkspaceLayout)
+    getRestorableWorkspaceTabs(storedWorkspaceLayout).filter((tab) => tab.kind !== 'window')
   );
   const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(initialWorkspaceTabs);
   const [activeTabId, setActiveTabId] = useState<string | null>(() =>
@@ -1343,12 +1187,11 @@ function App() {
       ? storedWorkspaceLayout.activeTabId ?? null
       : initialWorkspaceTabs[0]?.id ?? null
   );
-  const [leftPanelOpen, setLeftPanelOpen] = useState(storedWorkspaceLayout.leftPanelOpen ?? true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(storedWorkspaceLayout.rightPanelOpen ?? true);
-  const [bottomPanelOpen, setBottomPanelOpen] = useState(storedWorkspaceLayout.bottomPanelOpen ?? false);
-  const [leftPanelWidth, setLeftPanelWidth] = useState(storedWorkspaceLayout.leftPanelWidth ?? 260);
-  const [rightPanelWidth, setRightPanelWidth] = useState(storedWorkspaceLayout.rightPanelWidth ?? 280);
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(storedWorkspaceLayout.bottomPanelHeight ?? 190);
+  const dock = useDockWorkspace(storedWorkspaceLayout, openTabs.filter((tab) => tab.kind !== 'window').map((tab) => tab.id), activeTabId, openTabs.filter((tab) => tab.pinned).map((tab) => tab.id));
+  const leftPanelOpen = dock.explorerOpen;
+  const [activeActivityView, setActiveActivityView] = useState<'explorer' | 'versions'>(
+    storedWorkspaceLayout.activeActivityView ?? 'explorer'
+  );
   const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
   const [explorerDropTargetPath, setExplorerDropTargetPath] = useState<string | null>(null);
   const visibleExplorerTree = useMemo(() => sanitizeExplorerTree(explorerTree), [explorerTree]);
@@ -1357,34 +1200,10 @@ function App() {
   const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
     () => new Set(['Project'])
   );
-  const [projectWindow, setProjectWindow] = useState<FloatingPanelState>({
-    ...storedWorkspaceLayout.projectWindow,
-    x: storedWorkspaceLayout.projectWindow?.x ?? 92,
-    y: storedWorkspaceLayout.projectWindow?.y ?? 112,
-    width: storedWorkspaceLayout.projectWindow?.width ?? 300,
-    height: storedWorkspaceLayout.projectWindow?.height ?? 360,
-    minimized: storedWorkspaceLayout.projectWindow?.minimized ?? false,
-  });
-  const [inspectorWindow, setInspectorWindow] = useState<FloatingPanelState>({
-    ...storedWorkspaceLayout.inspectorWindow,
-    x: storedWorkspaceLayout.inspectorWindow?.x ?? 420,
-    y: storedWorkspaceLayout.inspectorWindow?.y ?? 144,
-    width: storedWorkspaceLayout.inspectorWindow?.width ?? 300,
-    height: storedWorkspaceLayout.inspectorWindow?.height ?? 330,
-    minimized: storedWorkspaceLayout.inspectorWindow?.minimized ?? false,
-  });
-  const [projectWindowOpen, setProjectWindowOpen] = useState(storedWorkspaceLayout.projectWindowOpen ?? false);
-  const [inspectorWindowOpen, setInspectorWindowOpen] = useState(
-    storedWorkspaceLayout.inspectorWindowOpen ?? false
-  );
   const [tabMenuOpen, setTabMenuOpen] = useState(false);
-  const [tabContextMenu, setTabContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const [closedTabs, setClosedTabs] = useState<WorkspaceTab[]>([]);
-  const [dragOverTab, setDragOverTab] = useState<string | null>(null);
-  const [floatingPanelOrder, setFloatingPanelOrder] = useState<Array<'project' | 'inspector'>>([
-    'project',
-    'inspector',
-  ]);
+  const [toolMenuPosition, setToolMenuPosition] = useState({ x: 0, y: 0 });
+  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
   const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
   const explorerPanelRef = useRef<HTMLDivElement | null>(null);
@@ -1393,13 +1212,6 @@ function App() {
   const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
-  const dockResizeRef = useRef<{
-    kind: 'left' | 'right' | 'bottom';
-    startX: number;
-    startY: number;
-    origin: number;
-  } | null>(null);
-  const draggedTabRef = useRef<string | null>(null);
   const [explorerContextMenu, setExplorerContextMenu] = useState<{
     node: ExplorerTreeNode;
     x: number;
@@ -1444,15 +1256,6 @@ function App() {
   } | null>(null);
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
 
-  const focusFloatingPanel = (panel: 'project' | 'inspector') => {
-    setFloatingPanelOrder((order) => [...order.filter((item) => item !== panel), panel]);
-  };
-
-  const openFloatingInspector = () => {
-    setInspectorWindowOpen(true);
-    focusFloatingPanel('inspector');
-  };
-
   const setInspectorSectionOpen = (section: InspectorSectionId, open: boolean) => {
     setInspectorSectionsOpen((sections) =>
       sections[section] === open ? sections : { ...sections, [section]: open }
@@ -1475,7 +1278,7 @@ function App() {
     }
 
     outputLog.scrollTop = outputLog.scrollHeight;
-  }, [operationLogs.length, bottomPanelOpen]);
+  }, [operationLogs.length]);
 
   useEffect(() => {
     const toolFromUrl = readToolFromUrl();
@@ -1570,49 +1373,13 @@ function App() {
   }, [addNotification, projectDirectoryHandle]);
 
   useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
-      const resize = dockResizeRef.current;
-      if (!resize) {
-        return;
-      }
-
-      if (resize.kind === 'left') {
-        setLeftPanelWidth(
-          Math.max(200, Math.min(420, resize.origin + (event.clientX - resize.startX)))
-        );
-      } else if (resize.kind === 'right') {
-        setRightPanelWidth(
-          Math.max(220, Math.min(460, resize.origin - (event.clientX - resize.startX)))
-        );
-      } else {
-        setBottomPanelHeight(
-          Math.max(130, Math.min(360, resize.origin - (event.clientY - resize.startY)))
-        );
-      }
-    };
-
-    const stopResize = () => {
-      dockResizeRef.current = null;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', stopResize);
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', stopResize);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!(TOOLS as readonly string[]).includes(currentTool)) {
-      setCurrentTool('hub');
+      setCurrentTool('import');
     }
   }, [currentTool, setCurrentTool]);
 
   useEffect(() => {
-    if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen && !tabContextMenu) {
+    if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen && !workspaceContextMenu) {
       return;
     }
 
@@ -1623,13 +1390,13 @@ function App() {
         setToolsMenuOpen(false);
         setWindowsMenuOpen(false);
         setTabMenuOpen(false);
-        setTabContextMenu(null);
+        setWorkspaceContextMenu(null);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fileMenuOpen, tabContextMenu, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
+  }, [fileMenuOpen, workspaceContextMenu, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
 
   useEffect(() => {
     if (!explorerContextMenu) {
@@ -1650,54 +1417,25 @@ function App() {
   }, [explorerContextMenu]);
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
-  const tabContextMenuTab = tabContextMenu
-    ? openTabs.find((tab) => tab.id === tabContextMenu.tabId) ?? null
-    : null;
-  const tabContextMenuDataset =
-    tabContextMenuTab?.kind === 'dataset' || tabContextMenuTab?.kind === 'dataset-tool'
-      ? datasetsById[tabContextMenuTab.datasetId]
-      : null;
-  const tabContextMenuDatasetFilePath = tabContextMenuDataset?.filePath;
   const activeTool = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.tool : null;
   const activeDataset =
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
       ? datasetsById[activeTab.datasetId]
+      : activeTab?.kind === 'window' && activeTab.window === 'dataset'
+        ? globalDataset
       : null;
   const activeDatasetFileAssetPaths = useMemo(
-    () =>
-      activeDataset
-        ? filterLegacyProjectAssetPaths([
-            ...new Set([...(activeDataset.assetPaths ?? []), ...(activeDataset.psdAssetPaths ?? [])]),
-          ])
-        : [],
-    [activeDataset]
+    () => filterLegacyProjectAssetPaths([...new Set([...globalDataset.assetPaths, ...globalDataset.psdAssetPaths])]),
+    [globalDataset]
   );
-  const activeDatasetWorkspaceAssetPaths = useMemo(
-    () =>
-      activeTab?.kind === 'dataset' && activeDataset
-        ? activeDatasetFileAssetPaths
-        : [],
-    [activeDataset, activeDatasetFileAssetPaths, activeTab]
-  );
+  const activeDatasetWorkspaceAssetPaths = activeDatasetFileAssetPaths;
   const activeDatasetSourceImages = useMemo(
-    () =>
-      activeTab?.kind === 'dataset' && activeDataset
-        ? activeDataset.assetIds
-            .map((assetId) => sourceImagesById[assetId])
-            .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset))
-        : [],
-    [activeDataset, activeTab, sourceImagesById]
+    () => globalDataset.assetIds.map((id) => sourceImagesById[id]).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset)),
+    [globalDataset.assetIds, sourceImagesById]
   );
   const activeDatasetPreviewItems = useMemo(
-    () =>
-      activeDataset
-        ? orderDatasetBoardItems(
-            toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets),
-            activeDataset.assetOrder,
-            activeDataset.assetIds
-          )
-        : [],
-    [activeDataset, activeDatasetSourceImages, datasetWorkspaceFileAssets]
+    () => orderDatasetBoardItems(toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets), globalDataset.assetOrder, globalDataset.assetIds),
+    [globalDataset, activeDatasetSourceImages, datasetWorkspaceFileAssets]
   );
   const activeDatasetPreviewUrls = useWorkspacePreviewUrls(activeDatasetPreviewItems);
   const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
@@ -1833,14 +1571,12 @@ function App() {
 
     return captionEntries;
   }, [activeDataset, activeFileWorkspaceItem, activeTab, datasetsById]);
-  const activeToolNestedView =
-    activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.nested : undefined;
   const getWorkspaceTabChrome = (tab: WorkspaceTab) => {
     const Icon =
       tab.kind === 'tool'
-        ? tab.tool === 'hub'
-          ? Archive
-          : toolIcons[tab.tool]
+        ? toolIcons[tab.tool]
+        : tab.kind === 'window'
+          ? tab.window === 'output' ? PanelBottom : tab.window === 'project' ? FolderOpen : tab.window === 'dataset' ? Layers3 : PanelRight
         : tab.kind === 'dataset-tool'
           ? toolIcons[tab.tool]
         : tab.kind === 'dataset'
@@ -1849,6 +1585,8 @@ function App() {
     const label =
       tab.kind === 'tool'
         ? TOOL_LABELS[tab.tool]
+        : tab.kind === 'window'
+          ? tab.window === 'output' ? 'Output' : tab.window === 'project' ? 'Project' : tab.window === 'dataset' ? 'Dataset' : 'Inspector'
         : tab.kind === 'dataset-tool'
           ? `${DATASET_TOOL_LABELS[tab.tool]}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'dataset'
@@ -1865,8 +1603,10 @@ function App() {
         ? 'Project tool'
         : tab.kind === 'dataset-tool'
           ? 'Applied to Dataset'
-          : tab.kind === 'dataset'
-            ? 'Dataset object'
+        : tab.kind === 'dataset'
+          ? 'Dataset object'
+          : tab.kind === 'window'
+            ? 'Workspace window'
             : 'File';
     const title = `${label} - ${target}`;
 
@@ -1880,7 +1620,6 @@ function App() {
     (activeTab?.kind === 'tool' && activeTab.tool === 'review') ||
     (activeTab?.kind === 'dataset-tool' && (activeTab.tool === 'select' || activeTab.tool === 'review'));
   const showAnalysisInspector = activeInspectorContext === 'analysis';
-  const floatingInspectorOwnsContent = inspectorWindowOpen && !inspectorWindow.minimized;
   const showPhotopeaInspector =
     activeInspectorContext === 'photopea' &&
     activeTab &&
@@ -1895,20 +1634,6 @@ function App() {
           : tab
       )
     );
-  };
-
-  const openActiveToolNestedFile = (itemId: string) => {
-    if (!activeTab || (activeTab.kind !== 'tool' && activeTab.kind !== 'dataset-tool')) {
-      return;
-    }
-    setToolTabNestedView(activeTab.id, { kind: 'file', itemId });
-  };
-
-  const closeActiveToolNestedView = () => {
-    if (!activeTab || (activeTab.kind !== 'tool' && activeTab.kind !== 'dataset-tool')) {
-      return;
-    }
-    setToolTabNestedView(activeTab.id, undefined);
   };
 
   useEffect(() => {
@@ -1927,7 +1652,7 @@ function App() {
   useEffect(() => {
     let canceled = false;
 
-    if (!projectDirectoryHandle || activeTab?.kind !== 'dataset' || activeDatasetWorkspaceAssetPaths.length === 0) {
+    if (!projectDirectoryHandle || activeDatasetWorkspaceAssetPaths.length === 0) {
       setDatasetWorkspaceFileAssets([]);
       return;
     }
@@ -1967,7 +1692,7 @@ function App() {
     return () => {
       canceled = true;
     };
-  }, [activeDatasetWorkspaceAssetPaths, activeTab?.kind, addNotification, assetPreviewRefreshKey, projectDirectoryHandle]);
+  }, [activeDatasetWorkspaceAssetPaths, addNotification, assetPreviewRefreshKey, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!activeTab || !isFileBackedTab(activeTab)) {
@@ -2019,11 +1744,6 @@ function App() {
     }
     setActiveTabId(openTabs[0]?.id ?? null);
   }, [activeTabId, openTabs]);
-  const showEditToolbar = activeTool === 'clean' && editToolbar.visible;
-  const showHeaderEditToolbar = activeTool === 'clean' && editToolbar.visible;
-  const showTaggingToolbar = activeTool === 'tagging' || activeTab?.kind === 'file-caption';
-  const showFullscreenTagging = showTaggingToolbar && taggingToolbar.visible;
-
   useEffect(() => {
     if (!activeTab || activeTab.kind !== 'file-edit') {
       return;
@@ -2056,6 +1776,7 @@ function App() {
     setAnalysisFileTargets(tool === 'analysis' ? scopes?.analysisFiles ?? null : null);
     setTaggingItemScope(tool === 'tagging' ? scopes?.taggingItemIds ?? null : null);
     const nextTab = createToolTab(tool);
+    dock.show(nextTab.id);
     setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
     setActiveTabId(nextTab.id);
     writeToolToUrl(tool, 'push');
@@ -2068,6 +1789,7 @@ function App() {
   };
 
   const activateTab = (tab: WorkspaceTab) => {
+    dock.show(tab.id);
     setActiveTabId(tab.id);
     if (tab.kind === 'tool') {
       writeToolToUrl(tab.tool, 'push');
@@ -2078,7 +1800,7 @@ function App() {
     setToolsMenuOpen(false);
     setWindowsMenuOpen(false);
     setTabMenuOpen(false);
-    setTabContextMenu(null);
+    setWorkspaceContextMenu(null);
   };
 
   const pushClosedTabs = (tabs: WorkspaceTab[]) => {
@@ -2088,52 +1810,9 @@ function App() {
     setClosedTabs((current) => [...tabs, ...current.filter((tab) => !tabs.some((closedTab) => closedTab.id === tab.id))].slice(0, 12));
   };
 
-  const closeTab = (tabId: string, keepHistory = true) => {
-    const tabIndex = openTabs.findIndex((tab) => tab.id === tabId);
-    const closedTab = openTabs[tabIndex];
-    if (!closedTab) {
-      return;
-    }
-    if (!confirmClosingTabs([closedTab])) {
-      return;
-    }
-    const nextTabs = openTabs.filter((tab) => tab.id !== tabId);
-    const nextTab = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))] ?? null;
-    if (keepHistory) {
-      pushClosedTabs([closedTab]);
-    }
-    setOpenTabs(nextTabs);
-    setTabContextMenu(null);
-
-    if (activeTabId === tabId) {
-      if (nextTab) {
-        activateTab(nextTab);
-      } else {
-        setActiveTabId(null);
-      }
-    }
-  };
-
-  const closeOtherTabs = (tabId: string) => {
-    const targetTab = openTabs.find((tab) => tab.id === tabId);
-    if (!targetTab) {
-      return;
-    }
-    const nextTabs = openTabs.filter((tab) => tab.id === tabId || tab.pinned);
-    const closed = openTabs.filter((tab) => tab.id !== tabId && !tab.pinned);
-    if (!confirmClosingTabs(closed)) {
-      setTabContextMenu(null);
-      return;
-    }
-    pushClosedTabs(closed);
-    setOpenTabs(nextTabs);
-    setActiveTabId(tabId);
-    setTabContextMenu(null);
-  };
-
   const toggleTabPinned = (tabId: string) => {
-    setOpenTabs((tabs) => tabs.map((tab) => (tab.id === tabId ? { ...tab, pinned: !tab.pinned } : tab)));
-    setTabContextMenu(null);
+    setOpenTabs((tabs) => orderWorkspaceTabs(tabs.map((tab) => (tab.id === tabId ? { ...tab, pinned: !tab.pinned } : tab))));
+    setWorkspaceContextMenu(null);
   };
 
   const reopenClosedTab = () => {
@@ -2149,7 +1828,7 @@ function App() {
       return [...tabs, tabToRestore];
     });
     setActiveTabId(tabToRestore.id);
-    setTabContextMenu(null);
+    setWorkspaceContextMenu(null);
   };
 
   const isTabDirty = (tab: WorkspaceTab): boolean =>
@@ -2157,7 +1836,7 @@ function App() {
 
   const applyWorkspaceTabsForProject = (nextProjectId: string) => {
     const layout = readWorkspaceLayout();
-    const datasets = useProjectStore.getState().datasets;
+    const datasets = { [globalDataset.id]: globalDataset };
     const restoredTabs = getRestorableWorkspaceTabs(layout, nextProjectId).filter((tab) => {
       if (tab.kind === 'tool') {
         return true;
@@ -2233,25 +1912,6 @@ function App() {
     }
   };
 
-  const reorderTabs = (source: string, target: string) => {
-    if (source === target) {
-      return;
-    }
-
-    setOpenTabs((tabs) => {
-      const sourceIndex = tabs.findIndex((tab) => tab.id === source);
-      const targetIndex = tabs.findIndex((tab) => tab.id === target);
-      if (sourceIndex < 0 || targetIndex < 0) {
-        return tabs;
-      }
-
-      const nextTabs = [...tabs];
-      const [sourceTab] = nextTabs.splice(sourceIndex, 1);
-      nextTabs.splice(targetIndex, 0, sourceTab);
-      return nextTabs;
-    });
-  };
-
   useEffect(() => {
     try {
       const persistableActiveTab = openTabs.find((tab) => tab.id === activeTabId);
@@ -2275,36 +1935,18 @@ function App() {
               ? null
               : storedWorkspaceLayout.activeTabId ?? null,
           projectId: projectDirectoryHandle ? projectId : storedWorkspaceLayout.projectId ?? null,
-          leftPanelOpen,
-          rightPanelOpen,
-          bottomPanelOpen,
-          leftPanelWidth,
-          rightPanelWidth,
-          bottomPanelHeight,
-          projectWindow,
-          inspectorWindow,
-          projectWindowOpen,
-          inspectorWindowOpen,
-        } satisfies WorkspaceLayout)
+          activeActivityView,
+        } satisfies Partial<WorkspaceLayout>)
       );
     } catch {
       // Workspace layout is a convenience; private browsing can disable localStorage.
     }
   }, [
-    bottomPanelHeight,
-    bottomPanelOpen,
-    inspectorWindow,
-    inspectorWindowOpen,
+    activeActivityView,
     activeTabId,
-    leftPanelOpen,
-    leftPanelWidth,
     openTabs,
     projectDirectoryHandle,
     projectId,
-    projectWindow,
-    projectWindowOpen,
-    rightPanelOpen,
-    rightPanelWidth,
   ]);
 
   useEffect(() => {
@@ -2907,7 +2549,7 @@ function App() {
   };
 
   const openDatasetTab = (datasetId: string) => {
-    const dataset = useProjectStore.getState().datasets[datasetId];
+    const dataset = useProjectStore.getState().dataset;
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
       return;
@@ -2924,7 +2566,7 @@ function App() {
 
   const openDatasetToolTab = (datasetId: string, tool: DatasetToolName) => {
     if (!profile.enabledTools.includes(tool)) return;
-    const dataset = useProjectStore.getState().datasets[datasetId];
+    const dataset = useProjectStore.getState().dataset;
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
       return;
@@ -3047,7 +2689,7 @@ function App() {
   };
 
   const applyEmptyDatasetSuggestion = async (dataset: Dataset, suggestion: EmptyDatasetSuggestion) => {
-    const currentDataset = useProjectStore.getState().datasets[dataset.id];
+    const currentDataset = useProjectStore.getState().dataset;
     if (!currentDataset) {
       addNotification('warning', 'Dataset is no longer available');
       return;
@@ -3167,7 +2809,7 @@ function App() {
     }
 
     const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>) => {
-      const latestDataset = useProjectStore.getState().datasets[tab.datasetId];
+      const latestDataset = useProjectStore.getState().dataset;
       if (!latestDataset) {
         addNotification('warning', 'Dataset is no longer available');
         return;
@@ -3412,26 +3054,16 @@ function App() {
     }
   };
 
-  const renderDatasetWorkspace = (tab: DatasetWorkspaceTab) => {
-    const dataset = datasetsById[tab.datasetId];
-    if (!dataset) {
-      return (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-          Dataset is no longer available
-        </div>
-      );
-    }
-    const datasetNode = dataset.filePath ? findExplorerNodeByPath(dataset.filePath) : null;
-    const datasetToolbarActionIds = new Set(['select', 'review', 'caption', 'analysis', 'export']);
-    const datasetToolbarActions = datasetNode
-      ? getDatasetContextActionGroups(datasetNode)
-          .map((group) =>
-            group
-              .filter((action) => datasetToolbarActionIds.has(action.id))
-              .map((action) => (action.id === 'export' ? { ...action, variant: 'primary' as const } : action))
-          )
-          .filter((group) => group.length > 0)
-      : [];
+  const renderDatasetWorkspace = (dataset: Dataset) => {
+    const datasetToolbarActions: ContextActionGroup[] = [
+      [
+        createExplorerAction({ id: 'select', label: 'Select', icon: ScanSearch, onSelect: () => openDatasetToolTab(dataset.id, 'select') }),
+        createExplorerAction({ id: 'review', label: 'Review', icon: Layers3, onSelect: () => openDatasetToolTab(dataset.id, 'review') }),
+        createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openDatasetToolTab(dataset.id, 'tagging') }),
+        createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openDatasetToolTab(dataset.id, 'analysis') }),
+      ],
+      [createExplorerAction({ id: 'export', label: 'Export', icon: Download, variant: 'primary', onSelect: () => navigateToTool('export') })],
+    ];
     const datasetBoardItems = sortDatasetBoardItems(activeDatasetPreviewItems, dataset, datasetBoardSortMode);
 
     return (
@@ -3504,7 +3136,7 @@ function App() {
               assetPaths = [...assetPaths, ...imported.assetPaths];
             }
             if (assetIds.length > 0 || assetPaths.length > 0) {
-              const currentDataset = useProjectStore.getState().datasets[dataset.id] ?? dataset;
+              const currentDataset = useProjectStore.getState().dataset;
               const nextAssetIds = [...new Set([...currentDataset.assetIds, ...assetIds])];
               const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(currentDataset.assetPaths ?? []), ...assetPaths])]);
               const nextPsdAssetPaths = collectDatasetPsdPathsFromAssetPaths(nextAssetPaths);
@@ -3544,7 +3176,7 @@ function App() {
             <div className="min-w-0">
               <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Dataset object</p>
               <h2 className="mt-1 truncate text-xl font-semibold">{dataset.name}</h2>
-              <p className="mt-1 truncate text-sm text-muted-foreground">{dataset.filePath ?? 'Unsaved Dataset'}</p>
+              <p className="mt-1 truncate text-sm text-muted-foreground">Global Dataset</p>
             </div>
             {datasetToolbarActions.length > 0 ? (
               <ContextActionGroups groups={datasetToolbarActions} mode="toolbar" />
@@ -3723,9 +3355,7 @@ function App() {
               ? FileJson
               : File
           : activeTool
-            ? activeTool === 'hub'
-              ? Archive
-              : toolIcons[activeTool]
+            ? toolIcons[activeTool]
             : PanelRight;
     const title =
       activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
@@ -3780,6 +3410,17 @@ function App() {
           },
           { label: 'Target', value: 'Dataset contents' },
           { label: 'Path', value: activeDataset?.filePath ?? 'Dataset' },
+        ];
+      }
+
+      if (activeTab.kind === 'window') {
+        return [
+          {
+            label: 'Object',
+            value: activeTab.window === 'project' ? 'Project' : activeTab.window === 'dataset' ? 'Dataset' : 'Inspector',
+          },
+          { label: 'Mode', value: 'Docked window' },
+          { label: 'Target', value: activeTab.window === 'dataset' ? 'Global Dataset' : 'Workspace' },
         ];
       }
 
@@ -4343,8 +3984,8 @@ function App() {
 
   const removeWorkspaceReferencesForDeletedEntries = async (entries: ExplorerClipboardEntry[]) => {
     const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
-    const datasetsBeforeSourceRemoval = useProjectStore.getState().datasets;
-    const sourceAffectedDatasetIds = new Set<string>();
+    const datasetBeforeSourceRemoval = useProjectStore.getState().dataset;
+    let sourceAffectsDataset = false;
     const removedSourceIds: string[] = [];
     for (const source of Object.values(useProjectStore.getState().sourceImages)) {
       const sourcePath = source.originalFilePath;
@@ -4352,21 +3993,13 @@ function App() {
         sourcePath &&
         deletedPaths.some((deletedPath) => sourcePath === deletedPath || sourcePath.startsWith(`${deletedPath}/`))
       ) {
-        Object.values(datasetsBeforeSourceRemoval).forEach((dataset) => {
-          if (dataset.assetIds.includes(source.id)) {
-            sourceAffectedDatasetIds.add(dataset.id);
-          }
-        });
+        sourceAffectsDataset ||= datasetBeforeSourceRemoval.assetIds.includes(source.id);
         removeSourceImage(source.id);
         removedSourceIds.push(source.id);
       }
     }
-    for (const dataset of Object.values(useProjectStore.getState().datasets)) {
-      const parentPath = dataset.parentPath || 'Project';
-      if (deletedPaths.some((deletedPath) => parentPath === `Project/${deletedPath}` || parentPath.startsWith(`Project/${deletedPath}/`))) {
-        removeProjectDataset(dataset.id);
-        continue;
-      }
+    {
+      const dataset = useProjectStore.getState().dataset;
 
       const deletedExplorerPaths = entries.map((entry) => entry.path);
       const isDeletedPath = (path: string) =>
@@ -4389,7 +4022,7 @@ function App() {
       );
 
       if (
-        sourceAffectedDatasetIds.has(dataset.id) ||
+        sourceAffectsDataset ||
         assetIds.length !== dataset.assetIds.length ||
         assetPaths.length !== (dataset.assetPaths ?? []).length ||
         psdAssetPaths.length !== (dataset.psdAssetPaths ?? []).length ||
@@ -4991,7 +4624,7 @@ function App() {
           return;
         }
         event.preventDefault();
-        closeTab(activeTab.id);
+        closeWorkspaceViews([activeTab.id]);
         return;
       }
 
@@ -5426,6 +5059,8 @@ function App() {
   };
 
   const openProjectVersions = async () => {
+    setActiveActivityView('versions');
+    dock.show(EXPLORER_VIEW);
     if (!projectDirectoryHandle) {
       addNotification('warning', 'Open a project directory before managing versions');
       return;
@@ -5434,7 +5069,6 @@ function App() {
       const { currentId, versions } = await listProjectVersions(projectDirectoryHandle);
       setCurrentProjectVersionId(currentId);
       setProjectVersions(versions);
-      setIsVersionDialogOpen(true);
       setFileMenuOpen(false);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to read project versions');
@@ -5465,7 +5099,6 @@ function App() {
       await restoreProjectVersion(projectDirectoryHandle, version.id);
       await openProjectDirectory(projectDirectoryHandle);
       setCurrentProjectVersionId(version.id);
-      setIsVersionDialogOpen(false);
       addNotification('success', `Restored version ${version.name}`);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to restore project version');
@@ -5477,7 +5110,7 @@ function App() {
     setViewMenuOpen(false);
     setToolsMenuOpen(false);
     setWindowsMenuOpen(false);
-    setTabContextMenu(null);
+    setWorkspaceContextMenu(null);
   };
 
   const closeExplorerContextMenu = () => setExplorerContextMenu(null);
@@ -5678,686 +5311,90 @@ function App() {
   const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
     <ContextActionGroups groups={getDirectoryContextActionGroups(node)} />;
 
-  return (
-    <div className="flex h-screen bg-background text-foreground">
-      <>{projectSetup && <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} />}</>
-      <Dialog.Root open={isVersionDialogOpen} onOpenChange={setIsVersionDialogOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-[2100] bg-black/60" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-[2101] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-5 shadow-xl">
-            <Dialog.Title className="text-lg font-semibold">Project versions</Dialog.Title>
-            <Dialog.Description className="mt-1 text-sm text-muted-foreground">Versions are tagged snapshots. Creating one from a restored version makes a child branch.</Dialog.Description>
-            <div className="mt-4 flex gap-2">
-              <input value={newVersionName} onChange={(event) => setNewVersionName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void handleCreateProjectVersion(); }} placeholder="Version name" className="min-w-0 flex-1 rounded border border-border bg-background px-3 py-2 text-sm" />
-              <button type="button" onClick={() => void handleCreateProjectVersion()} disabled={!newVersionName.trim()} className="rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40">Create</button>
-            </div>
-            <div className="mt-4 max-h-72 divide-y divide-border overflow-auto rounded border border-border">
-              {projectVersions.length > 0 ? projectVersions.map((version) => (
-                <div key={version.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1"><p className="truncate font-medium">{version.name}{version.id === currentProjectVersionId ? ' (current)' : ''}</p><p className="text-xs text-muted-foreground">{new Date(version.createdAt).toLocaleString()}</p></div>
-                  <button type="button" onClick={() => void handleRestoreProjectVersion(version)} disabled={version.id === currentProjectVersionId} className="rounded border border-border px-2 py-1 text-xs hover:bg-secondary disabled:opacity-40">Restore</button>
-                </div>
-              )) : <p className="px-3 py-6 text-center text-sm text-muted-foreground">No versions yet.</p>}
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-      <PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
-          {(fileMenuOpen || viewMenuOpen || toolsMenuOpen || windowsMenuOpen) && (
-            <button
-              type="button"
-              aria-label="Close menu"
-              className="fixed inset-0 z-30 cursor-default"
-              onClick={closeTopMenus}
-            />
-          )}
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                fileMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setViewMenuOpen(false);
-                setToolsMenuOpen(false);
-                setWindowsMenuOpen(false);
-                setFileMenuOpen((open) => !open);
-              }}
-            >
-              File
-            </button>
-            {fileMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
-                <button
-                  type="button"
-                  disabled={isProjectDirectoryBusy}
-                  onClick={() => void handleNewProject()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <FilePlus className="h-4 w-4" />
-                  <span className="flex-1">New Project Directory</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isProjectDirectoryBusy}
-                  onClick={() => void handleOpenProject()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  <span className="flex-1">Open Project Directory</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isProjectDirectoryBusy}
-                  onClick={handleRenameProject}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <Pencil className="h-4 w-4" />
-                  <span className="flex-1">Rename</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!projectDirectoryHandle}
-                  onClick={() => void openProjectVersions()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <GitBranch className="h-4 w-4" />
-                  <span className="flex-1">Versions</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                viewMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setFileMenuOpen(false);
-                setToolsMenuOpen(false);
-                setWindowsMenuOpen(false);
-                setViewMenuOpen((open) => !open);
-              }}
-            >
-              View
-            </button>
-            {viewMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-48 rounded-md border border-border bg-popover p-1 shadow-xl">
-                <button
-                  type="button"
-                  onClick={() => handleThemeChange(false)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Sun className="h-4 w-4" />
-                  <span className="flex-1">Light</span>
-                  {!darkMode && <Check className="h-4 w-4" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleThemeChange(true)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Moon className="h-4 w-4" />
-                  <span className="flex-1">Dark</span>
-                  {darkMode && <Check className="h-4 w-4" />}
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                toolsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setFileMenuOpen(false);
-                setViewMenuOpen(false);
-                setWindowsMenuOpen(false);
-                setToolsMenuOpen((open) => !open);
-              }}
-            >
-              Tools
-            </button>
-            {toolsMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => {
-                  const Icon = tool === 'hub' ? Archive : toolIcons[tool];
-                  const active = activeTab?.kind === 'tool' && activeTool === tool;
-                  return (
-                    <button
-                      type="button"
-                      key={tool}
-                      onClick={() => navigateToTool(tool)}
-                      className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary ${
-                        active ? 'bg-secondary/70' : ''
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      <span className="flex-1">{TOOL_LABELS[tool]}</span>
-                      {active && <Check className="h-4 w-4" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                windowsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setFileMenuOpen(false);
-                setViewMenuOpen(false);
-                setToolsMenuOpen(false);
-                setWindowsMenuOpen((open) => !open);
-              }}
-            >
-              Windows
-            </button>
-            {windowsMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLeftPanelOpen((open) => !open);
-                    setWindowsMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <PanelLeft className="h-4 w-4" />
-                  <span className="flex-1">Explorer</span>
-                  {leftPanelOpen && <Check className="h-4 w-4" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRightPanelOpen((open) => !open);
-                    setWindowsMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <PanelRight className="h-4 w-4" />
-                  <span className="flex-1">Inspector</span>
-                  {rightPanelOpen && <Check className="h-4 w-4" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBottomPanelOpen((open) => !open);
-                    setWindowsMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <PanelBottom className="h-4 w-4" />
-                  <span className="flex-1">Output</span>
-                  {bottomPanelOpen && <Check className="h-4 w-4" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProjectWindowOpen(true);
-                    setWindowsMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  <span className="flex-1">Project window</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    openFloatingInspector();
-                    setWindowsMenuOpen(false);
-                  }}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <PanelRight className="h-4 w-4" />
-                  <span className="flex-1">Floating inspector</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            className="rounded px-3 py-1.5 font-medium transition-colors hover:bg-secondary"
-            onClick={() => {
-              closeTopMenus();
-              setIsWorkspaceSettingsOpen(true);
-            }}
-          >
-            Settings
-          </button>
-        </div>
 
-        <div
-          className="workspace-tab-strip absolute z-20 flex h-9 items-stretch border-b border-border bg-background"
-          style={{
-            top: '2.25rem',
-            left: leftPanelOpen ? leftPanelWidth : 0,
-            right: rightPanelOpen ? rightPanelWidth : 0,
-          }}
-        >
-          <div className="workspace-tab-scroll flex min-w-0 flex-1 items-stretch overflow-x-auto px-1">
-            {openTabs.map((tab) => {
-              const { Icon, label, title } = getWorkspaceTabChrome(tab);
-              const active = activeTabId === tab.id;
-              return (
-                <div
-                  key={tab.id}
-                  role="tab"
-                  tabIndex={0}
-                  aria-selected={active}
-                  draggable
-                  onClick={(event) => {
-                    if ((event.target as HTMLElement).closest('[data-tab-close]')) {
-                      return;
-                    }
-                    activateTab(tab);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      activateTab(tab);
-                    }
-                  }}
-                  onDragStart={(event) => {
-                    draggedTabRef.current = tab.id;
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData(WORKSPACE_TAB_DRAG_TYPE, tab.id);
-                    event.dataTransfer.setData('text/plain', tab.id);
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = 'move';
-                    if (draggedTabRef.current !== tab.id) {
-                      setDragOverTab(tab.id);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const source =
-                      draggedTabRef.current ||
-                      event.dataTransfer.getData(WORKSPACE_TAB_DRAG_TYPE) ||
-                      event.dataTransfer.getData('text/plain');
-                    if (source) {
-                      reorderTabs(source, tab.id);
-                    }
-                    draggedTabRef.current = null;
-                    setDragOverTab(null);
-                  }}
-                  onDragEnd={() => {
-                    draggedTabRef.current = null;
-                    setDragOverTab(null);
-                  }}
-                  onMouseDown={(event) => {
-                    if (event.button === 1 && !(event.target as HTMLElement).closest('[data-tab-close]')) {
-                      event.preventDefault();
-                      closeTab(tab.id);
-                    }
-                  }}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setTabContextMenu({ tabId: tab.id, x: event.clientX, y: event.clientY });
-                  }}
-                  className={`group flex ${tab.pinned ? 'min-w-10 max-w-40' : 'min-w-[7rem] max-w-52'} shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 text-xs outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
-                    active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-secondary/60'
-                  } ${dragOverTab === tab.id ? 'border-l-2 border-l-primary' : ''}`}
-                  title={title}
-                >
-                  {tab.pinned ? <Pin className="h-3 w-3 shrink-0" /> : null}
-                  <Icon className="h-3.5 w-3.5 shrink-0" />
-                  <span className={`min-w-0 flex-1 truncate ${tab.pinned ? 'hidden sm:block' : ''}`}>{label}</span>
-                  {isTabDirty(tab) ? (
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" title="Unsaved changes" />
-                  ) : null}
-                  <button
-                    type="button"
-                    data-tab-close
-                    draggable={false}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeTab(tab.id);
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onDragStart={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                    className={`rounded p-1 text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 ${
-                      tab.pinned ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100'
-                    }`}
-                    title="Close tab"
-                    aria-label={`Close ${label} tab`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              );
-            })}
-            <DropdownMenu.Root open={tabMenuOpen} onOpenChange={setTabMenuOpen}>
-              <DropdownMenu.Trigger asChild>
-                <button
-                  type="button"
-                  className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                  title="Open tool"
-                  aria-label="Open tool"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  align="start"
-                  sideOffset={4}
-                  className="z-[100] w-52 rounded-md border border-border bg-popover p-1 shadow-xl"
-                >
-                  <p className="px-3 py-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                    Open tool
-                  </p>
-                  {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => {
-                    const Icon = tool === 'hub' ? Archive : toolIcons[tool];
-                    const isOpen = openTabs.some((tab) => tab.kind === 'tool' && tab.tool === tool);
-                    return (
-                      <DropdownMenu.Item
-                        key={tool}
-                        onSelect={() => navigateToTool(tool)}
-                        className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-xs outline-none hover:bg-secondary"
-                      >
-                        <Icon className="h-3.5 w-3.5" />
-                        <span className="min-w-0 flex-1 truncate">{TOOL_LABELS[tool]}</span>
-                        {isOpen && <Check className="h-3.5 w-3.5 text-muted-foreground" />}
-                      </DropdownMenu.Item>
-                    );
-                  })}
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-            <button
-              type="button"
-              disabled={closedTabs.length === 0}
-              onClick={reopenClosedTab}
-              className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
-              title="Reopen closed tab"
-              aria-label="Reopen closed tab"
-            >
-              <RotateCcw className="h-4 w-4" />
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={openFloatingInspector}
-            className="mx-1 shrink-0 self-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground md:hidden"
-            title="Open floating inspector"
-            aria-label="Open floating inspector"
-          >
-            <PanelRight className="h-4 w-4" />
-          </button>
-          {tabContextMenu && tabContextMenuTab ? (
-            <>
-              <button
-                type="button"
-                aria-label="Close tab menu"
-                className="fixed inset-0 z-40 cursor-default"
-                onClick={() => setTabContextMenu(null)}
-              />
-              <div
-                className="fixed z-50 w-52 rounded-md border border-border bg-popover p-1 text-xs shadow-xl"
-                style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
-              >
-                <button
-                  type="button"
-                  onClick={() => toggleTabPinned(tabContextMenuTab.id)}
-                  className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Pin className="h-3.5 w-3.5" />
-                  <span className="flex-1">{tabContextMenuTab.pinned ? 'Unpin tab' : 'Pin tab'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => closeOtherTabs(tabContextMenuTab.id)}
-                  className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  <span className="flex-1">Close others</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={closedTabs.length === 0}
-                  onClick={reopenClosedTab}
-                  className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  <span className="flex-1">Reopen closed tab</span>
-                </button>
-                {isFileBackedTab(tabContextMenuTab) ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTabContextMenu(null);
-                      setExplorerContextMenu({
-                        node: { name: tabContextMenuTab.name, path: tabContextMenuTab.path, kind: 'file' },
-                        x: tabContextMenu.x,
-                        y: tabContextMenu.y,
-                      });
-                    }}
-                    className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
-                  >
-                    <File className="h-3.5 w-3.5" />
-                    <span className="flex-1">File actions</span>
-                  </button>
-                ) : null}
-                {tabContextMenuDataset && tabContextMenuDatasetFilePath ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTabContextMenu(null);
-                      setExplorerContextMenu({
-                        node: {
-                          name: tabContextMenuDataset.name,
-                          path: tabContextMenuDatasetFilePath,
-                          kind: 'dataset',
-                          datasetId: tabContextMenuDataset.id,
-                        },
-                        x: tabContextMenu.x,
-                        y: tabContextMenu.y,
-                      });
-                    }}
-                    className="flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary"
-                  >
-                    <Layers3 className="h-3.5 w-3.5" />
-                    <span className="flex-1">Dataset actions</span>
-                  </button>
-                ) : null}
-              </div>
-            </>
-          ) : null}
-          {showHeaderEditToolbar && (
-            <div className="flex shrink-0 items-center gap-1 border-l border-border px-1">
-              <a
-                href="https://www.photopea.com"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors hover:bg-secondary"
-                title="Open Photopea"
-              >
-                <ExternalLink className="h-3.5 w-3.5" />
-                Photopea
-              </a>
-              <button
-                type="button"
-                onClick={() => runEditCommand('save')}
-                disabled={!editToolbar.canSave || editToolbar.isProcessing}
-                className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                onClick={() => runEditCommand('saveCopy')}
-                disabled={!editToolbar.canSave || editToolbar.isProcessing}
-                className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
-              >
-                Save Copy
-              </button>
-              <button
-                type="button"
-                onClick={() => runEditCommand('cancel')}
-                disabled={editToolbar.isProcessing}
-                className="rounded px-2 py-1 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-          <div className="flex min-w-0 shrink-0 items-center justify-end px-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-            {projectDirectoryName ?? 'Unsaved workspace'}
-          </div>
-        </div>
+  const closeWorkspaceViews = (ids: string[]) => {
+    const closable = ids.filter((id) => !openTabs.find((tab) => tab.id === id)?.pinned && !dock.layout.pinned?.includes(id));
+    const editors = openTabs.filter((tab) => closable.includes(tab.id));
+    if (!confirmClosingTabs(editors)) return;
+    pushClosedTabs(editors);
+    setOpenTabs((tabs) => tabs.filter((tab) => !closable.includes(tab.id)));
+    dock.close(closable);
+    if (activeTabId && closable.includes(activeTabId)) {
+      const location = findDockGroup(dock.layout, activeTabId);
+      const next = location?.group.tabs.find((id) => !closable.includes(id) && openTabs.some((tab) => tab.id === id));
+      setActiveTabId(next ?? openTabs.find((tab) => !closable.includes(tab.id))?.id ?? null);
+    }
+    setWorkspaceContextMenu(null);
+  };
 
-        <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
-          <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card p-4 shadow-2xl">
-              <div className="mb-4 flex items-start justify-between gap-4">
-                <div>
-                  <Dialog.Title className="text-base font-semibold">Settings</Dialog.Title>
-                  <Dialog.Description className="text-xs text-muted-foreground">
-                    Configure shared workspace display options.
-                  </Dialog.Description>
-                </div>
-                <Dialog.Close asChild>
-                  <button
-                    type="button"
-                    className="rounded-md p-2 transition-colors hover:bg-secondary"
-                    aria-label="Close Settings"
-                  >
-                    <X size={16} />
-                  </button>
-                </Dialog.Close>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <label className="mb-2 block text-xs text-muted-foreground">Brick columns</label>
-                  <select
-                    value={workspaceSettings?.brickColumnCount ?? 'auto'}
-                    onChange={(event) =>
-                      updateWorkspaceSettings({
-                        brickColumnCount: parseBrickColumnCount(event.target.value),
-                      })
-                    }
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                  >
-                    {BRICK_COLUMN_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option === 'auto' ? 'Auto' : `${option} columns`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="rounded-md border border-border bg-secondary/20 p-3">
-                  <h3 className="mb-3 text-sm font-semibold">Local Tagger Files</h3>
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">model.onnx</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {workspaceSettings.localTaggerModelPath ?? 'No model selected'}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handlePickLocalTaggerFile('model')}
-                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                      >
-                        <Upload size={16} />
-                        Choose model
-                      </button>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">selected_tags.csv</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {workspaceSettings.localTaggerTagsPath ?? 'No tags CSV selected'}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handlePickLocalTaggerFile('tags')}
-                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                      >
-                        <Upload size={16} />
-                        Choose tags
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-        <input
-          ref={taggerModelInputRef}
-          type="file"
-          accept=".onnx"
-          className="hidden"
-          onChange={(event) => void handleFallbackLocalTaggerFileSelected('model', event)}
-          aria-hidden="true"
-        />
-        <input
-          ref={taggerTagsInputRef}
-          type="file"
-          accept=".csv,text/csv"
-          className="hidden"
-          onChange={(event) => void handleFallbackLocalTaggerFileSelected('tags', event)}
-          aria-hidden="true"
-        />
-
-        <div className="flex min-h-0 flex-1">
-          {leftPanelOpen && (
-            <aside
-              className="workspace-dock-left relative flex min-h-0 shrink-0 flex-col border-r border-border bg-card"
-              style={{ width: leftPanelWidth }}
-            >
-              <button
-                type="button"
-                aria-label="Resize explorer panel"
-                className="workspace-dock-resize-vertical absolute inset-y-0 -right-1 z-10 w-2 cursor-ew-resize bg-transparent hover:bg-primary/60"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  dockResizeRef.current = {
-                    kind: 'left',
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    origin: leftPanelWidth,
-                  };
-                  document.body.style.cursor = 'ew-resize';
-                  document.body.style.userSelect = 'none';
-                }}
-              />
-              <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
-                <div className="flex min-w-0 items-center gap-2 text-xs font-semibold">
-                  <PanelLeft className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="truncate">Explorer</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setLeftPanelOpen(false)}
-                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  title="Close explorer"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
+  const renderEditor = (tab: WorkspaceTab) => {
+    const focused = tab.id === activeTabId;
+    if (isFileBackedTab(tab)) return <div className="h-full min-h-0">                      {tab.kind === 'file-view' ? (
+                        <InternalFileViewer
+                          file={tab.file}
+                          fileName={tab.name}
+                          fileKind={tab.fileKind}
+                          active={focused}
+                          onSavePsd={
+                            tab.fileKind === 'psd'
+                              ? (buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)
+                              : undefined
+                          }
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setExplorerContextMenu({
+                              node: { name: tab.name, path: tab.path, kind: 'file' },
+                              x: event.clientX,
+                              y: event.clientY,
+                            });
+                          }}
+                        />
+                      ) : tab.kind === 'file-analysis' ? (
+                        <AnalysisTool
+                          active={focused}
+                          projectDirectoryHandle={projectDirectoryHandle}
+                          onOpenAssetContextMenu={openAssetExplorerContextMenu}
+                          fileTarget={{
+                            path: tab.path,
+                            name: tab.name,
+                            fileKind: tab.fileKind,
+                            file: tab.file,
+                            workspaceImageId: tab.workspaceImageId,
+                          }}
+                        />
+                      ) : tab.kind === 'file-edit' ? (
+                        <PhotopeaBlobViewer
+                          file={tab.file}
+                          fileName={tab.name}
+                          active={focused}
+                          onSavePsd={(buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)}
+                        />
+                      ) : (
+                        <TaggingToolComponent
+                          selectedItemId={tab.workspaceImageId}
+                          singleFileMode
+                          active={focused}
+                        />
+                      )}
+</div>;
+    if (tab.kind === 'dataset') return renderDatasetWorkspace(globalDataset);
+    if (isDatasetToolTab(tab)) return renderDatasetTool(tab);
+    if (tab.kind !== 'tool') return null;
+    return <div className="relative h-full min-h-0 overflow-auto">
+      {tab.nested && <button type="button" title="Back to tool" className="absolute left-2 top-2 z-30 rounded border border-border bg-card p-2"
+        onClick={() => setToolTabNestedView(tab.id, undefined)}><ArrowLeft className="h-4 w-4" /></button>}
+      {renderTool({
+        currentTool: tab.tool, active: focused, projectDirectoryHandle, onOpenAssetContextMenu: openAssetExplorerContextMenu,
+        nested: tab.nested, onOpenNestedFile: (itemId) => setToolTabNestedView(tab.id, { kind: 'file', itemId }),
+        onImportFiles: (files) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`),
+        analysisFileTargets, taggingItemScope,
+      })}
+    </div>;
+  };
+  const workspaceViews: DockView[] = [
+    { id: EXPLORER_VIEW, title: activeActivityView === 'versions' ? 'Versions' : 'Explorer', icon: activeActivityView === 'versions' ? GitBranch : PanelLeft,
+      content: <div className="flex h-full min-h-0 flex-col">              {activeActivityView === 'explorer' ? (
+                <>
               <div
                 ref={explorerPanelRef}
                 className="min-h-0 flex-1 overflow-auto p-2"
@@ -6499,6 +5536,135 @@ function App() {
                   />
                 )}
               </div>
+
+                </>
+              ) : (
+                <div className="min-h-0 flex-1 overflow-auto p-3 text-xs">
+                  <p className="mb-1 font-medium">Project versions</p>
+                  <p className="mb-3 text-muted-foreground">Versions are tagged snapshots. Restoring replaces current project files.</p>
+                  <div className="flex gap-2">
+                    <input value={newVersionName} onChange={(event) => setNewVersionName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void handleCreateProjectVersion(); }} placeholder="Version name" className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1.5" />
+                    <button type="button" onClick={() => void handleCreateProjectVersion()} disabled={!newVersionName.trim()} className="rounded bg-primary px-2 py-1.5 font-medium text-primary-foreground disabled:opacity-40">Create</button>
+                  </div>
+                  <div className="mt-3 divide-y divide-border rounded border border-border">
+                    {projectVersions.length > 0 ? projectVersions.map((version) => <div key={version.id} className="flex items-center gap-2 px-2 py-2"><GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><p className="truncate font-medium">{version.name}{version.id === currentProjectVersionId ? ' (current)' : ''}</p><p className="text-[10px] text-muted-foreground">{new Date(version.createdAt).toLocaleString()}</p></div><button type="button" onClick={() => void handleRestoreProjectVersion(version)} disabled={version.id === currentProjectVersionId} className="rounded border border-border px-2 py-1 text-[10px] hover:bg-secondary disabled:opacity-40">Restore</button></div>) : <p className="px-2 py-4 text-center text-muted-foreground">No versions yet.</p>}
+                  </div>
+                </div>
+              )}
+</div> },
+    { id: 'window:inspector', title: 'Inspector', icon: PanelRight, content: <div className="h-full overflow-auto p-3">{renderInspectorContent()}</div> },
+    { id: 'window:output', title: 'Output', icon: PanelBottom,
+      content: <div ref={outputLogRef} className="h-full overflow-auto p-3 font-mono text-[11px]" onScroll={(event) => { const node = event.currentTarget; outputAutoFollowRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24; }}>
+        {operationLogs.map((entry) => <p key={entry.id} className={entry.level === 'error' ? 'text-destructive' : entry.level === 'warning' ? 'text-yellow-500' : entry.level === 'success' ? 'text-emerald-500' : 'text-muted-foreground'}>[{entry.timestamp.toLocaleTimeString()}] {entry.level.toUpperCase().padEnd(7, ' ')} {entry.message}</p>)}
+      </div> },
+    { id: 'window:project', title: 'Project', icon: FolderOpen, content: <div className="h-full overflow-auto p-3">            <div className="space-y-3 text-xs">
+              <div className="rounded border border-border bg-background p-3">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Current project</p>
+                <p className="mt-1 truncate font-semibold">{projectName}</p>
+                <p className="mt-1 text-muted-foreground">{profile.label} project</p>
+                <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
+                <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 text-muted-foreground">
+                  <span>Assets</span><span className="text-right text-foreground">{workspaceImages.length}</span>
+                  <span>Dataset assets</span><span className="text-right text-foreground">{globalDataset.assetIds.length + globalDataset.assetPaths.length}</span>
+                  <span>Tags</span><span className="text-right text-foreground">{projectTags.length}</span>
+                </div>
+              </div>
+              <div>
+                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Open editors</p>
+                <div className="space-y-1">
+                  {openTabs.length === 0 && (
+                    <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
+                  )}
+                  {openTabs.map((tab) => {
+                    const { Icon, label, target, title } = getWorkspaceTabChrome(tab);
+                    return (
+                      <button
+                        type="button"
+                        key={tab.id}
+                        onClick={() => activateTab(tab)}
+                        title={title}
+                        className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
+                          activeTabId === tab.id ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
+                        }`}
+                      >
+                        {tab.pinned ? <Pin className="h-3 w-3 shrink-0" /> : null}
+                        <Icon className="h-3.5 w-3.5" />
+                        <span className="min-w-0 flex-1 truncate">{label}</span>
+                        {isTabDirty(tab) ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" /> : null}
+                        <span className="shrink-0 text-[10px] opacity-70">{target}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+</div> },
+    { id: 'window:dataset', title: 'Dataset', icon: Layers3, content: <div className="h-full overflow-auto p-3">            <div className="space-y-3 text-xs">
+              <div className="rounded border border-border bg-background p-3">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Global Dataset</p>
+                <p className="mt-1 truncate text-sm font-semibold">{globalDataset.name}</p>
+                <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 text-muted-foreground">
+                  <span>Assets</span><span className="text-right text-foreground">{globalDataset.assetIds.length + globalDataset.assetPaths.length}</span>
+                  <span>Trigger word</span><span className="truncate text-right text-foreground">{globalDataset.triggerWord || '—'}</span>
+                  <span>Tags</span><span className="text-right text-foreground">{globalDatasetTags.length}</span>
+                </div>
+              </div>
+              <div>
+                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Tags</p>
+                {globalDatasetTags.length > 0 ? (
+                  <div className="flex flex-wrap gap-1">
+                    {globalDatasetTags.map((tag) => <span key={tag} className="rounded border border-border bg-background px-2 py-1">{tag}</span>)}
+                  </div>
+                ) : (
+                  <p className="rounded border border-border px-2 py-2 text-muted-foreground">No Dataset tags yet</p>
+                )}
+              </div>
+            </div>
+{renderDatasetWorkspace(globalDataset)}</div> },
+    ...openTabs.filter((tab) => tab.kind !== 'window').map((tab) => {
+      const chrome = getWorkspaceTabChrome(tab);
+      return { id: tab.id, title: chrome.label, icon: chrome.Icon, pinned: tab.pinned, dirty: isTabDirty(tab),
+        content: <Suspense fallback={<div className="p-4 text-sm text-muted-foreground">Loading…</div>}>{renderEditor(tab)}</Suspense> };
+    }),
+  ].map((view: DockView) => ({ ...view, pinned: view.pinned || dock.layout.pinned?.includes(view.id) }));
+
+  const renderWorkspaceMenus = () => {
+    const contextView = workspaceViews.find((view) => view.id === workspaceContextMenu?.id);
+    const contextGroup = contextView ? findDockGroup(dock.layout, contextView.id) : null;
+    const groupIds = contextGroup?.group.tabs ?? [];
+    const sortedGroupIds = [...groupIds.filter((id) => workspaceViews.find((view) => view.id === id)?.pinned), ...groupIds.filter((id) => !workspaceViews.find((view) => view.id === id)?.pinned)];
+    const menuClass = 'flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-40';
+    return <>
+      {tabMenuOpen && <>
+        <button type="button" aria-label="Close tool menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setTabMenuOpen(false)} />
+        <div className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(toolMenuPosition.x, window.innerWidth - 220), top: toolMenuPosition.y }}>
+          {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
+          <button type="button" className={menuClass} onClick={() => { reopenClosedTab(); setTabMenuOpen(false); }} disabled={!closedTabs.length}><RotateCcw className="h-3.5 w-3.5" />Reopen closed tab</button>
+        </div>
+      </>}
+      {workspaceContextMenu && contextView && <>
+        <button type="button" aria-label="Close tab menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setWorkspaceContextMenu(null)} />
+        <div className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(workspaceContextMenu.x, window.innerWidth - 220), top: Math.min(workspaceContextMenu.y, window.innerHeight - 340) }}>
+          <button type="button" className={menuClass} onClick={() => {
+            if (openTabs.some((tab) => tab.id === contextView.id)) toggleTabPinned(contextView.id);
+            else dock.setLayout((layout) => ({ ...layout, pinned: contextView.pinned ? layout.pinned?.filter((id) => id !== contextView.id) : [...(layout.pinned ?? []), contextView.id] }));
+            setWorkspaceContextMenu(null);
+          }}><Pin className="h-3.5 w-3.5" />{contextView.pinned ? 'Unpin tab' : 'Pin tab'}</button>
+          {contextView.id !== EXPLORER_VIEW && <>
+            {(['right', 'bottom'] as const).map((side) => <button key={side} type="button" className={menuClass} disabled={groupIds.length < 2} onClick={() => {
+              if (contextGroup) dock.setLayout((layout) => moveDockSource(layout, { type: 'tab', id: contextView.id }, { host: contextGroup.host, group: contextGroup.group.id, side }));
+              setWorkspaceContextMenu(null);
+            }}>{side === 'right' ? 'Split right' : 'Split down'}</button>)}
+            <button type="button" className={menuClass} onClick={() => { dock.setLayout((layout) => floatDockSource(layout, { type: 'tab', id: contextView.id }, { x: 100, y: 80, width: 500, height: 400 })); setWorkspaceContextMenu(null); }}>Detach</button>
+          </>}
+          <button type="button" className={menuClass} disabled={contextView.pinned} onClick={() => closeWorkspaceViews([contextView.id])}>Close</button>
+          <button type="button" className={menuClass} onClick={() => closeWorkspaceViews(groupIds.filter((id) => id !== contextView.id))}>Close others</button>
+          <button type="button" className={menuClass} onClick={() => closeWorkspaceViews(sortedGroupIds.slice(sortedGroupIds.indexOf(contextView.id) + 1))}>Close to the right</button>
+          <button type="button" className={menuClass} onClick={() => closeWorkspaceViews(groupIds)}>Close all</button>
+          <button type="button" className={menuClass} disabled={!closedTabs.length} onClick={() => { reopenClosedTab(); setWorkspaceContextMenu(null); }}>Reopen closed tab</button>
+          {(() => { const tab = openTabs.find((entry) => entry.id === contextView.id); return tab && isFileBackedTab(tab) ? <button type="button" className={menuClass} onClick={() => { setWorkspaceContextMenu(null); setExplorerContextMenu({ node: { name: tab.name, path: tab.path, kind: 'file' }, x: workspaceContextMenu.x, y: workspaceContextMenu.y }); }}>File actions</button> : null; })()}
+        </div>
+      </>}
               {explorerContextMenu && (
                 <>
                   <button
@@ -6521,272 +5687,331 @@ function App() {
                   </div>
                 </>
               )}
-            </aside>
-          )}
-          <section className="flex min-w-0 flex-1 flex-col pt-9">
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div
-            className={showEditToolbar || showFullscreenTagging || (activeTab && isFileBackedTab(activeTab)) ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}
-          >
-            <div
-              className={
-                showEditToolbar || showFullscreenTagging || (activeTab && isFileBackedTab(activeTab))
-                  ? 'relative h-full min-h-0'
-                  : 'relative p-4 md:p-6'
-              }
-            >
-              {activeToolNestedView ? (
-                <button
-                  type="button"
-                  onClick={closeActiveToolNestedView}
-                  className="absolute left-3 top-3 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card/95 text-muted-foreground shadow hover:bg-secondary hover:text-foreground"
-                  title="Back"
-                  aria-label="Back to tool"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </button>
-              ) : null}
-              <Suspense
-                fallback={
-                  <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
-                    Loading tool...
-                  </div>
-                }
-              >
-                {openTabs.filter(isFileBackedTab).map((tab) => {
-                  const isActiveFileTab = activeTabId === tab.id;
-                  return (
-                    <div key={tab.id} className={isActiveFileTab ? 'h-full min-h-0' : 'hidden'}>
-                      {tab.kind === 'file-view' ? (
-                        <InternalFileViewer
-                          file={tab.file}
-                          fileName={tab.name}
-                          fileKind={tab.fileKind}
-                          active={isActiveFileTab}
-                          onSavePsd={
-                            tab.fileKind === 'psd'
-                              ? (buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)
-                              : undefined
-                          }
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            setExplorerContextMenu({
-                              node: { name: tab.name, path: tab.path, kind: 'file' },
-                              x: event.clientX,
-                              y: event.clientY,
-                            });
-                          }}
-                        />
-                      ) : tab.kind === 'file-analysis' ? (
-                        <AnalysisTool
-                          active={isActiveFileTab}
-                          projectDirectoryHandle={projectDirectoryHandle}
-                          onOpenAssetContextMenu={openAssetExplorerContextMenu}
-                          fileTarget={{
-                            path: tab.path,
-                            name: tab.name,
-                            fileKind: tab.fileKind,
-                            file: tab.file,
-                            workspaceImageId: tab.workspaceImageId,
-                          }}
-                        />
-                      ) : tab.kind === 'file-edit' ? (
-                        <PhotopeaBlobViewer
-                          file={tab.file}
-                          fileName={tab.name}
-                          active={isActiveFileTab}
-                          onSavePsd={(buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)}
-                        />
-                      ) : (
-                        <TaggingToolComponent
-                          selectedItemId={tab.workspaceImageId}
-                          singleFileMode
-                          active={isActiveFileTab}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {activeTab?.kind === 'dataset' ? (
-                  renderDatasetWorkspace(activeTab)
-                ) : activeTab && isDatasetToolTab(activeTab) ? (
-                  renderDatasetTool(activeTab)
-                ) : activeTab && isFileBackedTab(activeTab) ? null : activeTool ? (
-                  renderTool({
-                    currentTool: activeTool,
-                    projectDirectoryHandle,
-                    onOpenAssetContextMenu: openAssetExplorerContextMenu,
-                    nested: activeToolNestedView,
-                    onOpenNestedFile: openActiveToolNestedFile,
-                    onOpenTool: navigateToTool,
-                    onImportFiles: (files) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`),
-                    analysisFileTargets,
-                    taggingItemScope,
-                  })
-                ) : (
-                  <EmptyWorkspacePlaceholder
-                    onOpenTool={() => setTabMenuOpen(true)}
-                    onOpenProject={() => void handleOpenProject()}
-                  />
-                )}
-              </Suspense>
-            </div>
-          </div>
-          {bottomPanelOpen && (
-            <section
-              className="workspace-dock-bottom relative shrink-0 border-t border-border bg-card"
-              style={{ height: bottomPanelHeight }}
-            >
-              <button
-                type="button"
-                aria-label="Resize output panel"
-                className="workspace-dock-resize-horizontal absolute -top-1 left-0 z-20 h-2 w-full cursor-ns-resize bg-transparent hover:bg-primary/60"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  dockResizeRef.current = {
-                    kind: 'bottom',
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    origin: bottomPanelHeight,
-                  };
-                  document.body.style.cursor = 'ns-resize';
-                  document.body.style.userSelect = 'none';
-                }}
-              />
-              <div className="flex h-full flex-col px-4 py-2">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-xs font-semibold">
-                    <PanelBottom className="h-3.5 w-3.5 text-muted-foreground" />
-                    Output
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setBottomPanelOpen(false)}
-                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    title="Close output"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div
-                  ref={outputLogRef}
-                  onScroll={(event) => {
-                    const element = event.currentTarget;
-                    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-                    outputAutoFollowRef.current = distanceFromBottom < 24;
-                  }}
-                  className="mt-2 min-h-0 flex-1 overflow-auto font-mono text-[11px]"
-                >
-                  {operationLogs.map((entry) => {
-                    const time = entry.timestamp.toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                    });
-                    const levelClass =
-                      entry.level === 'error'
-                        ? 'text-destructive'
-                        : entry.level === 'warning'
-                          ? 'text-yellow-500'
-                          : entry.level === 'success'
-                            ? 'text-emerald-500'
-                            : 'text-muted-foreground';
-                    return (
-                      <p key={entry.id} className={levelClass}>
-                        [{time}] {entry.level.toUpperCase().padEnd(7, ' ')} {entry.message}
-                      </p>
-                    );
-                  })}
-                </div>
-              </div>
-            </section>
-          )}
-        </div>
-          </section>
-          {rightPanelOpen && (
-            <aside className="workspace-dock-right relative flex min-h-0 shrink-0 flex-col border-l border-border bg-card" style={{ width: rightPanelWidth }}>
-              <button
-                type="button"
-                aria-label="Resize inspector panel"
-                className="workspace-dock-resize-vertical absolute inset-y-0 -left-1 z-10 w-2 cursor-ew-resize bg-transparent hover:bg-primary/60"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  dockResizeRef.current = {
-                    kind: 'right',
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    origin: rightPanelWidth,
-                  };
-                  document.body.style.cursor = 'ew-resize';
-                  document.body.style.userSelect = 'none';
-                }}
-              />
-              <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
-                <div className="flex items-center gap-2 text-xs font-semibold">
-                  <PanelRight className="h-3.5 w-3.5 text-muted-foreground" />
-                  Inspector
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setRightPanelOpen(false)}
-                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  title="Close inspector"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-3">
-                {floatingInspectorOwnsContent ? (
-                  <div className="space-y-3 text-xs">
-                    <div className="rounded border border-border bg-background p-3">
-                      <p className="font-medium">Floating inspector is open</p>
-                      <p className="mt-1 text-muted-foreground">
-                        Tool controls are shown in the floating panel.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={openFloatingInspector}
-                      className="flex w-full items-center justify-center gap-2 rounded border border-border px-2 py-2 font-medium hover:bg-secondary"
-                    >
-                      <PanelRight className="h-3.5 w-3.5" />
-                      Focus floating inspector
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setInspectorWindow((panel) => ({ ...panel, minimized: true }))}
-                      className="flex w-full items-center justify-center gap-2 rounded border border-border px-2 py-2 font-medium hover:bg-secondary"
-                    >
-                      <Minimize2 className="h-3.5 w-3.5" />
-                      Return controls here
-                    </button>
-                  </div>
-                ) : (
-                  renderInspectorContent()
-                )}
-              </div>
-            </aside>
-          )}
-        </div>
+    </>;
+  };
 
-        {!leftPanelOpen && explorerContextMenu?.node.kind === 'file' && (
-          <>
+  return (
+    <div className="flex h-screen bg-background text-foreground">
+      <>{projectSetup && <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} />}</>
+      <PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
+          {(fileMenuOpen || viewMenuOpen || toolsMenuOpen || windowsMenuOpen) && (
             <button
               type="button"
-              aria-label="Close file context menu"
-              className="fixed inset-0 z-[950] cursor-default"
-              onClick={() => setExplorerContextMenu(null)}
+              aria-label="Close menu"
+              className="fixed inset-0 z-30 cursor-default"
+              onClick={closeTopMenus}
             />
-            <div
-              className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
-              style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
+          )}
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                fileMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setViewMenuOpen(false);
+                setToolsMenuOpen(false);
+                setWindowsMenuOpen(false);
+                setFileMenuOpen((open) => !open);
+              }}
             >
-              {explorerContextMenu.actionGroups
-                ? <ContextActionGroups groups={explorerContextMenu.actionGroups} />
-                : renderFileContextMenuItems(explorerContextMenu.node)}
-            </div>
-          </>
-        )}
+              File
+            </button>
+            {fileMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
+                <button
+                  type="button"
+                  disabled={isProjectDirectoryBusy}
+                  onClick={() => void handleNewProject()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <FilePlus className="h-4 w-4" />
+                  <span className="flex-1">New Project Directory</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isProjectDirectoryBusy}
+                  onClick={() => void handleOpenProject()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  <span className="flex-1">Open Project Directory</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isProjectDirectoryBusy}
+                  onClick={handleRenameProject}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <Pencil className="h-4 w-4" />
+                  <span className="flex-1">Rename</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!projectDirectoryHandle}
+                  onClick={() => void openProjectVersions()}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
+                >
+                  <GitBranch className="h-4 w-4" />
+                  <span className="flex-1">Versions</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                viewMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setToolsMenuOpen(false);
+                setWindowsMenuOpen(false);
+                setViewMenuOpen((open) => !open);
+              }}
+            >
+              View
+            </button>
+            {viewMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-48 rounded-md border border-border bg-popover p-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => handleThemeChange(false)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Sun className="h-4 w-4" />
+                  <span className="flex-1">Light</span>
+                  {!darkMode && <Check className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleThemeChange(true)}
+                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
+                >
+                  <Moon className="h-4 w-4" />
+                  <span className="flex-1">Dark</span>
+                  {darkMode && <Check className="h-4 w-4" />}
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                toolsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setViewMenuOpen(false);
+                setWindowsMenuOpen(false);
+                setToolsMenuOpen((open) => !open);
+              }}
+            >
+              Tools
+            </button>
+            {toolsMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+                {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => {
+                  const Icon = toolIcons[tool];
+                  const active = activeTab?.kind === 'tool' && activeTool === tool;
+                  return (
+                    <button
+                      type="button"
+                      key={tool}
+                      onClick={() => navigateToTool(tool)}
+                      className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary ${
+                        active ? 'bg-secondary/70' : ''
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span className="flex-1">{TOOL_LABELS[tool]}</span>
+                      {active && <Check className="h-4 w-4" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="relative z-40">
+            <button
+              type="button"
+              className={`rounded px-3 py-1.5 font-medium transition-colors ${
+                windowsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
+              }`}
+              onClick={() => {
+                setFileMenuOpen(false);
+                setViewMenuOpen(false);
+                setToolsMenuOpen(false);
+                setWindowsMenuOpen((open) => !open);
+              }}
+            >
+              Windows
+            </button>
+            {windowsMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+                {([
+                  ['explorer', 'Explorer', PanelLeft], ['inspector', 'Inspector', PanelRight],
+                  ['output', 'Output', PanelBottom], ['project', 'Project', FolderOpen], ['dataset', 'Dataset', Layers3],
+                ] as const).map(([id, title, Icon]) => (
+                  <button key={id} type="button" onClick={() => { if (dock.isOpen(`window:${id}`)) closeWorkspaceViews([`window:${id}`]); else dock.show(`window:${id}`); setWindowsMenuOpen(false); }}
+                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary">
+                    <Icon className="h-4 w-4" /><span className="flex-1">{title}</span>
+                    {dock.isOpen(`window:${id}`) && <Check className="h-4 w-4" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="rounded px-3 py-1.5 font-medium transition-colors hover:bg-secondary"
+            onClick={() => {
+              closeTopMenus();
+              setIsWorkspaceSettingsOpen(true);
+            }}
+          >
+            Settings
+          </button>
+        </div>
+
+        <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card p-4 shadow-2xl">
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <Dialog.Title className="text-base font-semibold">Settings</Dialog.Title>
+                  <Dialog.Description className="text-xs text-muted-foreground">
+                    Configure shared workspace display options.
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button
+                    type="button"
+                    className="rounded-md p-2 transition-colors hover:bg-secondary"
+                    aria-label="Close Settings"
+                  >
+                    <X size={16} />
+                  </button>
+                </Dialog.Close>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-2 block text-xs text-muted-foreground">Brick columns</label>
+                  <select
+                    value={workspaceSettings?.brickColumnCount ?? 'auto'}
+                    onChange={(event) =>
+                      updateWorkspaceSettings({
+                        brickColumnCount: parseBrickColumnCount(event.target.value),
+                      })
+                    }
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  >
+                    {BRICK_COLUMN_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option === 'auto' ? 'Auto' : `${option} columns`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="rounded-md border border-border bg-secondary/20 p-3">
+                  <h3 className="mb-3 text-sm font-semibold">Local Tagger Files</h3>
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">model.onnx</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {workspaceSettings.localTaggerModelPath ?? 'No model selected'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handlePickLocalTaggerFile('model')}
+                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                      >
+                        <Upload size={16} />
+                        Choose model
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">selected_tags.csv</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {workspaceSettings.localTaggerTagsPath ?? 'No tags CSV selected'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handlePickLocalTaggerFile('tags')}
+                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                      >
+                        <Upload size={16} />
+                        Choose tags
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+        <input
+          ref={taggerModelInputRef}
+          type="file"
+          accept=".onnx"
+          className="hidden"
+          onChange={(event) => void handleFallbackLocalTaggerFileSelected('model', event)}
+          aria-hidden="true"
+        />
+        <input
+          ref={taggerTagsInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(event) => void handleFallbackLocalTaggerFileSelected('tags', event)}
+          aria-hidden="true"
+        />
+
+        <div className="flex min-h-0 flex-1">
+          <nav className="flex w-10 shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2" aria-label="Activity bar">
+            <button
+              type="button"
+              onClick={() => { setActiveActivityView('explorer'); dock.show(EXPLORER_VIEW); }}
+              className={`rounded p-2 transition-colors ${activeActivityView === 'explorer' && leftPanelOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
+              title="Explorer"
+              aria-label="Explorer"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void openProjectVersions()}
+              className={`rounded p-2 transition-colors ${activeActivityView === 'versions' && leftPanelOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
+              title="Versions"
+              aria-label="Versions"
+            >
+              <GitBranch className="h-4 w-4" />
+            </button>
+          </nav>
+
+          <DockWorkspace
+            layout={dock.layout}
+            onLayout={dock.setLayout}
+            views={workspaceViews}
+            onFocus={(id) => { const tab = openTabs.find((entry) => entry.id === id); if (tab && activeTabId !== id) activateTab(tab); }}
+            onClose={closeWorkspaceViews}
+            onContextMenu={(id, x, y) => setWorkspaceContextMenu({ id, x, y })}
+            onOpenTool={(group, x, y) => { dock.setLayout((layout) => ({ ...layout, focusedGroup: group })); setToolMenuPosition({ x, y }); setTabMenuOpen(true); }}
+          />
+        </div>
+        {renderWorkspaceMenus()}
 
         {notifications.length > 0 && (
           <div className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-2">
@@ -6821,89 +6046,6 @@ function App() {
           </div>
         )}
 
-        {projectWindowOpen && (
-          <FloatingWorkspacePanel
-            title="Project"
-            icon={FolderOpen}
-            panel={projectWindow}
-            zIndex={1200 + floatingPanelOrder.indexOf('project') + 1}
-            onChange={setProjectWindow}
-            onFocus={() => focusFloatingPanel('project')}
-            onClose={() => setProjectWindowOpen(false)}
-          >
-            <div className="space-y-3 text-xs">
-              <div className="rounded border border-border bg-background p-3">
-                <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Current project</p>
-                <p className="mt-1 truncate font-semibold">{projectName}</p>
-                <p className="mt-1 text-muted-foreground">{profile.label} project</p>
-                <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
-              </div>
-              <div>
-                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Open editors</p>
-                <div className="space-y-1">
-                  {openTabs.length === 0 && (
-                    <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
-                  )}
-                  {openTabs.map((tab) => {
-                    const { Icon, label, target, title } = getWorkspaceTabChrome(tab);
-                    return (
-                      <button
-                        type="button"
-                        key={tab.id}
-                        onClick={() => activateTab(tab)}
-                        title={title}
-                        className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
-                          activeTabId === tab.id ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
-                        }`}
-                      >
-                        {tab.pinned ? <Pin className="h-3 w-3 shrink-0" /> : null}
-                        <Icon className="h-3.5 w-3.5" />
-                        <span className="min-w-0 flex-1 truncate">{label}</span>
-                        {isTabDirty(tab) ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" /> : null}
-                        <span className="shrink-0 text-[10px] opacity-70">{target}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </FloatingWorkspacePanel>
-        )}
-
-        {inspectorWindowOpen && (
-          <FloatingWorkspacePanel
-            title="Inspector"
-            icon={PanelRight}
-            panel={inspectorWindow}
-            zIndex={1200 + floatingPanelOrder.indexOf('inspector') + 1}
-            onChange={setInspectorWindow}
-            onFocus={() => focusFloatingPanel('inspector')}
-            onClose={() => setInspectorWindowOpen(false)}
-          >
-            <div className="space-y-4 text-xs">
-              {renderInspectorContent()}
-              <div className="border-t border-border pt-3">
-                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Dock layout</p>
-                <button
-                  type="button"
-                  onClick={() => setRightPanelOpen((open) => !open)}
-                  className="mb-2 flex w-full items-center justify-between rounded border border-border px-2 py-2 text-left hover:bg-secondary"
-                >
-                  <span>Docked inspector</span>
-                  <span className="text-muted-foreground">{rightPanelOpen ? 'On' : 'Off'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setBottomPanelOpen((open) => !open)}
-                  className="flex w-full items-center justify-between rounded border border-border px-2 py-2 text-left hover:bg-secondary"
-                >
-                  <span>Output panel</span>
-                  <span className="text-muted-foreground">{bottomPanelOpen ? 'On' : 'Off'}</span>
-                </button>
-              </div>
-            </div>
-          </FloatingWorkspacePanel>
-        )}
       </main>
     </div>
   );

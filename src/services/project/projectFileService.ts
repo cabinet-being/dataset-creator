@@ -1,6 +1,7 @@
 import { resolveProjectType, type ProjectTypeResolver } from '../../lib/projectProfiles';
 import JSZip from 'jszip';
 import { TOOL_URL_SLUGS, URL_TOOL_ALIASES } from '../../lib/constants';
+import { createDataset } from '../../types';
 import type {
   BrickColumnCount,
   ProjectState,
@@ -13,6 +14,7 @@ import type {
 } from '../../types';
 import { getAssetManifestName, PROJECT_MANIFEST_NAME } from './assetManifestService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
+import { createDatasetManifest, type DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -92,7 +94,7 @@ type DatasetManifest = {
 
 type ProjectFileManifest = {
   format: 'dataset-creator-project';
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   project: {
     id: string;
     name: string;
@@ -187,7 +189,6 @@ const toIsoString = (value: Date | string | number | undefined, fallback = new D
 };
 
 const createEmptyToolState = (): ProjectState['toolState'] => ({
-  hub: {},
   import: {},
   select: {},
   clean: {},
@@ -202,7 +203,7 @@ const getToolSlug = (tool: ToolName): string => TOOL_URL_SLUGS[tool] ?? tool;
 const isToolName = (value: string): value is ToolName =>
   Object.prototype.hasOwnProperty.call(TOOL_URL_SLUGS, value);
 
-const getToolFromSlug = (tool?: string, fallback: ToolName = 'hub'): ToolName =>
+const getToolFromSlug = (tool?: string, fallback: ToolName = 'import'): ToolName =>
   ((tool ? URL_TOOL_ALIASES[tool] : undefined) ?? fallback) as ToolName;
 
 const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggingConfig => {
@@ -313,7 +314,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
 
   const manifest: ProjectFileManifest = {
     format: 'dataset-creator-project',
-    version: 4,
+    version: 5,
     project: {
       id: project.id,
       name: project.name,
@@ -329,6 +330,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   };
 
   zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+  zip.file('dataset.json', JSON.stringify(createDatasetManifest(project), null, 2));
   return zip.generateAsync({ type: 'blob', mimeType: PROJECT_FILE_MIME_TYPE });
 };
 
@@ -405,7 +407,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
   }
 
   const manifest = JSON.parse(await manifestFile.async('string')) as ProjectFileManifest;
-  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3, 4].includes(manifest.version)) {
+  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3, 4, 5].includes(manifest.version)) {
     throw new Error('Unsupported project file');
   }
 
@@ -556,9 +558,16 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
   const legacyToolState = projectRecord[`sta${'ge'}State`];
   const legacyCurrentTool = projectRecord[`currentSta${'ge'}`];
   const loadedToolState = (manifest.project.toolState ?? legacyToolState) as Partial<Record<string, unknown>>;
+  const globalDatasetManifestFile = zip.file('dataset.json');
+  const globalDatasetManifest = globalDatasetManifestFile
+    ? JSON.parse(await globalDatasetManifestFile.async('string')) as GlobalDatasetManifest
+    : null;
+  const legacyDataset = Object.values(datasets ?? {})[0];
+  const restoredDataset = globalDatasetManifest ?? legacyDataset;
+  const defaultDataset = createDataset(manifest.project.name);
   const restoredCurrentTool = getToolFromSlug(
     currentTool,
-    typeof legacyCurrentTool === 'string' && isToolName(legacyCurrentTool) ? legacyCurrentTool : 'hub'
+    typeof legacyCurrentTool === 'string' && isToolName(legacyCurrentTool) ? legacyCurrentTool : 'import'
   );
 
   return {
@@ -566,12 +575,23 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     projectType,
     sourceImages,
     datasetItems,
-    datasets: {},
+    dataset: {
+      ...defaultDataset,
+      name: restoredDataset?.name ?? defaultDataset.name,
+      triggerWord: restoredDataset?.triggerWord ?? defaultDataset.triggerWord,
+      assetIds: restoredDataset?.assetIds ?? defaultDataset.assetIds,
+      assetPaths: restoredDataset?.assetPaths ?? defaultDataset.assetPaths,
+      psdAssetPaths: globalDatasetManifest?.psdAssetPaths ?? defaultDataset.psdAssetPaths,
+      assetOrder: restoredDataset?.assetOrder ?? defaultDataset.assetOrder,
+      overwriteCaptions: globalDatasetManifest?.overwriteCaptions ?? defaultDataset.overwriteCaptions,
+      captionOverrides: globalDatasetManifest?.captionOverrides ?? defaultDataset.captionOverrides,
+      createdAt: globalDatasetManifest?.createdAt ? new Date(globalDatasetManifest.createdAt) : defaultDataset.createdAt,
+      updatedAt: globalDatasetManifest?.updatedAt ? new Date(globalDatasetManifest.updatedAt) : defaultDataset.updatedAt,
+    },
     cleanupOverlays: {},
     currentTool: restoredCurrentTool,
     toolState: {
       ...createEmptyToolState(),
-      hub: loadedToolState?.hub ?? {},
       import: loadedToolState?.import ?? {},
       select: loadedToolState?.select ?? {},
       clean: loadedToolState?.clean ?? {},
