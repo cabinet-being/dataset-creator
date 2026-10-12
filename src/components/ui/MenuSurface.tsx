@@ -1,19 +1,27 @@
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type HTMLAttributes } from 'react';
+import { createPortal } from 'react-dom';
 import { clampSurfaceToViewport } from '../../lib/viewportGeometry';
 export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...props }: HTMLAttributes<HTMLDivElement> & { onDismiss: () => void; initialFocus?: 'first' | 'last' }) {
   const ref = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const dismissRef = useRef(onDismiss); dismissRef.current = onDismiss;
   const returnFocus = useRef<HTMLElement | null>(null);
   const [viewportStyle, setViewportStyle] = useState<CSSProperties>({ visibility: 'hidden' });
   const buttons = () => Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
   const place = useCallback(() => {
     const element = ref.current;
     if (!element) return;
-    const previousTransform = element.style.transform;
-    element.style.transform = '';
+    if (!anchorRef.current?.isConnected) { dismissRef.current(); return; }
+    const previousTransform = element.style.transform; element.style.transform = '';
     const bounds = element.getBoundingClientRect();
     element.style.transform = previousTransform;
+    const anchor = anchorRef.current.parentElement?.getBoundingClientRect();
+    const explicitLeft = typeof props.style?.left === 'number' ? props.style.left : undefined;
+    const explicitTop = typeof props.style?.top === 'number' ? props.style.top : undefined;
+    const nominalLeft = explicitLeft ?? (props.className?.includes('right-0') ? (anchor?.right ?? 0) - bounds.width : anchor?.left ?? 0);
+    const nominalTop = explicitTop ?? (props.className?.includes('bottom-full') ? (anchor?.top ?? 0) - bounds.height : anchor?.bottom ?? 0);
     const viewport = window.visualViewport;
-    const constrained = clampSurfaceToViewport(bounds, {
+    const constrained = clampSurfaceToViewport({ left: nominalLeft, top: nominalTop, width: bounds.width, height: bounds.height }, {
       left: viewport?.offsetLeft ?? 0,
       top: viewport?.offsetTop ?? 0,
       width: viewport?.width ?? window.innerWidth,
@@ -21,13 +29,17 @@ export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...pr
     });
     const next = {
       visibility: 'visible',
-      transform: `translate(${constrained.x - bounds.left}px, ${constrained.y - bounds.top}px)`,
+      position: 'fixed',
+      left: `${constrained.x}px`,
+      top: `${constrained.y}px`,
+      transform: 'none',
+      zIndex: props.style?.zIndex ?? 2000,
       maxHeight: `${constrained.maxHeight}px`,
       overflowY: 'auto',
       overscrollBehavior: 'contain',
     } satisfies CSSProperties;
-    setViewportStyle(current => current.transform === next.transform && current.maxHeight === next.maxHeight && current.visibility === 'visible' ? current : next);
-  }, []);
+    setViewportStyle(current => current.left === next.left && current.top === next.top && current.maxHeight === next.maxHeight && current.visibility === 'visible' ? current : next);
+  }, [props.className, props.style?.left, props.style?.top, props.style?.zIndex]);
   useLayoutEffect(() => {
     // StrictMode replays this effect after it has already focused the first item.
     // Keep the original trigger rather than capturing an item that will unmount.
@@ -46,7 +58,7 @@ export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...pr
       requestAnimationFrame(() => { if (document.activeElement === document.body && returnFocus.current?.isConnected) returnFocus.current.focus(); });
     };
   }, [initialFocus, place]);
-  return <div {...props} style={{ ...props.style, ...viewportStyle }} ref={ref} role="menu" data-state="open" onKeyDown={event => {
+  const surface = <div {...props} style={{ ...props.style, ...viewportStyle }} ref={ref} role="menu" data-state="open" onKeyDown={event => {
     const entries = buttons(); const index = entries.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); onDismiss(); returnFocus.current?.focus(); return; }
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
@@ -58,4 +70,5 @@ export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...pr
       if (next) { event.preventDefault(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
     }
   }}>{children}</div>;
+  return <><span ref={anchorRef} aria-hidden="true" className="pointer-events-none absolute h-0 w-0" />{createPortal(surface, document.body)}</>;
 }
