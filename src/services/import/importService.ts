@@ -94,8 +94,11 @@ export type ImportImagesResult = {
 
 const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '');
 const getArchiveFileName = (path: string): string => path.split('/').pop() ?? path;
-const getArchiveFileStem = (path: string): string => getArchiveFileName(path).replace(/\.[^.]+$/, '');
 const getArchiveExtension = (path: string): string => path.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
+const isUnsafeArchivePath = (path: string): boolean => {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.startsWith('/') || /^[a-z]:\//i.test(normalized) || normalized.split('/').includes('..');
+};
 const INTERNAL_IMPORT_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
 const isInternalImportPath = (path: string): boolean =>
   path.split('/').some((part) => INTERNAL_IMPORT_DIRECTORY_NAMES.has(part)) || isLegacyProjectRootPath(path);
@@ -168,17 +171,23 @@ export const getImportFilesFromDataTransfer = async (
   return files.flat();
 };
 
-const parseCaptionTags = (caption: string): string[] =>
+export const parseImportedCaptionTags = (caption: string): string[] =>
   caption
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
     .split(',')
-    .map((tag) => tag.trim().toLowerCase())
+    .map((tag) => tag.trim())
     .filter(Boolean);
+
+export const getImportPairKey = (path: string): string =>
+  getArchivePathStem(path.replace(/\\/g, '/')).toLocaleLowerCase();
 
 const toProjectRelativePath = (explorerPath: string): string =>
   explorerPath === 'Project' ? '' : explorerPath.replace(/^Project\//, '');
 
 const joinPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
 const getParentPath = (path: string): string => path.split('/').filter(Boolean).slice(0, -1).join('/');
+const getCaptionSidecarPath = (assetPath: string): string => `${getArchivePathStem(assetPath)}.txt`;
 const yieldToUi = async () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
 const normalizeImportInput = (input: ImportInputFile): { file?: File; relativePath?: string; directoryPath?: string } => {
@@ -313,7 +322,8 @@ const writeBlobFile = async (directory: ProjectDirectoryHandle, name: string, va
 const writeProjectAsset = async (
   file: File,
   target: { explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string },
-  destination: ImportDestination | undefined
+  destination: ImportDestination | undefined,
+  tags: string[] = []
 ): Promise<ImportedProjectAsset | null> => {
   if (!destination?.projectDirectory || !target.explorerDirectoryPath || !target.assetPath || !target.manifestPath) {
     return null;
@@ -345,6 +355,7 @@ const writeProjectAsset = async (
           assetPath: asset.assetPath,
           mimeType: asset.mimeType,
           size: asset.size,
+          tags: tags.length > 0 ? tags : undefined,
           createdAt: new Date().toISOString(),
         },
         null,
@@ -377,7 +388,7 @@ const processImportedFile = async (
   }
 
   const target = await getImportTarget(file.name, relativePath, destination, reservedNamesByDirectory);
-  const asset = await writeProjectAsset(file, target, destination);
+  const asset = await writeProjectAsset(file, target, destination, tags);
 
   if (resolveProjectAssetKind(file.name, file.type) !== 'image') {
     return { sourceImage: null, asset };
@@ -410,36 +421,68 @@ const processArchiveFile = async (
 ): Promise<{ importedImages: SourceImage[]; importedAssets: ImportedProjectAsset[] }> => {
   signal?.throwIfAborted();
   const zip = await JSZip.loadAsync(file);
-  const entries = Object.values(zip.files).filter(
-    (entry) => !entry.dir && !isInternalImportPath(entry.name) && !isInternalImportFileName(getArchiveFileName(entry.name))
+  const archiveEntries = Object.values(zip.files);
+  const unsafeEntries = archiveEntries.filter((entry) =>
+    isUnsafeArchivePath((entry as JSZip.JSZipObject & { unsafeOriginalName?: string }).unsafeOriginalName ?? entry.name)
   );
-  const captionsByPathStem = new Map<string, JSZip.JSZipObject>();
-  const captionsByFileStem = new Map<string, JSZip.JSZipObject>();
+  if (unsafeEntries.length > 0) {
+    logger.warning(`archive ${file.name} contains ${unsafeEntries.length} unsafe path${unsafeEntries.length !== 1 ? 's' : ''}; skipped`);
+  }
+  const entries = archiveEntries.filter((entry) => {
+    const originalName = (entry as JSZip.JSZipObject & { unsafeOriginalName?: string }).unsafeOriginalName ?? entry.name;
+    return !entry.dir && !isUnsafeArchivePath(originalName) && !isInternalImportPath(entry.name) && !isInternalImportFileName(getArchiveFileName(entry.name));
+  });
+  const captionsByPathStem = new Map<string, JSZip.JSZipObject[]>();
 
   for (const entry of entries) {
     if (getArchiveExtension(entry.name) !== '.txt') {
       continue;
     }
-    captionsByPathStem.set(getArchivePathStem(entry.name), entry);
-    captionsByFileStem.set(getArchiveFileStem(entry.name), entry);
+    const key = getImportPairKey(entry.name);
+    captionsByPathStem.set(key, [...(captionsByPathStem.get(key) ?? []), entry]);
   }
 
   const importedImages: SourceImage[] = [];
   const importedAssets: ImportedProjectAsset[] = [];
+  const captionTargetByPairKey = new Map<string, string>();
   const imageEntries = entries.filter((entry) => resolveProjectAssetKind(entry.name) === 'image');
-  logger.info(`archive ${file.name} contains ${imageEntries.length} image files`);
+  const textEntries = entries.filter((entry) => getArchiveExtension(entry.name) === '.txt');
+  const importEntries = [...imageEntries, ...textEntries];
+  logger.info(`archive ${file.name} contains ${imageEntries.length} image files and ${textEntries.length} text files`);
 
-  for (let i = 0; i < imageEntries.length; i++) {
+  for (let i = 0; i < importEntries.length; i++) {
     signal?.throwIfAborted();
-    const entry = imageEntries[i];
+    const entry = importEntries[i];
+    const kind = resolveProjectAssetKind(entry.name);
+    if (kind === 'text') {
+      const textBlob = await entry.async('blob');
+      const targetPath = captionTargetByPairKey.get(getImportPairKey(entry.name)) ?? entry.name;
+      const textFile = new File([textBlob], getArchiveFileName(targetPath), { type: 'text/plain' });
+      const { asset } = await processImportedFile(
+        textFile,
+        targetPath,
+        [],
+        destination,
+        logger,
+        reservedNamesByDirectory
+      );
+      if (asset) {
+        importedAssets.push(asset);
+        await onAssetImported?.(asset);
+      }
+      const current = i + 1;
+      if (shouldLogProgress(current, importEntries.length)) {
+        logger.progress({ current, total: importEntries.length, label: `processing ${file.name}` });
+      }
+      continue;
+    }
     const mimeType = getProjectAssetMimeType(entry.name, 'image/png');
 
     const imageBlob = await entry.async('blob');
     const imageFile = new File([imageBlob], getArchiveFileName(entry.name), { type: mimeType });
-    const captionEntry =
-      captionsByPathStem.get(getArchivePathStem(entry.name)) ??
-      captionsByFileStem.get(getArchiveFileStem(entry.name));
-    const tags = captionEntry ? parseCaptionTags(await captionEntry.async('string')) : [];
+    const captionEntries = captionsByPathStem.get(getImportPairKey(entry.name)) ?? [];
+    if (captionEntries.length > 1) logger.warning(`archive ${file.name} has conflicting captions for ${entry.name}; caption was not attached`);
+    const tags = captionEntries.length === 1 ? parseImportedCaptionTags(await captionEntries[0].async('string')) : [];
     const { sourceImage, asset } = await processImportedFile(
       imageFile,
       entry.name,
@@ -450,6 +493,10 @@ const processArchiveFile = async (
     );
     if (asset) {
       importedAssets.push(asset);
+      captionTargetByPairKey.set(
+        getImportPairKey(entry.name),
+        getCaptionSidecarPath(joinPath(getParentPath(entry.name), asset.fileName))
+      );
       await onAssetImported?.(asset);
     }
     if (sourceImage) {
@@ -458,8 +505,8 @@ const processArchiveFile = async (
     }
 
     const current = i + 1;
-    if (shouldLogProgress(current, imageEntries.length)) {
-      logger.progress({ current, total: imageEntries.length, label: `processing ${file.name}` });
+    if (shouldLogProgress(current, importEntries.length)) {
+      logger.progress({ current, total: importEntries.length, label: `processing ${file.name}` });
     }
   }
 
@@ -474,6 +521,24 @@ export const importImageFiles = async (
   const importedImages: SourceImage[] = [];
   const importedAssets: ImportedProjectAsset[] = [];
   const reservedNamesByDirectory = new Map<string, Set<string>>();
+  const normalizedInputs = files.map(normalizeImportInput);
+  const orderedInputs = [...normalizedInputs].sort((left, right) => {
+    const priority = (input: ReturnType<typeof normalizeImportInput>) => {
+      if (input.directoryPath || !input.file || isImportArchiveFile(input.file)) return 0;
+      const kind = resolveProjectAssetKind(input.file.name, input.file.type);
+      return kind === 'image' ? 1 : kind === 'text' ? 2 : 3;
+    };
+    return priority(left) - priority(right);
+  });
+  const directCaptions = new Map<string, File[]>();
+  const directCaptionTargetByPairKey = new Map<string, string>();
+  for (const input of normalizedInputs) {
+    if (!input.file || isImportArchiveFile(input.file) || resolveProjectAssetKind(input.file.name, input.file.type) !== 'text') continue;
+    const path = input.relativePath || input.file.name;
+    if (getArchiveExtension(path) !== '.txt') continue;
+    const key = getImportPairKey(path);
+    directCaptions.set(key, [...(directCaptions.get(key) ?? []), input.file]);
+  }
   let skippedCount = 0;
 
   if (files.length === 0) {
@@ -485,9 +550,9 @@ export const importImageFiles = async (
     : '';
   logger.info(`starting asset import from ${files.length} selected file${files.length !== 1 ? 's' : ''}${destinationLabel}`);
 
-  for (let i = 0; i < files.length; i++) {
+  for (let i = 0; i < orderedInputs.length; i++) {
     options.signal?.throwIfAborted();
-    const input = normalizeImportInput(files[i]);
+    const input = orderedInputs[i];
     if (input.directoryPath) {
       await createImportDirectory(options.destination, input.directoryPath);
       await options.onDirectoryImported?.(input.directoryPath);
@@ -513,16 +578,31 @@ export const importImageFiles = async (
         importedImages.push(...archiveResult.importedImages);
         importedAssets.push(...archiveResult.importedAssets);
       } else {
+        const kind = resolveProjectAssetKind(file.name, file.type);
+        const originalPath = input.relativePath || file.name;
+        const captionEntries = kind === 'image' ? directCaptions.get(getImportPairKey(input.relativePath || file.name)) ?? [] : [];
+        if (captionEntries.length > 1) logger.warning(`conflicting captions for ${input.relativePath || file.name}; caption was not attached`);
+        const tags = captionEntries.length === 1 ? parseImportedCaptionTags(await captionEntries[0].text()) : [];
+        const pairedTargetPath = kind === 'text' ? directCaptionTargetByPairKey.get(getImportPairKey(originalPath)) : undefined;
+        const importFile = pairedTargetPath
+          ? new File([file], getArchiveFileName(pairedTargetPath), { type: file.type || 'text/plain', lastModified: file.lastModified })
+          : file;
         const { sourceImage, asset } = await processImportedFile(
-          file,
-          input.relativePath,
-          [],
+          importFile,
+          pairedTargetPath ?? input.relativePath,
+          tags,
           options.destination,
           logger,
           reservedNamesByDirectory
         );
         if (asset) {
           importedAssets.push(asset);
+          if (kind === 'image') {
+            directCaptionTargetByPairKey.set(
+              getImportPairKey(originalPath),
+              getCaptionSidecarPath(joinPath(getParentPath(originalPath), asset.fileName))
+            );
+          }
           await options.onAssetImported?.(asset);
         }
         if (sourceImage) {
