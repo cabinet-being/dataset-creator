@@ -1,0 +1,155 @@
+import { useMemo, useState, type DragEvent, type MouseEvent } from 'react';
+import { Download, Layers3, Plus, Tags } from 'lucide-react';
+import type { Dataset, ToolName } from '../../types';
+import type { WorkspaceImage } from '../../lib/workspaceImages';
+import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
+import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
+import { AssetGallery } from '../ui/AssetGallery';
+import { BrickMasonry } from '../ui/BrickMasonry';
+import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
+import { ContextActionGroups } from '../ui/ContextActions';
+import { datasetBoardItems, DATASET_BOARD_SORT_OPTIONS, type DatasetBoardSortMode } from '../../lib/datasetBoard';
+
+export type EmptyDatasetSuggestion = { signature: string; items: WorkspaceImage[]; assetIds: string[]; totalCount: number };
+type Props = {
+  dataset: Dataset; items: WorkspaceImage[]; active: boolean; suggestion: EmptyDatasetSuggestion | null;
+  onTool: (tool: Extract<ToolName, 'select' | 'review' | 'tagging' | 'analysis'>) => void;
+  onExport: () => void;
+  onUpdate: (updates: Partial<Pick<Dataset, 'triggerWord' | 'overwriteCaptions'>>) => void;
+  canDrop: (event: DragEvent<HTMLDivElement>) => boolean;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onContextMenu: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
+  onApplySuggestion: (suggestion: EmptyDatasetSuggestion) => void;
+  onDismissSuggestion: (signature: string) => void;
+};
+const EMPTY_ITEMS: WorkspaceImage[] = [];
+export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExport, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion }: Props) {
+  const [sort, setSort] = useState<DatasetBoardSortMode>('name');
+  const [dropActive, setDropActive] = useState(false);
+  const boardItems = useMemo(() => datasetBoardItems(items, dataset, sort), [items, dataset, sort]);
+  const previewUrls = useWorkspacePreviewUrls(boardItems);
+  const suggestionPreviewUrls = useWorkspacePreviewUrls(suggestion?.items ?? EMPTY_ITEMS);
+  const linked = new Set(dataset.assetIds).size + new Set(filterLegacyProjectAssetPaths([...dataset.assetPaths, ...dataset.psdAssetPaths])).size;
+  const captioned = boardItems.filter(item => item.tags?.length).length;
+  const missing = Math.max(0, linked - items.length);
+  return <div className={`h-full min-h-0 overflow-auto p-3 sm:p-5 ${dropActive ? 'ring-2 ring-inset ring-primary bg-primary/5' : ''}`}
+    onDragOver={event => { if (canDrop(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropActive(true); } }}
+    onDragEnter={event => { if (canDrop(event)) setDropActive(true); }}
+    onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }}
+    onDrop={event => { setDropActive(false); onDrop(event); }}>
+    <div className="mx-auto flex max-w-5xl flex-col gap-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0"><h2 className="truncate text-xl font-semibold">{dataset.name}</h2>
+          <p className="text-sm text-muted-foreground">{linked} assets · {captioned}/{boardItems.length} captions</p>
+        </div>
+        <ContextActionGroups mode="toolbar" groups={[[
+          { id: 'add', label: 'Add files', icon: Plus, onSelect: () => onTool('select') },
+          { id: 'review', label: 'Review', icon: Layers3, onSelect: () => onTool('review') },
+          { id: 'caption', label: 'Caption', icon: Tags, onSelect: () => onTool('tagging') },
+          { id: 'export', label: 'Export', icon: Download, variant: 'primary', onSelect: onExport },
+        ]]} />
+      </header>
+      {missing > 0 && <p role="status" className="text-sm text-amber-700 dark:text-amber-300">{missing} linked {missing === 1 ? 'asset is' : 'assets are'} unavailable. Reconnect the project folder or restore the missing files.</p>}
+      <details className="rounded border border-border px-3 py-2">
+        <summary className="cursor-pointer text-sm">Dataset options</summary>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <label className="flex min-w-0 flex-wrap items-center gap-2 text-sm">Trigger
+            <input value={dataset.triggerWord} onChange={event => onUpdate({ triggerWord: event.target.value })} className="w-44 max-w-full rounded border border-border bg-background px-2 py-1.5" />
+          </label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={dataset.overwriteCaptions} onChange={event => onUpdate({ overwriteCaptions: event.target.checked })} />Overwrite captions</label>
+          <button className="rounded border border-border px-3 py-1.5 text-sm hover:bg-secondary" onClick={() => onTool('analysis')}>Analysis</button>
+        </div>
+      </details>
+      {dropActive && <p role="status" className="text-sm text-primary">Release to add files</p>}
+      {items.length > 0 ? (
+              <AssetGallery
+                active={active}
+                membership="remove" showOrder={false}
+                toolbarControls={<select aria-label="Dataset order" value={sort} onChange={event => setSort(event.target.value as DatasetBoardSortMode)} className="rounded-md border border-border bg-background p-2 text-sm">
+                  {DATASET_BOARD_SORT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>}
+                items={boardItems}
+                getKey={(item) => item.id}
+                getEstimate={(item) => item.height / Math.max(1, item.width)}
+                className="p-3"
+                renderItem={(item) => (
+                  <WorkspacePreviewCard
+                    item={item}
+                    previewUrl={previewUrls[item.id]}
+                    className="gallery-masonry-item"
+                    onOpenContextMenu={(_item, event) => onContextMenu(item, event)}
+                    footer={
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+                        <div className="flex items-end justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-white">{item.originalFileName ?? item.fileName}</p>
+                            <p className="text-xs text-gray-300">
+                              {item.label} · {item.width} x {item.height}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    }
+                  />
+                )}
+              />
+      ) : suggestion ? (
+            <div className="min-h-40 rounded border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">Suggested fill</p>
+                  <p className="text-xs text-muted-foreground">
+                    {suggestion.totalCount} captioned asset
+                    {suggestion.totalCount !== 1 ? 's' : ''}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onApplySuggestion(suggestion)}
+                    className="inline-flex items-center rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Add {suggestion.totalCount} asset
+                    {suggestion.totalCount !== 1 ? 's' : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDismissSuggestion(suggestion.signature)}
+                    className="inline-flex items-center rounded border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+              <BrickMasonry
+                items={suggestion.items}
+                getKey={(item) => item.id}
+                getEstimate={(item) => item.height / Math.max(1, item.width)}
+                className="p-3"
+                renderItem={(item) => (
+                  <WorkspacePreviewCard
+                    item={item}
+                    previewUrl={suggestionPreviewUrls[item.id]}
+                    className="gallery-masonry-item opacity-45 grayscale transition hover:opacity-65 hover:grayscale-0"
+                    footer={
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
+                        <div className="flex items-end justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-white">{item.originalFileName ?? item.fileName}</p>
+                            <p className="text-xs text-gray-300">
+                              {item.tags?.length ?? 0} tag{(item.tags?.length ?? 0) !== 1 ? 's' : ''}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    }
+                  />
+                )}
+              />
+            </div>
+      ) : (
+        <div className="py-10 text-center"><p className="text-sm text-muted-foreground">{linked ? 'No linked files available' : 'Empty Dataset'}</p></div>
+      )}
+    </div>
+  </div>;
+}

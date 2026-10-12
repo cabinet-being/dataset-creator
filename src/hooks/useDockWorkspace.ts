@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
+import { readWorkspacePersistence } from '../lib/workspacePersistence';
 import {
-  DOCK_STORAGE_KEY, EXPLORER_VIEW, dockHosts, dockViews, findDockGroup, focusDockView,
-  migrateDockLayout, openDockView, parseDockLayout, removeDockViews, mapDockNode,
+  EXPLORER_VIEW, dockHosts, dockViews, findDockGroup, focusDockView,
+  migrateDockLayout, openDockView, removeDockViews, mapDockNode, ensureDockEditorGroup,
   type DockLayout, type LegacyDockLayout,
 } from '../lib/workspaceLayout';
 
 export const useDockWorkspace = (legacy: LegacyDockLayout, editorIds: string[], activeEditor: string | null, pinnedEditorIds: string[]) => {
   const [layout, setLayout] = useState<DockLayout>(() => {
     try {
-      const saved = parseDockLayout(JSON.parse(localStorage.getItem(DOCK_STORAGE_KEY) ?? 'null'));
-      if (saved) return saved;
+      const saved = readWorkspacePersistence(localStorage).dock;
+      if (saved) return ensureDockEditorGroup(saved);
     } catch {}
-    return migrateDockLayout(legacy, editorIds, window.innerWidth - 40, window.innerHeight - 36);
+    return migrateDockLayout({ bottomPanelOpen: false, ...legacy }, editorIds, window.innerWidth - 40, window.innerHeight - 36);
   });
   const editorSignature = JSON.stringify(editorIds);
   const pinnedSignature = JSON.stringify([...pinnedEditorIds, ...(layout.pinned ?? [])]);
@@ -34,7 +35,7 @@ export const useDockWorkspace = (legacy: LegacyDockLayout, editorIds: string[], 
     setLayout((current) => {
       const existing = dockHosts(current).flatMap((host) => dockViews(host.root));
       const removed = existing.filter((id) => !id.startsWith('window:') && !editors.includes(id));
-      let next = removed.length ? removeDockViews(current, removed) : current;
+      let next = ensureDockEditorGroup(removed.length ? removeDockViews(current, removed) : current);
       for (const id of editors) if (!findDockGroup(next, id)) next = openDockView(next, id);
       return next;
     });
@@ -44,13 +45,6 @@ export const useDockWorkspace = (legacy: LegacyDockLayout, editorIds: string[], 
     if (!activeEditor) return;
     setLayout((current) => focusDockView(openDockView(current, activeEditor), activeEditor));
   }, [activeEditor]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify(layout)); } catch {}
-    }, 120);
-    return () => window.clearTimeout(timer);
-  }, [layout]);
 
   const show = useCallback((id: string) => setLayout((current) => openDockView(current, id)), []);
   const close = useCallback((ids: string[]) => setLayout((current) => removeDockViews(current, ids)), []);

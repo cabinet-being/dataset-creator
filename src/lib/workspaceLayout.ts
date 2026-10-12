@@ -25,6 +25,11 @@ const identity = (prefix: string) => `${prefix}:${crypto.randomUUID()}`;
 export const dockGroup = (tabs: string[] = [], id = identity('group')): DockGroup => ({ type: 'tabs', id, tabs, active: tabs[0] ?? null });
 export const dockSplit = (first: DockNode, second: DockNode, axis: DockSplit['axis'], ratio = 0.5): DockSplit => ({ type: 'split', id: identity('split'), axis, ratio, first, second });
 export const dockGroups = (node: DockNode | null): DockGroup[] => !node ? [] : node.type === 'tabs' ? [node] : [...dockGroups(node.first), ...dockGroups(node.second)];
+/** Keep a Welcome / new-editor destination when closing the last editor leaves only utility panels. */
+export const ensureDockEditorGroup = (layout: DockLayout): DockLayout => {
+  if (dockGroups(layout.main).some(group => !group.tabs.length || group.tabs.some(id => !id.startsWith('window:')))) return layout;
+  return { ...layout, main: dockSplit(dockGroup(), layout.main, 'horizontal', 0.75) };
+};
 export const dockViews = (node: DockNode | null): string[] => dockGroups(node).flatMap((group) => group.tabs);
 export const dockHosts = (layout: DockLayout): { id: string; root: DockNode | null }[] => [
   { id: 'left', root: layout.left }, { id: 'main', root: layout.main }, ...layout.floating.map((host) => ({ id: host.id, root: host.root })),
@@ -148,10 +153,13 @@ export const openDockView = (layout: DockLayout, view: string): DockLayout => {
   const groups = dockGroups(root);
   const previousGroup = groups.find((group) => group.id === location?.group);
   const neighbor = groups.find((group) => group.tabs.includes(location?.neighbor ?? ''));
-  const target = previousGroup ?? neighbor ?? groups.find((group) => group.id === layout.focusedGroup) ?? groups[0];
+  const focused = groups.find(group => group.id === layout.focusedGroup);
+  const editorGroup = groups.find(group => !group.tabs.length || group.tabs.some(id => !id.startsWith('window:')));
+  const emptyEditor = view.startsWith('window:') ? undefined : groups.find(group => !group.tabs.length);
+  const target = previousGroup ?? emptyEditor ?? neighbor ?? (view.startsWith('window:') ? focused : focused?.tabs.some(id => !id.startsWith('window:')) ? focused : editorGroup) ?? groups[0];
   const incoming = dockGroup([view]);
   const next = updateHost(layout, region, (node) => target
-    ? insertNode(node, { host: region, group: target.id, side: previousGroup ? 'center' : neighbor ? location!.side : 'center', index: previousGroup ? location?.index : undefined }, incoming)
+    ? insertNode(node, { host: region, group: target.id, side: previousGroup || target !== neighbor ? 'center' : location!.side, index: previousGroup ? location?.index : undefined }, incoming)
     : incoming);
   return focusDockView(next, view);
 };

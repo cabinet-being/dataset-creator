@@ -1,43 +1,57 @@
+import { WorkspaceWelcome } from './components/workspace/WorkspaceWelcome';
+import { WorkspaceTool, type AnalysisScopeTarget, type AssetContextMenuHandler, type DatasetToolName } from './components/workspace/WorkspaceTool';
+import { getToolViewContext, setToolViewScope, moveToolViewScope, pruneToolViewScope, type ToolSelectionScope } from './lib/workspaceToolScope';
+import { readWorkspacePersistence, writeWorkspacePersistence } from './lib/workspacePersistence';
+import { ExplorerPanel } from './components/workspace/ExplorerPanel';
+import { ExplorerTree, getExplorerIcon, type ExplorerTreeNode } from './components/workspace/ExplorerTree';
+import { selectFileNameStem } from './lib/fileNameSelection';
+import { checkDirtyDocuments, useDocumentStateStore } from './stores/useDocumentStateStore';
+import { DatasetBoard, type EmptyDatasetSuggestion } from './components/workspace/DatasetBoard';
+import { findFileTab, isFileBackedTab, moveFileTab, type FileWorkspaceTab } from './lib/workspaceFileTabs';
+import { DocumentActions } from './components/workspace/DocumentActions';
+import { TOOL_ICONS as toolIcons } from './lib/toolDefinitions';
+import { WorkspaceSettingsDialog } from './components/workspace/WorkspaceSettingsDialog';
+import { addDatasetReferences, addWorkspacePathsToDataset, removeAssetsFromDataset } from './lib/assetActions';
+import { AppShell } from './components/workspace/AppShell';
+import { WorkspaceMenus, WORKSPACE_WINDOWS, type WorkspaceMenu } from './components/workspace/WorkspaceMenus';
+import { WorkspaceStatusBar } from './components/workspace/WorkspaceStatusBar';
+import { WorkspaceNotifications } from './components/workspace/WorkspaceNotifications';
+import { isOperationRunning, useOperationStore } from './stores/useOperationStore';
+import { MenuSurface } from './components/ui/MenuSurface';
+import { useHistoryStore } from './stores/useHistoryStore';
+import { useCommands, useCommandPalette, type Command } from './components/workspace/Commands';
+import { InspectorSlot } from './components/workspace/InspectorHost';
+import { flushProjectSave, runProjectFileOperation, useProjectSave } from './hooks/useProjectSave';
 import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
 import type { ProjectType } from './types';
-import * as Dialog from '@radix-ui/react-dialog';
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, ComponentType, DragEvent, MouseEvent, ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent, DragEvent, MouseEvent, ReactNode, SetStateAction } from 'react';
 import {
-  AlertCircle,
   ArrowLeft,
   BarChart3,
-  Brush,
-  ChevronDown,
-  ChevronRight,
   Download,
   ExternalLink,
   File,
   FilePlus,
   FolderOpen,
   GitBranch,
-  Check,
   Layers3,
   Copy,
   Edit3,
   FileJson,
-  Moon,
   PanelBottom,
   PanelLeft,
   PanelRight,
   Pencil,
   Pin,
-  Plus,
   RotateCcw,
   ScanSearch,
   Scissors,
-  Sun,
   Tags,
   Trash2,
   Upload,
   Video,
-  X,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
 import { useUIStore } from './stores/useUIStore';
@@ -45,7 +59,6 @@ import {
   TOOLS,
   TOOL_LABELS,
   TOOL_URL_SLUGS,
-  TOOL_DESCRIPTIONS,
   URL_TOOL_ALIASES,
 } from './lib/constants';
 import {
@@ -56,7 +69,6 @@ import {
   type WorkspaceImage,
 } from './lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
-import { useWorkspacePreviewUrls } from './lib/previewUrlCache';
 import {
   createProjectDirectory,
   clearProjectDirectory,
@@ -64,11 +76,10 @@ import {
   projectDirectoryHasManifest,
   readProjectDirectory,
   writeProjectPreview,
-  writeProjectDirectoryChanges,
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
 import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
-import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile } from './services/import/importService';
+import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile, type ImportImagesOptions } from './services/import/importService';
 import {
   deleteLocalTaggerFileHandle,
   saveLocalTaggerFileHandle,
@@ -82,7 +93,6 @@ import {
   isLegacyProjectRootPath,
   LEGACY_PROJECT_ROOT_DIRECTORY_NAMES,
 } from './services/project/projectPathFilters';
-import { downloadZipFile, exportAsZip, type ExportAsset } from './services/export/exportService';
 import {
   createDatasetForFile,
   getDatasetDisplayName,
@@ -92,23 +102,19 @@ import {
   writeDatasetFile,
 } from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
-import { BrickMasonry } from './components/ui/BrickMasonry';
 import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
-import { WorkspacePreviewCard } from './components/ui/WorkspacePreviewCard';
 import {
   applyCaptionOverridePathMoves,
   applyExplorerPathMoves,
+  applyProjectRelativePathMoves,
   applyFileAssetOrderPathMoves,
   createDatasetFileAssetKey,
   createDatasetImageAssetKey,
   normalizeDatasetAssetOrder,
   type ExplorerPathMove,
 } from './lib/datasetAssets';
-import { CleanupTool as CleanupToolComponent } from './components/tools/CleanupTool';
-import { FinalReviewTool } from './components/tools/FinalReviewTool';
-import { TaggingTool as TaggingToolComponent } from './components/tools/TaggingTool';
-import { PhotopeaBlobViewer, PhotopeaPsdPreviewWorker, PSD_TOOL_COMMAND_EVENT } from './components/photopea/PhotopeaFrame';
+import { PhotopeaPsdPreviewWorker } from './components/photopea/PhotopeaFrame';
 import {
   canOpenExplorerFile,
   copyExplorerEntries,
@@ -124,10 +130,9 @@ import {
   readExplorerFile,
   renameExplorerEntry,
   type ExplorerClipboardEntry,
-  type ExplorerFileKind,
 } from './services/project/explorerFileService';
-import { type BrickColumnCount, type Dataset, type ToolName } from './types';
-import { createProjectVersion, listProjectVersions, restoreProjectVersion, type ProjectVersion } from './services/project/projectVersionService';
+import { createProject, type ProjectState, type Dataset, type ToolName } from './types';
+import { createProjectVersion, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from './services/project/projectVersionService';
 import {
   DATASET_MANIFEST_FILE,
   PROJECT_DATASET_DIRECTORY,
@@ -137,11 +142,11 @@ import {
 } from './services/project/projectLayoutService';
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
 import { useDockWorkspace } from './hooks/useDockWorkspace';
-import { EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource } from './lib/workspaceLayout';
+import { useWorkspaceNavigation } from './hooks/useWorkspaceNavigation';
+import { EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from './lib/workspaceLayout';
+import { hasBusyVideoTabs } from './services/video/videoClient';
 
-const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
-const BRICK_COLUMN_OPTIONS: BrickColumnCount[] = ['auto', 1, 2, 3, 4, 5];
 type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'review' | 'analysis' | 'caption';
 
 type FilePickerWindow = Window &
@@ -171,19 +176,6 @@ type FileInspectorMetadata = {
 
 type InspectorContext = 'empty' | 'tool' | 'dataset' | 'file' | 'review' | 'analysis' | 'caption' | 'photopea';
 
-const parseBrickColumnCount = (value: string): BrickColumnCount =>
-  value === 'auto' ? 'auto' : (Math.min(5, Math.max(1, Number(value))) as BrickColumnCount);
-
-const selectFileNameStem = (input: HTMLInputElement) => {
-  const extensionStart = input.value.lastIndexOf('.');
-  if (extensionStart > 0) {
-    input.setSelectionRange(0, extensionStart);
-    return;
-  }
-  input.select();
-};
-
-const WORKSPACE_LAYOUT_STORAGE_KEY = 'dataset-creator-workspace-layout';
 
 type WorkspaceTabState = {
   pinned?: boolean;
@@ -194,23 +186,9 @@ type ToolWorkspaceTab = {
   id: string;
   kind: 'tool';
   tool: ToolName;
+  scope?: ToolSelectionScope;
   nested?: ToolNestedView;
 } & WorkspaceTabState;
-
-type DatasetToolName = Extract<ToolName, 'select' | 'analysis' | 'review' | 'tagging'>;
-type DatasetBoardSortMode = 'name' | 'type' | 'captioned' | 'aspect';
-type EmptyDatasetSuggestion = {
-  signature: string;
-  items: WorkspaceImage[];
-  assetIds: string[];
-  totalCount: number;
-};
-const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; label: string }> = [
-  { value: 'name', label: 'Name' },
-  { value: 'type', label: 'Type' },
-  { value: 'captioned', label: 'Captioned' },
-  { value: 'aspect', label: 'Aspect ratio' },
-];
 
 const getDatasetBoardAssetKey = (item: WorkspaceImage): string =>
   item.kind === 'image'
@@ -245,12 +223,7 @@ type ToolNestedView = {
   itemId: string;
 };
 
-const DATASET_TOOL_LABELS: Record<DatasetToolName, string> = {
-  select: 'Remove Duplicates',
-  analysis: 'Analysis',
-  review: 'Review',
-  tagging: 'Caption',
-};
+const DATASET_TOOL_LABELS = { ...TOOL_LABELS, select: 'Add files', analysis: TOOL_LABELS.analysis, review: TOOL_LABELS.review, tagging: TOOL_LABELS.tagging };
 
 type DatasetToolWorkspaceTab = {
   id: string;
@@ -259,24 +232,6 @@ type DatasetToolWorkspaceTab = {
   tool: DatasetToolName;
   nested?: ToolNestedView;
 } & WorkspaceTabState;
-
-type FileWorkspaceTab = {
-  id: string;
-  kind: 'file-view' | 'file-edit' | 'file-caption' | 'file-analysis';
-  path: string;
-  name: string;
-  fileKind: ExplorerFileKind;
-  file: File | Blob;
-  workspaceImageId?: string;
-} & WorkspaceTabState;
-
-type AnalysisScopeTarget = {
-  path: string;
-  name: string;
-  fileKind: ExplorerFileKind;
-  file: File | Blob;
-  workspaceImageId?: string;
-};
 
 type DatasetWorkspaceTab = {
   id: string;
@@ -322,8 +277,7 @@ const createToolTab = (tool: ToolName): ToolWorkspaceTab => ({
   tool,
 });
 
-const createFileTabId = (path: string): string => `file:${path}`;
-const createFileModeTabId = (mode: 'edit' | 'caption' | 'analysis', path: string): string => `file:${mode}:${path}`;
+const createFileTabId = (): string => `file:${crypto.randomUUID()}`;
 const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
 const createDatasetToolTabId = (datasetId: string, tool: DatasetToolName): string => `dataset:${datasetId}:${tool}`;
 
@@ -393,9 +347,6 @@ const orderWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => [
 ];
 
 const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
-const isFileBackedTab = (tab: WorkspaceTab): tab is FileWorkspaceTab =>
-  tab.kind === 'file-view' || tab.kind === 'file-edit' || tab.kind === 'file-caption' || tab.kind === 'file-analysis';
-
 const getInspectorContext = (tab: WorkspaceTab | null, activeTool: ToolName | null): InspectorContext => {
   if (!tab) {
     return 'empty';
@@ -417,7 +368,7 @@ const getInspectorContext = (tab: WorkspaceTab | null, activeTool: ToolName | nu
     return 'photopea';
   }
 
-  if (tab.kind === 'file-view') {
+  if (tab.kind === 'file-view' || tab.kind === 'file-video') {
     return 'file';
   }
 
@@ -466,13 +417,13 @@ const getRestorableWorkspaceTabs = (
     .map(createWorkspaceTabFromPersisted);
 };
 
-const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
+const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout> => {
   if (typeof window === 'undefined') {
     return {};
   }
 
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(WORKSPACE_LAYOUT_STORAGE_KEY) ?? 'null');
+    const parsed = readWorkspacePersistence(window.localStorage, projectId).workspace;
     if (!parsed || typeof parsed !== 'object') {
       return {};
     }
@@ -594,20 +545,6 @@ const readWorkspaceLayout = (): Partial<WorkspaceLayout> => {
   }
 };
 
-const ImportTool = lazy(() =>
-  import('./components/tools/ImportTool').then((module) => ({ default: module.ImportTool }))
-);
-const SimilarityReviewTool = lazy(() =>
-  import('./components/tools/SimilarityReviewTool').then((module) => ({
-    default: module.SimilarityReviewTool,
-  }))
-);
-const AnalysisTool = lazy(() =>
-  import('./components/tools/AnalysisTool').then((module) => ({ default: module.AnalysisTool }))
-);
-const ExportTool = lazy(() =>
-  import('./components/tools/ExportTool').then((module) => ({ default: module.ExportTool }))
-);
 
 const isToolName = (value: string | null): value is ToolName =>
   Boolean(value && (TOOLS as readonly string[]).includes(value));
@@ -631,38 +568,7 @@ const readToolFromUrl = (): ToolName | null => {
   return getToolFromUrlSlug(tool) ?? (isToolName(tool) ? tool : null);
 };
 
-const writeToolToUrl = (tool: ToolName, mode: 'push' | 'replace' = 'replace') => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  const url = new URL(window.location.href);
-  const toolSlug = getUrlSlugForTool(tool);
-  if (url.searchParams.get('tool') === toolSlug) {
-    return;
-  }
-
-  url.searchParams.set('tool', toolSlug);
-  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
-  if (mode === 'push') {
-    window.history.pushState(null, '', nextUrl);
-    return;
-  }
-
-  window.history.replaceState(null, '', nextUrl);
-};
-
-const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
-  import: Upload,
-  select: ScanSearch,
-  clean: Brush,
-  analysis: BarChart3,
-  review: Layers3,
-  tagging: Tags,
-  export: Download,
-};
-
-const TOOLS_MENU_ITEMS = TOOLS.filter((tool) => tool !== 'import' && tool !== 'export');
+const TOOLS_MENU_ITEMS = TOOLS;
 
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
@@ -680,87 +586,12 @@ const getAspectRatioLabel = (width: number, height: number): string => {
   return `${Math.round(width / value)}:${Math.round(height / value)}`;
 };
 
-type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
-
-type RenderToolOptions = {
-  active?: boolean;
-  currentTool: ToolName;
-  projectDirectoryHandle?: ProjectDirectoryHandle | null;
-  onOpenAssetContextMenu?: AssetContextMenuHandler;
-  nested?: ToolNestedView;
-  onOpenNestedFile?: (itemId: string) => void;
-  onImportFiles?: (files: ImportInputFile[]) => Promise<number>;
-  analysisFileTargets?: AnalysisScopeTarget[] | null;
-  taggingItemScope?: string[] | null;
-};
-
-const renderTool = ({
-  active = true,
-  currentTool,
-  projectDirectoryHandle,
-  onOpenAssetContextMenu,
-  nested,
-  onOpenNestedFile,
-  onImportFiles,
-  analysisFileTargets,
-  taggingItemScope,
-}: RenderToolOptions) => {
-  switch (currentTool) {
-    case 'import':
-      return <ImportTool onImportFiles={onImportFiles} />;
-    case 'select':
-      return <SimilarityReviewTool />;
-    case 'clean':
-      return (
-        <CleanupToolComponent
-          active={active}
-          selectedImageId={nested?.itemId ?? null}
-          onSelectImage={onOpenNestedFile}
-          projectDirectoryHandle={projectDirectoryHandle}
-        />
-      );
-    case 'analysis':
-      return (
-        <AnalysisTool
-          active={active}
-          projectDirectoryHandle={projectDirectoryHandle}
-          onOpenAssetContextMenu={onOpenAssetContextMenu}
-          fileTargets={analysisFileTargets ?? undefined}
-        />
-      );
-    case 'review':
-      return <FinalReviewTool active={active} onOpenAssetContextMenu={onOpenAssetContextMenu} />;
-    case 'tagging':
-      return (
-        <TaggingToolComponent
-          active={active}
-          scopedItemIds={taggingItemScope ?? undefined}
-          selectedItemId={nested?.itemId ?? null}
-          onOpenItem={onOpenNestedFile}
-          onOpenAssetContextMenu={onOpenAssetContextMenu}
-        />
-      );
-    case 'export':
-      return <ExportTool active={active} />;
-    default:
-      return null;
-  }
-};
-
 type FloatingPanelState = {
   x: number;
   y: number;
   width: number;
   height: number;
   minimized: boolean;
-};
-
-type ExplorerTreeNode = {
-  name: string;
-  path: string;
-  kind: 'folder' | 'file' | 'dataset';
-  datasetId?: string;
-  children?: ExplorerTreeNode[];
 };
 
 type ExplorerItemEntry = {
@@ -774,14 +605,6 @@ type ExplorerItemEntry = {
 type ExplorerClipboard = {
   mode: 'copy' | 'cut';
   entries: ExplorerItemEntry[];
-};
-
-type ExplorerMarquee = {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
 };
 
 type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file' };
@@ -888,225 +711,6 @@ const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTreeNode |
   };
 };
 
-type ExplorerTreeProps = {
-  node: ExplorerTreeNode;
-  expandedPaths: Set<string>;
-  selectedPaths: Set<string>;
-  dropTargetPath: string | null;
-  inlineEdit: {
-    mode: 'create' | 'rename';
-    parentPath: string;
-    path?: string;
-    kind: 'folder' | 'file' | 'dataset';
-    value: string;
-  } | null;
-  focusedPath: string | null;
-  onToggle: (path: string) => void;
-  onSelect: (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
-  onContextMenu: (node: ExplorerTreeNode, x: number, y: number) => void;
-  onInlineChange: (value: string) => void;
-  onInlineCommit: () => void;
-  onInlineCancel: () => void;
-  onDragStartItem: (node: ExplorerTreeNode) => void;
-  onDragEndItems: () => void;
-  onDropTargetChange: (path: string | null) => void;
-  onDropItems: (node: ExplorerTreeNode, event: DragEvent) => void;
-  depth?: number;
-};
-
-const getExplorerIcon = (node: ExplorerTreeNode): ComponentType<{ className?: string }> => {
-  if (node.kind === 'folder') {
-    return FolderOpen;
-  }
-  if (node.kind === 'dataset') {
-    return Layers3;
-  }
-  switch (getExplorerFileKind(node.name)) {
-    case 'image':
-    case 'psd':
-      return File;
-    case 'json':
-      return FileJson;
-    case 'text':
-      return File;
-    case 'video':
-      return Video;
-    default:
-      return File;
-  }
-};
-
-const ExplorerTree = ({
-  node,
-  expandedPaths,
-  selectedPaths,
-  dropTargetPath,
-  inlineEdit,
-  focusedPath,
-  onToggle,
-  onSelect,
-  onContextMenu,
-  onInlineChange,
-  onInlineCommit,
-  onInlineCancel,
-  onDragStartItem,
-  onDragEndItems,
-  onDropTargetChange,
-  onDropItems,
-  depth = 0,
-}: ExplorerTreeProps) => {
-  const isFolder = node.kind === 'folder';
-  const isExpanded = isFolder && expandedPaths.has(node.path);
-  const isSelected = selectedPaths.has(node.path);
-  const isFocused = focusedPath === node.path;
-  const isDropTarget = isFolder && dropTargetPath === node.path;
-  const isRenaming = inlineEdit?.mode === 'rename' && inlineEdit.path === node.path;
-  const Icon = getExplorerIcon(node);
-
-  return (
-    <div>
-      <button
-        type="button"
-        data-explorer-row
-        data-explorer-path={node.path}
-        draggable={!isRenaming}
-        onClick={(event) => {
-          onSelect(node, event);
-          if (isFolder && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
-            onToggle(node.path);
-          }
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          onContextMenu(node, event.clientX, event.clientY);
-        }}
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = 'copyMove';
-          event.dataTransfer.setData('text/plain', node.path);
-          onDragStartItem(node);
-        }}
-        onDragEnd={onDragEndItems}
-        onDragOver={(event) => {
-          if (node.kind === 'folder') {
-            event.preventDefault();
-            event.stopPropagation();
-            event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
-            onDropTargetChange(node.path);
-          }
-        }}
-        onDrop={(event) => {
-          if (node.kind !== 'folder') {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          onDropTargetChange(null);
-          onDropItems(node, event);
-        }}
-        className={`flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:bg-secondary ${
-          isSelected ? 'bg-primary/15 text-foreground' : ''
-        } ${isFocused ? 'outline outline-1 outline-primary/60' : ''} ${
-          isDropTarget ? 'bg-primary/20 text-foreground ring-1 ring-inset ring-primary' : ''
-        }`}
-        style={{ paddingLeft: 4 + depth * 12 }}
-        title={node.path}
-      >
-        {isFolder ? (
-          isExpanded ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          )
-        ) : (
-          <span className="w-3.5 shrink-0" />
-        )}
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        {isRenaming ? (
-          <input
-            value={inlineEdit.value}
-            autoFocus
-            onFocus={(event) => {
-              if (inlineEdit.kind === 'folder') {
-                event.currentTarget.select();
-                return;
-              }
-              selectFileNameStem(event.currentTarget);
-            }}
-            onChange={(event) => onInlineChange(event.target.value)}
-            onBlur={onInlineCommit}
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onInlineCommit();
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                onInlineCancel();
-              }
-            }}
-            className="min-w-0 flex-1 rounded border border-primary bg-background px-1 py-0.5 text-xs"
-          />
-        ) : (
-          <span className="min-w-0 flex-1 truncate">{node.name}</span>
-        )}
-        {isDropTarget ? <span className="ml-auto shrink-0 text-[10px] font-medium text-primary">Import here</span> : null}
-      </button>
-      {inlineEdit?.mode === 'create' && inlineEdit.parentPath === node.path && (
-        <div style={{ paddingLeft: 4 + (depth + 1) * 12 }} className="flex h-7 items-center gap-1">
-          <span className="w-3.5 shrink-0" />
-          {inlineEdit.kind === 'dataset' ? (
-            <Layers3 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <input
-            value={inlineEdit.value}
-            autoFocus
-            onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => onInlineChange(event.target.value)}
-            onBlur={onInlineCommit}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onInlineCommit();
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                onInlineCancel();
-              }
-            }}
-            className="min-w-0 flex-1 rounded border border-primary bg-background px-1 py-0.5 text-xs"
-          />
-        </div>
-      )}
-      {isExpanded &&
-        node.children?.map((child) => (
-          <ExplorerTree
-            key={child.path}
-            node={child}
-            expandedPaths={expandedPaths}
-            selectedPaths={selectedPaths}
-            dropTargetPath={dropTargetPath}
-            inlineEdit={inlineEdit}
-            focusedPath={focusedPath}
-            onToggle={onToggle}
-            onSelect={onSelect}
-            onContextMenu={onContextMenu}
-            onInlineChange={onInlineChange}
-            onInlineCommit={onInlineCommit}
-            onInlineCancel={onInlineCancel}
-            onDragStartItem={onDragStartItem}
-            onDragEndItems={onDragEndItems}
-            onDropTargetChange={onDropTargetChange}
-            onDropItems={onDropItems}
-            depth={depth + 1}
-          />
-        ))}
-    </div>
-  );
-};
-
 function App() {
   const projectId = useProjectStore((state) => state.id);
   const projectName = useProjectStore((state) => state.name);
@@ -1116,7 +720,6 @@ function App() {
   const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType } | null>((resolve) => {
     setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
   });
-  const initializeProject = useProjectStore((state) => state.initializeProject);
   const loadProject = useProjectStore((state) => state.loadProject);
   const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
@@ -1154,36 +757,51 @@ function App() {
       .sort((left, right) => left.localeCompare(right)),
     [globalDatasetTags, sourceImages]
   );
-  const {
-    darkMode,
-    setDarkMode,
-    editToolbar,
-    addNotification,
-    notifications,
-    operationLogs,
-    removeNotification,
-    projectDirectoryHandle,
-    projectDirectoryName,
-    setProjectDirectory,
-  } = useUIStore();
+  const setDarkMode = useUIStore(state => state.setDarkMode);
+  const documentStates = useDocumentStateStore(state => state.documents);
+  const addNotification = useUIStore(state => state.addNotification);
+  const operationLogs = useUIStore(state => state.operationLogs);
+  const projectDirectoryHandle = useUIStore(state => state.projectDirectoryHandle);
+  const projectDirectoryName = useUIStore(state => state.projectDirectoryName);
+  const setProjectDirectory = useUIStore(state => state.setProjectDirectory);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
-  const [fileMenuOpen, setFileMenuOpen] = useState(false);
-  const [viewMenuOpen, setViewMenuOpen] = useState(false);
-  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
-  const [windowsMenuOpen, setWindowsMenuOpen] = useState(false);
+  const darkMode = useUIStore(state => state.darkMode);
+  const [openMenu, setOpenMenu] = useState<WorkspaceMenu | null>(null);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
+  const projectMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const projectOperationOriginRef = useRef<HTMLElement | null>(null);
+  const projectWasBusyRef = useRef(false);
+  useEffect(() => {
+    if (projectWasBusyRef.current && !isProjectDirectoryBusy) {
+      const frame = requestAnimationFrame(() => {
+        if (document.activeElement !== document.body) return;
+        const origin = projectOperationOriginRef.current;
+        (origin?.isConnected && origin !== document.body && origin !== document.documentElement
+          ? origin : projectMenuButtonRef.current)?.focus();
+      });
+      projectWasBusyRef.current = false;
+      return () => cancelAnimationFrame(frame);
+    }
+    projectWasBusyRef.current = isProjectDirectoryBusy;
+  }, [isProjectDirectoryBusy]);
   const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
   const [currentProjectVersionId, setCurrentProjectVersionId] = useState<string | undefined>();
   const [newVersionName, setNewVersionName] = useState('');
-  const [isUrlToolReady, setIsUrlToolReady] = useState(false);
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
+  const persistWorkspaceRef = useRef<(() => void) | null>(null);
   const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
     getRestorableWorkspaceTabs(storedWorkspaceLayout).filter((tab) => tab.kind !== 'window')
   );
-  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(initialWorkspaceTabs);
+  const [openTabs, setOpenTabsState] = useState<WorkspaceTab[]>(initialWorkspaceTabs);
+  const openTabsRef = useRef(openTabs);
+  const setOpenTabs = useCallback((update: SetStateAction<WorkspaceTab[]>) => {
+    const next = typeof update === 'function' ? update(openTabsRef.current) : update;
+    openTabsRef.current = next;
+    setOpenTabsState(next);
+  }, []);
   const [activeTabId, setActiveTabId] = useState<string | null>(() =>
-    initialWorkspaceTabs.some((tab) => tab.id === storedWorkspaceLayout.activeTabId)
+    storedWorkspaceLayout.activeTabId === null ? null : initialWorkspaceTabs.some((tab) => tab.id === storedWorkspaceLayout.activeTabId)
       ? storedWorkspaceLayout.activeTabId ?? null
       : initialWorkspaceTabs[0]?.id ?? null
   );
@@ -1209,7 +827,6 @@ function App() {
   const explorerPanelRef = useRef<HTMLDivElement | null>(null);
   const outputLogRef = useRef<HTMLDivElement | null>(null);
   const outputAutoFollowRef = useRef(true);
-  const autoSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
   const [explorerContextMenu, setExplorerContextMenu] = useState<{
@@ -1221,7 +838,7 @@ function App() {
   const [inspectorRenameValue, setInspectorRenameValue] = useState('');
   const [inspectorRenaming, setInspectorRenaming] = useState(false);
   const [inspectorSectionsOpen, setInspectorSectionsOpen] = useState<Record<InspectorSectionId, boolean>>({
-    object: true,
+    object: false,
     actions: true,
     file: true,
     dataset: true,
@@ -1232,8 +849,6 @@ function App() {
   });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
   const [datasetWorkspaceFileAssets, setDatasetWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
-  const [datasetBoardSortMode, setDatasetBoardSortMode] = useState<DatasetBoardSortMode>('name');
-  const [datasetDropActive, setDatasetDropActive] = useState(false);
   const [dismissedEmptyDatasetSuggestionSignatures, setDismissedEmptyDatasetSuggestionSignatures] = useState<Set<string>>(
     () => new Set()
   );
@@ -1241,9 +856,6 @@ function App() {
   const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const [focusedExplorerPath, setFocusedExplorerPath] = useState<string | null>(null);
-  const [explorerMarquee, setExplorerMarquee] = useState<ExplorerMarquee | null>(null);
-  const [analysisFileTargets, setAnalysisFileTargets] = useState<AnalysisScopeTarget[] | null>(null);
-  const [taggingItemScope, setTaggingItemScope] = useState<string[] | null>(null);
   const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerItemEntry[] | null>(null);
   const draggedExplorerEntriesRef = useRef<ExplorerItemEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
@@ -1262,10 +874,18 @@ function App() {
     );
   };
 
+  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>(() => {
+    try { const saved = localStorage.getItem('dataset-creator-theme'); return saved === 'light' || saved === 'dark' ? saved : 'system'; } catch { return 'system'; }
+  });
+  const [density, setDensity] = useState(() => { try { return localStorage.getItem('dataset-creator-density') === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; } });
   useEffect(() => {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    setDarkMode(prefersDark);
-  }, [setDarkMode]);
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => setDarkMode(theme === 'dark' || (theme === 'system' && media.matches));
+    apply(); media.addEventListener('change', apply);
+    try { localStorage.setItem('dataset-creator-theme', theme); } catch {}
+    return () => media.removeEventListener('change', apply);
+  }, [theme, setDarkMode]);
+  useEffect(() => { document.documentElement.dataset.density = density; try { localStorage.setItem('dataset-creator-density', density); } catch {} }, [density]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -1280,97 +900,29 @@ function App() {
     outputLog.scrollTop = outputLog.scrollHeight;
   }, [operationLogs.length]);
 
-  useEffect(() => {
-    const toolFromUrl = readToolFromUrl();
-    if (toolFromUrl) {
-      setCurrentTool(toolFromUrl);
-      setOpenTabs((tabs) =>
-        tabs.some((tab) => tab.kind === 'tool' && tab.tool === toolFromUrl)
-          ? tabs
-          : [...tabs, createToolTab(toolFromUrl)]
-      );
-      setActiveTabId(createToolTab(toolFromUrl).id);
-    }
-    setIsUrlToolReady(true);
-
-    const handlePopState = () => {
-      const nextTool = readToolFromUrl();
-      if (nextTool) {
-        setCurrentTool(nextTool);
-        setOpenTabs((tabs) =>
-          tabs.some((tab) => tab.kind === 'tool' && tab.tool === nextTool)
-            ? tabs
-            : [...tabs, createToolTab(nextTool)]
-        );
-        setActiveTabId(createToolTab(nextTool).id);
+  const [navigationRecovery, setNavigationRecovery] = useState(false);
+  useWorkspaceNavigation({
+    projectId, activeId: activeTabId, views: openTabs, closedViews: closedTabs,
+    toolFromUrl: () => { const tool = readToolFromUrl(); return tool ? createToolTab(tool) : null; },
+    toolSlug: tab => tab.kind === 'tool' ? getUrlSlugForTool(tab.tool) : null,
+    activate: tab => {
+      if (tab) {
+        setNavigationRecovery(false);
+        setOpenTabs(tabs => tabs.some(item => item.id === tab.id) ? tabs : [...tabs, tab]);
+        dock.show(tab.id);
+        if (tab.kind === 'tool') setCurrentTool(tab.tool);
       }
-    };
+      setActiveTabId(tab?.id ?? null);
+      requestAnimationFrame(() => {
+        const target = tab ? document.getElementById(`panel-${tab.id}`) : document.querySelector<HTMLElement>('[data-workspace-welcome]');
+        target?.focus();
+      });
+    },
+    unavailable: () => setNavigationRecovery(true),
+  });
 
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [setCurrentTool]);
-
-  useEffect(() => {
-    if (isUrlToolReady) {
-      writeToolToUrl(currentTool);
-    }
-  }, [currentTool, isUrlToolReady]);
-
-  useEffect(() => {
-    if (!projectDirectoryHandle) {
-      return;
-    }
-
-    const sessionId = projectSessionRef.current;
-    const directoryHandle = projectDirectoryHandle;
-    let previousProject = useProjectStore.getState();
-    let saveTimer: number | undefined;
-
-    const unsubscribe = useProjectStore.subscribe((nextProject) => {
-      window.clearTimeout(saveTimer);
-      saveTimer = window.setTimeout(() => {
-        if (
-          projectSessionRef.current !== sessionId ||
-          useUIStore.getState().projectDirectoryHandle !== directoryHandle
-        ) {
-          return;
-        }
-
-        const projectBeforeChanges = previousProject;
-        previousProject = nextProject;
-        autoSaveQueueRef.current = autoSaveQueueRef.current
-          .catch(() => undefined)
-          .then(async () => {
-            if (
-              projectSessionRef.current !== sessionId ||
-              useUIStore.getState().projectDirectoryHandle !== directoryHandle
-            ) {
-              return;
-            }
-            await writeProjectDirectoryChanges(nextProject, projectBeforeChanges, directoryHandle);
-          })
-          .catch((error) => {
-            if (
-              projectSessionRef.current === sessionId &&
-              useUIStore.getState().projectDirectoryHandle === directoryHandle
-            ) {
-              createOperationLogger('Project').error(
-                error instanceof Error ? error.message : 'failed to auto-save project directory'
-              );
-              addNotification(
-                'error',
-                error instanceof Error ? error.message : 'Failed to auto-save project directory'
-              );
-            }
-          });
-      }, 250);
-    });
-
-    return () => {
-      window.clearTimeout(saveTimer);
-      unsubscribe();
-    };
-  }, [addNotification, projectDirectoryHandle]);
+  const projectSave = useProjectSave();
+  const openCommands = useCommandPalette();
 
   useEffect(() => {
     if (!(TOOLS as readonly string[]).includes(currentTool)) {
@@ -1379,16 +931,13 @@ function App() {
   }, [currentTool, setCurrentTool]);
 
   useEffect(() => {
-    if (!fileMenuOpen && !viewMenuOpen && !toolsMenuOpen && !windowsMenuOpen && !tabMenuOpen && !workspaceContextMenu) {
+    if (!openMenu && !tabMenuOpen && !workspaceContextMenu) {
       return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setFileMenuOpen(false);
-        setViewMenuOpen(false);
-        setToolsMenuOpen(false);
-        setWindowsMenuOpen(false);
+        setOpenMenu(null);
         setTabMenuOpen(false);
         setWorkspaceContextMenu(null);
       }
@@ -1396,7 +945,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fileMenuOpen, workspaceContextMenu, tabMenuOpen, toolsMenuOpen, viewMenuOpen, windowsMenuOpen]);
+  }, [openMenu, workspaceContextMenu, tabMenuOpen]);
 
   useEffect(() => {
     if (!explorerContextMenu) {
@@ -1437,16 +986,11 @@ function App() {
     () => orderDatasetBoardItems(toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets), globalDataset.assetOrder, globalDataset.assetIds),
     [globalDataset, activeDatasetSourceImages, datasetWorkspaceFileAssets]
   );
-  const activeDatasetPreviewUrls = useWorkspacePreviewUrls(activeDatasetPreviewItems);
   const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
-    if (!activeDataset || activeTab?.kind !== 'dataset') {
-      return null;
-    }
-
     const isEmpty =
-      activeDataset.assetIds.length === 0 &&
-      filterLegacyProjectAssetPaths(activeDataset.assetPaths ?? []).length === 0 &&
-      filterLegacyProjectAssetPaths(activeDataset.psdAssetPaths ?? []).length === 0;
+      globalDataset.assetIds.length === 0 &&
+      filterLegacyProjectAssetPaths(globalDataset.assetPaths ?? []).length === 0 &&
+      filterLegacyProjectAssetPaths(globalDataset.psdAssetPaths ?? []).length === 0;
     if (!isEmpty) {
       return null;
     }
@@ -1472,7 +1016,7 @@ function App() {
     }
 
     const assetIds = [...new Set(candidates.map((item) => item.sourceImageId).filter(Boolean))];
-    const signature = `${activeDataset.id}:${assetIds
+    const signature = `${globalDataset.id}:${assetIds
       .map((assetId) => {
         const item = candidates.find((candidate) => candidate.sourceImageId === assetId);
         return `${assetId}:${item?.tags?.length ?? 0}`;
@@ -1488,37 +1032,11 @@ function App() {
       assetIds,
       totalCount: assetIds.length,
     };
-  }, [activeDataset, activeTab, dismissedEmptyDatasetSuggestionSignatures, workspaceImages]);
-  const activeEmptyDatasetSuggestionPreviewUrls = useWorkspacePreviewUrls(activeEmptyDatasetSuggestion?.items ?? []);
-  const activeDatasetSummary = useMemo(() => {
-    if (!activeDataset) {
-      return null;
-    }
-
-    const sourceAssetIds = [...new Set(activeDataset.assetIds ?? [])];
-    const sourceItems = workspaceImages.filter((item) => sourceAssetIds.includes(item.sourceImageId));
-    const sourceCaptionedCount = sourceItems.filter((item) => {
-      const overrideTags = activeDataset.overwriteCaptions ? activeDataset.captionOverrides[item.id] : undefined;
-      return (overrideTags ?? item.tags ?? []).length > 0;
-    }).length;
-    const fileCaptionedCount = activeDatasetFileAssetPaths.filter((path) => {
-      const tags = activeDataset.captionOverrides[createWorkspaceFileAssetId(path)];
-      return tags && tags.length > 0;
-    }).length;
-
-    return {
-      assets: sourceAssetIds.length + activeDatasetFileAssetPaths.length,
-      supported:
-        sourceItems.filter((item) => item.kind === 'image' || item.kind === 'edited').length +
-        filterLegacyProjectAssetPaths(activeDataset.psdAssetPaths ?? []).length,
-      sourceRefs: sourceAssetIds.length,
-      availableSourceRefs: sourceAssetIds.filter((id) => Boolean(sourceImagesById[id])).length,
-      fileAssets: activeDatasetFileAssetPaths.length,
-      captioned: sourceCaptionedCount + fileCaptionedCount,
-      captionable: sourceItems.length + activeDatasetFileAssetPaths.length,
-      triggerWordSet: Boolean(activeDataset.triggerWord.trim()),
-    };
-  }, [activeDataset, activeDatasetFileAssetPaths, sourceImagesById, workspaceImages]);
+  }, [globalDataset, dismissedEmptyDatasetSuggestionSignatures, workspaceImages]);
+  const missingDatasetSourceCount = useMemo(
+    () => [...new Set(activeDataset?.assetIds ?? [])].filter(id => !sourceImagesById[id]).length,
+    [activeDataset?.assetIds, sourceImagesById]
+  );
   const activeFileWorkspaceItem = useMemo(() => {
     if (!activeTab || !isFileBackedTab(activeTab)) {
       return null;
@@ -1595,6 +1113,8 @@ function App() {
           ? `Photopea: ${tab.name}`
           : tab.kind === 'file-analysis'
             ? `Analysis: ${tab.name}`
+          : tab.kind === 'file-video'
+            ? `Video Frames: ${tab.name}`
           : tab.kind === 'file-caption'
             ? `Caption: ${tab.name}`
             : tab.name;
@@ -1615,10 +1135,6 @@ function App() {
   const activeInspectorContext = getInspectorContext(activeTab, activeTool);
   const showFileInspector = Boolean(activeTab && isFileBackedTab(activeTab));
   const showDatasetInspector = Boolean(activeDataset);
-  const showCaptionInspector = activeInspectorContext === 'caption';
-  const showReviewInspector =
-    (activeTab?.kind === 'tool' && activeTab.tool === 'review') ||
-    (activeTab?.kind === 'dataset-tool' && (activeTab.tool === 'select' || activeTab.tool === 'review'));
   const showAnalysisInspector = activeInspectorContext === 'analysis';
   const showPhotopeaInspector =
     activeInspectorContext === 'photopea' &&
@@ -1626,7 +1142,14 @@ function App() {
     isFileBackedTab(activeTab) &&
     (activeTab.kind === 'file-edit' || activeTab.fileKind === 'psd');
 
-  const setToolTabNestedView = (tabId: string, nested: ToolNestedView | undefined) => {
+  const setToolTabNestedView = async (tabId: string, nested: ToolNestedView | undefined) => {
+    const current = openTabs.find(tab => tab.id === tabId);
+    if (current?.kind === 'tool' && current.nested?.itemId !== nested?.itemId) {
+      if (useOperationStore.getState().entries.some(entry => entry.viewId === tabId && isOperationRunning(entry))) {
+        addNotification('warning', 'Finish saving before leaving this editor.'); return;
+      }
+      if (!await confirmClosingTabs([current])) return;
+    }
     setOpenTabs((tabs) =>
       tabs.map((tab) =>
         tab.id === tabId && (tab.kind === 'tool' || tab.kind === 'dataset-tool')
@@ -1739,66 +1262,37 @@ function App() {
   }, [activeFileCaptionEntries, activeTab]);
 
   useEffect(() => {
-    if (activeTabId && openTabs.some((tab) => tab.id === activeTabId)) {
+    if (activeTabId === null || openTabs.some((tab) => tab.id === activeTabId)) {
       return;
     }
     setActiveTabId(openTabs[0]?.id ?? null);
   }, [activeTabId, openTabs]);
-  useEffect(() => {
-    if (!activeTab || activeTab.kind !== 'file-edit') {
-      return;
-    }
-    setOpenTabs((tabs) =>
-      tabs.map((tab) =>
-        tab.id === activeTab.id && tab.kind === 'file-edit'
-          ? tab.dirty === editToolbar.canSave
-            ? tab
-            : { ...tab, dirty: editToolbar.canSave }
-          : tab
-      )
-    );
-  }, [activeTab, editToolbar.canSave]);
 
-  const runEditCommand = (command: 'back' | 'save' | 'saveCopy' | 'cancel') => {
-    window.dispatchEvent(new CustomEvent(EDIT_TOOL_COMMAND_EVENT, { detail: command }));
-    if (command === 'save' || command === 'saveCopy') {
-      window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
-    }
-  };
-  const runPsdCommand = (command: 'save' | 'saveCopy') => {
-    window.dispatchEvent(new CustomEvent(PSD_TOOL_COMMAND_EVENT, { detail: command }));
-  };
+
   const navigateToTool = (
     tool: ToolName,
-    scopes?: { analysisFiles?: AnalysisScopeTarget[]; taggingItemIds?: string[] }
+    scopes?: ToolSelectionScope
   ) => {
     if (!profile.enabledTools.includes(tool)) return;
-    setAnalysisFileTargets(tool === 'analysis' ? scopes?.analysisFiles ?? null : null);
-    setTaggingItemScope(tool === 'tagging' ? scopes?.taggingItemIds ?? null : null);
+    setNavigationRecovery(false);
     const nextTab = createToolTab(tool);
     dock.show(nextTab.id);
-    setOpenTabs((tabs) => (tabs.some((tab) => tab.id === nextTab.id) ? tabs : [...tabs, nextTab]));
+    setOpenTabs(tabs => setToolViewScope(tabs.some(tab => tab.id === nextTab.id) ? tabs : [...tabs, nextTab], nextTab.id, scopes));
     setActiveTabId(nextTab.id);
-    writeToolToUrl(tool, 'push');
     setCurrentTool(tool);
-    setFileMenuOpen(false);
-    setViewMenuOpen(false);
-    setToolsMenuOpen(false);
-    setWindowsMenuOpen(false);
+    focusView(nextTab.id);
+    setOpenMenu(null);
     setTabMenuOpen(false);
   };
 
   const activateTab = (tab: WorkspaceTab) => {
+    setNavigationRecovery(false);
     dock.show(tab.id);
     setActiveTabId(tab.id);
     if (tab.kind === 'tool') {
-      writeToolToUrl(tab.tool, 'push');
       setCurrentTool(tab.tool);
     }
-    setFileMenuOpen(false);
-    setViewMenuOpen(false);
-    setToolsMenuOpen(false);
-    setWindowsMenuOpen(false);
+    setOpenMenu(null);
     setTabMenuOpen(false);
     setWorkspaceContextMenu(null);
   };
@@ -1832,11 +1326,17 @@ function App() {
   };
 
   const isTabDirty = (tab: WorkspaceTab): boolean =>
-    Boolean(tab.dirty || (activeTabId === tab.id && tab.kind === 'file-edit' && editToolbar.canSave));
+    Boolean(documentStates[tab.id]?.dirty ?? tab.dirty);
 
-  const applyWorkspaceTabsForProject = (nextProjectId: string) => {
-    const layout = readWorkspaceLayout();
-    const datasets = { [globalDataset.id]: globalDataset };
+  const applyWorkspaceTabsForProject = (nextProject: ProjectState) => {
+    const nextProjectId = nextProject.id;
+    const layout = readWorkspaceLayout(nextProjectId);
+    if (layout.projectId === nextProjectId) {
+      const savedDock = readWorkspacePersistence(window.localStorage, nextProjectId).dock;
+      if (savedDock) dock.setLayout(savedDock);
+      setActiveActivityView(layout.activeActivityView ?? 'explorer');
+    }
+    const datasets = { [nextProject.dataset.id]: nextProject.dataset };
     const restoredTabs = getRestorableWorkspaceTabs(layout, nextProjectId).filter((tab) => {
       if (tab.kind === 'tool') {
         return true;
@@ -1850,7 +1350,7 @@ function App() {
       return false;
     });
 
-    const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool');
+    const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool').map(tab => ({...tab,scope:undefined,nested:undefined,dirty:false}));
     const restoredToolTabs = restoredTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool');
     const nextTabs = dedupeWorkspaceTabs([
       ...(restoredToolTabs.length > 0 ? restoredToolTabs : currentToolTabs),
@@ -1872,8 +1372,13 @@ function App() {
     });
   };
 
-  const confirmClosingTabs = (tabs: WorkspaceTab[]): boolean => {
-    const dirtyCount = tabs.filter(isTabDirty).length;
+  const confirmClosingTabs = async (tabs: WorkspaceTab[]): Promise<boolean> => {
+    if (hasBusyVideoTabs(tabs.map((tab) => tab.id)) && !window.confirm('Cancel the running video operation and close its tab? Already saved frames will remain in the project.')) return false;
+    let checked: string[];
+    try { checked = await checkDirtyDocuments(tabs.map(tab => tab.id)); }
+    catch (error) { addNotification('error', error instanceof Error ? error.message : 'Could not verify unsaved changes'); return false; }
+    const registered = useDocumentStateStore.getState().documents;
+    const dirtyCount = tabs.filter(tab => checked.includes(tab.id) || (!registered[tab.id] && tab.dirty)).length;
     if (dirtyCount === 0) {
       return true;
     }
@@ -1913,40 +1418,52 @@ function App() {
   };
 
   useEffect(() => {
-    try {
-      const persistableActiveTab = openTabs.find((tab) => tab.id === activeTabId);
-      const persistedActiveTab = persistableActiveTab ? persistWorkspaceTab(persistableActiveTab) : null;
-      const persistedOpenTabs = openTabs
-        .map(persistWorkspaceTab)
-        .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab));
-      const nextOpenTabs = projectDirectoryHandle
-        ? persistedOpenTabs
-        : [
-            ...persistedOpenTabs.filter((tab) => tab.kind === 'tool'),
-            ...(storedWorkspaceLayout.openTabs ?? []).filter((tab) => tab.kind !== 'tool'),
-          ];
-      window.localStorage.setItem(
-        WORKSPACE_LAYOUT_STORAGE_KEY,
-        JSON.stringify({
-          openTabs: nextOpenTabs,
-          activeTabId: persistedActiveTab
-            ? persistableActiveTab?.id ?? null
-            : projectDirectoryHandle
-              ? null
-              : storedWorkspaceLayout.activeTabId ?? null,
-          projectId: projectDirectoryHandle ? projectId : storedWorkspaceLayout.projectId ?? null,
-          activeActivityView,
-        } satisfies Partial<WorkspaceLayout>)
-      );
-    } catch {
-      // Workspace layout is a convenience; private browsing can disable localStorage.
-    }
+    const persist = () => {
+      try {
+        const persistableActiveTab = openTabs.find((tab) => tab.id === activeTabId);
+        const persistedActiveTab = persistableActiveTab ? persistWorkspaceTab(persistableActiveTab) : null;
+        const persistedOpenTabs = openTabs
+          .map(persistWorkspaceTab)
+          .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab));
+        const nextOpenTabs = projectDirectoryHandle
+          ? persistedOpenTabs
+          : [
+              ...persistedOpenTabs.filter((tab) => tab.kind === 'tool'),
+              ...(storedWorkspaceLayout.openTabs ?? []).filter((tab) => tab.kind !== 'tool'),
+            ];
+        writeWorkspacePersistence(
+          window.localStorage,
+          {
+            openTabs: nextOpenTabs,
+            activeTabId: persistedActiveTab
+              ? persistableActiveTab?.id ?? null
+              : projectDirectoryHandle
+                ? null
+                : storedWorkspaceLayout.activeTabId ?? null,
+            projectId: projectDirectoryHandle ? projectId : storedWorkspaceLayout.projectId ?? null,
+            activeActivityView,
+          } satisfies Partial<WorkspaceLayout>,
+          dock.layout,
+          projectDirectoryHandle ? projectId : undefined
+        );
+      } catch {
+        // Workspace layout is a convenience; private browsing can disable localStorage.
+      }
+    };
+    persistWorkspaceRef.current = persist;
+    const timer = window.setTimeout(persist, 120);
+    window.addEventListener('pagehide', persist);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pagehide', persist);
+    };
   }, [
     activeActivityView,
     activeTabId,
     openTabs,
     projectDirectoryHandle,
     projectId,
+    dock.layout,
   ]);
 
   useEffect(() => {
@@ -2001,7 +1518,7 @@ function App() {
   };
 
   const getVisibleExplorerNodes = (node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode[] => {
-    if (!node) {
+    if (!node || (node.kind === 'folder' && !expandedExplorerPaths.has(node.path))) {
       return [];
     }
 
@@ -2066,6 +1583,10 @@ function App() {
 
   const focusExplorerNode = (node: ExplorerTreeNode, extendSelection: boolean) => {
     setActiveExplorerNode(node);
+    const row = Array.from(explorerPanelRef.current?.querySelectorAll<HTMLElement>('[data-explorer-row]') ?? [])
+      .find(element => element.dataset.explorerPath === node.path);
+    row?.focus({ preventScroll: true });
+    row?.scrollIntoView({ block: 'nearest' });
     if (extendSelection) {
       const anchor = selectionAnchorPath ?? focusedExplorerPath ?? node.path;
       setSelectionAnchorPath(anchor);
@@ -2082,7 +1603,7 @@ function App() {
       return;
     }
     const focusedPath = focusedExplorerPath ?? selectedExplorerPaths.values().next().value;
-    const currentIndex = Math.max(0, visibleNodes.findIndex((node) => node.path === focusedPath));
+    const currentIndex = visibleNodes.findIndex((node) => node.path === focusedPath);
     const nextIndex = Math.max(0, Math.min(visibleNodes.length - 1, currentIndex + direction));
     focusExplorerNode(visibleNodes[nextIndex], extendSelection);
   };
@@ -2393,10 +1914,7 @@ function App() {
     return [...assetPaths];
   };
 
-  const collectDatasetPsdPathsFromAssetPaths = (assetPaths: string[]): string[] =>
-    filterLegacyProjectAssetPaths(assetPaths).filter((path) => getExplorerFileKind(path.split('/').pop() ?? path) === 'psd');
-
-  const indexSharedWorkspaceAssets = async () => {
+  const indexSharedWorkspaceAssets = async (save = true) => {
     if (!projectDirectoryHandle) {
       return;
     }
@@ -2409,11 +1927,11 @@ function App() {
         if (sourceImage && !previousProject.sourceImages[sourceImage.id]) {
           addSourceImage(sourceImage);
         }
-        await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, projectDirectoryHandle);
+        if (save) await flushProjectSave();
         refreshExplorer();
       },
     });
-    await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, projectDirectoryHandle);
+    if (save) await flushProjectSave();
     refreshExplorer();
     useUIStore.getState().refreshAssetPreviews();
   };
@@ -2435,7 +1953,6 @@ function App() {
     const importedAssetIds: string[] = [];
     const importedAssetPaths: string[] = [];
     const importedPsdPaths: string[] = [];
-    const previousProject = useProjectStore.getState();
     const result = await importImageFiles(files, {
       logger: createOperationLogger('Dataset'),
       destination: {
@@ -2459,7 +1976,7 @@ function App() {
     });
 
     if (result.importedImages.length > 0 || result.importedAssets.length > 0) {
-      await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, projectDirectoryHandle);
+      await flushProjectSave();
       refreshExplorer();
     }
 
@@ -2609,75 +2126,10 @@ function App() {
     dataset: Dataset,
     updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>
   ) => {
-    const assetIds = updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds;
-    const assetPaths = 'assetPaths' in updates
-      ? filterLegacyProjectAssetPaths([...new Set(updates.assetPaths ?? [])])
-      : filterLegacyProjectAssetPaths(dataset.assetPaths);
-    const psdAssetPaths = updates.psdAssetPaths
-      ? filterLegacyProjectAssetPaths([...new Set(updates.psdAssetPaths)])
-      : 'assetPaths' in updates
-        ? collectDatasetPsdPathsFromAssetPaths(filterLegacyProjectAssetPaths(updates.assetPaths ?? []))
-        : filterLegacyProjectAssetPaths(dataset.psdAssetPaths);
-    const normalizedPsdAssetPaths = filterLegacyProjectAssetPaths([
-      ...new Set([...psdAssetPaths, ...collectDatasetPsdPathsFromAssetPaths(assetPaths)]),
-    ]);
-    const nextDataset = {
-      ...dataset,
-      ...updates,
-      assetIds,
-      assetPaths,
-      psdAssetPaths: normalizedPsdAssetPaths,
-      assetOrder: normalizeDatasetAssetOrder(updates.assetOrder ?? dataset.assetOrder, assetIds, assetPaths),
-      overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
-      captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
-      updatedAt: new Date(),
-    };
-    updateProjectDataset(dataset.id, nextDataset);
-    const directory = requireProjectDirectory();
-    if (directory && nextDataset.filePath) {
-      await writeDatasetFile(directory, nextDataset);
-    }
-  };
-
-  const getDatasetBoardCaptionCount = (dataset: Dataset, item: WorkspaceImage): number => {
-    const tags =
-      item.kind === 'image'
-        ? dataset.overwriteCaptions
-          ? dataset.captionOverrides[item.id]
-          : item.tags
-        : item.assetPath
-          ? dataset.captionOverrides[createWorkspaceFileAssetId(item.assetPath)]
-          : item.tags;
-    return tags?.length ?? 0;
-  };
-
-  const sortDatasetBoardItems = (
-    items: WorkspaceImage[],
-    dataset: Dataset,
-    sortMode: DatasetBoardSortMode
-  ): WorkspaceImage[] => {
-    return [...items].sort((left, right) => {
-      if (sortMode === 'name') {
-        return left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' });
-      }
-      if (sortMode === 'type') {
-        return (
-          left.kind.localeCompare(right.kind) ||
-          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
-        );
-      }
-      if (sortMode === 'captioned') {
-        return (
-          getDatasetBoardCaptionCount(dataset, right) -
-            getDatasetBoardCaptionCount(dataset, left) ||
-          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
-        );
-      }
-      return (
-        left.aspectRatio.localeCompare(right.aspectRatio) ||
-        left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
-      );
-    });
+    // Merge only the changed fields into the latest store snapshot. Passing a
+    // captured Dataset back here can overwrite membership added by another panel.
+    updateProjectDataset(dataset.id, updates);
+    await flushProjectSave();
   };
 
   const dismissEmptyDatasetSuggestion = (signature: string) => {
@@ -2695,45 +2147,19 @@ function App() {
       return;
     }
 
-    const nextAssetIds = [...new Set([...currentDataset.assetIds, ...suggestion.assetIds])];
-    const addedCount = nextAssetIds.length - currentDataset.assetIds.length;
+    const addedCount = addDatasetReferences({ assetIds: suggestion.assetIds });
     if (addedCount <= 0) {
       dismissEmptyDatasetSuggestion(suggestion.signature);
       addNotification('info', 'Suggested assets are already in this Dataset');
       return;
     }
-
-    const nextAssetOrder = normalizeDatasetAssetOrder(
-      [
-        ...(currentDataset.assetOrder ?? []),
-        ...suggestion.assetIds.map(createDatasetImageAssetKey),
-      ],
-      nextAssetIds,
-      filterLegacyProjectAssetPaths(currentDataset.assetPaths ?? [])
-    );
-    await updateDatasetFileBackedState(currentDataset, {
-      assetIds: nextAssetIds,
-      assetOrder: nextAssetOrder,
-    });
+    await flushProjectSave();
     addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
   };
 
-  const removeDatasetBoardAsset = async (dataset: Dataset, item: WorkspaceImage) => {
-    const assetOrder = (dataset.assetOrder ?? []).filter((key) => key !== getDatasetBoardAssetKey(item));
-    if (item.kind === 'image') {
-      await updateDatasetFileBackedState(dataset, {
-        assetIds: dataset.assetIds.filter((assetId) => assetId !== item.sourceImageId),
-        assetOrder,
-      });
-    } else if (item.assetPath) {
-      await updateDatasetFileBackedState(dataset, {
-        assetPaths: filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
-        psdAssetPaths: filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((assetPath) => assetPath !== item.assetPath),
-        assetOrder,
-      });
-    } else {
-      return;
-    }
+  const removeDatasetBoardAsset = async (_dataset: Dataset, item: WorkspaceImage) => {
+    removeAssetsFromDataset([item]);
+    await flushProjectSave();
     addNotification('info', 'Asset removed from Dataset');
   };
 
@@ -2784,6 +2210,9 @@ function App() {
           canOpenInAnalysis
             ? createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openFileModeTab(node, 'analysis') })
             : null,
+          fileKind === 'video'
+            ? createExplorerAction({ id: 'video-frames', label: 'Video Frames', icon: Video, onSelect: () => openFileModeTab(node, 'video') })
+            : null,
         ].filter((action): action is ContextAction => Boolean(action)),
         [
           createExplorerAction({
@@ -2816,49 +2245,10 @@ function App() {
       }
       return updateDatasetFileBackedState(latestDataset, updates);
     };
-    switch (tab.tool) {
-      case 'select':
-        return (
-          <FinalReviewTool
-            datasetId={dataset.id}
-            mode="select"
-            active={activeTabId === tab.id}
-            onUpdateDataset={updateDataset}
-            onOpenAssetContextMenu={openAssetExplorerContextMenu}
-          />
-        );
-      case 'review':
-        return (
-          <FinalReviewTool
-            datasetId={dataset.id}
-            mode="review"
-            active={activeTabId === tab.id}
-            onUpdateDataset={updateDataset}
-            onOpenAssetContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
-          />
-        );
-      case 'analysis':
-        return (
-          <AnalysisTool
-            datasetId={dataset.id}
-            active={activeTabId === tab.id}
-            projectDirectoryHandle={projectDirectoryHandle}
-            onUpdateDataset={updateDataset}
-            onOpenAssetContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
-          />
-        );
-      case 'tagging':
-        return (
-          <TaggingToolComponent
-            datasetId={dataset.id}
-            active={activeTabId === tab.id}
-            onUpdateDataset={updateDataset}
-            onOpenAssetContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
-          />
-        );
-      default:
-        return null;
-    }
+    return <WorkspaceTool tool={tab.tool} active={activeTabId === tab.id} directory={projectDirectoryHandle}
+      context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select')}}
+      onOpenImport={() => navigateToTool('import')}
+      onAssetContextMenu={tab.tool === 'select' ? openAssetExplorerContextMenu : (item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)} />;
   };
 
   const openExplorerFile = async (node: ExplorerTreeNode) => {
@@ -2875,6 +2265,9 @@ function App() {
     if (node.kind !== 'file') {
       return;
     }
+    const existing = findFileTab(openTabsRef.current, node.path, 'file-view');
+    if (existing) { setActiveTabId(existing.id); return; }
+    const session = projectSessionRef.current;
 
     try {
       if (!projectDirectoryHandle) {
@@ -2883,6 +2276,7 @@ function App() {
       }
 
       const file = await readExplorerFile(projectDirectoryHandle, node.path);
+      if (session !== projectSessionRef.current) return;
       if (!file) {
         addNotification('error', 'File is no longer available');
         return;
@@ -2895,7 +2289,7 @@ function App() {
       }
 
       const tab: FileWorkspaceTab = {
-        id: createFileTabId(node.path),
+        id: createFileTabId(),
         kind: 'file-view',
         path: node.path,
         name: node.name,
@@ -2904,14 +2298,19 @@ function App() {
         workspaceImageId: findWorkspaceImageIdForPath(node.path) ?? undefined,
       };
 
-      setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
-      setActiveTabId(tab.id);
+      const current = findFileTab(openTabsRef.current, tab.path, tab.kind);
+      if (!current) setOpenTabs(tabs => [...tabs, tab]);
+      setActiveTabId(current?.id ?? tab.id);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to open file');
     }
   };
 
-  const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption' | 'analysis') => {
+  const openFileModeTab = async (node: ExplorerTreeNode, mode: 'edit' | 'caption' | 'analysis' | 'video') => {
+    const kind: FileWorkspaceTab['kind'] = mode === 'video' ? 'file-video' : mode === 'edit' ? 'file-edit' : mode === 'analysis' ? 'file-analysis' : 'file-caption';
+    const existing = findFileTab(openTabsRef.current, node.path, kind);
+    if (existing) { setActiveTabId(existing.id); return; }
+    const session = projectSessionRef.current;
     try {
       const imageId = findWorkspaceImageIdForPath(node.path);
       if (mode === 'caption' && !imageId) {
@@ -2924,15 +2323,16 @@ function App() {
         return;
       }
 
-      const file = await readExplorerFile(projectDirectoryHandle, node.path);
+      const file = await readExplorerFile(projectDirectoryHandle, node.path, { snapshot: mode !== 'video' });
+      if (session !== projectSessionRef.current) return;
       if (!file) {
         addNotification('error', 'File is no longer available');
         return;
       }
 
       const tab: FileWorkspaceTab = {
-        id: createFileModeTabId(mode, node.path),
-        kind: mode === 'edit' ? 'file-edit' : mode === 'analysis' ? 'file-analysis' : 'file-caption',
+        id: createFileTabId(),
+        kind,
         path: node.path,
         name: node.name,
         fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
@@ -2940,10 +2340,11 @@ function App() {
         workspaceImageId: imageId ?? undefined,
       };
 
-      setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
-      setActiveTabId(tab.id);
+      const current = findFileTab(openTabsRef.current, tab.path, tab.kind);
+      if (!current) setOpenTabs(tabs => [...tabs, tab]);
+      setActiveTabId(current?.id ?? tab.id);
     } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : `Failed to open ${mode === 'edit' ? 'Photopea' : mode === 'analysis' ? 'Analysis' : 'Caption'}`);
+      addNotification('error', error instanceof Error ? error.message : `Failed to open ${mode === 'video' ? 'Video Frames' : mode === 'edit' ? 'Photopea' : mode === 'analysis' ? 'Analysis' : 'Caption'}`);
     }
   };
 
@@ -3003,106 +2404,68 @@ function App() {
   ) => {
     try {
       if (!projectDirectoryHandle) {
-        addNotification('warning', 'Open a project directory before saving PSD files.');
-        return;
+        throw new Error('Open a project directory before saving PSD files.');
       }
-
-      const { directory, name } = await getExplorerParentDirectory(projectDirectoryHandle, tab.path);
-      const sourceStem = name.replace(/\.[^.]+$/, '');
-      const shouldCreatePsd = tab.fileKind !== 'psd';
-      const requestedName = saveCopy
-        ? `${sourceStem} Copy.psd`
-        : shouldCreatePsd
-          ? `${sourceStem}.psd`
-          : name;
-      const targetName = saveCopy || shouldCreatePsd
-        ? await getUniqueExplorerName(directory, requestedName)
-        : requestedName;
-      const nextBlob = new Blob([payload.psd], { type: 'image/vnd.adobe.photoshop' });
-      const handle = await directory.getFileHandle(targetName, { create: true });
-      const writable = await handle.createWritable();
-      await writable.write(nextBlob);
-      await writable.close();
-
-      const nextPath = `${tab.path.split('/').slice(0, -1).join('/') || 'Project'}/${targetName}`;
-      if (payload.preview) {
-        await writeProjectPreview(projectDirectoryHandle, 'psd', nextPath, new Blob([payload.preview], { type: 'image/png' }));
-        useUIStore.getState().refreshAssetPreviews();
-      }
-      const nextTab: FileWorkspaceTab = {
-        ...tab,
-        id: createFileModeTabId('edit', nextPath),
-        path: nextPath,
-        name: targetName,
-        fileKind: 'psd',
-        file: new globalThis.File([nextBlob], targetName, { type: 'image/vnd.adobe.photoshop' }),
-      };
-
-      setOpenTabs((tabs) => {
-        if (saveCopy) {
-          return tabs.some((entry) => entry.id === nextTab.id) ? tabs : [...tabs, nextTab];
+      const { targetName, nextPath, nextTab } = await runProjectFileOperation(async () => {
+        const { directory, name } = await getExplorerParentDirectory(projectDirectoryHandle, tab.path);
+        const sourceStem = name.replace(/\.[^.]+$/, '');
+        const shouldCreatePsd = tab.fileKind !== 'psd';
+        const requestedName = saveCopy
+          ? `${sourceStem} Copy.psd`
+          : shouldCreatePsd
+            ? `${sourceStem}.psd`
+            : name;
+        const targetName = saveCopy || shouldCreatePsd
+          ? await getUniqueExplorerName(directory, requestedName)
+          : requestedName;
+        const nextBlob = new Blob([payload.psd], { type: 'image/vnd.adobe.photoshop' });
+        const handle = await directory.getFileHandle(targetName, { create: true });
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(nextBlob);
+          await writable.close();
+        } catch (error) {
+          await (writable as typeof writable & { abort?: () => Promise<void> }).abort?.();
+          throw error;
         }
-        return tabs.map((entry) => (entry.id === tab.id ? nextTab : entry));
+
+        const nextPath = `${tab.path.split('/').slice(0, -1).join('/') || 'Project'}/${targetName}`;
+        if (payload.preview) {
+          await writeProjectPreview(projectDirectoryHandle, 'psd', nextPath, new Blob([payload.preview], { type: 'image/png' }));
+        }
+        const nextTab: FileWorkspaceTab = {
+          ...tab,
+          id: saveCopy ? createFileTabId() : tab.id,
+          path: nextPath,
+          name: targetName,
+          fileKind: 'psd',
+          file: new globalThis.File([nextBlob], targetName, { type: 'image/vnd.adobe.photoshop' }),
+        };
+        return { targetName, nextPath, nextTab };
       });
-      if (saveCopy || nextPath !== tab.path) {
-        setActiveTabId(nextTab.id);
-      }
+
+      useUIStore.getState().refreshAssetPreviews();
+      setOpenTabs((tabs) => saveCopy
+        ? tabs.some((entry) => entry.id === nextTab.id) ? tabs : [...tabs, nextTab]
+        : tabs.map((entry) => (entry.id === tab.id ? nextTab : entry)));
+      if (saveCopy || nextPath !== tab.path) setActiveTabId(nextTab.id);
       refreshExplorer();
       addNotification('success', saveCopy ? `Saved PSD copy "${targetName}"` : `Saved "${targetName}"`);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to save PSD file');
+      throw error;
     }
   };
 
-  const renderDatasetWorkspace = (dataset: Dataset) => {
-    const datasetToolbarActions: ContextActionGroup[] = [
-      [
-        createExplorerAction({ id: 'select', label: 'Select', icon: ScanSearch, onSelect: () => openDatasetToolTab(dataset.id, 'select') }),
-        createExplorerAction({ id: 'review', label: 'Review', icon: Layers3, onSelect: () => openDatasetToolTab(dataset.id, 'review') }),
-        createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openDatasetToolTab(dataset.id, 'tagging') }),
-        createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openDatasetToolTab(dataset.id, 'analysis') }),
-      ],
-      [createExplorerAction({ id: 'export', label: 'Export', icon: Download, variant: 'primary', onSelect: () => navigateToTool('export') })],
-    ];
-    const datasetBoardItems = sortDatasetBoardItems(activeDatasetPreviewItems, dataset, datasetBoardSortMode);
-
-    return (
-      <div
-        className="h-full min-h-0 overflow-auto p-6"
-        onDragOver={(event) => {
-          if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
-            return;
-          }
-          if (
-            draggedExplorerEntriesRef.current?.length ||
-            draggedExplorerEntries?.length ||
-            event.dataTransfer.types.includes('text/plain') ||
-            event.dataTransfer.types.includes('Files')
-          ) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = 'copy';
-          }
-        }}
-        onDragEnter={(event) => {
-          if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
-            return;
-          }
-          if (
-            draggedExplorerEntriesRef.current?.length ||
-            draggedExplorerEntries?.length ||
-            event.dataTransfer.types.includes('text/plain') ||
-            event.dataTransfer.types.includes('Files')
-          ) {
-            setDatasetDropActive(true);
-          }
-        }}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-            setDatasetDropActive(false);
-          }
-        }}
-        onDrop={(event) => {
-          setDatasetDropActive(false);
+  const renderDatasetWorkspace = (dataset: Dataset) => (
+    <DatasetBoard dataset={dataset} items={activeDatasetPreviewItems} active={activeTab?.kind === 'dataset'} suggestion={activeEmptyDatasetSuggestion}
+      onTool={tool => openDatasetToolTab(dataset.id, tool)} onExport={() => navigateToTool('export')}
+      onUpdate={updates => { void updateDatasetFileBackedState(dataset, updates).catch(error => addNotification('error', `Could not save Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
+      onContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
+      onApplySuggestion={suggestion => { void applyEmptyDatasetSuggestion(dataset, suggestion).catch(error => addNotification('error', `Could not add suggested files: ${error instanceof Error ? error.message : String(error)}`)); }}
+      onDismissSuggestion={dismissEmptyDatasetSuggestion}
+      canDrop={event => !event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE) && Boolean(draggedExplorerEntriesRef.current?.length || draggedExplorerEntries?.length || event.dataTransfer.types.includes('text/plain') || event.dataTransfer.types.includes('Files'))}
+      onDrop={event => {
           if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {
             return;
           }
@@ -3118,6 +2481,9 @@ function App() {
           event.preventDefault();
           const dataTransfer = event.dataTransfer;
           setCurrentDraggedExplorerEntries(null);
+          const operationId = crypto.randomUUID();
+          const operations = useOperationStore.getState();
+          operations.start({ id: operationId, viewId: createDatasetTabId(dataset.id), label: 'Add files to Dataset' });
           void (async () => {
             let assetIds = droppedEntries?.length
               ? collectDatasetAssetIdsFromExplorerEntries(droppedEntries)
@@ -3136,31 +2502,9 @@ function App() {
               assetPaths = [...assetPaths, ...imported.assetPaths];
             }
             if (assetIds.length > 0 || assetPaths.length > 0) {
-              const currentDataset = useProjectStore.getState().dataset;
-              const nextAssetIds = [...new Set([...currentDataset.assetIds, ...assetIds])];
-              const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(currentDataset.assetPaths ?? []), ...assetPaths])]);
-              const nextPsdAssetPaths = collectDatasetPsdPathsFromAssetPaths(nextAssetPaths);
-              const addedCount =
-                nextAssetIds.length -
-                currentDataset.assetIds.length +
-                nextAssetPaths.length -
-                (currentDataset.assetPaths ?? []).length;
+              const addedCount = addDatasetReferences({ assetIds, assetPaths });
               if (addedCount > 0) {
-                const nextAssetOrder = normalizeDatasetAssetOrder(
-                  [
-                    ...(currentDataset.assetOrder ?? []),
-                    ...assetIds.map(createDatasetImageAssetKey),
-                    ...assetPaths.map(createDatasetFileAssetKey),
-                  ],
-                  nextAssetIds,
-                  nextAssetPaths
-                );
-                await updateDatasetFileBackedState(currentDataset, {
-                  assetIds: nextAssetIds,
-                  assetPaths: nextAssetPaths,
-                  psdAssetPaths: nextPsdAssetPaths,
-                  assetOrder: nextAssetOrder,
-                });
+                await flushProjectSave();
                 addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
               } else {
                 addNotification('info', 'Selected assets are already in this Dataset');
@@ -3168,181 +2512,13 @@ function App() {
             } else {
               addNotification('warning', 'No supported project assets found to add');
             }
-          })();
-        }}
-      >
-        <div className="mx-auto flex max-w-5xl flex-col gap-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Dataset object</p>
-              <h2 className="mt-1 truncate text-xl font-semibold">{dataset.name}</h2>
-              <p className="mt-1 truncate text-sm text-muted-foreground">Global Dataset</p>
-            </div>
-            {datasetToolbarActions.length > 0 ? (
-              <ContextActionGroups groups={datasetToolbarActions} mode="toolbar" />
-            ) : null}
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-md border border-border bg-card p-3">
-              <p className="text-xs text-muted-foreground">Assets</p>
-              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.assets ?? 0}</p>
-            </div>
-            <div className="rounded-md border border-border bg-card p-3">
-              <p className="text-xs text-muted-foreground">Supported</p>
-              <p className="mt-1 text-2xl font-semibold">{activeDatasetSummary?.supported ?? 0}</p>
-            </div>
-            <div className="rounded-md border border-border bg-card p-3">
-              <p className="text-xs text-muted-foreground">Captioned</p>
-              <p className="mt-1 text-2xl font-semibold">
-                {activeDatasetSummary?.captioned ?? 0}/{activeDatasetSummary?.captionable ?? 0}
-              </p>
-            </div>
-            <div className="rounded-md border border-border bg-card p-3">
-              <label className="text-xs text-muted-foreground" htmlFor={`dataset-trigger-${dataset.id}`}>
-                Trigger
-              </label>
-              <input
-                id={`dataset-trigger-${dataset.id}`}
-                value={dataset.triggerWord}
-                onChange={(event) => void updateDatasetFileBackedState(dataset, { triggerWord: event.target.value })}
-                placeholder="Missing"
-                className="mt-1 h-8 w-full min-w-0 rounded border border-border bg-background px-2 font-mono text-sm font-semibold text-foreground placeholder:text-muted-foreground"
-              />
-            </div>
-          </div>
-
-          <div
-            className={`flex min-h-24 items-center justify-between gap-4 rounded border border-dashed px-4 py-4 transition-colors ${
-              datasetDropActive ? 'border-primary bg-primary/10' : 'border-border bg-card'
-            }`}
-          >
-            <div className="min-w-0">
-              <p className="text-sm font-medium">Dataset intake</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {datasetDropActive ? 'Release to link assets' : `${activeDatasetPreviewItems.length} assets linked`}
-              </p>
-            </div>
-            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded ${datasetDropActive ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>
-              <Plus className="h-4 w-4" />
-            </div>
-          </div>
-
-          {activeDatasetPreviewItems.length > 0 ? (
-            <div className="min-h-40 rounded border border-border bg-card">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
-                <div>
-                  <p className="text-sm font-medium">Dataset contents</p>
-                  <p className="text-xs text-muted-foreground">
-                    {activeDatasetPreviewItems.length} assets · sorted by {DATASET_BOARD_SORT_OPTIONS.find((option) => option.value === datasetBoardSortMode)?.label ?? 'Name'}
-                  </p>
-                </div>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  Sort
-                  <select
-                    value={datasetBoardSortMode}
-                    onChange={(event) => setDatasetBoardSortMode(event.target.value as DatasetBoardSortMode)}
-                    className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
-                  >
-                    {DATASET_BOARD_SORT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <BrickMasonry
-                items={datasetBoardItems}
-                getKey={(item) => item.id}
-                getEstimate={(item) => item.height / Math.max(1, item.width)}
-                className="p-3"
-                renderItem={(item) => (
-                  <WorkspacePreviewCard
-                    item={item}
-                    previewUrl={activeDatasetPreviewUrls[item.id]}
-                    className="gallery-masonry-item"
-                    onOpenContextMenu={(_item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
-                    footer={
-                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-                        <div className="flex items-end justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
-                            <p className="text-xs text-gray-300">
-                              {item.label} · {item.width} x {item.height}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    }
-                  />
-                )}
-              />
-            </div>
-          ) : activeEmptyDatasetSuggestion ? (
-            <div className="min-h-40 rounded border border-border bg-card">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
-                <div>
-                  <p className="text-sm font-medium">Suggested fill</p>
-                  <p className="text-xs text-muted-foreground">
-                    {activeEmptyDatasetSuggestion.totalCount} captioned asset
-                    {activeEmptyDatasetSuggestion.totalCount !== 1 ? 's' : ''}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void applyEmptyDatasetSuggestion(dataset, activeEmptyDatasetSuggestion)}
-                    className="inline-flex items-center rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    Add {activeEmptyDatasetSuggestion.totalCount} asset
-                    {activeEmptyDatasetSuggestion.totalCount !== 1 ? 's' : ''}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => dismissEmptyDatasetSuggestion(activeEmptyDatasetSuggestion.signature)}
-                    className="inline-flex items-center rounded border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
-              <BrickMasonry
-                items={activeEmptyDatasetSuggestion.items}
-                getKey={(item) => item.id}
-                getEstimate={(item) => item.height / Math.max(1, item.width)}
-                className="p-3"
-                renderItem={(item) => (
-                  <WorkspacePreviewCard
-                    item={item}
-                    previewUrl={activeEmptyDatasetSuggestionPreviewUrls[item.id]}
-                    className="gallery-masonry-item opacity-45 grayscale transition hover:opacity-65 hover:grayscale-0"
-                    footer={
-                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/45 to-transparent p-3">
-                        <div className="flex items-end justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-white">{item.fileName}</p>
-                            <p className="text-xs text-gray-300">
-                              {item.tags?.length ?? 0} tag{(item.tags?.length ?? 0) !== 1 ? 's' : ''}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    }
-                  />
-                )}
-              />
-            </div>
-          ) : (
-            <div className="rounded border border-border bg-card px-4 py-8 text-center">
-              <p className="text-sm font-medium">Empty Dataset</p>
-              <p className="mt-1 text-sm text-muted-foreground">0 assets linked</p>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
+          })().then(() => operations.finish(operationId, 'completed')).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            operations.finish(operationId, 'failed', message);
+            addNotification('error', `Could not add files: ${message}`);
+          });
+      }} />
+  );
 
   const renderInspectorContent = () => {
     const Icon =
@@ -3366,6 +2542,9 @@ function App() {
             ? TOOL_LABELS[activeTool]
             : 'Workspace';
     const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
+    const selectedCount = activeTab?.kind === 'tool'
+      ? activeTab.scope?.analysisFiles?.length ?? activeTab.scope?.taggingItemIds?.length
+      : undefined;
     const objectDetails = (() => {
       if (!activeTab) {
         return [
@@ -3391,6 +2570,10 @@ function App() {
             ? 'Photopea'
             : activeTab.kind === 'file-caption'
               ? 'Caption'
+              : activeTab.kind === 'file-analysis'
+                ? 'Analysis'
+              : activeTab.kind === 'file-video'
+                ? 'Video Frames'
               : 'Open file';
 
         return [
@@ -3427,7 +2610,7 @@ function App() {
       return [
         { label: 'Object', value: TOOL_LABELS[activeTab.tool] },
         { label: 'Mode', value: activeTab.nested ? 'Nested item' : 'Project tool' },
-        { label: 'Target', value: 'Project' },
+        { label: 'Target', value: selectedCount === undefined ? 'Project' : `Selection (${selectedCount})` },
       ];
     })();
 
@@ -3438,6 +2621,7 @@ function App() {
           <div className="min-w-0 flex-1">
             {inspectorRenaming && canRename ? (
               <input
+                aria-label={`Rename ${title}`}
                 value={inspectorRenameValue}
                 autoFocus
                 onFocus={(event) => selectFileNameStem(event.currentTarget)}
@@ -3459,27 +2643,21 @@ function App() {
               <button
                 type="button"
                 disabled={!canRename}
-                onDoubleClick={() => canRename && setInspectorRenaming(true)}
+                onClick={() => canRename && setInspectorRenaming(true)}
                 className="block w-full truncate text-left text-sm font-semibold disabled:cursor-default"
-                title={canRename ? 'Double-click to rename' : undefined}
+                title={canRename ? 'Rename' : undefined}
               >
                 {title}
               </button>
             )}
-            <p className="mt-1 truncate text-muted-foreground">
-              {activeTab && isFileBackedTab(activeTab)
-                ? activeTab.path
-                : activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
-                  ? activeDataset?.filePath ?? 'Dataset'
-                  : activeTool
-                    ? TOOL_DESCRIPTIONS[activeTool]
-                    : 'Open a file, Dataset, or tool'}
-            </p>
+            {activeTab && isFileBackedTab(activeTab) && <p className="mt-1 truncate text-muted-foreground">{activeTab.path}</p>}
+            {selectedCount !== undefined && <p className="mt-1 text-muted-foreground">{selectedCount} selected</p>}
           </div>
+          {activeTabId && <button className="shrink-0 rounded p-1 text-muted-foreground hover:bg-secondary" aria-label="Return to active editor" title="Return to editor" onClick={() => focusView(activeTabId)}><ArrowLeft size={16} /></button>}
         </div>
 
         <InspectorSection
-          title="Object"
+          title="Details"
           open={inspectorSectionsOpen.object}
           onOpenChange={(open) => setInspectorSectionOpen('object', open)}
         >
@@ -3502,10 +2680,6 @@ function App() {
             onOpenChange={(open) => setInspectorSectionOpen('file', open)}
           >
             <div className="space-y-2">
-              <div className="flex justify-between gap-3">
-                <span className="text-muted-foreground">Filename</span>
-                <span className="min-w-0 truncate font-medium">{activeTab.name}</span>
-              </div>
               <div className="flex justify-between gap-3">
                 <span className="text-muted-foreground">Format</span>
                 <span className="font-medium">{fileInspectorMetadata.format}</span>
@@ -3570,45 +2744,26 @@ function App() {
           </InspectorSection>
         ) : null}
 
-        {showDatasetInspector && activeDataset ? (
+        {showDatasetInspector && activeDataset && activeTab?.kind !== 'dataset' ? (
           <InspectorSection
             title="Dataset"
             open={inspectorSectionsOpen.dataset}
             onOpenChange={(open) => setInspectorSectionOpen('dataset', open)}
           >
             <div className="space-y-3">
-              <div className="rounded-md border border-border bg-background p-2">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">Context</span>
-                  <span className="font-medium">
-                    {activeTab?.kind === 'dataset-tool' ? `${DATASET_TOOL_LABELS[activeTab.tool]} applied` : 'Dataset object'}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded bg-secondary/60 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Assets</p>
-                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.assets ?? 0}</p>
-                  </div>
-                  <div className="rounded bg-secondary/60 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Supported</p>
-                    <p className="mt-1 text-sm font-semibold">{activeDatasetSummary?.supported ?? 0}</p>
-                  </div>
-                </div>
-                {activeDatasetSummary && activeDatasetSummary.sourceRefs > activeDatasetSummary.availableSourceRefs ? (
-                  <p className="mt-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-yellow-700">
-                    {activeDatasetSummary.sourceRefs - activeDatasetSummary.availableSourceRefs} source reference
-                    {activeDatasetSummary.sourceRefs - activeDatasetSummary.availableSourceRefs !== 1 ? 's' : ''} not loaded in workspace.
-                  </p>
-                ) : null}
-              </div>
-              <div>
-                <label className="mb-1 block text-muted-foreground">Trigger Word</label>
+              {missingDatasetSourceCount > 0 && (
+                <p role="status" className="rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-yellow-700">
+                  {missingDatasetSourceCount} source {missingDatasetSourceCount === 1 ? 'file unavailable' : 'files unavailable'}
+                </p>
+              )}
+              <label className="block text-muted-foreground">
+                Trigger word
                 <input
                   value={activeDataset.triggerWord}
                   onChange={(event) => void updateDatasetFileBackedState(activeDataset, { triggerWord: event.target.value })}
-                  className="w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-sm"
+                  className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-sm text-foreground"
                 />
-              </div>
+              </label>
               <label className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
                 <input
                   type="checkbox"
@@ -3620,30 +2775,7 @@ function App() {
                 />
                 <span>Overwrite captions</span>
               </label>
-              {activeTab?.kind === 'dataset' ? (
-                <div className="rounded-md border border-border bg-background p-2">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">Board</span>
-                    <span className="font-medium">
-                      Sorted preview
-                    </span>
-                  </div>
-                  <label className="block">
-                    <span className="mb-1 block text-muted-foreground">Sort</span>
-                    <select
-                      value={datasetBoardSortMode}
-                      onChange={(event) => setDatasetBoardSortMode(event.target.value as DatasetBoardSortMode)}
-                      className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-                    >
-                      {DATASET_BOARD_SORT_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              ) : null}
+
             </div>
           </InspectorSection>
         ) : null}
@@ -3659,47 +2791,8 @@ function App() {
                 <ExternalLink className="h-3.5 w-3.5" />
                 Photopea
               </a>
-              {activeTab?.kind === 'file-edit' ? (
-                <>
-                  <button type="button" onClick={() => runEditCommand('save')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50">
-                    Save
-                  </button>
-                  <button type="button" onClick={() => runEditCommand('saveCopy')} disabled={!editToolbar.canSave || editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
-                    Save Copy
-                  </button>
-                  <button type="button" onClick={() => runEditCommand('cancel')} disabled={editToolbar.isProcessing} className="rounded border border-border px-2 py-2 text-left hover:bg-secondary disabled:opacity-50">
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => runPsdCommand('save')}
-                    className="rounded bg-primary px-2 py-2 font-medium text-primary-foreground hover:opacity-90"
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runPsdCommand('saveCopy')}
-                    className="rounded border border-border px-2 py-2 text-left hover:bg-secondary"
-                  >
-                    Save Copy
-                  </button>
-                </>
-              )}
+              <DocumentActions />
             </div>
-          </InspectorSection>
-        ) : null}
-
-        {showReviewInspector ? (
-          <InspectorSection
-            title="Review"
-            open={inspectorSectionsOpen.review}
-            onOpenChange={(open) => setInspectorSectionOpen('review', open)}
-          >
-            <div id="review-inspector-root" />
           </InspectorSection>
         ) : null}
 
@@ -3709,29 +2802,7 @@ function App() {
             open={inspectorSectionsOpen.analysis}
             onOpenChange={(open) => setInspectorSectionOpen('analysis', open)}
           >
-            <div id="analysis-inspector-root" />
-          </InspectorSection>
-        ) : null}
-
-        {showCaptionInspector ? (
-          <InspectorSection
-            title="Caption"
-            open={inspectorSectionsOpen.caption}
-            onOpenChange={(open) => setInspectorSectionOpen('caption', open)}
-          >
-            {activeTab?.kind !== 'file-caption' && fileInspectorMetadata?.tags?.length ? (
-              <div>
-                <p className="mb-1 text-muted-foreground">Tags</p>
-                <div className="flex flex-wrap gap-1">
-                  {fileInspectorMetadata.tags.map((tag) => (
-                    <span key={tag} className="rounded bg-secondary px-2 py-1">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            <div id="caption-inspector-root" />
+            {dock.isOpen('window:inspector') && <InspectorSlot id="analysis-inspector-root" />}
           </InspectorSection>
         ) : null}
 
@@ -3749,55 +2820,34 @@ function App() {
 
   const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
 
-  const getFileTabIdForPath = (tab: FileWorkspaceTab, path: string): string => {
-    const mode = tab.kind === 'file-edit'
-      ? 'edit'
-      : tab.kind === 'file-caption'
-        ? 'caption'
-        : tab.kind === 'file-analysis'
-          ? 'analysis'
-          : null;
-    return mode ? createFileModeTabId(mode, path) : createFileTabId(path);
+  const runExplorerMutation = async <T,>(label: string, action: () => Promise<T>): Promise<T> => {
+    const operations = useOperationStore.getState();
+    const running = operations.entries.find(isOperationRunning);
+    if (projectOperationBusyRef.current || running) {
+      throw new Error(running ? `Finish or cancel ${running.label} before changing project files.` : 'Wait for the project to finish opening.');
+    }
+    const id = `explorer:${crypto.randomUUID()}`;
+    operations.start({ id, viewId: EXPLORER_VIEW, label });
+    try {
+      const result = await runProjectFileOperation(action);
+      operations.finish(id, 'completed');
+      return result;
+    } catch (error) {
+      operations.finish(id, 'failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      refreshExplorer();
+    }
   };
 
   const updateFileTabsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
-    const activeFileTab = activeTab && isFileBackedTab(activeTab) ? activeTab : null;
-    const movedTabs = openTabs.flatMap((tab) => {
-      if (!isFileBackedTab(tab)) {
-        return [];
-      }
-      const nextPath = applyExplorerPathMoves(tab.path, moves);
-      return nextPath === tab.path
-        ? []
-        : [{ id: getFileTabIdForPath(tab, nextPath), path: nextPath }];
+    const movedTabs = openTabsRef.current.flatMap(tab => {
+      if (!isFileBackedTab(tab)) return [];
+      const moved = moveFileTab(tab, moves);
+      return moved === tab ? [] : [{id: tab.id, path: moved.path}];
     });
-    setOpenTabs((tabs) =>
-      tabs.map((tab) => {
-        if (!isFileBackedTab(tab)) {
-          return tab;
-        }
-
-        for (const move of moves) {
-          if (tab.path === move.from || tab.path.startsWith(`${move.from}/`)) {
-            const nextPath = tab.path === move.from ? move.to : `${move.to}/${tab.path.slice(move.from.length + 1)}`;
-            return {
-              ...tab,
-              id: getFileTabIdForPath(tab, nextPath),
-              path: nextPath,
-              name: tab.path === move.from ? move.to.split('/').pop() ?? tab.name : tab.name,
-            };
-          }
-        }
-
-        return tab;
-      })
-    );
-    if (activeFileTab) {
-      const nextPath = applyExplorerPathMoves(activeFileTab.path, moves);
-      if (nextPath !== activeFileTab.path) {
-        setActiveTabId(getFileTabIdForPath(activeFileTab, nextPath));
-      }
-    }
+    setOpenTabs(tabs => tabs.map(tab => moveToolViewScope(moveFileTab(tab, moves), moves)));
+    setClosedTabs(tabs => tabs.map(tab => moveToolViewScope(moveFileTab(tab, moves), moves)));
     if (projectDirectoryHandle && movedTabs.length > 0) {
       void Promise.all(
         movedTabs.map(async ({ id, path }) => ({ id, path, file: await readExplorerFile(projectDirectoryHandle, path) }))
@@ -3818,7 +2868,7 @@ function App() {
             };
           })
         );
-      });
+      }).catch(error => addNotification('warning', error instanceof Error ? error.message : 'Could not refresh the moved file'));
     }
   };
 
@@ -3855,32 +2905,11 @@ function App() {
     });
   };
 
-  const applyProjectRelativePathMoves = (
-    path: string | undefined,
-    moves: ExplorerPathMove[]
-  ): string | undefined => {
-    if (!path) {
-      return path;
-    }
-    const explorerPath = `Project/${path}`;
-    for (const move of moves) {
-      if (explorerPath === move.from || explorerPath.startsWith(`${move.from}/`)) {
-        const nextPath = explorerPath === move.from ? move.to : `${move.to}/${explorerPath.slice(move.from.length + 1)}`;
-        return toProjectRelativePath(nextPath);
-      }
-    }
-    return path;
-  };
-
   const updateWorkspacePathsForPathMoves = async (moves: ExplorerPathMove[]) => {
-    for (const source of Object.values(sourceImagesById)) {
+    for (const source of Object.values(useProjectStore.getState().sourceImages)) {
       const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
-      const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves);
+      const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves, true);
       if (originalFilePath !== source.originalFilePath || manifestPath !== source.manifestPath) {
-        if (!isProjectWorkspacePath(originalFilePath ?? '', 'shared')) {
-          removeSourceImage(source.id);
-          continue;
-        }
         const fileNameChanged = originalFilePath && originalFilePath !== source.originalFilePath;
         const fileName = fileNameChanged ? originalFilePath.split('/').pop() ?? source.fileName : source.fileName;
         updateSourceImage(source.id, {
@@ -3892,10 +2921,10 @@ function App() {
       }
     }
 
-    for (const item of Object.values(datasetItemsById)) {
+    for (const item of Object.values(useProjectStore.getState().datasetItems)) {
       const imageDataPath = applyProjectRelativePathMoves(item.imageDataPath, moves);
       const psdDataPath = applyProjectRelativePathMoves(item.psdDataPath, moves);
-      const manifestPath = applyProjectRelativePathMoves(item.manifestPath, moves);
+      const manifestPath = applyProjectRelativePathMoves(item.manifestPath, moves, true);
       if (
         imageDataPath !== item.imageDataPath ||
         psdDataPath !== item.psdDataPath ||
@@ -3905,7 +2934,7 @@ function App() {
       }
     }
 
-    for (const dataset of Object.values(datasetsById)) {
+    for (const dataset of [useProjectStore.getState().dataset]) {
       const parentPath = applyExplorerPathMoves(dataset.parentPath || 'Project', moves);
       const filePath = dataset.filePath ? applyExplorerPathMoves(dataset.filePath, moves) : dataset.filePath;
       const assetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).map((path) =>
@@ -3935,9 +2964,6 @@ function App() {
         Object.keys(captionOverrides).some((key) => captionOverrides[key] !== dataset.captionOverrides[key])
       ) {
         updateProjectDataset(dataset.id, nextDataset);
-        if (projectDirectoryHandle && nextDataset.filePath) {
-          await writeDatasetFile(projectDirectoryHandle, nextDataset);
-        }
       }
     }
   };
@@ -3953,37 +2979,40 @@ function App() {
       return null;
     }
 
-    const previousProject = useProjectStore.getState();
-    const nextFileName = kind === 'dataset' ? getDatasetFileName(trimmedName) : trimmedName;
-    const entryKind = kind === 'folder' ? 'folder' : 'file';
-    const nextPath = await renameExplorerEntry(directory, path, entryKind, nextFileName);
-    const moves = [{ from: path, to: nextPath }];
+    return runExplorerMutation('Rename file', async () => {
+      const nextFileName = kind === 'dataset' ? getDatasetFileName(trimmedName) : trimmedName;
+      const entryKind = kind === 'folder' ? 'folder' : 'file';
+      return renameExplorerEntry(directory, path, entryKind, nextFileName, async change => {
+        const moves = [change];
+        const nextPath = change.to;
+        setSelectedExplorerPaths(new Set([nextPath]));
+        setSelectionAnchorPath(nextPath);
+        setFocusedExplorerPath(nextPath);
+        setInlineExplorerEdit(null);
+        updateFileTabsForPathMoves(moves);
+        await updateWorkspacePathsForPathMoves(moves);
+        updateExplorerClipboardForPathMoves(moves);
 
-    updateFileTabsForPathMoves(moves);
-    await updateWorkspacePathsForPathMoves(moves);
-    updateExplorerClipboardForPathMoves(moves);
-
-    if (kind === 'dataset') {
-      const dataset = await readDatasetFile(directory, nextPath);
-      const updatedDataset = {
-        ...dataset,
-        name: getDatasetDisplayName(nextPath.split('/').pop() ?? trimmedName),
-        parentPath: nextPath.split('/').slice(0, -1).join('/') || 'Project',
-        filePath: nextPath,
-        updatedAt: new Date(),
-      };
-      await writeDatasetFile(directory, updatedDataset);
-      upsertProjectDataset(updatedDataset);
-      refreshOpenDatasetTabs(updatedDataset.id);
-    }
-
-    await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
-    refreshExplorer();
-    return nextPath;
+        if (kind === 'dataset') {
+          const currentDataset = useProjectStore.getState().dataset;
+          const dataset = currentDataset.filePath === nextPath ? currentDataset : await readDatasetFile(directory, nextPath);
+          const updatedDataset = {
+            ...dataset,
+            name: getDatasetDisplayName(nextPath.split('/').pop() ?? trimmedName),
+            parentPath: nextPath.split('/').slice(0, -1).join('/') || 'Project',
+            filePath: nextPath,
+            updatedAt: new Date(),
+          };
+          upsertProjectDataset(updatedDataset);
+          refreshOpenDatasetTabs(updatedDataset.id);
+        }
+      });
+    });
   };
 
   const removeWorkspaceReferencesForDeletedEntries = async (entries: ExplorerClipboardEntry[]) => {
     const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
+    const previousEdited = Object.values(useProjectStore.getState().datasetItems);
     const datasetBeforeSourceRemoval = useProjectStore.getState().dataset;
     let sourceAffectsDataset = false;
     const removedSourceIds: string[] = [];
@@ -3998,6 +3027,21 @@ function App() {
         removedSourceIds.push(source.id);
       }
     }
+    const removedIds = new Set([
+      ...removedSourceIds.map(id => `source:${id}`),
+      ...previousEdited.filter(item => removedSourceIds.includes(item.sourceImageId)).map(item => `edited:${item.id}`),
+    ]);
+    const explorerPaths = entries.map(entry => entry.path);
+    const isDeletedExplorerPath = (path: string) => explorerPaths.some(root => path === root || path.startsWith(`${root}/`));
+    const keepViews = (tabs: WorkspaceTab[]) => tabs
+      .filter(tab => !isFileBackedTab(tab) || !explorerPaths.some(path => tab.path === path || tab.path.startsWith(`${path}/`)))
+      .map(tab => pruneToolViewScope(tab, explorerPaths, removedIds));
+    setOpenTabs(keepViews);
+    setClosedTabs(keepViews);
+    clearExplorerClipboardForDeletedPaths(entries);
+    setSelectedExplorerPaths(paths => new Set([...paths].filter(path => !isDeletedExplorerPath(path))));
+    setFocusedExplorerPath(path => path && isDeletedExplorerPath(path) ? null : path);
+    setSelectionAnchorPath(path => path && isDeletedExplorerPath(path) ? null : path);
     {
       const dataset = useProjectStore.getState().dataset;
 
@@ -4039,10 +3083,29 @@ function App() {
           updatedAt: new Date(),
         };
         updateProjectDataset(dataset.id, nextDataset);
-        if (projectDirectoryHandle && nextDataset.filePath) {
-          await writeDatasetFile(projectDirectoryHandle, nextDataset);
-        }
       }
+    }
+  };
+
+  // Caller owns the save queue lane; updates are applied after each completed move.
+  const moveWorkspaceEntries = async (directory: ProjectDirectoryHandle, entries: ExplorerClipboardEntry[], destinationPath: string) => {
+    let movedIntoShared = false;
+    try {
+      return await moveExplorerEntries(directory, entries, destinationPath, async move => {
+        if (move.from === move.to) return;
+        movedIntoShared ||= isProjectWorkspacePath(move.to, 'shared');
+        updateFileTabsForPathMoves([move]);
+        await updateWorkspacePathsForPathMoves([move]);
+        updateExplorerClipboardForPathMoves([move]);
+        const current = useProjectStore.getState().dataset;
+        if (current.filePath === move.to && isDatasetFileName(move.to)) {
+          updateProjectDataset(current.id,{name:getDatasetDisplayName(move.to.split('/').pop()!),parentPath:destinationPath});
+          refreshOpenDatasetTabs(current.id);
+        }
+      });
+    } finally {
+      if (movedIntoShared) await indexSharedWorkspaceAssets(false);
+      refreshExplorer();
     }
   };
 
@@ -4066,65 +3129,63 @@ function App() {
     if (!window.confirm(confirmation)) {
       return;
     }
+    const affectedTabs = openTabs.filter(tab => isFileBackedTab(tab) && entries.some(entry => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`)));
+    if (!await confirmClosingTabs(affectedTabs)) return;
 
     try {
-      const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
-      const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
-      const directory = filesystemEntries.length > 0 || datasetEntries.length > 0 ? requireProjectDirectory() : null;
-      if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
-        return;
-      }
-      const filesToReturnToShared = filesystemEntries.filter((entry) => datasetFiles.some((datasetFile) => datasetFile.path === entry.path));
-      if (filesToReturnToShared.length > 0) {
-        const moves = await moveExplorerEntries(directory!, filesToReturnToShared, `Project/${PROJECT_SHARED_DIRECTORY}`);
-        updateFileTabsForPathMoves(moves);
-        await updateWorkspacePathsForPathMoves(moves);
-        await indexProjectAssets(directory!, {
-          existingSourceImages: useProjectStore.getState().sourceImages,
-          onAssetIndexed: ({ sourceImage }) => {
-            if (sourceImage && !useProjectStore.getState().sourceImages[sourceImage.id]) {
-              addSourceImage(sourceImage);
-            }
-          },
-        });
-      }
-      const deletedFilesystemEntries = filesystemEntries.filter((entry) => !filesToReturnToShared.some((moved) => moved.path === entry.path));
-      const activeFileTabDeleted =
-        activeTab &&
-        isFileBackedTab(activeTab) &&
-        deletedFilesystemEntries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
-      for (const entry of deletedFilesystemEntries) {
-        await deleteExplorerEntry(directory!, entry.path, true);
-      }
-      const deletedDatasetIds: string[] = [];
-      for (const entry of datasetEntries) {
-        const dataset = await readDatasetFile(directory!, entry.path).catch(() => null);
-        await deleteExplorerEntry(directory!, entry.path, false);
-        if (dataset) {
-          removeProjectDataset(dataset.id);
-          deletedDatasetIds.push(dataset.id);
+      await runExplorerMutation('Delete files', async () => {
+        const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
+        const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
+        const directory = filesystemEntries.length > 0 || datasetEntries.length > 0 ? requireProjectDirectory() : null;
+        if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
+          return;
         }
-      }
-      await removeWorkspaceReferencesForDeletedEntries(deletedFilesystemEntries);
-      setOpenTabs((tabs) =>
-        tabs.filter(
-          (tab) =>
-            (isFileBackedTab(tab) &&
-              !deletedFilesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
-            (tab.kind === 'dataset' &&
-              !deletedDatasetIds.includes(tab.datasetId)) ||
-            (tab.kind === 'dataset-tool' &&
-              !deletedDatasetIds.includes(tab.datasetId)) ||
-            tab.kind === 'tool'
-        )
-      );
-      if (activeFileTabDeleted) {
-        setActiveTabId(null);
-      }
-      clearExplorerClipboardForDeletedPaths(entries);
-      setSelectedExplorerPaths(new Set());
-      setFocusedExplorerPath(null);
-      refreshExplorer();
+        const filesToReturnToShared = filesystemEntries.filter((entry) => datasetFiles.some((datasetFile) => datasetFile.path === entry.path));
+        if (filesToReturnToShared.length > 0) {
+          await moveWorkspaceEntries(directory!, filesToReturnToShared, `Project/${PROJECT_SHARED_DIRECTORY}`);
+        }
+        const deletedFilesystemEntries = filesystemEntries.filter((entry) => !filesToReturnToShared.some((moved) => moved.path === entry.path));
+        const activeFileTabDeleted =
+          activeTab &&
+          isFileBackedTab(activeTab) &&
+          deletedFilesystemEntries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
+        for (const entry of deletedFilesystemEntries) {
+          await deleteExplorerEntry(directory!, entry.path, true, () => removeWorkspaceReferencesForDeletedEntries([entry]));
+        }
+        const deletedDatasetIds: string[] = [];
+        for (const entry of datasetEntries) {
+          const dataset = await readDatasetFile(directory!, entry.path).catch(() => null);
+          await deleteExplorerEntry(directory!, entry.path, false, () => {
+            if (!dataset) return;
+            removeProjectDataset(dataset.id);
+            deletedDatasetIds.push(dataset.id);
+            const keepViews = (tabs: WorkspaceTab[]) => tabs.filter(tab =>
+              (tab.kind !== 'dataset' && tab.kind !== 'dataset-tool') || tab.datasetId !== dataset.id);
+            setOpenTabs(keepViews);
+            setClosedTabs(keepViews);
+            clearExplorerClipboardForDeletedPaths([entry]);
+          });
+        }
+        setOpenTabs((tabs) =>
+          tabs.filter(
+            (tab) =>
+              (isFileBackedTab(tab) &&
+                !deletedFilesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
+              (tab.kind === 'dataset' &&
+                !deletedDatasetIds.includes(tab.datasetId)) ||
+              (tab.kind === 'dataset-tool' &&
+                !deletedDatasetIds.includes(tab.datasetId)) ||
+              tab.kind === 'tool' || tab.kind === 'window'
+          )
+        );
+        if (activeFileTabDeleted) {
+          setActiveTabId(null);
+        }
+        clearExplorerClipboardForDeletedPaths(entries);
+        setSelectedExplorerPaths(new Set());
+        setFocusedExplorerPath(null);
+        refreshExplorer();
+      });
       addNotification('success', 'Explorer entry deleted');
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to delete entry');
@@ -4153,96 +3214,54 @@ function App() {
   };
 
   const handleExplorerPaste = async (node: ExplorerTreeNode) => {
-    if (node.kind !== 'folder' || !explorerClipboard) {
-      return;
-    }
-
+    if (node.kind !== 'folder' || !explorerClipboard) return;
+    const directory = requireProjectDirectory();
+    if (!directory) return;
+    const clipboard = explorerClipboard;
     try {
-      const filesystemEntries = explorerClipboard.entries.filter(isFilesystemExplorerEntry);
-      const datasetEntries = explorerClipboard.entries.filter((entry) => entry.kind === 'dataset');
-      let movedIntoSharedWorkspace = false;
-      if (filesystemEntries.length > 0) {
-        const directory = requireProjectDirectory();
-        if (!directory) {
-          return;
-        }
-        const moves =
-          explorerClipboard.mode === 'cut'
-            ? await moveExplorerEntries(directory, filesystemEntries, node.path)
-            : await copyExplorerEntries(directory, filesystemEntries, node.path);
-        if (explorerClipboard.mode === 'cut') {
-          updateFileTabsForPathMoves(moves);
-          await updateWorkspacePathsForPathMoves(moves);
-          updateExplorerClipboardForPathMoves(moves);
-        }
-        movedIntoSharedWorkspace = moves.some((move) => isProjectWorkspacePath(move.to, 'shared'));
-      }
-      if (movedIntoSharedWorkspace) {
-        await indexSharedWorkspaceAssets();
-      }
-      if (explorerClipboard.mode === 'copy') {
-        for (const entry of datasetEntries) {
-          await duplicateDatasetEntry(entry, node.path);
-        }
-      }
-      if (explorerClipboard.mode === 'cut') {
-        const directory = requireProjectDirectory();
-        if (!directory) {
-          return;
-        }
-        const datasetMoves = await moveExplorerEntries(
-          directory,
-          datasetEntries.map(toPhysicalExplorerEntry),
-          node.path
-        );
-        const movedPaths: string[] = [];
-        for (const entry of datasetEntries) {
-          const move = datasetMoves.find((candidate) => candidate.from === entry.path);
-          if (!move) {
-            continue;
+      await runExplorerMutation('Paste files', async () => {
+        if (clipboard.mode === 'cut') {
+          const moves = await moveWorkspaceEntries(directory, clipboard.entries.map(toPhysicalExplorerEntry), node.path);
+          setSelectedExplorerPaths(new Set(moves.map(move => move.to)));
+          setExplorerClipboard(null);
+        } else {
+          try {
+            await copyExplorerEntries(directory, clipboard.entries.filter(isFilesystemExplorerEntry), node.path);
+            for (const entry of clipboard.entries.filter(entry => entry.kind === 'dataset')) await duplicateDatasetEntry(entry,node.path);
+          } finally {
+            if (isProjectWorkspacePath(node.path,'shared')) await indexSharedWorkspaceAssets(false);
           }
-          const dataset = await readDatasetFile(directory, move.to);
-          const updatedDataset = {
-            ...dataset,
-            parentPath: node.path,
-            filePath: move.to,
-            updatedAt: new Date(),
-          };
-        await writeDatasetFile(directory, updatedDataset);
-        upsertProjectDataset(updatedDataset);
-        refreshOpenDatasetTabs(updatedDataset.id);
-        movedPaths.push(move.to);
         }
-        updateExplorerClipboardForPathMoves(datasetMoves);
-        setSelectedExplorerPaths(new Set(movedPaths));
-      }
-      if (explorerClipboard.mode === 'cut') {
-        setExplorerClipboard(null);
-      }
-      setExpandedExplorerPaths((paths) => new Set([...paths, node.path]));
-      refreshExplorer();
-      addNotification('success', 'Explorer entry pasted');
+        setExpandedExplorerPaths(paths => new Set([...paths,node.path]));
+        refreshExplorer();
+      });
+      addNotification('success','Explorer entry pasted');
     } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to paste entry');
+      addNotification('error',error instanceof Error ? error.message : 'Failed to paste entry');
     }
   };
 
   const handleExplorerDuplicate = async (node: ExplorerTreeNode) => {
     try {
-      const entries = getContextEntries(node);
-      const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
-      const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
-      if (filesystemEntries.length > 0) {
-        const directory = requireProjectDirectory();
-        if (!directory) {
-          return;
+      await runExplorerMutation('Duplicate files', async () => {
+        const entries = getContextEntries(node);
+        const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
+        const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
+        try {
+          if (filesystemEntries.length > 0) {
+            const directory = requireProjectDirectory();
+            if (!directory) return;
+            await duplicateExplorerEntries(directory, filesystemEntries);
+          }
+          for (const entry of datasetEntries) {
+            await duplicateDatasetEntry(entry);
+          }
+        } finally {
+          if (filesystemEntries.some(entry => isProjectWorkspacePath(entry.path, 'shared'))) {
+            await indexSharedWorkspaceAssets(false);
+          }
         }
-        await duplicateExplorerEntries(directory, filesystemEntries);
-      }
-      for (const entry of datasetEntries) {
-        await duplicateDatasetEntry(entry);
-      }
-      refreshExplorer();
+      });
       addNotification('success', 'Explorer entry duplicated');
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to duplicate entry');
@@ -4257,10 +3276,10 @@ function App() {
 
     try {
       if (edit.kind === 'dataset' && edit.mode === 'create') {
-        const dataset = await createDatasetFileInDirectory(
+        const dataset = await runExplorerMutation('Create Dataset', () => createDatasetFileInDirectory(
           edit.parentPath,
           edit.value.trim() || getUniqueDatasetName(profile.defaults.datasetName, edit.parentPath)
-        );
+        ));
         setSelectedExplorerPaths(new Set([dataset.filePath!]));
         setSelectionAnchorPath(dataset.filePath!);
         setFocusedExplorerPath(dataset.filePath!);
@@ -4287,7 +3306,7 @@ function App() {
       }
 
       if (edit.mode === 'create') {
-        const nextPath = await createExplorerDirectory(directory, edit.parentPath, edit.value);
+        const nextPath = await runExplorerMutation('Create folder', () => createExplorerDirectory(directory, edit.parentPath, edit.value));
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
         setFocusedExplorerPath(nextPath);
@@ -4313,64 +3332,22 @@ function App() {
 
   const cancelInlineExplorerEdit = () => setInlineExplorerEdit(null);
 
-  const moveSelectedExplorerEntries = async (
-    destinationPath: string,
-    entriesOverride?: ExplorerItemEntry[] | null
-  ) => {
-    const allEntries = entriesOverride ?? getSelectedExplorerEntries();
-    const filesystemEntries = allEntries.filter(isFilesystemExplorerEntry);
-    const datasetEntries = allEntries.filter((entry) => entry.kind === 'dataset');
+  const moveSelectedExplorerEntries = async (destinationPath: string, entriesOverride?: ExplorerItemEntry[] | null) => {
+    const entries = entriesOverride ?? getSelectedExplorerEntries();
+    const directory = requireProjectDirectory();
+    if (!directory || !entries.length) return;
     try {
-      const directory = filesystemEntries.length > 0 || datasetEntries.length > 0 ? requireProjectDirectory() : null;
-      if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
-        return;
-      }
-      const moves = directory
-        ? await moveExplorerEntries(directory, filesystemEntries, destinationPath)
-        : [];
-      if (moves.length > 0) {
-        updateFileTabsForPathMoves(moves);
-        await updateWorkspacePathsForPathMoves(moves);
-        updateExplorerClipboardForPathMoves(moves);
-        if (moves.some((move) => isProjectWorkspacePath(move.to, 'shared'))) {
-          await indexSharedWorkspaceAssets();
-        }
-      }
-      const datasetMoves = datasetEntries.length > 0
-        ? await moveExplorerEntries(directory!, datasetEntries.map(toPhysicalExplorerEntry), destinationPath)
-        : [];
-      const movedDatasetPaths: string[] = [];
-      for (const entry of datasetEntries) {
-        const move = datasetMoves.find((candidate) => candidate.from === entry.path);
-        if (!move) {
-          continue;
-        }
-        const dataset = await readDatasetFile(directory!, move.to);
-        const updatedDataset = {
-          ...dataset,
-          parentPath: destinationPath,
-          filePath: move.to,
-          updatedAt: new Date(),
-        };
-        await writeDatasetFile(directory!, updatedDataset);
-        upsertProjectDataset(updatedDataset);
-        refreshOpenDatasetTabs(updatedDataset.id);
-        movedDatasetPaths.push(move.to);
-      }
-      if (datasetMoves.length > 0) {
-        updateExplorerClipboardForPathMoves(datasetMoves);
-      }
-      const selectedPaths = [...moves.map((move) => move.to), ...movedDatasetPaths];
-      setSelectedExplorerPaths(new Set(selectedPaths));
-      setFocusedExplorerPath(selectedPaths[0] ?? null);
+      const moves = await runExplorerMutation('Move files', () => moveWorkspaceEntries(directory,entries.map(toPhysicalExplorerEntry),destinationPath));
+      const paths = moves.map(move => move.to);
+      setSelectedExplorerPaths(new Set(paths));
+      setFocusedExplorerPath(paths[0] ?? null);
       setCurrentDraggedExplorerEntries(null);
-      refreshExplorer();
     } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to move Explorer entries');
+      addNotification('error',error instanceof Error ? error.message : 'Failed to move Explorer entries');
     }
   };
 
-  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string): Promise<number> => {
+  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string, execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>): Promise<number> => {
     const directory = requireProjectDirectory();
     if (!directory || files.length === 0) {
       return 0;
@@ -4381,6 +3358,7 @@ function App() {
       let importedImageCount = 0;
       let importedAssetCount = 0;
       const result = await importImageFiles(files, {
+        ...execution,
         logger: createOperationLogger('Import'),
         destination: {
           projectDirectory: directory,
@@ -4390,10 +3368,9 @@ function App() {
           if (!importsIntoSharedWorkspace) {
             return;
           }
-          const previousProject = useProjectStore.getState();
           addSourceImage(image);
           importedImageCount += 1;
-          await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
+          await flushProjectSave();
           setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
           refreshExplorer();
         },
@@ -4422,6 +3399,7 @@ function App() {
       }
       return result.importedAssets.length || result.importedImages.length;
     } catch (error) {
+      if (execution) throw error;
       addNotification('error', error instanceof Error ? error.message : 'Failed to import files');
       return 0;
     }
@@ -4495,101 +3473,7 @@ function App() {
     }
   };
 
-  const handleDatasetExport = async (node: ExplorerTreeNode) => {
-    try {
-      const dataset = await readDatasetEntry(node);
-      const assetIds = new Set(dataset.assetIds);
-      const fileAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]);
-      const exportOrderIndex = new Map(
-        normalizeDatasetAssetOrder(dataset.assetOrder, dataset.assetIds, fileAssetPaths).map((key, index) => [key, index])
-      );
-      const getExportOrder = (key: string): number => exportOrderIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
-      const exportItems = workspaceImages.filter(
-        (item) => assetIds.has(item.sourceImageId) && !item.excludedFromDataset
-      ).sort(
-        (left, right) =>
-          getExportOrder(createDatasetImageAssetKey(left.sourceImageId)) -
-            getExportOrder(createDatasetImageAssetKey(right.sourceImageId)) ||
-          left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
-      );
-      const directory = requireProjectDirectory();
-      if (!directory) {
-        return;
-      }
-      const fileAssets = (await Promise.all(
-        fileAssetPaths.map(async (path): Promise<{ file: File; fileName: string; kind: ExplorerFileKind; path: string } | null> => {
-          try {
-            const file = await readExplorerFile(directory, path);
-            return {
-              file,
-              fileName: path.split('/').pop() ?? file.name,
-              kind: getExplorerFileKind(path.split('/').pop() ?? file.name, file.type),
-              path,
-            };
-          } catch (error) {
-            addNotification('warning', error instanceof Error ? error.message : `Unable to read "${path}"`);
-            return null;
-          }
-        })
-      )).filter((asset): asset is { file: File; fileName: string; kind: ExplorerFileKind; path: string } => Boolean(asset));
-      const psdAssets = fileAssets
-        .filter((asset) => asset.kind === 'psd')
-        .sort(
-          (left, right) =>
-            getExportOrder(createDatasetFileAssetKey(left.path)) -
-              getExportOrder(createDatasetFileAssetKey(right.path)) ||
-            left.fileName.localeCompare(right.fileName, undefined, { numeric: true, sensitivity: 'base' })
-        )
-        .map(({ file, fileName }) => ({ file, fileName }));
-      const skippedFileAssetCount = fileAssets.length - psdAssets.length;
-      const workspaceExportsByKey = new Map(
-        exportItems.map((item): [string, ExportAsset] => [
-          createDatasetImageAssetKey(item.sourceImageId),
-          { kind: 'workspace', item },
-        ])
-      );
-      const psdExportsByKey = new Map(
-        fileAssets
-          .filter((asset) => asset.kind === 'psd')
-          .map((asset): [string, ExportAsset] => [
-            createDatasetFileAssetKey(asset.path),
-            { kind: 'psd', asset: { file: asset.file, fileName: asset.fileName } },
-          ])
-      );
-      const orderedAssets = normalizeDatasetAssetOrder(dataset.assetOrder, dataset.assetIds, fileAssetPaths)
-        .map((key) => workspaceExportsByKey.get(key) ?? psdExportsByKey.get(key))
-        .filter((asset): asset is ExportAsset => Boolean(asset));
-
-      if (exportItems.length === 0 && psdAssets.length === 0) {
-        createOperationLogger('Export').warning(`no assets to export for Dataset "${dataset.name}"`);
-        addNotification('warning', 'No assets to export');
-        return;
-      }
-
-      const logger = createOperationLogger('Export');
-      const exportCount = exportItems.length + psdAssets.length;
-      logger.info(`exporting Dataset "${dataset.name}" with ${exportCount} asset${exportCount !== 1 ? 's' : ''}`);
-      if (skippedFileAssetCount > 0) {
-        logger.warning(`skipped ${skippedFileAssetCount} non-PSD file asset${skippedFileAssetCount !== 1 ? 's' : ''}`);
-        addNotification('warning', `Skipped ${skippedFileAssetCount} non-PSD file asset${skippedFileAssetCount !== 1 ? 's' : ''}`);
-      }
-      const zipBlob = await exportAsZip(
-        {
-          datasetKeyword: dataset.triggerWord,
-          items: exportItems,
-          psdAssets,
-          orderedAssets,
-        },
-        useProjectStore.getState().taggingConfig.blacklist,
-        logger
-      );
-      downloadZipFile(zipBlob, `${dataset.name || 'dataset'}-${new Date().toISOString().split('T')[0]}.zip`);
-      logger.success(`exported Dataset "${dataset.name}"`);
-      addNotification('success', `Exported ${exportCount} asset${exportCount !== 1 ? 's' : ''} as ZIP`);
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to export Dataset');
-    }
-  };
+  const handleDatasetExport = async (_node: ExplorerTreeNode) => { navigateToTool('export'); };
 
   const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
     if (Array.from(event.dataTransfer.types).includes('Files')) {
@@ -4605,64 +3489,6 @@ function App() {
     void moveSelectedExplorerEntries(destinationPath, draggedExplorerEntries);
   };
 
-  useEffect(() => {
-    const isEditableTarget = (target: EventTarget | null): boolean =>
-      target instanceof HTMLElement &&
-      Boolean(target.closest('input, textarea, select, [contenteditable="true"], iframe'));
-
-    const handleWorkspaceShortcut = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey)) {
-        return;
-      }
-
-      if (isEditableTarget(event.target)) {
-        return;
-      }
-
-      if (event.key.toLowerCase() === 'w') {
-        if (!activeTab) {
-          return;
-        }
-        event.preventDefault();
-        closeWorkspaceViews([activeTab.id]);
-        return;
-      }
-
-      if (event.shiftKey && event.key.toLowerCase() === 't') {
-        if (closedTabs.length === 0) {
-          return;
-        }
-        event.preventDefault();
-        reopenClosedTab();
-        return;
-      }
-
-      if (/^[1-9]$/.test(event.key)) {
-        const targetIndex = Number(event.key) - 1;
-        const targetTab = openTabs[targetIndex];
-        if (!targetTab) {
-          return;
-        }
-        event.preventDefault();
-        activateTab(targetTab);
-        return;
-      }
-
-      if (event.key === 'Tab' || event.key === 'PageDown' || event.key === 'PageUp') {
-        if (openTabs.length < 2) {
-          return;
-        }
-        event.preventDefault();
-        const currentIndex = Math.max(0, activeTab ? openTabs.findIndex((tab) => tab.id === activeTab.id) : 0);
-        const direction = event.key === 'PageUp' ? -1 : 1;
-        const nextIndex = (currentIndex + direction + openTabs.length) % openTabs.length;
-        activateTab(openTabs[nextIndex]);
-      }
-    };
-
-    window.addEventListener('keydown', handleWorkspaceShortcut);
-    return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
-  }, [activeTab, closedTabs.length, openTabs]);
 
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null): boolean =>
@@ -4670,6 +3496,8 @@ function App() {
       Boolean(target.closest('input, textarea, select, [contenteditable="true"], iframe'));
 
     const handleExplorerShortcut = (event: KeyboardEvent) => {
+      if (projectOperationBusyRef.current) return;
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.getModifierState('AltGraph') || document.querySelector('[role=dialog][data-state=open], [role=menu][data-state=open]')) return;
       if (isEditableTarget(event.target)) {
         return;
       }
@@ -4686,6 +3514,16 @@ function App() {
         setSelectionAnchorPath(null);
         setFocusedExplorerPath(null);
         setExplorerContextMenu(null);
+        return;
+      }
+
+      if (event.key === 'Home' || event.key === 'End') {
+        const nodes = getVisibleExplorerNodes();
+        const node = event.key === 'Home' ? nodes[0] : nodes[nodes.length - 1];
+        if (node) {
+          event.preventDefault();
+          focusExplorerNode(node, event.shiftKey);
+        }
         return;
       }
 
@@ -4747,69 +3585,11 @@ function App() {
         return;
       }
 
-      const selectedEntries = getSelectedExplorerEntries();
-      const selectedNode = selectedEntries.length === 1
-        ? getVisibleExplorerNodes().find((node) => node.path === selectedEntries[0].path)
-        : null;
-
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && selectedEntries.length > 0) {
-        event.preventDefault();
-        setExplorerClipboard({ mode: 'copy', entries: selectedEntries });
-        return;
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x' && selectedEntries.length > 0) {
-        event.preventDefault();
-        setExplorerClipboard({ mode: 'cut', entries: selectedEntries });
-        return;
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && explorerClipboard) {
-        event.preventDefault();
-        void handleExplorerPaste({ name: activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path: activeExplorerDirectoryPath, kind: 'folder' });
-        return;
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && selectedEntries.length > 0) {
-        event.preventDefault();
-        const node = selectedNode ?? getVisibleExplorerNodes().find((entry) => entry.path === selectedEntries[0].path);
-        if (node) {
-          void handleExplorerDuplicate(node);
-        }
-        return;
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
-        event.preventDefault();
-        const nodes = getActiveDirectoryChildren();
-        setSelectedExplorerPaths(new Set(nodes.map((node) => node.path)));
-        setSelectionAnchorPath(nodes[0]?.path ?? null);
-        return;
-      }
-
-      if (event.key === 'F2' && selectedNode) {
-        event.preventDefault();
-        handleExplorerRename(selectedNode);
-        return;
-      }
-
-      if (event.key === 'Delete' && selectedEntries.length > 0) {
-        event.preventDefault();
-        const node = selectedNode ?? getVisibleExplorerNodes().find((entry) => entry.path === selectedEntries[0].path);
-        if (node) {
-          void handleExplorerDelete(node);
-        }
-      }
     };
 
     window.addEventListener('keydown', handleExplorerShortcut);
     return () => window.removeEventListener('keydown', handleExplorerShortcut);
   }, [activeExplorerDirectoryPath, explorerClipboard, explorerContextMenu, focusedExplorerPath, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
-
-  const handleThemeChange = (nextDarkMode: boolean) => {
-    setDarkMode(nextDarkMode);
-    setViewMenuOpen(false);
-  };
 
   const updateLocalTaggerFileSetting = async (
     key: LocalTaggerFileKey,
@@ -4934,17 +3714,66 @@ function App() {
   const isAbortError = (error: unknown): boolean =>
     error instanceof DOMException && error.name === 'AbortError';
 
+  const activateProjectDirectory = (directory: ProjectDirectoryHandle, project: ProjectState) => {
+    persistWorkspaceRef.current?.();
+    setNavigationRecovery(false);
+    projectSessionRef.current += 1;
+    setProjectDirectory(undefined);
+    loadProject(project);
+    setClosedTabs([]);
+    useHistoryStore.setState({past:[],future:[]});
+    applyWorkspaceTabsForProject(project);
+    setProjectDirectory({handle:directory,name:directory.name});
+  };
+
+  const indexActiveProject = async (directory: ProjectDirectoryHandle, expectedProjectId: string) => {
+    const operations = useOperationStore.getState();
+    const operationId = `project-index:${crypto.randomUUID()}`;
+    operations.start({id:operationId,viewId:EXPLORER_VIEW,label:'Index project files'});
+    try {
+      await runProjectFileOperation(async () => {
+        await indexProjectAssets(directory, {
+          logger: createOperationLogger('Index'),
+          existingSourceImages: useProjectStore.getState().sourceImages,
+          onAssetIndexed: ({sourceImage}) => {
+            const current = useProjectStore.getState();
+            if (current.id !== expectedProjectId || useUIStore.getState().projectDirectoryHandle !== directory) {
+              throw new DOMException('Project changed during indexing', 'AbortError');
+            }
+            if (sourceImage && !current.sourceImages[sourceImage.id]) addSourceImage(sourceImage);
+            refreshExplorer();
+          },
+          onProgress: (completed,total) => operations.update(operationId,{completed,total}),
+        });
+      });
+      operations.finish(operationId,'completed');
+      refreshExplorer();
+    } catch (error) {
+      operations.finish(operationId,'failed',error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  };
+
+  const canSwitchProject = async () => {
+    if (useHistoryStore.getState().busy) { addNotification('warning', 'Wait for Undo or Redo to finish saving.'); return false; }
+    const running = useOperationStore.getState().entries.find(isOperationRunning);
+    if (!running) return confirmClosingTabs(openTabs);
+    addNotification('warning', `Finish or cancel ${running.label} before switching projects.`); focusView(running.viewId); return false;
+  };
+
   const handleNewProject = async () => {
+    if (!await canSwitchProject()) return;
     if (projectOperationBusyRef.current) {
       return;
     }
     const logger = createOperationLogger('Project');
-    setFileMenuOpen(false);
+    setOpenMenu(null);
     if (workspaceImages.length > 0 && !window.confirm('Create a new project and clear the current workspace?')) {
       return;
     }
 
     projectOperationBusyRef.current = true;
+    projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setIsProjectDirectoryBusy(true);
     try {
       const setup = await requestProjectSetup('Untitled Project', false);
@@ -4964,16 +3793,16 @@ function App() {
         logger.warning(`new project canceled before overwriting ${nextName}`);
         return;
       }
-      projectSessionRef.current += 1;
-      autoSaveQueueRef.current = Promise.resolve();
-      setProjectDirectory(undefined);
-      initializeProject(nextName, projectType);
-      const project = useProjectStore.getState();
+      await flushProjectSave();
+      const project = createProject(nextName, projectType);
       logger.info('writing project manifest and folders');
-      await clearProjectDirectory(directory);
-      await createProjectDirectory(directory, project);
-      applyWorkspaceTabsForProject(project.id);
-      setProjectDirectory({ handle: directory, name: directory.name });
+      const create = async () => {
+        await clearProjectDirectory(directory);
+        await createProjectDirectory(directory, project);
+        activateProjectDirectory(directory, project);
+      };
+      if (projectDirectoryHandle) await runProjectFileOperation(create);
+      else await create();
       logger.success(`created project directory ${directory.name}`);
       addNotification('success', 'New project directory created');
     } catch (error) {
@@ -4990,46 +3819,30 @@ function App() {
   const openProjectDirectory = async (directory: ProjectDirectoryHandle) => {
     const logger = createOperationLogger('Project');
     logger.info(`opening project directory ${directory.name}`);
+    await flushProjectSave();
+    const previousProject = useProjectStore.getState();
     const project = await readProjectDirectory(directory, async (name) => {
       const setup = await requestProjectSetup(name, true);
       if (!setup) throw new DOMException('Project opening canceled', 'AbortError');
       return setup.projectType;
     });
-    projectSessionRef.current += 1;
-    autoSaveQueueRef.current = Promise.resolve();
-    setProjectDirectory(undefined);
-    loadProject(project);
-    applyWorkspaceTabsForProject(project.id);
-    setProjectDirectory({ handle: directory, name: directory.name });
+    if (useProjectStore.getState() !== previousProject) {
+      throw new Error('The current project changed while opening the folder. Open it again after your changes are saved.');
+    }
+    activateProjectDirectory(directory, project);
+    await indexActiveProject(directory, project.id);
     logger.success(`opened project directory ${directory.name}`);
     addNotification('success', 'Project directory opened');
-    void indexProjectAssets(directory, {
-      logger: createOperationLogger('Index'),
-      existingSourceImages: useProjectStore.getState().sourceImages,
-      onAssetIndexed: async ({ sourceImage }) => {
-        const previousProject = useProjectStore.getState();
-        if (sourceImage && !previousProject.sourceImages[sourceImage.id]) {
-          addSourceImage(sourceImage);
-        }
-        await writeProjectDirectoryChanges(useProjectStore.getState(), previousProject, directory);
-        refreshExplorer();
-      },
-    })
-      .then(async () => {
-        await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, directory);
-        refreshExplorer();
-      })
-      .catch((error) => {
-        addNotification('error', error instanceof Error ? error.message : 'Failed to index project assets');
-      });
   };
 
   const handleOpenProject = async () => {
+    if (!await canSwitchProject()) return;
     if (projectOperationBusyRef.current) {
       return;
     }
     projectOperationBusyRef.current = true;
-    setFileMenuOpen(false);
+    projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setOpenMenu(null);
     setIsProjectDirectoryBusy(true);
     try {
       const directory = await pickProjectDirectory();
@@ -5048,7 +3861,7 @@ function App() {
   };
 
   const handleRenameProject = () => {
-    setFileMenuOpen(false);
+    setOpenMenu(null);
     const nextName = window.prompt('Project name', projectName)?.trim();
     if (!nextName || nextName === projectName) {
       return;
@@ -5069,7 +3882,7 @@ function App() {
       const { currentId, versions } = await listProjectVersions(projectDirectoryHandle);
       setCurrentProjectVersionId(currentId);
       setProjectVersions(versions);
-      setFileMenuOpen(false);
+      setOpenMenu(null);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to read project versions');
     }
@@ -5080,8 +3893,7 @@ function App() {
       return;
     }
     try {
-      await writeProjectDirectoryChanges(useProjectStore.getState(), undefined, projectDirectoryHandle);
-      const version = await createProjectVersion(projectDirectoryHandle, newVersionName);
+      const version = await runExplorerMutation('Create project version', () => createProjectVersion(projectDirectoryHandle, newVersionName));
       setProjectVersions((versions) => [...versions, version]);
       setCurrentProjectVersionId(version.id);
       setNewVersionName('');
@@ -5092,24 +3904,47 @@ function App() {
   };
 
   const handleRestoreProjectVersion = async (version: ProjectVersion) => {
-    if (!projectDirectoryHandle || !window.confirm(`Restore project version "${version.name}"? Current unsaved changes will be replaced.`)) {
-      return;
-    }
+    if (!projectDirectoryHandle || projectOperationBusyRef.current || !await canSwitchProject()) return;
+    if (!window.confirm(`Restore project version "${version.name}"? Current changes will be replaced.`)) return;
+    const directory = projectDirectoryHandle;
+    const operations = useOperationStore.getState();
+    const operationId = `project-restore:${crypto.randomUUID()}`;
+    projectOperationBusyRef.current = true;
+    projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setIsProjectDirectoryBusy(true);
+    operations.start({id:operationId,viewId:EXPLORER_VIEW,label:'Restore project version'});
     try {
-      await restoreProjectVersion(projectDirectoryHandle, version.id);
-      await openProjectDirectory(projectDirectoryHandle);
+      await runProjectFileOperation(async () => {
+        let restoredOnDisk = false;
+        try {
+          let project!: ProjectState;
+          await restoreProjectVersion(directory, version.id, async () => { project = await readProjectDirectory(directory); });
+          restoredOnDisk = true;
+          activateProjectDirectory(directory, project);
+        } catch (error) {
+          // Stop the old queue before its finally block can write over a partial restore.
+          if (restoredOnDisk || (error instanceof ProjectVersionRestoreError && !error.previousRestored)) {
+            setProjectDirectory(undefined);
+          }
+          throw error;
+        }
+      });
+      await indexActiveProject(directory, useProjectStore.getState().id);
       setCurrentProjectVersionId(version.id);
+      operations.finish(operationId,'completed');
       addNotification('success', `Restored version ${version.name}`);
     } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to restore project version');
+      const message = error instanceof Error ? error.message : 'Failed to restore project version';
+      operations.finish(operationId,'failed',message);
+      addNotification('error', message);
+    } finally {
+      projectOperationBusyRef.current = false;
+      setIsProjectDirectoryBusy(false);
     }
   };
 
   const closeTopMenus = () => {
-    setFileMenuOpen(false);
-    setViewMenuOpen(false);
-    setToolsMenuOpen(false);
-    setWindowsMenuOpen(false);
+    setOpenMenu(null);
     setWorkspaceContextMenu(null);
   };
 
@@ -5170,18 +4005,12 @@ function App() {
     const canAddToDataset = sharedImages.length > 0 && sharedImages.length === selectedFiles.length;
 
     const addToDataset = async () => {
-      const directory = requireProjectDirectory();
-      if (!directory) return;
-      const sourceIds = Object.values(sourceImagesById)
-        .filter((source) => sharedImages.some((entry) => source.originalFilePath === entry.path.replace(/^Project\//, '')))
-        .map((source) => source.id);
-      const moves = await moveExplorerEntries(directory, sharedImages, `Project/${PROJECT_DATASET_DIRECTORY}`);
-      updateFileTabsForPathMoves(moves);
-      await updateWorkspacePathsForPathMoves(moves);
-      for (const id of sourceIds) removeSourceImage(id);
-      setSelectedExplorerPaths(new Set(moves.map((move) => move.to)));
-      refreshExplorer();
-      addNotification('success', `Added ${moves.length} image${moves.length !== 1 ? 's' : ''} to the Dataset`);
+      try {
+        const added = await runExplorerMutation('Add to Dataset', async () => addWorkspacePathsToDataset(sharedImages.map(entry => entry.path)));
+        addNotification(added ? 'success' : 'info', added ? `Added ${added} file${added !== 1 ? 's' : ''} to Dataset` : 'Files are already in Dataset');
+      } catch (error) {
+        addNotification('error', error instanceof Error ? error.message : 'Could not add files to Dataset');
+      }
     };
 
     return [
@@ -5210,6 +4039,9 @@ function App() {
           ? createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => {
             return openExplorerFilesInAnalysis(selectedFileNodes);
           } })
+          : null,
+        selectedFileNode && selectedFileKind === 'video'
+          ? createExplorerAction({ id: 'video-frames', label: 'Video Frames', icon: Video, onSelect: () => openFileModeTab(selectedFileNode, 'video') })
           : null,
       ].filter((action): action is ContextAction => Boolean(action)),
       [
@@ -5312,10 +4144,15 @@ function App() {
     <ContextActionGroups groups={getDirectoryContextActionGroups(node)} />;
 
 
-  const closeWorkspaceViews = (ids: string[]) => {
+  const closeWorkspaceViews = async (ids: string[]) => {
     const closable = ids.filter((id) => !openTabs.find((tab) => tab.id === id)?.pinned && !dock.layout.pinned?.includes(id));
+    const running = useOperationStore.getState().entries.filter(entry => closable.includes(entry.viewId) && isOperationRunning(entry));
+    if (running.length) { addNotification('warning', 'Finish or cancel running operations before closing their tabs.'); focusView(running[0].viewId); return; }
     const editors = openTabs.filter((tab) => closable.includes(tab.id));
-    if (!confirmClosingTabs(editors)) return;
+    if (!await confirmClosingTabs(editors)) return;
+    if (useOperationStore.getState().entries.some(entry => closable.includes(entry.viewId) && isOperationRunning(entry))) {
+      addNotification('warning', 'Finish saving before closing this editor.'); return;
+    }
     pushClosedTabs(editors);
     setOpenTabs((tabs) => tabs.filter((tab) => !closable.includes(tab.id)));
     dock.close(closable);
@@ -5329,6 +4166,11 @@ function App() {
 
   const renderEditor = (tab: WorkspaceTab) => {
     const focused = tab.id === activeTabId;
+    if (tab.kind === 'file-video' || (tab.kind === 'tool' && tab.tool === 'video')) {
+      return <WorkspaceTool tool="video" active={focused} directory={projectDirectoryHandle}
+        context={{...(tab.kind === 'file-video' ? {kind:'file', file:tab} : {kind:'project'}), viewId:tab.id,
+          onSaved:async () => { refreshExplorer(); await indexSharedWorkspaceAssets(); }}} />;
+    }
     if (isFileBackedTab(tab)) return <div className="h-full min-h-0">                      {tab.kind === 'file-view' ? (
                         <InternalFileViewer
                           file={tab.file}
@@ -5350,147 +4192,39 @@ function App() {
                           }}
                         />
                       ) : tab.kind === 'file-analysis' ? (
-                        <AnalysisTool
-                          active={focused}
-                          projectDirectoryHandle={projectDirectoryHandle}
-                          onOpenAssetContextMenu={openAssetExplorerContextMenu}
-                          fileTarget={{
-                            path: tab.path,
-                            name: tab.name,
-                            fileKind: tab.fileKind,
-                            file: tab.file,
-                            workspaceImageId: tab.workspaceImageId,
-                          }}
-                        />
+                        <WorkspaceTool tool="analysis" active={focused} directory={projectDirectoryHandle}
+                          onAssetContextMenu={openAssetExplorerContextMenu}
+                          context={{kind:'file', file:tab}} />
                       ) : tab.kind === 'file-edit' ? (
-                        <PhotopeaBlobViewer
-                          file={tab.file}
-                          fileName={tab.name}
-                          active={focused}
-                          onSavePsd={(buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)}
-                        />
+                        <WorkspaceTool tool="clean" active={focused}
+                          context={{kind:'file', file:tab, onSavePsd:(buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)}} />
                       ) : (
-                        <TaggingToolComponent
-                          selectedItemId={tab.workspaceImageId}
-                          singleFileMode
-                          active={focused}
-                        />
+                        <WorkspaceTool tool="tagging" active={focused} context={{kind:'file', file:tab}} />
                       )}
 </div>;
     if (tab.kind === 'dataset') return renderDatasetWorkspace(globalDataset);
     if (isDatasetToolTab(tab)) return renderDatasetTool(tab);
-    if (tab.kind !== 'tool') return null;
-    return <div className="relative h-full min-h-0 overflow-auto">
+    if (tab.kind !== 'tool' || tab.tool === 'video') return null;
+    return <div className="relative h-full min-h-0 overflow-auto p-4">
       {tab.nested && <button type="button" title="Back to tool" className="absolute left-2 top-2 z-30 rounded border border-border bg-card p-2"
         onClick={() => setToolTabNestedView(tab.id, undefined)}><ArrowLeft className="h-4 w-4" /></button>}
-      {renderTool({
-        currentTool: tab.tool, active: focused, projectDirectoryHandle, onOpenAssetContextMenu: openAssetExplorerContextMenu,
-        nested: tab.nested, onOpenNestedFile: (itemId) => setToolTabNestedView(tab.id, { kind: 'file', itemId }),
-        onImportFiles: (files) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`),
-        analysisFileTargets, taggingItemScope,
-      })}
+      <WorkspaceTool {...getToolViewContext(tab.tool, tab.scope, tab.nested?.itemId)} active={focused} directory={projectDirectoryHandle}
+        onAssetContextMenu={openAssetExplorerContextMenu}
+        onOpenItem={itemId => setToolTabNestedView(tab.id, {kind:'file', itemId})}
+        onImportFiles={projectDirectoryHandle ? (files, execution) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`, execution) : undefined}
+        onOpenImport={() => navigateToTool('import')} />
     </div>;
   };
   const workspaceViews: DockView[] = [
     { id: EXPLORER_VIEW, title: activeActivityView === 'versions' ? 'Versions' : 'Explorer', icon: activeActivityView === 'versions' ? GitBranch : PanelLeft,
       content: <div className="flex h-full min-h-0 flex-col">              {activeActivityView === 'explorer' ? (
                 <>
-              <div
-                ref={explorerPanelRef}
-                className="min-h-0 flex-1 overflow-auto p-2"
-                tabIndex={0}
-                onPointerDown={(event) => {
-                  if (
-                    event.button !== 0 ||
-                    (event.target as HTMLElement).closest('[data-explorer-row], input, button, [contenteditable="true"]')
-                  ) {
-                    return;
-                  }
-                  event.currentTarget.focus();
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                  setExplorerContextMenu(null);
-                  setSelectedExplorerPaths(new Set());
-                  setSelectionAnchorPath(null);
-                  setFocusedExplorerPath(null);
-                  setExplorerMarquee({
-                    pointerId: event.pointerId,
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    currentX: event.clientX,
-                    currentY: event.clientY,
-                  });
-                }}
-                onPointerMove={(event) => {
-                  if (!explorerMarquee || explorerMarquee.pointerId !== event.pointerId) {
-                    return;
-                  }
-
-                  const nextMarquee = {
-                    ...explorerMarquee,
-                    currentX: event.clientX,
-                    currentY: event.clientY,
-                  };
-                  const left = Math.min(nextMarquee.startX, nextMarquee.currentX);
-                  const right = Math.max(nextMarquee.startX, nextMarquee.currentX);
-                  const top = Math.min(nextMarquee.startY, nextMarquee.currentY);
-                  const bottom = Math.max(nextMarquee.startY, nextMarquee.currentY);
-                  const paths = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-explorer-row][data-explorer-path]'))
-                    .filter((row) => {
-                      const bounds = row.getBoundingClientRect();
-                      return bounds.left < right && bounds.right > left && bounds.top < bottom && bounds.bottom > top;
-                    })
-                    .map((row) => row.dataset.explorerPath)
-                    .filter((path): path is string => Boolean(path) && path !== 'Project');
-
-                  setExplorerMarquee(nextMarquee);
-                  setSelectedExplorerPaths(new Set(paths));
-                  setSelectionAnchorPath(paths[0] ?? null);
-                  setFocusedExplorerPath(paths[0] ?? null);
-                }}
-                onPointerUp={(event) => {
-                  if (!explorerMarquee || explorerMarquee.pointerId !== event.pointerId) {
-                    return;
-                  }
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                  setExplorerMarquee(null);
-                }}
-                onPointerCancel={(event) => {
-                  if (!explorerMarquee || explorerMarquee.pointerId !== event.pointerId) {
-                    return;
-                  }
-                  setExplorerMarquee(null);
-                }}
-                onContextMenu={(event) => {
-                  if ((event.target as HTMLElement).closest('[data-explorer-row]')) {
-                    return;
-                  }
-                  event.preventDefault();
-                  setActiveExplorerDirectoryPath('Project');
-                  setExplorerContextMenu({ node: { name: projectName || 'Project', path: 'Project', kind: 'folder' }, x: event.clientX, y: event.clientY });
-                }}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
-                  setExplorerDropTargetPath('Project');
-                }}
-                onDragLeave={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                    setExplorerDropTargetPath(null);
-                  }
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setExplorerDropTargetPath(null);
-                  handleExplorerDrop(event, 'Project');
-                }}
-              >
-                {explorerError && (
-                  <p className="mb-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-600">
-                    Showing workspace state. {explorerError}
-                  </p>
-                )}
+              <ExplorerPanel panelRef={explorerPanelRef} error={explorerError}
+                onDismissContextMenu={() => setExplorerContextMenu(null)}
+                onSelectionChange={paths => { setSelectedExplorerPaths(new Set(paths)); setSelectionAnchorPath(paths[0] ?? null); setFocusedExplorerPath(paths[0] ?? null); }}
+                onRootContextMenu={(x, y) => { setActiveExplorerDirectoryPath('Project'); setExplorerContextMenu({ node: { name: projectName || 'Project', path: 'Project', kind: 'folder' }, x, y }); }}
+                onDropTargetChange={setExplorerDropTargetPath}
+                onDropFiles={event => handleExplorerDrop(event, 'Project')}>
                 {visibleExplorerTree ? (
                   <ExplorerTree
                     node={visibleExplorerTree}
@@ -5500,6 +4234,7 @@ function App() {
                     inlineEdit={inlineExplorerEdit}
                     focusedPath={focusedExplorerPath}
                     onToggle={toggleExplorerPath}
+                    onFocus={setActiveExplorerNode}
                     onSelect={selectExplorerNode}
                     onContextMenu={(node, x, y) => {
                       setActiveExplorerNode(node);
@@ -5523,19 +4258,7 @@ function App() {
                 ) : (
                   <p className="px-2 py-1 text-xs text-muted-foreground">No project files</p>
                 )}
-                {explorerMarquee && (
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none fixed z-[900] border border-primary bg-primary/15"
-                    style={{
-                      left: Math.min(explorerMarquee.startX, explorerMarquee.currentX),
-                      top: Math.min(explorerMarquee.startY, explorerMarquee.currentY),
-                      width: Math.abs(explorerMarquee.currentX - explorerMarquee.startX),
-                      height: Math.abs(explorerMarquee.currentY - explorerMarquee.startY),
-                    }}
-                  />
-                )}
-              </div>
+              </ExplorerPanel>
 
                 </>
               ) : (
@@ -5620,7 +4343,7 @@ function App() {
                 )}
               </div>
             </div>
-{renderDatasetWorkspace(globalDataset)}</div> },
+<button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={() => openDatasetTab(globalDataset.id)}>Open Dataset</button></div> },
     ...openTabs.filter((tab) => tab.kind !== 'window').map((tab) => {
       const chrome = getWorkspaceTabChrome(tab);
       return { id: tab.id, title: chrome.label, icon: chrome.Icon, pinned: tab.pinned, dirty: isTabDirty(tab),
@@ -5637,14 +4360,14 @@ function App() {
     return <>
       {tabMenuOpen && <>
         <button type="button" aria-label="Close tool menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setTabMenuOpen(false)} />
-        <div className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(toolMenuPosition.x, window.innerWidth - 220), top: toolMenuPosition.y }}>
+        <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(toolMenuPosition.x, window.innerWidth - 220), top: toolMenuPosition.y }}>
           {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
           <button type="button" className={menuClass} onClick={() => { reopenClosedTab(); setTabMenuOpen(false); }} disabled={!closedTabs.length}><RotateCcw className="h-3.5 w-3.5" />Reopen closed tab</button>
-        </div>
+        </MenuSurface>
       </>}
       {workspaceContextMenu && contextView && <>
         <button type="button" aria-label="Close tab menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setWorkspaceContextMenu(null)} />
-        <div className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(workspaceContextMenu.x, window.innerWidth - 220), top: Math.min(workspaceContextMenu.y, window.innerHeight - 340) }}>
+        <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(workspaceContextMenu.x, window.innerWidth - 220), top: Math.min(workspaceContextMenu.y, window.innerHeight - 340) }}>
           <button type="button" className={menuClass} onClick={() => {
             if (openTabs.some((tab) => tab.id === contextView.id)) toggleTabPinned(contextView.id);
             else dock.setLayout((layout) => ({ ...layout, pinned: contextView.pinned ? layout.pinned?.filter((id) => id !== contextView.id) : [...(layout.pinned ?? []), contextView.id] }));
@@ -5663,7 +4386,7 @@ function App() {
           <button type="button" className={menuClass} onClick={() => closeWorkspaceViews(groupIds)}>Close all</button>
           <button type="button" className={menuClass} disabled={!closedTabs.length} onClick={() => { reopenClosedTab(); setWorkspaceContextMenu(null); }}>Reopen closed tab</button>
           {(() => { const tab = openTabs.find((entry) => entry.id === contextView.id); return tab && isFileBackedTab(tab) ? <button type="button" className={menuClass} onClick={() => { setWorkspaceContextMenu(null); setExplorerContextMenu({ node: { name: tab.name, path: tab.path, kind: 'file' }, x: workspaceContextMenu.x, y: workspaceContextMenu.y }); }}>File actions</button> : null; })()}
-        </div>
+        </MenuSurface>
       </>}
               {explorerContextMenu && (
                 <>
@@ -5673,7 +4396,7 @@ function App() {
                     className="fixed inset-0 z-[950] cursor-default"
                     onClick={() => setExplorerContextMenu(null)}
                   />
-                  <div
+                  <MenuSurface onDismiss={() => setExplorerContextMenu(null)}
                     className="fixed z-[1000] w-44 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl"
                     style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
                   >
@@ -5684,302 +4407,95 @@ function App() {
                       : explorerContextMenu.node.kind === 'dataset'
                         ? renderDatasetContextMenuItems(explorerContextMenu.node)
                         : renderDirectoryContextMenuItems(explorerContextMenu.node)}
-                  </div>
+                  </MenuSurface>
                 </>
               )}
     </>;
   };
 
-  return (
-    <div className="flex h-screen bg-background text-foreground">
-      <>{projectSetup && <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} />}</>
-      <PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-border bg-card px-3 text-sm">
-          {(fileMenuOpen || viewMenuOpen || toolsMenuOpen || windowsMenuOpen) && (
-            <button
-              type="button"
-              aria-label="Close menu"
-              className="fixed inset-0 z-30 cursor-default"
-              onClick={closeTopMenus}
-            />
-          )}
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                fileMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setViewMenuOpen(false);
-                setToolsMenuOpen(false);
-                setWindowsMenuOpen(false);
-                setFileMenuOpen((open) => !open);
-              }}
-            >
-              File
-            </button>
-            {fileMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
-                <button
-                  type="button"
-                  disabled={isProjectDirectoryBusy}
-                  onClick={() => void handleNewProject()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <FilePlus className="h-4 w-4" />
-                  <span className="flex-1">New Project Directory</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isProjectDirectoryBusy}
-                  onClick={() => void handleOpenProject()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  <span className="flex-1">Open Project Directory</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isProjectDirectoryBusy}
-                  onClick={handleRenameProject}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <Pencil className="h-4 w-4" />
-                  <span className="flex-1">Rename</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!projectDirectoryHandle}
-                  onClick={() => void openProjectVersions()}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-50"
-                >
-                  <GitBranch className="h-4 w-4" />
-                  <span className="flex-1">Versions</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                viewMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setFileMenuOpen(false);
-                setToolsMenuOpen(false);
-                setWindowsMenuOpen(false);
-                setViewMenuOpen((open) => !open);
-              }}
-            >
-              View
-            </button>
-            {viewMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-48 rounded-md border border-border bg-popover p-1 shadow-xl">
-                <button
-                  type="button"
-                  onClick={() => handleThemeChange(false)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Sun className="h-4 w-4" />
-                  <span className="flex-1">Light</span>
-                  {!darkMode && <Check className="h-4 w-4" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleThemeChange(true)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary"
-                >
-                  <Moon className="h-4 w-4" />
-                  <span className="flex-1">Dark</span>
-                  {darkMode && <Check className="h-4 w-4" />}
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                toolsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setFileMenuOpen(false);
-                setViewMenuOpen(false);
-                setWindowsMenuOpen(false);
-                setToolsMenuOpen((open) => !open);
-              }}
-            >
-              Tools
-            </button>
-            {toolsMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => {
-                  const Icon = toolIcons[tool];
-                  const active = activeTab?.kind === 'tool' && activeTool === tool;
-                  return (
-                    <button
-                      type="button"
-                      key={tool}
-                      onClick={() => navigateToTool(tool)}
-                      className={`flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary ${
-                        active ? 'bg-secondary/70' : ''
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      <span className="flex-1">{TOOL_LABELS[tool]}</span>
-                      {active && <Check className="h-4 w-4" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div className="relative z-40">
-            <button
-              type="button"
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${
-                windowsMenuOpen ? 'bg-secondary' : 'hover:bg-secondary'
-              }`}
-              onClick={() => {
-                setFileMenuOpen(false);
-                setViewMenuOpen(false);
-                setToolsMenuOpen(false);
-                setWindowsMenuOpen((open) => !open);
-              }}
-            >
-              Windows
-            </button>
-            {windowsMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-                {([
-                  ['explorer', 'Explorer', PanelLeft], ['inspector', 'Inspector', PanelRight],
-                  ['output', 'Output', PanelBottom], ['project', 'Project', FolderOpen], ['dataset', 'Dataset', Layers3],
-                ] as const).map(([id, title, Icon]) => (
-                  <button key={id} type="button" onClick={() => { if (dock.isOpen(`window:${id}`)) closeWorkspaceViews([`window:${id}`]); else dock.show(`window:${id}`); setWindowsMenuOpen(false); }}
-                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left hover:bg-secondary">
-                    <Icon className="h-4 w-4" /><span className="flex-1">{title}</span>
-                    {dock.isOpen(`window:${id}`) && <Check className="h-4 w-4" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            className="rounded px-3 py-1.5 font-medium transition-colors hover:bg-secondary"
-            onClick={() => {
-              closeTopMenus();
-              setIsWorkspaceSettingsOpen(true);
-            }}
-          >
-            Settings
-          </button>
-        </div>
+  const focusView = (id: string) => {
+    dock.show(id);
+    requestAnimationFrame(() => {
+      const view = Array.from(document.querySelectorAll<HTMLElement>('[data-dock-view]')).find(node => node.dataset.dockView === id);
+      (view?.querySelector<HTMLElement>('input:not([type=hidden]):not([disabled]), button:not([disabled]), [tabindex="0"]') ?? view)?.focus();
+    });
+  };
+  const stepTab = (direction: number) => {
+    const group = activeTabId ? findDockGroup(dock.layout, activeTabId)?.group : null;
+    const tabs = group?.tabs.filter(id => openTabs.some(tab => tab.id === id)) ?? openTabs.map(tab => tab.id);
+    const next = tabs[(Math.max(0, tabs.indexOf(activeTabId ?? '')) + direction + tabs.length) % tabs.length];
+    const tab = openTabs.find(tab => tab.id === next); if (tab) { activateTab(tab); focusView(tab.id); }
+  };
+  const history = useHistoryStore();
+  const explorerSelection = getSelectedExplorerEntries();
+  const explorerSelectionNode = explorerSelection.length ? findExplorerNodeByPath(explorerSelection[0].path) : null;
+  const explorerCommandScope = () => explorerPanelRef.current;
+  const explorerCommands: Command[] = [
+    {id:'explorer.copy', label:'Explorer: Copy', shortcut:'Mod+C', disabled:!explorerSelection.length,
+      run:() => setExplorerClipboard({mode:'copy', entries:explorerSelection})},
+    {id:'explorer.cut', label:'Explorer: Cut', shortcut:'Mod+X', disabled:!explorerSelection.length,
+      run:() => setExplorerClipboard({mode:'cut', entries:explorerSelection})},
+    {id:'explorer.paste', label:'Explorer: Paste', shortcut:'Mod+V', disabled:!explorerClipboard || !projectDirectoryHandle,
+      reason:!projectDirectoryHandle ? 'Open a project directory first' : !explorerClipboard ? 'Copy or cut files first' : undefined,
+      run:() => handleExplorerPaste({name:activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path:activeExplorerDirectoryPath, kind:'folder'})},
+    {id:'explorer.duplicate', label:'Explorer: Duplicate', shortcut:'Mod+B', disabled:!explorerSelectionNode || !projectDirectoryHandle,
+      run:() => {if (explorerSelectionNode) return handleExplorerDuplicate(explorerSelectionNode);}},
+    {id:'explorer.rename', label:'Explorer: Rename', shortcut:'F2', disabled:explorerSelection.length !== 1 || !explorerSelectionNode || !projectDirectoryHandle,
+      reason:!projectDirectoryHandle ? 'Open a project directory first' : 'Select one file or folder',
+      run:() => {if (explorerSelectionNode) handleExplorerRename(explorerSelectionNode);}},
+    {id:'explorer.delete', label:'Explorer: Delete', shortcut:'Delete', disabled:!explorerSelectionNode || !projectDirectoryHandle,
+      run:() => {if (explorerSelectionNode) return handleExplorerDelete(explorerSelectionNode);}},
+    {id:'explorer.selectAll', label:'Explorer: Select all in folder', shortcut:'Mod+A', run:() => {
+      const nodes = getActiveDirectoryChildren();
+      setSelectedExplorerPaths(new Set(nodes.map(node => node.path)));
+      setSelectionAnchorPath(nodes[0]?.path ?? null);
+    }},
+  ];
+  const workspaceCommands: Command[] = [
+    ...explorerCommands.map(command => ({...command, group:'Explorer', scope:explorerCommandScope,
+      reason:command.reason ?? (command.disabled ? !projectDirectoryHandle ? 'Open a project directory first' : 'Select files in Explorer' : undefined)})),
+    { id: 'history.undo', label: `Undo${history.past.length ? " · " + history.past[history.past.length - 1].label : ""}`, shortcut: 'Mod+Z', disabled: !history.past.length || history.busy, run: history.undo },
+    { id: 'history.redo', label: 'Redo', shortcut: 'Mod+Shift+Z', disabled: !history.future.length || history.busy, run: history.redo },
+    { id: 'project.new', label: 'New project', disabled: isProjectDirectoryBusy, run: handleNewProject },
+    { id: 'project.open', label: 'Open project', disabled: isProjectDirectoryBusy, run: handleOpenProject },
+    { id: 'project.rename', label: 'Rename project', disabled: isProjectDirectoryBusy, run: handleRenameProject },
+    { id: 'project.versions', label: 'Project versions', disabled: !projectDirectoryHandle, reason: !projectDirectoryHandle ? 'Open a project directory first' : undefined, run: openProjectVersions },
+    ...(['system', 'light', 'dark'] as const).map(mode => ({ id: `theme.${mode}`, label: `Theme: ${mode}`, run: () => setTheme(mode) })),
+    ...WORKSPACE_WINDOWS.map(window => ({ id: `window.${window.id}`, label: `Toggle ${window.label}`, run: () => {
+      const id = `window:${window.id}`;
+      if (dock.isOpen(id)) return closeWorkspaceViews([id]);
+      dock.show(id);
+    } })),
+    { id: 'dataset.open', label: 'Open Dataset', run: () => openDatasetTab(globalDataset.id) },
+    { id: 'dataset.add', label: 'Add files to Dataset', run: () => openDatasetToolTab(globalDataset.id, 'select') },
+    { id: 'settings', label: 'Settings', run: () => setIsWorkspaceSettingsOpen(true) },
+    { id: 'help', label: 'Keyboard shortcuts', run: () => openCommands(true) },
+    { id: 'focus.editor', label: 'Return to active editor', disabled: !activeTabId, run: () => { if (activeTabId) focusView(activeTabId); } },
+    { id: 'layout.reset', label: 'Reset workspace layout', run: () => dock.setLayout(layout => { const next = migrateDockLayout({ bottomPanelOpen: false }, openTabs.map(tab => tab.id), window.innerWidth - 40, window.innerHeight - 80); return { ...(activeTabId ? focusDockView(next, activeTabId) : next), pinned: layout.pinned }; }) },
+    { id: 'tabs.next', label: 'Next editor tab', run: () => stepTab(1), disabled: openTabs.length < 2 },
+    { id: 'tabs.previous', label: 'Previous editor tab', run: () => stepTab(-1), disabled: openTabs.length < 2 },
+    { id: 'tabs.close', label: 'Close editor tab', run: () => { if (activeTab) closeWorkspaceViews([activeTab.id]); }, disabled: !activeTab || activeTab.pinned },
+    { id: 'tabs.reopen', label: 'Reopen closed editor', run: reopenClosedTab, disabled: !closedTabs.length },
+    { id: 'project.save', label: 'Save project', shortcut: 'Mod+S', shortcutEnabled: !(activeTool === 'clean' || activeTab?.kind === 'file-edit' || (activeTab?.kind === 'file-view' && activeTab.fileKind === 'psd')), allowInInput: true, disabled: !projectDirectoryHandle, run: projectSave.retry },
+    ...(['explorer', 'inspector', 'output', 'project', 'dataset'] as const).map(id => ({ id: `focus.${id}`, label: `Focus ${id[0].toUpperCase() + id.slice(1)}`, run: () => focusView(`window:${id}`) })),
+    ...TOOLS.filter(tool => profile.enabledTools.includes(tool)).map(tool => ({ id: `tool.${tool}`, label: TOOL_LABELS[tool], group: 'Tools', run: () => navigateToTool(tool) })),
+    ...(['right', 'bottom'] as const).map(side => ({ id: `tabs.split.${side}`, label: `Split editor ${side}`, disabled: !activeTab || (findDockGroup(dock.layout, activeTab.id)?.group.tabs.length ?? 0) < 2, run: () => {
+      if (!activeTab) return; const group = findDockGroup(dock.layout, activeTab.id); if (group) dock.setLayout(layout => moveDockSource(layout, { type: 'tab', id: activeTab.id }, { host: group.host, group: group.group.id, side }));
+    } })),
+    { id: 'tabs.dock', label: 'Dock / detach editor', disabled: !activeTab, run: () => { if (!activeTab) return; const group = findDockGroup(dock.layout, activeTab.id); if (group) dock.setLayout(layout => group.host !== 'main' && group.host !== 'left' ? pinDockHost(layout, group.host) : floatDockSource(layout, { type: 'tab', id: activeTab.id }, { x: 100, y: 80, width: 600, height: 450 })); } },
+  ];
+  useCommands(workspaceCommands.map(command => isProjectDirectoryBusy ? {...command,disabled:true,reason:'Wait for the project operation to finish'} : command));
 
-        <Dialog.Root open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}>
-          <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(640px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card p-4 shadow-2xl">
-              <div className="mb-4 flex items-start justify-between gap-4">
-                <div>
-                  <Dialog.Title className="text-base font-semibold">Settings</Dialog.Title>
-                  <Dialog.Description className="text-xs text-muted-foreground">
-                    Configure shared workspace display options.
-                  </Dialog.Description>
-                </div>
-                <Dialog.Close asChild>
-                  <button
-                    type="button"
-                    className="rounded-md p-2 transition-colors hover:bg-secondary"
-                    aria-label="Close Settings"
-                  >
-                    <X size={16} />
-                  </button>
-                </Dialog.Close>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <label className="mb-2 block text-xs text-muted-foreground">Brick columns</label>
-                  <select
-                    value={workspaceSettings?.brickColumnCount ?? 'auto'}
-                    onChange={(event) =>
-                      updateWorkspaceSettings({
-                        brickColumnCount: parseBrickColumnCount(event.target.value),
-                      })
-                    }
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-                  >
-                    {BRICK_COLUMN_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option === 'auto' ? 'Auto' : `${option} columns`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="rounded-md border border-border bg-secondary/20 p-3">
-                  <h3 className="mb-3 text-sm font-semibold">Local Tagger Files</h3>
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">model.onnx</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {workspaceSettings.localTaggerModelPath ?? 'No model selected'}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handlePickLocalTaggerFile('model')}
-                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                      >
-                        <Upload size={16} />
-                        Choose model
-                      </button>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">selected_tags.csv</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {workspaceSettings.localTaggerTagsPath ?? 'No tags CSV selected'}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handlePickLocalTaggerFile('tags')}
-                        className="inline-flex items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
-                      >
-                        <Upload size={16} />
-                        Choose tags
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-        <input
-          ref={taggerModelInputRef}
-          type="file"
-          accept=".onnx"
-          className="hidden"
-          onChange={(event) => void handleFallbackLocalTaggerFileSelected('model', event)}
-          aria-hidden="true"
-        />
-        <input
-          ref={taggerTagsInputRef}
-          type="file"
-          accept=".csv,text/csv"
-          className="hidden"
-          onChange={(event) => void handleFallbackLocalTaggerFileSelected('tags', event)}
-          aria-hidden="true"
-        />
-
-        <div className="flex min-h-0 flex-1">
+  return <AppShell
+    busy={isProjectDirectoryBusy}
+    setupDialog={projectSetup ? <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} /> : null}
+    backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
+    header={<WorkspaceMenus openMenu={openMenu}
+      onOpenMenuChange={menu => { setOpenMenu(menu); setTabMenuOpen(false); setWorkspaceContextMenu(null); }}
+      fileButtonRef={projectMenuButtonRef} enabledTools={profile.enabledTools}
+      activeTool={activeTab?.kind === 'tool' ? activeTool : null}
+      theme={theme} isWindowOpen={dock.isOpen} onCommands={() => openCommands()} />}
+    activityBar={
           <nav className="flex w-10 shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2" aria-label="Activity bar">
             <button
               type="button"
@@ -6000,8 +4516,42 @@ function App() {
               <GitBranch className="h-4 w-4" />
             </button>
           </nav>
+    }
+    footer={<WorkspaceStatusBar projectName={projectName} save={projectSave}
+      onFocusOperation={id => { const tab = openTabs.find(tab => tab.id === id); if (tab) { activateTab(tab); focusView(id); } else focusView('window:output'); }}
+      onOutput={() => focusView('window:output')} onHelp={() => openCommands(true)} />}
+    overlays={<>
+        <WorkspaceSettingsDialog open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}
+          theme={theme} onThemeChange={setTheme} density={density} onDensityChange={setDensity}
+          settings={workspaceSettings} onSettingsChange={updateWorkspaceSettings}
+          onPickTaggerFile={kind => void handlePickLocalTaggerFile(kind)}
+          onShortcuts={() => openCommands(true)} onOpenTool={tool => navigateToTool(tool)} />
+        <input
+          ref={taggerModelInputRef}
+          type="file"
+          accept=".onnx"
+          className="hidden"
+          onChange={(event) => void handleFallbackLocalTaggerFileSelected('model', event)}
+          aria-hidden="true"
+        />
+        <input
+          ref={taggerTagsInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(event) => void handleFallbackLocalTaggerFileSelected('tags', event)}
+          aria-hidden="true"
+        />
 
-          <DockWorkspace
+      {renderWorkspaceMenus()}
+      <WorkspaceNotifications />
+    </>}
+  >
+          <DockWorkspace key={`${projectId}:${projectSessionRef.current}`}
+            activeEditorId={activeTabId}
+            emptyContent={<WorkspaceWelcome projectName={projectDirectoryName} hasDirectory={Boolean(projectDirectoryHandle)} recoveryNeeded={navigationRecovery}
+              onOpen={() => void handleOpenProject()} onCreate={() => void handleNewProject()}
+              onContinue={() => navigateToTool(projectDirectoryHandle ? 'review' : 'import')} />}
             layout={dock.layout}
             onLayout={dock.setLayout}
             views={workspaceViews}
@@ -6010,45 +4560,8 @@ function App() {
             onContextMenu={(id, x, y) => setWorkspaceContextMenu({ id, x, y })}
             onOpenTool={(group, x, y) => { dock.setLayout((layout) => ({ ...layout, focusedGroup: group })); setToolMenuPosition({ x, y }); setTabMenuOpen(true); }}
           />
-        </div>
-        {renderWorkspaceMenus()}
+  </AppShell>;
 
-        {notifications.length > 0 && (
-          <div className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-2">
-            {notifications.map((notification) => {
-              const isError = notification.type === 'error';
-              const isSuccess = notification.type === 'success';
-              return (
-                <div
-                  key={notification.id}
-                  role="alert"
-                  className={`pointer-events-auto flex items-start gap-3 rounded-md border px-3 py-3 text-sm shadow-xl ${
-                    isError
-                      ? 'border-destructive/60 bg-destructive text-destructive-foreground'
-                      : isSuccess
-                        ? 'border-emerald-500/60 bg-emerald-950 text-emerald-100'
-                        : 'border-border bg-card text-foreground'
-                  }`}
-                >
-                  {isError ? <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> : <Check className="mt-0.5 h-4 w-4 shrink-0" />}
-                  <p className="min-w-0 flex-1 break-words">{notification.message}</p>
-                  <button
-                    type="button"
-                    onClick={() => removeNotification(notification.id)}
-                    className="shrink-0 rounded p-0.5 opacity-80 transition-opacity hover:opacity-100"
-                    aria-label="Dismiss notification"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-      </main>
-    </div>
-  );
 }
 
 export default App;
