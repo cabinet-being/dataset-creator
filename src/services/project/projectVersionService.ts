@@ -4,6 +4,14 @@ import { PROJECT_GIT_DIRECTORY, REQUIRED_PROJECT_DIRECTORIES } from './projectLa
 
 const VERSION_INDEX_PATH = `${PROJECT_GIT_DIRECTORY}/dataset-creator-versions.json`;
 const VERSION_SNAPSHOT_DIRECTORY = `${PROJECT_GIT_DIRECTORY}/snapshots`;
+const RESTORE_BACKUP_DIRECTORY = `${PROJECT_GIT_DIRECTORY}/restore-backups`;
+
+export class ProjectVersionRestoreError extends Error {
+  constructor(message: string, readonly previousRestored: boolean, readonly recoveryPath?: string) {
+    super(message);
+    this.name = 'ProjectVersionRestoreError';
+  }
+}
 
 export type ProjectVersion = {
   id: string;
@@ -74,6 +82,7 @@ const addDirectoryToZip = async (zip: JSZip, directory: ProjectDirectoryHandle, 
     }
     const path = prefix ? `${prefix}/${name}` : name;
     if ('entries' in entry) {
+      zip.folder(path);
       await addDirectoryToZip(zip, entry, path);
     } else {
       zip.file(path, await (await entry.getFile()).arrayBuffer());
@@ -88,7 +97,18 @@ const clearProjectContents = async (root: ProjectDirectoryHandle) => {
       entries.push(name);
     }
   }
-  await Promise.all(entries.map((name) => root.removeEntry(name, { recursive: true })));
+  const results = await Promise.allSettled(entries.map((name) => root.removeEntry(name, { recursive: true })));
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
+};
+
+const applySnapshot = async (root: ProjectDirectoryHandle, zip: JSZip) => {
+  await clearProjectContents(root);
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) await getDirectoryAtPath(root, entry.name, true);
+    else await writeFileAtPath(root, entry.name, await entry.async('blob'));
+  }
+  for (const path of REQUIRED_PROJECT_DIRECTORIES) await getDirectoryAtPath(root, path, true);
 };
 
 export const listProjectVersions = async (root: ProjectDirectoryHandle): Promise<{ currentId?: string; versions: ProjectVersion[] }> => {
@@ -122,20 +142,55 @@ export const createProjectVersion = async (root: ProjectDirectoryHandle, name: s
   return version;
 };
 
-export const restoreProjectVersion = async (root: ProjectDirectoryHandle, id: string): Promise<ProjectVersion> => {
+export const restoreProjectVersion = async (
+  root: ProjectDirectoryHandle,
+  id: string,
+  validate?: () => Promise<void>
+): Promise<ProjectVersion> => {
   const index = await readVersionIndex(root);
   const version = index.versions.find((entry) => entry.id === id);
   if (!version) {
     throw new Error('Project version was not found.');
   }
   const snapshot = await readFile(await getDirectoryAtPath(root, VERSION_SNAPSHOT_DIRECTORY), `${version.id}.zip`);
-  const zip = await JSZip.loadAsync(await snapshot.arrayBuffer());
-  await clearProjectContents(root);
-  await Promise.all(Object.values(zip.files)
-    .filter((entry) => !entry.dir)
-    .map(async (entry) => writeFileAtPath(root, entry.name, await entry.async('blob'))));
-  await Promise.all(REQUIRED_PROJECT_DIRECTORIES.map((path) => getDirectoryAtPath(root, path, true)));
-  await writeVersionIndex(root, { ...index, currentId: version.id });
+  const zip = await JSZip.loadAsync(await snapshot.arrayBuffer(), {checkCRC32:true});
+  for (const entry of Object.values(zip.files)) {
+    const path = entry.dir ? entry.name.replace(/\/$/, '') : entry.name;
+    const originalName = (entry as typeof entry & {unsafeOriginalName?: string}).unsafeOriginalName;
+    if (path.split('/').some(part => !part || part === '.' || part === '..') || path.includes('\\') || path.split('/')[0] === PROJECT_GIT_DIRECTORY || (originalName && originalName !== entry.name)) {
+      throw new Error('The version contains an invalid project path.');
+    }
+  }
+  const manifestText = await zip.file('manifest.json')?.async('string');
+  const manifest = manifestText ? JSON.parse(manifestText) : null;
+  if (manifest?.format !== 'dataset-creator-directory' || manifest.version !== 1 || !manifest.project?.id || !manifest.project?.name) {
+    throw new Error('The version has no valid project manifest.');
+  }
+  const backup = new JSZip();
+  await addDirectoryToZip(backup, root);
+  const recoveryPath = `${RESTORE_BACKUP_DIRECTORY}/${crypto.randomUUID()}.zip`;
+  await writeFileAtPath(root, recoveryPath, await backup.generateAsync({type:'blob'}));
+  let retainBackup = false;
+  try {
+    await applySnapshot(root, zip);
+    await validate?.();
+    await writeVersionIndex(root, { ...index, currentId: version.id });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    try {
+      await applySnapshot(root, backup);
+      await writeVersionIndex(root, index);
+    } catch {
+      retainBackup = true;
+      throw new ProjectVersionRestoreError(`Restore failed: ${detail}. Recovery also failed. The previous files are backed up in ${recoveryPath}.`, false, recoveryPath);
+    }
+    throw new ProjectVersionRestoreError(`Restore failed: ${detail}. Your previous files were restored.`, true);
+  } finally {
+    if (!retainBackup) {
+      try { await (await getDirectoryAtPath(root, RESTORE_BACKUP_DIRECTORY)).removeEntry(getFileName(recoveryPath)); }
+      catch { /* A leftover recovery copy does not change the restore result. */ }
+    }
+  }
   return version;
 };
 

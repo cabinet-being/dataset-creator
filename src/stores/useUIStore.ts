@@ -20,14 +20,6 @@ interface UIState {
   projectDirectoryName?: string;
   assetPreviewRefreshKey: number;
 
-  // Edit tool header actions
-  editToolbar: {
-    visible: boolean;
-    canSave: boolean;
-    isProcessing: boolean;
-    status?: string;
-  };
-
   // Caption tool header actions
   taggingToolbar: {
     visible: boolean;
@@ -76,7 +68,6 @@ interface UIActions {
   refreshAssetPreviews: () => void;
 
   // Edit tool header actions
-  setEditToolbar: (toolbar: Partial<UIState['editToolbar']>) => void;
   setTaggingToolbar: (toolbar: Partial<UIState['taggingToolbar']>) => void;
   setTaggingModal: (modal: Partial<UIState['taggingModals']>) => void;
   
@@ -100,11 +91,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   projectDirectoryHandle: undefined,
   projectDirectoryName: undefined,
   assetPreviewRefreshKey: 0,
-  editToolbar: {
-    visible: false,
-    canSave: false,
-    isProcessing: false,
-  },
+
   taggingToolbar: {
     visible: false,
   },
@@ -176,25 +163,6 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
 
   refreshAssetPreviews: () =>
     set((state) => ({ assetPreviewRefreshKey: state.assetPreviewRefreshKey + 1 })),
-
-  setEditToolbar: (toolbar) =>
-    set((state) => {
-      const nextToolbar = {
-        ...state.editToolbar,
-        ...toolbar,
-      };
-
-      if (
-        state.editToolbar.visible === nextToolbar.visible &&
-        state.editToolbar.canSave === nextToolbar.canSave &&
-        state.editToolbar.isProcessing === nextToolbar.isProcessing &&
-        state.editToolbar.status === nextToolbar.status
-      ) {
-        return state;
-      }
-
-      return { editToolbar: nextToolbar };
-    }),
 
   setTaggingToolbar: (toolbar) =>
     set((state) => {

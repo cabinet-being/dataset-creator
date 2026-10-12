@@ -135,8 +135,9 @@ const createPhotopeaExportUrl = () => {
   return `${PHOTOPEA_ORIGIN}#${encodeURIComponent(JSON.stringify(config))}`;
 };
 
-export const convertPsdToPng = async (asset: ExportPsdAsset, logger?: OperationLogger): Promise<Blob> =>
+export const convertPsdToPng = async (asset: ExportPsdAsset, logger?: OperationLogger, signal?: AbortSignal): Promise<Blob> =>
   new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
     const iframe = document.createElement('iframe');
     iframe.src = createPhotopeaExportUrl();
     iframe.title = `PSD export converter for ${asset.fileName}`;
@@ -153,6 +154,7 @@ export const convertPsdToPng = async (asset: ExportPsdAsset, logger?: OperationL
     let settled = false;
 
     const cleanup = () => {
+      signal?.removeEventListener('abort', handleAbort);
       window.removeEventListener('message', handleMessage);
       iframe.remove();
       window.clearTimeout(timeout);
@@ -203,6 +205,8 @@ export const convertPsdToPng = async (asset: ExportPsdAsset, logger?: OperationL
       }
     };
 
+    const handleAbort = () => settle(() => reject(signal?.reason ?? new DOMException('Cancelled', 'AbortError')));
+    signal?.addEventListener('abort', handleAbort, { once: true });
     window.addEventListener('message', handleMessage);
     logger?.info(`waiting for Photopea to load "${asset.fileName}"`);
     document.body.appendChild(iframe);

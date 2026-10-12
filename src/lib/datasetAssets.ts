@@ -1,4 +1,5 @@
 import { filterLegacyProjectAssetPaths } from '../services/project/projectPathFilters';
+import { ASSET_MANIFEST_SUFFIX } from '../services/project/assetManifestService';
 import { createWorkspaceFileAssetId, type WorkspaceImage } from './workspaceImages';
 
 export type ExplorerPathMove = { from: string; to: string };
@@ -77,6 +78,21 @@ export const applyExplorerPathMoves = (path: string, moves: ExplorerPathMove[]):
   return path;
 };
 
+export const applyProjectRelativePathMoves = (
+  path: string | undefined,
+  moves: ExplorerPathMove[],
+  sidecar = false
+): string | undefined => {
+  if (!path) return path;
+  const explorerPath = path.startsWith('Project/') ? path : `Project/${path}`;
+  const assetPath = sidecar && explorerPath.endsWith(ASSET_MANIFEST_SUFFIX)
+    ? explorerPath.slice(0, -ASSET_MANIFEST_SUFFIX.length)
+    : explorerPath;
+  const moved = applyExplorerPathMoves(assetPath, moves);
+  const nextPath = assetPath === explorerPath ? moved : `${moved}${ASSET_MANIFEST_SUFFIX}`;
+  return nextPath.replace(/^Project\//, '');
+};
+
 export const applyFileAssetOrderPathMoves = (
   assetOrder: string[] = [],
   moves: ExplorerPathMove[]
@@ -87,6 +103,9 @@ export const applyFileAssetOrderPathMoves = (
     }
     return createDatasetFileAssetKey(applyExplorerPathMoves(key.slice('file:'.length), moves));
   });
+
+export const applyWorkspaceAssetIdMoves = (id: string | undefined, moves: ExplorerPathMove[]): string | undefined =>
+  id?.startsWith('asset:') ? createWorkspaceFileAssetId(applyExplorerPathMoves(id.slice('asset:'.length), moves)) : id;
 
 export const applyCaptionOverridePathMoves = (
   captionOverrides: Record<string, string[]> = {},

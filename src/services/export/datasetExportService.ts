@@ -8,6 +8,7 @@ import type { OperationLogger } from '../logging/applicationLog';
 type DatasetAssetMetadata = {
   tags?: string[];
   caption?: string;
+  excludedFromDataset?: boolean;
 };
 
 export type DatasetExportAsset = {
@@ -15,6 +16,7 @@ export type DatasetExportAsset = {
   sourcePath: string;
   targetDirectory: string;
   tags: string[];
+  excludedFromDataset?: boolean;
 };
 
 const getPathParts = (path: string) => path.split('/').filter(Boolean);
@@ -28,8 +30,9 @@ const readOptionalMetadata = async (
     const metadataFile = await (await directory.getFileHandle(getAssetManifestName(fileName))).getFile();
     const metadata = JSON.parse(await metadataFile.text()) as DatasetAssetMetadata;
     return metadata;
-  } catch {
-    return {};
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotFoundError') return {};
+    throw error;
   }
 };
 
@@ -61,6 +64,7 @@ const collectDatasetAssets = async (
       sourcePath: joinPath(relativeDirectory, name),
       targetDirectory: getExportDirectory(relativeDirectory),
       tags,
+      excludedFromDataset: metadata.excludedFromDataset,
     });
   }
   return assets;
@@ -83,11 +87,13 @@ const getCaption = (tags: string[], triggerWord: string, blacklist: string[]) =>
 };
 
 export const getProjectDatasetAssets = async (root: ProjectDirectoryHandle): Promise<DatasetExportAsset[]> => {
-  try {
-    return await collectDatasetAssets(await root.getDirectoryHandle(PROJECT_DATASET_DIRECTORY));
-  } catch {
-    return [];
+  let directory: ProjectDirectoryHandle;
+  try { directory = await root.getDirectoryHandle(PROJECT_DATASET_DIRECTORY); }
+  catch (error) {
+    if (error instanceof Error && error.name === 'NotFoundError') return [];
+    throw error;
   }
+  return collectDatasetAssets(directory);
 };
 
 export const syncProjectDatasetManifest = async (root: ProjectDirectoryHandle): Promise<DatasetExportAsset[]> => {

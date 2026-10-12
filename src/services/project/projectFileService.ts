@@ -190,6 +190,7 @@ const toIsoString = (value: Date | string | number | undefined, fallback = new D
 
 const createEmptyToolState = (): ProjectState['toolState'] => ({
   import: {},
+  video: {},
   select: {},
   clean: {},
   analysis: {},

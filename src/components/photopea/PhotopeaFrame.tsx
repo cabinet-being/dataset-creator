@@ -1,3 +1,7 @@
+import { usePhotopeaDocumentState } from '../../hooks/usePhotopeaDocumentState';
+import { DocumentActions } from '../workspace/DocumentActions';
+import { useOperation } from '../../hooks/useOperation';
+import { useCommands, useCommandRunner } from '../workspace/Commands';
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   completePhotopeaPsdPreviewJob,
@@ -9,7 +13,6 @@ import {
 import { appLog } from '../../services/logging/applicationLog';
 
 export const PHOTOPEA_ORIGIN = 'https://www.photopea.com';
-export const PSD_TOOL_COMMAND_EVENT = 'dataset-creator-psd-command';
 
 export const CLOSE_ALL_DOCUMENTS_SCRIPT = [
   'while (app.documents.length > 0) {',
@@ -204,7 +207,7 @@ type PsdSavePayload = {
   preview?: ArrayBuffer;
 };
 
-type PsdSavePhase = 'idle' | 'saving-png' | 'saving-psd';
+type PsdSavePhase = 'idle' | 'saving-png' | 'saving-psd' | 'writing';
 
 export const PhotopeaBlobViewer = ({
   file,
@@ -217,6 +220,11 @@ export const PhotopeaBlobViewer = ({
   active?: boolean;
   onSavePsd?: (payload: PsdSavePayload, saveCopy: boolean) => void | Promise<void>;
 }) => {
+  // Saving refreshes the parent's file snapshot. Keep the live document (including
+  // edits made during that write) until this viewer is actually unmounted.
+  const [initialDocument] = useState(() => ({ file, fileName }));
+  const rootRef = useRef<HTMLDivElement>(null);
+  const writeOperation = useOperation('Save document', rootRef, `photopea:${fileName}`);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const openedRef = useRef(false);
   const savingRef = useRef<PsdToolCommand | null>(null);
@@ -224,11 +232,15 @@ export const PhotopeaBlobViewer = ({
   const pendingPreviewRef = useRef<ArrayBuffer | null>(null);
   const pendingPsdRef = useRef<ArrayBuffer | null>(null);
   const readyRef = useRef(false);
+  const documentState = usePhotopeaDocumentState(rootRef, iframeRef, () => readyRef.current && (savePhaseRef.current === 'idle' || savePhaseRef.current === 'writing'));
   const [status, setStatus] = useState('Loading Photopea...');
   const onSavePsdRef = useRef(onSavePsd);
   onSavePsdRef.current = onSavePsd;
+  const runCommand = useCommandRunner();
+  const runCommandRef = useRef(runCommand); runCommandRef.current = runCommand;
 
   useEffect(() => {
+    documentState.reset();
     openedRef.current = false;
     readyRef.current = false;
     savingRef.current = null;
@@ -239,6 +251,11 @@ export const PhotopeaBlobViewer = ({
 
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow || event.origin !== PHOTOPEA_ORIGIN) {
+        return;
+      }
+
+      if (event.data === 'Open') {
+        runCommandRef.current('focus.explorer');
         return;
       }
 
@@ -261,6 +278,7 @@ export const PhotopeaBlobViewer = ({
           if (!pendingPreviewRef.current) {
             savingRef.current = null;
             savePhaseRef.current = 'idle';
+            writeOperation.finish('failed', 'Photopea did not return a preview.');
             setStatus('Photopea did not return a preview.');
             return;
           }
@@ -276,22 +294,33 @@ export const PhotopeaBlobViewer = ({
           const psd = pendingPsdRef.current;
           const preview = pendingPreviewRef.current ?? undefined;
           savingRef.current = null;
-          savePhaseRef.current = 'idle';
+          savePhaseRef.current = 'writing';
           pendingPreviewRef.current = null;
           pendingPsdRef.current = null;
 
           if (!psd) {
+            savePhaseRef.current = 'idle';
+            writeOperation.finish('failed', 'Photopea did not return a PSD.');
             setStatus('Photopea did not return a PSD.');
             return;
           }
 
           setStatus(command === 'saveCopy' ? 'Saving PSD copy...' : 'Saving PSD...');
-          void Promise.resolve(onSavePsdRef.current?.({ psd, preview }, command === 'saveCopy'))
-            .then(() => setStatus(command === 'saveCopy' ? 'Saved PSD copy.' : 'Saved PSD.'))
-            .catch(() => setStatus(command === 'saveCopy' ? 'Unable to save PSD copy.' : 'Unable to save PSD.'));
+          const save = onSavePsdRef.current;
+          void Promise.resolve().then(() => {
+            if (!save) throw new Error('Saving is unavailable for this document.');
+            return save({ psd, preview }, command === 'saveCopy');
+          }).then(() => {
+            writeOperation.progress(1, 1); writeOperation.finish('completed', `Saved ${fileName}`);
+            savePhaseRef.current = 'idle'; documentState.saved(command === 'saveCopy'); setStatus(command === 'saveCopy' ? 'Saved PSD copy.' : 'Saved PSD.');
+          }).catch(error => {
+            writeOperation.finish('failed', error instanceof Error ? error.message : 'Unable to save PSD');
+            savePhaseRef.current = 'idle'; setStatus(command === 'saveCopy' ? 'Unable to save PSD copy.' : 'Unable to save PSD.');
+          });
           return;
         }
 
+        if (savePhaseRef.current === 'writing') return;
         if (openedRef.current) {
           readyRef.current = true;
           setStatus('Ready in Photopea.');
@@ -299,71 +328,68 @@ export const PhotopeaBlobViewer = ({
         }
 
         openedRef.current = true;
-        file
+        initialDocument.file
           .arrayBuffer()
           .then((buffer) => {
-            setStatus(`Opening ${fileName}...`);
+            setStatus(`Opening ${initialDocument.fileName}...`);
             iframeRef.current?.contentWindow?.postMessage(buffer, PHOTOPEA_ORIGIN, [buffer]);
           })
           .catch(() => setStatus('Unable to open PSD in Photopea.'));
       }
 
-      if (event.data === 'Save' && onSavePsdRef.current && readyRef.current) {
+      if (event.data === 'Save' && onSavePsdRef.current && readyRef.current && savePhaseRef.current === 'idle') {
         const photopeaWindow = iframeRef.current?.contentWindow;
         if (!photopeaWindow) {
           setStatus('Photopea is not available.');
           return;
         }
+        writeOperation.start(undefined, 1);
+        const inspect = documentState.saving();
         savingRef.current = 'save';
         savePhaseRef.current = 'saving-png';
         pendingPreviewRef.current = null;
         pendingPsdRef.current = null;
         setStatus('Requesting preview...');
-        photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN);
+        void inspect.then(() => photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN)).catch(error => {
+          savingRef.current = null; savePhaseRef.current = 'idle'; writeOperation.finish('failed', error.message); setStatus(error.message);
+        });
       }
     };
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [file, fileName]);
+  }, [initialDocument, writeOperation, documentState]);
 
-  useEffect(() => {
-    if (!active || !onSavePsd) {
-      return;
-    }
-
-    const handleCommand = (event: Event) => {
-      const command = (event as CustomEvent<PsdToolCommand>).detail;
-      if (command !== 'save' && command !== 'saveCopy') {
-        return;
-      }
-      if (!readyRef.current) {
-        setStatus('Photopea is still loading...');
-        return;
-      }
-      const photopeaWindow = iframeRef.current?.contentWindow;
-      if (!photopeaWindow) {
-        setStatus('Photopea is not available.');
-        return;
-      }
-      savingRef.current = command;
-      savePhaseRef.current = 'saving-png';
-      pendingPreviewRef.current = null;
-      pendingPsdRef.current = null;
-      setStatus(command === 'saveCopy' ? 'Requesting PSD copy preview...' : 'Requesting preview...');
-      photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN);
-    };
-
-    window.addEventListener(PSD_TOOL_COMMAND_EVENT, handleCommand);
-    return () => window.removeEventListener(PSD_TOOL_COMMAND_EVENT, handleCommand);
-  }, [active, onSavePsd]);
+  const requestSave = (command: PsdToolCommand) => {
+    if (!onSavePsdRef.current || !readyRef.current || savePhaseRef.current !== 'idle') return;
+    const photopeaWindow = iframeRef.current?.contentWindow;
+    if (!photopeaWindow) { setStatus('Photopea is not available.'); return; }
+    writeOperation.start(undefined, 1);
+    const inspect = documentState.saving();
+    savingRef.current = command;
+    savePhaseRef.current = 'saving-png';
+    pendingPreviewRef.current = null;
+    pendingPsdRef.current = null;
+    setStatus(command === 'saveCopy' ? 'Requesting PSD copy preview...' : 'Requesting preview...');
+    void inspect.then(() => photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN)).catch(error => {
+      savingRef.current = null; savePhaseRef.current = 'idle'; writeOperation.finish('failed', error.message); setStatus(error.message);
+    });
+  };
+  const saveDisabled = !onSavePsd || !readyRef.current || savePhaseRef.current !== 'idle';
+  useCommands([
+    { id: 'document.save', label: `Save ${fileName}`, shortcut: 'Mod+S', allowInInput: true, active, disabled: saveDisabled,
+      reason: !readyRef.current ? 'Photopea is loading' : savePhaseRef.current !== 'idle' ? 'Saving document…' : !onSavePsd ? 'This document is read-only' : undefined,
+      run: () => requestSave('save') },
+    { id: 'document.saveCopy', label: 'Save document copy', active, disabled: saveDisabled, run: () => requestSave('saveCopy') },
+  ]);
 
   return (
-    <div className="relative h-full min-h-0 bg-black">
-      <p className="pointer-events-none absolute left-3 top-3 z-10 rounded bg-black/70 px-2 py-1 text-xs text-white">
-        {status}
-      </p>
-      <PhotopeaFrame ref={iframeRef} title={`Photopea editor for ${fileName}`} />
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col bg-background">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border p-2">
+        <DocumentActions active={active} open />
+        <p role="status" className="text-xs text-muted-foreground">{status}</p>
+      </div>
+      <PhotopeaFrame ref={iframeRef} title={`Photopea editor for ${fileName}`} className="min-h-0 flex-1" />
     </div>
   );
 };

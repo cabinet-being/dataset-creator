@@ -14,6 +14,7 @@ import { createThumbnail } from '../image/imageProcessor';
 import { getAssetManifestName } from './assetManifestService';
 import { snapshotFileIfNeeded } from './fileSnapshotService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
+import { isDatasetFileName, writeDatasetFile } from './datasetFileService';
 import {
   DATASET_MANIFEST_FILE,
   PROJECT_DATASET_DIRECTORY,
@@ -35,6 +36,7 @@ type ProjectPreviewKind = 'source' | 'edited' | 'psd';
 export type ProjectDirectoryWritable = {
   write: (data: Blob | string) => Promise<void> | void;
   close: () => Promise<void> | void;
+  abort?: () => Promise<void>;
 };
 
 export type ProjectDirectoryFileHandle = {
@@ -69,6 +71,7 @@ type DirectoryProjectManifest = {
     sourceImageManifests?: Record<string, string>;
     editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
+    datasetFilePath?: string;
     lastModified: string;
     createdAt: string;
   };
@@ -354,6 +357,7 @@ const getProjectManifest = (
     workspaceSettings: project.workspaceSettings,
     sourceImageManifests: paths.sourceImageManifests,
     editedAssetManifests: paths.editedAssetManifests,
+    datasetFilePath: project.dataset.filePath,
     lastModified: toIsoString(project.lastModified),
     createdAt: toIsoString(project.createdAt),
   },
@@ -686,6 +690,9 @@ export const createProjectDirectory = async (
       updatedAt: new Date().toISOString(),
     });
   }
+  if (project.dataset.filePath) {
+    await writeDatasetFile(directory, project.dataset);
+  }
 };
 
 export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
@@ -725,25 +732,12 @@ export const writeProjectDirectoryChanges = async (
   directory: ProjectDirectoryHandle
 ) => {
   await ensureProjectLayout(directory, project);
-  const metadataChanged =
-    !previousProject ||
-    project.id !== previousProject.id ||
-    project.name !== previousProject.name ||
-    project.currentTool !== previousProject.currentTool ||
-    project.taggingConfig !== previousProject.taggingConfig ||
-    project.workspaceSettings !== previousProject.workspaceSettings ||
-    project.lastModified !== previousProject.lastModified;
-
-  if (metadataChanged) {
-    await writeTextFile(directory, PROJECT_DIRECTORY_MANIFEST, JSON.stringify(getProjectManifest(project), null, 2));
-  }
-
   const previousSources = previousProject?.sourceImages ?? {};
   const previousEditedAssets = previousProject?.datasetItems ?? {};
   const sourceImageManifests: Record<string, string> = {};
   const editedAssetManifests: Record<string, string> = {};
 
-  await Promise.all([
+  const assetWrites = await Promise.allSettled([
     ...Object.entries(project.sourceImages)
       .filter(([id, source]) => source !== previousSources[id])
       .map(async ([id, source]) => {
@@ -774,6 +768,11 @@ export const writeProjectDirectoryChanges = async (
         }
       }),
   ]);
+
+  // Keep the save lane occupied until every started writer finishes, even if
+  // another failed. A retry must not race an unfinished previous snapshot.
+  const failedWrite = assetWrites.find((result) => result.status === 'rejected');
+  if (failedWrite?.status === 'rejected') throw failedWrite.reason;
 
   for (const source of Object.values(project.sourceImages)) {
     sourceImageManifests[source.id] = source.manifestPath
@@ -809,6 +808,11 @@ export const writeProjectDirectoryChanges = async (
       createdAt: project.dataset.createdAt.toISOString(),
       updatedAt: new Date().toISOString(),
     });
+  }
+  // The linked Dataset document is part of the same saved snapshot as the project.
+  // This also persists membership changes made through Undo/Redo and galleries.
+  if (project.dataset.filePath && project.dataset !== previousProject?.dataset) {
+    await writeDatasetFile(directory, project.dataset);
   }
 };
 
@@ -987,6 +991,16 @@ export const readProjectDirectory = async (
   if (!manifest.project || !manifest.project.id || !manifest.project.name) {
     throw new Error('The project manifest is missing required project fields.');
   }
+  const datasetFilePath = manifest.project.datasetFilePath;
+  if (datasetFilePath !== undefined && (
+    typeof datasetFilePath !== 'string' ||
+    !datasetFilePath.startsWith('Project/') ||
+    !isDatasetFileName(datasetFilePath) ||
+    datasetFilePath.includes('\\') ||
+    datasetFilePath.split('/').some(part => !part || part === '.' || part === '..')
+  )) {
+    throw new Error('The project manifest contains an invalid Dataset file path.');
+  }
 
   const projectType = await resolveProjectType(manifest.project.projectType, manifest.project.name, selectProjectType);
   if (manifest.project.projectType === undefined) {
@@ -1039,7 +1053,11 @@ export const readProjectDirectory = async (
   ]);
   const sources = sourceResults
     .filter((source): source is SourceImage => Boolean(source))
-    .filter((source) => isProjectWorkspacePath(source.originalFilePath ?? '', 'shared'));
+    // Explicitly registered sources retain their identity after an Explorer move.
+    // Discovery of new sources remains limited to shared in assetIndexService.
+    .filter((source) => sourceManifestPaths
+      ? !isLegacyProjectRootPath(source.originalFilePath ?? '')
+      : isProjectWorkspacePath(source.originalFilePath ?? '', 'shared'));
   const edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
 
   const sourceIds = new Set(sources.map((source) => source.id));
@@ -1063,6 +1081,8 @@ export const readProjectDirectory = async (
     datasetItems: Object.fromEntries(edited.map((item) => [item.id, item])),
     dataset: {
       ...defaults.dataset,
+      filePath: datasetFilePath,
+      parentPath: datasetFilePath ? getParentPath(datasetFilePath) : defaults.dataset.parentPath,
       name: datasetManifest.name || defaults.dataset.name,
       triggerWord: datasetManifest.triggerWord || defaults.dataset.triggerWord,
       assetIds: datasetManifest.assetIds ?? [],
