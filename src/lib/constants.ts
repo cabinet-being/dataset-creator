@@ -1,6 +1,8 @@
+import { TOOL_DEFINITIONS, type ToolDefinition } from './toolDefinitions';
 // Tools in recommended image preparation order.
 export const WORKFLOW_TOOLS = [
   'import',
+  'video',
   'select',
   'clean',
   'analysis',
@@ -17,18 +19,12 @@ export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'analysis', 'review',
 
 export const TOOLS = [...WORKFLOW_TOOLS] as const;
 
-export const TOOL_URL_SLUGS: Record<(typeof TOOLS)[number], string> = {
-  import: 'import',
-  select: 'remove-duplicates',
-  clean: 'photopea',
-  analysis: 'analysis',
-  review: 'review',
-  tagging: 'caption',
-  export: 'export',
-};
+export const TOOL_URL_SLUGS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.slug])) as Record<(typeof TOOLS)[number], string>;
 
 export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
   import: 'import',
+  'video-frames': 'video',
+  video: 'video',
   'remove-duplicates': 'select',
   select: 'select',
   photopea: 'clean',
@@ -42,35 +38,9 @@ export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
   export: 'export',
 };
 
-export const TOOL_LABELS: Record<string, string> = {
-  import: 'Import',
-  select: 'Remove Duplicates',
-  clean: 'Photopea',
-  analysis: 'Analysis',
-  review: 'Review',
-  tagging: 'Caption',
-  export: 'Export',
-};
-
-export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  import: 'Load source image files or folders into the project workspace.',
-  select: 'Find duplicate and near-duplicate source images before editing.',
-  clean: 'Open image and PSD assets in Photopea.',
-  analysis: 'Analyze workspace images with relationship maps and similarity groups.',
-  review: 'Preview workspace image, video, and PSD assets before captioning.',
-  tagging: 'Edit captions manually, in bulk, or with a local ONNX tagger.',
-  export: 'Save PNG and TXT training pairs as a folder or ZIP archive.',
-};
-
-export const TOOL_REQUIREMENTS: Record<string, 'none' | 'sourceImages' | 'workspaceImages'> = {
-  import: 'none',
-  select: 'sourceImages',
-  clean: 'sourceImages',
-  analysis: 'workspaceImages',
-  review: 'workspaceImages',
-  tagging: 'workspaceImages',
-  export: 'workspaceImages',
-};
+export const TOOL_LABELS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.label])) as Record<string, string>;
+export const TOOL_DESCRIPTIONS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.description])) as Record<string, string>;
+export const TOOL_REQUIREMENTS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.requirement])) as Record<string, ToolDefinition['requirement']>;
 
 // Aspect ratios
 export const ASPECT_RATIOS = ['2:3', '3:2', '1:1'] as const;

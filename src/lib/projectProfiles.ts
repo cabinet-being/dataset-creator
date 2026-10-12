@@ -1,3 +1,4 @@
+import { WORKFLOW_TOOLS } from './constants';
 import type { ProjectType, ToolName } from '../types';
 
 export interface ProjectTypeProfile {
@@ -8,7 +9,7 @@ export interface ProjectTypeProfile {
   labels: { workspace: string; emptyDatasets: string };
   flags: Readonly<Record<string, boolean>>;
 }
-const tools: readonly ToolName[] = ['import', 'select', 'clean', 'analysis', 'review', 'tagging', 'export'];
+const tools = WORKFLOW_TOOLS;
 export const PROJECT_TYPE_PROFILES: Record<ProjectType, ProjectTypeProfile> = {
   character: {
     label: 'Character', description: 'Build datasets around a consistent character or identity.', enabledTools: tools,

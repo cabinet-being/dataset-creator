@@ -13,6 +13,7 @@ export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
 export type ToolName =
   | 'import'
+  | 'video'
   | 'select'
   | 'clean'
   | 'analysis'
@@ -298,6 +299,7 @@ export const createProject = (name: string, projectType: ProjectType): ProjectSt
   currentTool: 'import',
   toolState: {
     import: {},
+    video: {},
     select: {},
     clean: {},
     analysis: {},

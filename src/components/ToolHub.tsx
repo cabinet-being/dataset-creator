@@ -1,31 +1,15 @@
+import { TOOL_ICONS as toolIcons } from '../lib/toolDefinitions';
 import { PROJECT_TYPE_PROFILES } from '../lib/projectProfiles';
 import {
   Archive,
-  BarChart3,
-  Brush,
   CheckCircle2,
-  Download,
   Layers3,
-  ScanSearch,
-  Tags,
-  Upload,
 } from 'lucide-react';
-import type { ComponentType } from 'react';
 import { useMemo } from 'react';
 import { HUB_TOOL_CARDS, TOOL_LABELS, TOOL_REQUIREMENTS } from '../lib/constants';
 import { toWorkspaceImages } from '../lib/workspaceImages';
 import { useProjectStore } from '../stores/useProjectStore';
 import { type ToolName } from '../types';
-
-const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
-  import: Upload,
-  select: ScanSearch,
-  clean: Brush,
-  analysis: BarChart3,
-  review: Layers3,
-  tagging: Tags,
-  export: Download,
-};
 
 const getRequirementLabel = (
   requirement: (typeof TOOL_REQUIREMENTS)[string],
