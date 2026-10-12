@@ -21,6 +21,8 @@ try {
   assert.equal(isProjectPathIncluded('Project/people/a.png',['Project/people']),false);
   assert.equal(isProjectPathIncluded('Project/people-old/a.png',['Project/people']),true,'Category prefixes stop at path boundaries');
   assert.equal(isProjectPathIncluded('Project/people/nested/a.png',['Project/people/nested']),false);
+  assert.equal(isProjectPathIncluded('Project/people/keep/a.png',['Project/people'],['Project/people/keep']),true,'A more specific include overrides an excluded parent');
+  assert.equal(isProjectPathIncluded('Project/people/keep/private/a.png',['Project/people'],['Project/people/keep']),true);
   const staleScopeItem = {id:'one',tags:['stale']};
   const currentScopeItem = {id:'one',tags:['current']};
   assert.deepEqual(resolveCurrentScope([], [staleScopeItem]),[], 'Unmounted galleries cannot keep deleted/out-of-scope batch targets');
@@ -190,10 +192,12 @@ try {
   const { useOperationStore, isOperationRunning } = await module('useOperationStore');
   const { useHistoryStore } = await module('useHistoryStore');
   const { useProjectStore } = await module('useProjectStore');
-  const { importImageFiles, getImportPairKey, parseImportedCaptionTags } = await module('importService');
+  const { importImageFiles, getImportPairKey, parseImportedCaptionTags, summarizeImportPairPaths } = await module('importService');
   assert.equal(getImportPairKey('animals/Cat.PNG'),getImportPairKey('animals/Cat.TxT'));
   assert.notEqual(getImportPairKey('animals/cat.png'),getImportPairKey('portraits/cat.txt'),'Caption pairs cannot cross folders');
   assert.deepEqual(parseImportedCaptionTags('\uFEFFКіт, Blue Sky\r\nsecond line'),['Кіт','Blue Sky\nsecond line'],'Caption import preserves Unicode, case and line breaks');
+  assert.deepEqual(summarizeImportPairPaths(['animals/cat.png','animals/cat.jpg','animals/cat.txt','portraits/cat.png','notes.txt','dup/dog.txt','dup/DOG.TXT','dup/dog.webp']),
+    {pairedImages:2,imagesWithoutCaption:1,standaloneTextFiles:1,captionConflicts:1,errors:0},'Pair summaries respect folders, multiple image formats and conflicts');
   let cancelled = 0;
   const operations = useOperationStore.getState();
   operations.start({ id: 'test', viewId: 'tool:import', label: 'Import', cancel: () => cancelled++, total: 3 });
