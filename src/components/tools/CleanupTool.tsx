@@ -1,3 +1,8 @@
+import { usePhotopeaDocumentState } from '../../hooks/usePhotopeaDocumentState';
+import { DocumentActions } from '../workspace/DocumentActions';
+import { useOperation } from '../../hooks/useOperation';
+import { useCommands, useCommandRunner } from '../workspace/Commands';
+import { flushProjectSave } from '../../hooks/useProjectSave';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { getImageDimensions } from '../../services/image/imageProcessor';
@@ -33,9 +38,9 @@ type PhotopeaPhase =
   | 'opening-source'
   | 'preparing-edited-psd'
   | 'saving-png'
-  | 'saving-psd';
+  | 'saving-psd'
+  | 'writing';
 
-const EDIT_TOOL_COMMAND_EVENT = 'dataset-creator-edit-command';
 
 type PhotopeaSaveBuffers = {
   png?: ArrayBuffer;
@@ -79,13 +84,16 @@ export const CleanupTool = ({
   projectDirectoryHandle = null,
   onSelectImage,
 }: CleanupToolProps = {}) => {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const writeOperation = useOperation('Save edited image', rootRef, 'tool:clean');
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const addNotification = useUIStore((state) => state.addNotification);
-  const setEditToolbar = useUIStore((state) => state.setEditToolbar);
+  const runCommand = useCommandRunner();
+  const runCommandRef = useRef(runCommand); runCommandRef.current = runCommand;
   const initialSelectedImageId = useProjectStore(
     (state) => (state.toolState.clean as { selectedImageId?: string } | undefined)?.selectedImageId
   );
@@ -106,6 +114,7 @@ export const CleanupTool = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [editorStatus, setEditorStatus] = useState('Loading Photopea...');
   const [hasPhotopeaMounted, setHasPhotopeaMounted] = useState(false);
+  const documentState = usePhotopeaDocumentState(rootRef, iframeRef, () => documentReady && (phaseRef.current === 'idle' || phaseRef.current === 'writing'));
 
   const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
   const editedAssets = useMemo(
@@ -167,6 +176,7 @@ export const CleanupTool = ({
   }, [initialSelectedImageId, selectedImageId, selectedImageKey]);
 
   const resetEditorState = useCallback((status = 'Loading Photopea...', resetPhotopea = true) => {
+    documentState.reset();
     phaseRef.current = 'waiting-ready';
     saveModeRef.current = null;
     saveBuffersRef.current = {};
@@ -181,7 +191,7 @@ export const CleanupTool = ({
     setDocumentReady(false);
     setIsProcessing(false);
     setEditorStatus(status);
-  }, []);
+  }, [documentState]);
 
   const focusPhotopea = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -212,29 +222,6 @@ export const CleanupTool = ({
       focusPhotopea();
     }
   }, [active, focusPhotopea, hasPhotopeaMounted, selectedImage?.id]);
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-    setEditToolbar({
-      visible: Boolean(selectedImage),
-      canSave: Boolean(selectedImage && documentReady),
-      isProcessing,
-      status: selectedImage ? editorStatus : undefined,
-    });
-  }, [active, documentReady, editorStatus, isProcessing, selectedImageKey, setEditToolbar]);
-
-  useEffect(() => {
-    return () => {
-      setEditToolbar({
-        visible: false,
-        canSave: false,
-        isProcessing: false,
-        status: undefined,
-      });
-    };
-  }, [setEditToolbar]);
 
   useEffect(() => {
     if (selectedImageKey && !selectedImage) {
@@ -295,6 +282,7 @@ export const CleanupTool = ({
 
   const saveEditedImage = useCallback(
     async (buffers: PhotopeaSaveBuffers, saveCopy: boolean, image: WorkspaceImage) => {
+      phaseRef.current = 'writing';
       setIsProcessing(true);
       setEditorStatus('Saving edited image...');
 
@@ -338,9 +326,14 @@ export const CleanupTool = ({
           }
         }
 
+        await flushProjectSave();
+        writeOperation.progress(1, 1); writeOperation.finish('completed', saveCopy ? 'Saved edited copy' : 'Saved edited image');
         addNotification('success', saveCopy ? 'Saved edited copy' : 'Saved edited image');
-        closeEditor();
+        const stillDirty = await documentState.saved(saveCopy);
+        if (stillDirty) setEditorStatus(saveCopy ? 'Copy saved. Original has unsaved changes.' : 'Saved. New changes remain unsaved.');
+        else closeEditor();
       } catch (error) {
+        writeOperation.finish('failed', error instanceof Error ? error.message : 'Failed to save edited image');
         console.error('Failed to save edited image:', error);
         addNotification('error', 'Failed to save edited image');
         setEditorStatus('Failed to save edited image.');
@@ -351,11 +344,11 @@ export const CleanupTool = ({
         phaseRef.current = 'idle';
       }
     },
-    [addDatasetItem, addNotification, closeEditor, updateDatasetItem, updateSourceImage]
+    [addDatasetItem, addNotification, closeEditor, updateDatasetItem, updateSourceImage, writeOperation, documentState]
   );
 
   const requestPhotopeaSave = useCallback((saveCopy: boolean) => {
-    if (!selectedImage || !documentReady || isProcessing) {
+    if (!selectedImage || !documentReady || isProcessing || saveModeRef.current !== null) {
       return;
     }
 
@@ -365,13 +358,17 @@ export const CleanupTool = ({
       return;
     }
 
+    writeOperation.start(undefined, 1);
+    const inspect = documentState.saving();
     setIsProcessing(true);
     setEditorStatus('Requesting PNG preview from Photopea...');
     saveModeRef.current = saveCopy;
     saveBuffersRef.current = {};
     phaseRef.current = 'saving-png';
-    photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN);
-  }, [addNotification, documentReady, isProcessing, selectedImage]);
+    void inspect.then(() => photopeaWindow.postMessage('app.activeDocument.saveToOE("png");', PHOTOPEA_ORIGIN)).catch(error => {
+      saveModeRef.current = null; phaseRef.current = 'idle'; writeOperation.finish('failed', error.message); setIsProcessing(false); setEditorStatus(error.message);
+    });
+  }, [addNotification, documentReady, isProcessing, selectedImage, documentState, writeOperation]);
 
   useEffect(() => {
     const handlePhotopeaMessage = (event: MessageEvent) => {
@@ -380,6 +377,7 @@ export const CleanupTool = ({
       }
 
       const data = event.data;
+      if (data === 'Open') { runCommandRef.current('focus.explorer'); return; }
 
       if (data instanceof ArrayBuffer) {
         if (phaseRef.current === 'preparing-edited-psd') {
@@ -507,6 +505,7 @@ export const CleanupTool = ({
         } else {
           phaseRef.current = 'idle';
           setIsProcessing(false);
+          writeOperation.finish('failed', 'Photopea did not return an edited image.');
           setEditorStatus('Photopea did not return an edited image.');
           addNotification('error', 'Photopea did not return an edited image');
         }
@@ -525,29 +524,15 @@ export const CleanupTool = ({
     focusPhotopea,
   ]);
 
-  useEffect(() => {
-    const handleEditCommand = (event: Event) => {
-      if (!active) return;
-      const command = (event as CustomEvent<'back' | 'save' | 'saveCopy' | 'cancel'>).detail;
-      switch (command) {
-        case 'back':
-        case 'cancel':
-          if (!isProcessing) {
-            closeEditor();
-          }
-          break;
-        case 'save':
-          requestPhotopeaSave(false);
-          break;
-        case 'saveCopy':
-          requestPhotopeaSave(true);
-          break;
-      }
-    };
-
-    window.addEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
-    return () => window.removeEventListener(EDIT_TOOL_COMMAND_EVENT, handleEditCommand);
-  }, [active, closeEditor, isProcessing, requestPhotopeaSave]);
+  useCommands([
+    { id: 'document.save', label: 'Save edited image', shortcut: 'Mod+S', allowInInput: true, active,
+      disabled: !selectedImage || !documentReady || isProcessing,
+      reason: isProcessing ? 'Saving image…' : !selectedImage ? 'Choose an image to edit' : !documentReady ? 'Photopea is loading' : undefined,
+      run: () => requestPhotopeaSave(false) },
+    { id: 'document.saveCopy', label: 'Save edited copy', active, disabled: !selectedImage || !documentReady || isProcessing,
+      run: () => requestPhotopeaSave(true) },
+    { id: 'document.cancel', label: 'Close image editor', active, disabled: !selectedImage || isProcessing, run: async () => { try { if (!await documentState.check() || window.confirm('Close this image with unsaved changes?')) closeEditor(); } catch (error) { addNotification('error', error instanceof Error ? error.message : 'Could not verify changes'); } } },
+  ]);
 
   if (workspaceImages.length === 0 || (singleFileMode && !selectedImage)) {
     return (
@@ -568,7 +553,11 @@ export const CleanupTool = ({
   }
 
   return (
-    <div className="h-full min-h-0">
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col">
+      {selectedImage && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border p-2">
+        <DocumentActions active={active} close open />
+        <p role="status" className="text-xs text-muted-foreground">{editorStatus}</p>
+      </div>}
       <div className={selectedImage || singleFileMode ? 'hidden' : 'h-full min-h-0 overflow-y-auto'}>
         <BrickMasonry
           items={workspaceImages}
@@ -619,7 +608,7 @@ export const CleanupTool = ({
         <PhotopeaFrame
           ref={iframeRef}
           title="Photopea image editor"
-          className={`h-full min-h-0 w-full border-0 bg-black ${selectedImage ? '' : 'hidden'}`}
+          className={`min-h-0 w-full flex-1 border-0 bg-black ${selectedImage ? '' : 'hidden'}`}
         />
       )}
     </div>

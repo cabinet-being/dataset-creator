@@ -1,3 +1,5 @@
+import { useOperation } from '../../hooks/useOperation';
+import { useCommands } from '../workspace/Commands';
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
@@ -18,15 +20,17 @@ import {
   importImageFiles,
   SUPPORTED_IMPORT_FILE_FORMATS,
   type ImportInputFile,
+  type ImportImagesOptions,
 } from '../../services/import/importService';
 
 import { FolderOpen, ImageIcon, RotateCcw, Trash2, Upload } from 'lucide-react';
 
 type ImportToolProps = {
-  onImportFiles?: (files: ImportInputFile[]) => Promise<number>;
+  active?: boolean;
+  onImportFiles?: (files: ImportInputFile[], execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>) => Promise<number>;
 };
 
-export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
+export const ImportTool = ({ onImportFiles, active = true }: ImportToolProps) => {
   const {
     addSourceImage,
     removeSourceImage,
@@ -61,8 +65,17 @@ export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
   
   const [isLoading, setIsLoading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const commandRoot = useRef<HTMLDivElement>(null);
+  const operation = useOperation('Import', commandRoot, 'tool:import');
+  const controller = useRef<AbortController>();
+  const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  useCommands([
+    { id: 'import.files', label: 'Import files', active, disabled: isLoading, run: () => fileInputRef.current?.click() },
+    { id: 'import.cancel', label: 'Cancel import', active, disabled: !isLoading, run: () => controller.current?.abort() },
+    { id: 'import.folder', label: 'Import folder', active, disabled: isLoading, run: () => folderInputRef.current?.click() },
+  ], () => commandRoot.current?.closest<HTMLElement>('[data-dock-view]') ?? commandRoot.current);
   const importLogger = useRef(createOperationLogger('Import'));
 
   const logDev = useCallback((area: string, message: string, value: number) => {
@@ -77,15 +90,23 @@ export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
         return 0;
       }
 
+      if (controller.current && !controller.current.signal.aborted && isLoading) return 0;
+      const next = new AbortController(); controller.current = next;
+      const onProgress = (completed: number, total: number) => { setProgress({ completed, total }); operation.progress(completed, total); };
+      operation.start(() => next.abort(), files.length); onProgress(0, files.length);
       setIsLoading(true);
       logDev('import', 'received files', files.length);
 
       try {
         if (onImportFiles) {
-          return await onImportFiles(files);
+          const count = await onImportFiles(files, { signal: next.signal, onProgress });
+          next.signal.throwIfAborted();
+          operation.finish('completed', `${count} assets imported`);
+          return count;
         }
         const result = await importImageFiles(files, {
           logger: importLogger.current,
+          signal: next.signal, onProgress,
           onImageImported: (image) => {
             addSourceImage(image);
             logDev(
@@ -106,15 +127,20 @@ export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
           );
         }
 
+        operation.finish('completed', `${newImages.length} images imported`);
         return newImages.length;
       } catch (error) {
+        const cancelled = next.signal.aborted;
+        operation.finish(cancelled ? 'cancelled' : 'failed', cancelled ? 'Import stopped. Files already imported remain available.' : error instanceof Error ? error.message : 'Import failed');
+        if (cancelled) { addNotification('info', 'Import stopped. Files already imported remain available.'); return 0; }
         importLogger.current.error(error instanceof Error ? error.message : 'image import failed');
-        throw error;
+        addNotification('error', error instanceof Error ? error.message : 'Import failed');
+        return 0;
       } finally {
         setIsLoading(false);
       }
     },
-    [addNotification, addSourceImage, logDev, onImportFiles]
+    [addNotification, addSourceImage, logDev, onImportFiles, isLoading, operation]
   );
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -194,7 +220,8 @@ export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div ref={commandRoot} className="flex h-full min-h-0 flex-col gap-4">
+      {isLoading && <div role="status" className="flex items-center gap-3 text-sm"><progress aria-label="Import progress" value={progress.completed} max={progress.total || 1} className="flex-1" /><span>{progress.completed}/{progress.total}</span><button onClick={() => controller.current?.abort()}>Cancel</button></div>}
       <div 
         className={`rounded-md border border-dashed transition-colors ${
           isDragOver 
@@ -212,9 +239,7 @@ export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-semibold">Import sources</h3>
-              <p className="truncate text-xs text-muted-foreground">
-                Drop files here, or choose image files and folders.
-              </p>
+
               {isDragOver && (
                 <p className="mt-1 text-xs font-medium text-primary">
                   Release to import selected files.
@@ -361,9 +386,7 @@ export const ImportTool = ({ onImportFiles }: ImportToolProps) => {
             <div className="max-w-sm">
               <ImageIcon className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
               <p className="text-sm font-medium">No source files</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Import remains available as a fallback, but day-to-day file intake can happen from Explorer.
-              </p>
+
             </div>
           </div>
         )}

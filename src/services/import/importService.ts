@@ -76,6 +76,7 @@ export type ImportDestination = {
 };
 
 export type ImportImagesOptions = {
+  signal?: AbortSignal;
   logger?: OperationLogger;
   destination?: ImportDestination;
   onProgress?: (current: number, total: number) => void;
@@ -404,8 +405,10 @@ const processArchiveFile = async (
   logger: OperationLogger,
   reservedNamesByDirectory: Map<string, Set<string>>,
   onImageImported?: ImportImagesOptions['onImageImported'],
-  onAssetImported?: ImportImagesOptions['onAssetImported']
+  onAssetImported?: ImportImagesOptions['onAssetImported'],
+  signal?: AbortSignal
 ): Promise<{ importedImages: SourceImage[]; importedAssets: ImportedProjectAsset[] }> => {
+  signal?.throwIfAborted();
   const zip = await JSZip.loadAsync(file);
   const entries = Object.values(zip.files).filter(
     (entry) => !entry.dir && !isInternalImportPath(entry.name) && !isInternalImportFileName(getArchiveFileName(entry.name))
@@ -427,6 +430,7 @@ const processArchiveFile = async (
   logger.info(`archive ${file.name} contains ${imageEntries.length} image files`);
 
   for (let i = 0; i < imageEntries.length; i++) {
+    signal?.throwIfAborted();
     const entry = imageEntries[i];
     const mimeType = getProjectAssetMimeType(entry.name, 'image/png');
 
@@ -482,6 +486,7 @@ export const importImageFiles = async (
   logger.info(`starting asset import from ${files.length} selected file${files.length !== 1 ? 's' : ''}${destinationLabel}`);
 
   for (let i = 0; i < files.length; i++) {
+    options.signal?.throwIfAborted();
     const input = normalizeImportInput(files[i]);
     if (input.directoryPath) {
       await createImportDirectory(options.destination, input.directoryPath);
@@ -502,7 +507,8 @@ export const importImageFiles = async (
           logger,
           reservedNamesByDirectory,
           options.onImageImported,
-          options.onAssetImported
+          options.onAssetImported,
+          options.signal
         );
         importedImages.push(...archiveResult.importedImages);
         importedAssets.push(...archiveResult.importedAssets);
@@ -527,6 +533,7 @@ export const importImageFiles = async (
         }
       }
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       logger.error(`failed to process ${file.name}: ${error instanceof Error ? error.message : 'unknown error'}`);
       options.onError?.(file.name, error);
     }
@@ -539,6 +546,7 @@ export const importImageFiles = async (
     await yieldToUi();
   }
 
+  options.signal?.throwIfAborted();
   if (skippedCount > 0) {
     logger.warning(`${skippedCount} unsupported file${skippedCount !== 1 ? 's' : ''} skipped`);
   }

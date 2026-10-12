@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useId, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
@@ -932,15 +932,17 @@ const sortSimilarGroups = (groups: SimilarGroup[], sort: SimilarGroupSort): Simi
 
 export const AnalysisTool = ({
   active = true,
+  datasetId,
   projectDirectoryHandle,
   fileTarget,
   fileTargets,
   onOpenAssetContextMenu,
   onUpdateDataset,
 }: AnalysisToolProps = {}) => {
+  const controlId = useId();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
-  const dataset = useProjectStore((state) => state.dataset);
+  const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
   const cleanupToolState = useProjectStore(
     (state) =>
       (state.toolState.clean as
@@ -958,14 +960,14 @@ export const AnalysisTool = ({
   const [similarSort, setSimilarSort] = useState<SimilarGroupSort>('risk');
   const [similarFilter, setSimilarFilter] = useState<SimilarGroupFilter>('all');
   const [overusedThreshold, setOverusedThreshold] = useState(TAG_OVERUSED_PERCENT);
-  const scopedFileTargets = fileTargets?.length ? fileTargets : fileTarget ? [fileTarget] : [];
+  const scopedFileTargets = useMemo(() => fileTargets ?? (fileTarget ? [fileTarget] : []), [fileTargets, fileTarget]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(scopedFileTargets[0]?.workspaceImageId ?? null);
   const [itemEmbeddings, setItemEmbeddings] = useState<Record<string, Float32Array>>({});
   const [visualTraitsById, setVisualTraitsById] = useState<Record<string, VisualTraits>>({});
   const [workspaceFileAssets, setWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const [psdPreviewBlobsById, setPsdPreviewBlobsById] = useState<Record<string, PsdPreviewCacheEntry>>({});
 
-  const targetMode: AnalysisTargetMode = scopedFileTargets.length > 0 ? 'file' : dataset ? 'dataset' : 'project';
+  const targetMode: AnalysisTargetMode = fileTargets !== undefined || fileTarget !== undefined ? 'file' : dataset ? 'dataset' : 'project';
   const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) => !image.hidden), [sourceImagesById]);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const datasetFileAssetPaths = useMemo(
@@ -1067,11 +1069,11 @@ export const AnalysisTool = ({
     [baseItems, scopedFileTargets]
   );
   const items = useMemo(() => {
-    if (fileTargetItems.length === 0) {
-      return baseItems;
-    }
     if (targetMode === 'file') {
       return fileTargetItems;
+    }
+    if (fileTargetItems.length === 0) {
+      return baseItems;
     }
     const targetIds = new Set(fileTargetItems.map((item) => item.id));
     return [...fileTargetItems, ...baseItems.filter((item) => !targetIds.has(item.id))];
@@ -1569,6 +1571,7 @@ export const AnalysisTool = ({
   ].filter((entry): entry is string => Boolean(entry));
   const healthItems = [
     { label: 'Duplicates', value: duplicateGroups.length === 0 ? 'No duplicate groups' : `${duplicateGroups.length} duplicate group${duplicateGroups.length === 1 ? '' : 's'}` },
+    { label: 'Similar groups', value: String(similarGroups.length) },
     { label: 'Coverage', value: `${coverageScore}/100` },
     { label: 'Captions', value: `${tagAnalysis.captioned}/${tagAnalysis.totalCaptionable} captioned` },
     { label: 'Tags', value: `Balance ${tagAnalysis.balanceScore}/100` },
@@ -1583,19 +1586,17 @@ export const AnalysisTool = ({
     { id: 'outliers' as const, label: 'Outliers', Icon: SearchX, count: outliers.length },
   ];
 
+  if (items.length === 0) {
+    return <section className="flex min-h-80 items-center justify-center p-8 text-center" aria-label={targetTitle}>
+      <div>
+        <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+        <h3 className="text-sm font-medium">{targetMode === 'file' ? 'No selected files to analyze' : 'No visual assets to analyze'}</h3>
+      </div>
+    </section>;
+  }
+
   const analysisControls = (
     <div className="space-y-3 text-xs">
-      <div className="rounded-md border border-border bg-background p-3">
-        <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Target</p>
-        <p className="mt-1 truncate text-sm font-semibold">
-          {targetMode === 'file'
-            ? scopedFileTargets.length === 1
-              ? scopedFileTargets[0]?.name
-              : `${scopedFileTargets.length} selected files`
-            : targetMode === 'dataset' ? dataset?.name : 'Project'}
-        </p>
-        <p className="mt-1 text-muted-foreground">{targetDescription}</p>
-      </div>
 
       <div>
         <p className="mb-2 text-muted-foreground">View</p>
@@ -1621,13 +1622,15 @@ export const AnalysisTool = ({
 
       <div className="rounded-md border border-border bg-background p-3">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <span className="flex items-center gap-1.5 text-muted-foreground">
+          <label htmlFor={`${controlId}-similarity`} className="flex items-center gap-1.5 text-muted-foreground">
             <SlidersHorizontal className="h-3.5 w-3.5" />
             Similarity
-          </span>
+          </label>
           <span className="font-mono">{percent(similarityThreshold)}</span>
         </div>
         <input
+          id={`${controlId}-similarity`}
+          aria-valuetext={percent(similarityThreshold)}
           type="range"
           min="0.5"
           max="1"
@@ -1636,13 +1639,14 @@ export const AnalysisTool = ({
           onChange={(event) => setSimilarityThreshold(Number(event.target.value))}
           className="w-full"
         />
-        <p className="mt-1 text-[10px] text-muted-foreground">Controls Similar Groups only. Duplicates use visual hash.</p>
+        <details className="mt-1 text-xs text-muted-foreground"><summary className="cursor-pointer">About similarity</summary><p className="mt-1">Controls Similar Groups only. Duplicates use visual hash.</p></details>
       </div>
 
       {activeView === 'similar' ? (
         <div className="rounded-md border border-border bg-background p-3">
-          <label className="mb-2 block text-muted-foreground">Sort</label>
+          <label htmlFor={`${controlId}-sort`} className="mb-2 block text-muted-foreground">Sort</label>
           <select
+            id={`${controlId}-sort`}
             value={similarSort}
             onChange={(event) => setSimilarSort(event.target.value as SimilarGroupSort)}
             className="w-full rounded border border-border bg-background px-2 py-1 text-foreground"
@@ -1652,8 +1656,9 @@ export const AnalysisTool = ({
             <option value="coverage">Coverage value</option>
             <option value="size">Size</option>
           </select>
-          <label className="mb-2 mt-3 block text-muted-foreground">Filter</label>
+          <label htmlFor={`${controlId}-filter`} className="mb-2 mt-3 block text-muted-foreground">Filter</label>
           <select
+            id={`${controlId}-filter`}
             value={similarFilter}
             onChange={(event) => setSimilarFilter(event.target.value as SimilarGroupFilter)}
             className="w-full rounded border border-border bg-background px-2 py-1 text-foreground"
@@ -1671,10 +1676,12 @@ export const AnalysisTool = ({
       {activeView === 'tags' ? (
         <div className="rounded-md border border-border bg-background p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Overused threshold</span>
+            <label htmlFor={`${controlId}-overused`} className="text-muted-foreground">Overused threshold</label>
             <span className="font-mono">{overusedThreshold}%</span>
           </div>
           <input
+            id={`${controlId}-overused`}
+            aria-valuetext={`${overusedThreshold}%`}
             type="range"
             min="20"
             max="80"
@@ -1686,14 +1693,6 @@ export const AnalysisTool = ({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-3 gap-1.5">
-        {(['portrait', 'landscape', 'square'] as const).map((orientation) => (
-          <div key={orientation} className="rounded-md border border-border bg-background p-2">
-            <p className="text-[10px] capitalize text-muted-foreground">{orientation}</p>
-            <p className="mt-1 font-mono text-sm font-semibold">{orientationCounts.get(orientation) ?? 0}</p>
-          </div>
-        ))}
-      </div>
 
       {selectedItem ? (
         <div className="rounded-md border border-border bg-background p-3">
@@ -1722,7 +1721,7 @@ export const AnalysisTool = ({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold">{targetTitle}</h3>
-          <p className="mt-1 text-sm text-muted-foreground">{targetDescription}</p>
+          <details className="mt-1 text-sm text-muted-foreground"><summary className="cursor-pointer">About this analysis</summary><p className="mt-2">{targetDescription}</p></details>
         </div>
         <div className="flex flex-wrap gap-1.5">
           <MetricPill label="Analysis-ready" value={visualItems.length} />
@@ -1732,34 +1731,6 @@ export const AnalysisTool = ({
           <MetricPill label="Waiting" value={pendingAnalysisAssets.length} />
         </div>
       </div>
-
-      <section className="grid gap-3 md:grid-cols-5">
-        <div className="rounded-md border border-border bg-card p-4">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Duplicate groups</p>
-          <p className="mt-2 text-2xl font-semibold">{duplicateGroups.length}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Visual hash based.</p>
-        </div>
-        <div className="rounded-md border border-border bg-card p-4">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Similar groups</p>
-          <p className="mt-2 text-2xl font-semibold">{similarGroups.length}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Embedding + traits.</p>
-        </div>
-        <div className="rounded-md border border-border bg-card p-4">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Coverage score</p>
-          <p className="mt-2 text-2xl font-semibold">{coverageScore}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Orientation presence, aspect preset coverage, captions, and tag balance.</p>
-        </div>
-        <div className="rounded-md border border-border bg-card p-4">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Caption health</p>
-          <p className="mt-2 text-2xl font-semibold">{tagAnalysis.captioned}/{tagAnalysis.totalCaptionable}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Captioned visual assets.</p>
-        </div>
-        <div className="rounded-md border border-border bg-card p-4">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Tag balance</p>
-          <p className="mt-2 text-2xl font-semibold">{tagAnalysis.balanceScore}</p>
-          <p className="mt-1 text-xs text-muted-foreground">Frequency pressure.</p>
-        </div>
-      </section>
 
       {activeView === 'overview' ? (
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(22rem,0.8fr)]">
@@ -2238,15 +2209,7 @@ export const AnalysisTool = ({
         </section>
       ) : null}
 
-      {items.length === 0 ? (
-        <section className="flex min-h-80 items-center justify-center rounded-md border border-dashed border-border bg-card p-8 text-center">
-          <div>
-            <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium">No visual assets to analyze</p>
-            <p className="mt-1 text-xs text-muted-foreground">Open a project, Dataset, or visual file to start Analysis.</p>
-          </div>
-        </section>
-      ) : null}
+
     </div>
   );
 };

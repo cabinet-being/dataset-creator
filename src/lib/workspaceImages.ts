@@ -62,6 +62,10 @@ export type WorkspaceImage = {
   hidden?: boolean;
 };
 
+/** Human-readable UI name; storage and export names remain unchanged. */
+export const getWorkspaceDisplayName = (item: Pick<WorkspaceImage, 'originalFileName' | 'fileName'>): string =>
+  item.originalFileName?.trim() || item.fileName;
+
 export type WorkspaceFileAsset = {
   id: string;
   path: string;

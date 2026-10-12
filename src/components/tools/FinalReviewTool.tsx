@@ -1,6 +1,8 @@
+import { MenuSurface } from '../ui/MenuSurface';
+import { addAssetsToDataset } from '../../lib/assetActions';
+import { flushProjectSave } from '../../hooks/useProjectSave';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
-import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowUpDown,
@@ -11,9 +13,6 @@ import {
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
 import {
-  createDatasetFileAssetKey,
-  createDatasetImageAssetKey,
-  normalizeDatasetAssetOrder,
   orderWorkspaceItemsByDatasetOrder,
 } from '../../lib/datasetAssets';
 import {
@@ -22,12 +21,10 @@ import {
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
-import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
 import { appLog } from '../../services/logging/applicationLog';
-import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
-import { BrickMasonry } from '../ui/BrickMasonry';
+import { AssetGallery } from '../ui/AssetGallery';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { AspectRatio, Dataset, WorkspaceImageKind } from '../../types';
@@ -57,7 +54,6 @@ const KIND_LABELS: Record<ReviewKind, string> = {
 const REVIEW_KINDS = ['image', 'edited', 'video', 'psd'] as const satisfies ReviewKind[];
 const isReviewKind = (kind: WorkspaceImageKind): kind is ReviewKind =>
   (REVIEW_KINDS as readonly WorkspaceImageKind[]).includes(kind);
-const isString = (value: string | undefined): value is string => Boolean(value);
 const getDatasetQuickActionLabel = (
   item: WorkspaceImage,
   mode: 'add' | 'remove'
@@ -148,6 +144,8 @@ type FinalReviewToolProps = {
     >
   ) => void | Promise<void>;
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
+  onOpenImport?: () => void;
+  onAddFiles?: () => void;
 };
 
 export const FinalReviewTool = ({
@@ -156,6 +154,8 @@ export const FinalReviewTool = ({
   active = true,
   onUpdateDataset,
   onOpenAssetContextMenu,
+  onOpenImport,
+  onAddFiles,
 }: FinalReviewToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
@@ -182,7 +182,6 @@ export const FinalReviewTool = ({
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
   const [sortMode, setSortMode] = useState<SortMode>('identity-asc');
   const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
-  const reviewInspectorRoot = useInspectorPortalRoot('review-inspector-root', active);
   const psdDiagnosticsKeyRef = useRef('');
 
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
@@ -425,54 +424,9 @@ export const FinalReviewTool = ({
   };
 
   const addItemsToDataset = useCallback((nextItems: WorkspaceImage[]) => {
-    if (!dataset || !onUpdateDataset) {
-      return;
-    }
-
-    const imageIds = nextItems
-      .filter((item) => item.kind === 'image' || item.kind === 'edited')
-      .map((item) => item.sourceImageId)
-      .filter(Boolean);
-    const assetPaths = filterLegacyProjectAssetPaths(
-      nextItems
-        .filter((item) => item.kind !== 'image' && item.kind !== 'edited')
-        .map((item) => item.assetPath)
-        .filter(isString)
-    );
-    const psdAssetPaths = filterLegacyProjectAssetPaths(nextItems.filter((item) => item.kind === 'psd').map((item) => item.assetPath).filter(isString));
-    if (imageIds.length === 0 && assetPaths.length === 0) {
-      return;
-    }
-
-    const nextAssetIds = [...new Set([...dataset.assetIds, ...imageIds])];
-    const nextAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...assetPaths])]);
-    const nextPsdAssetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.psdAssetPaths ?? []), ...psdAssetPaths])]);
-    const nextAssetOrder = normalizeDatasetAssetOrder(
-      [
-        ...(dataset.assetOrder ?? []),
-        ...imageIds.map(createDatasetImageAssetKey),
-        ...assetPaths.map(createDatasetFileAssetKey),
-      ],
-      nextAssetIds,
-      nextAssetPaths
-    );
-    const addedCount =
-      nextAssetIds.length -
-      dataset.assetIds.length +
-      nextAssetPaths.length -
-      filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).length;
-    if (addedCount === 0) {
-      return;
-    }
-
-    void onUpdateDataset({
-      assetIds: nextAssetIds,
-      assetPaths: nextAssetPaths,
-      psdAssetPaths: nextPsdAssetPaths,
-      assetOrder: nextAssetOrder,
-    });
-    addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to Dataset`);
-  }, [addNotification, dataset, onUpdateDataset]);
+    addAssetsToDataset(nextItems);
+    void flushProjectSave().catch(error => addNotification('error', error instanceof Error ? error.message : 'Unable to save Dataset'));
+  }, [addNotification]);
 
   const showSelectActions = Boolean(dataset && onUpdateDataset && mode === 'select');
   const reviewControls = (
@@ -490,6 +444,7 @@ export const FinalReviewTool = ({
         <div className="relative">
           <button
             type="button"
+            aria-haspopup="menu" aria-expanded={openMenu === 'aspect'}
             onClick={() => setOpenMenu((menu) => (menu === 'aspect' ? null : 'aspect'))}
             className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               openMenu === 'aspect' ? 'bg-secondary' : 'hover:bg-secondary'
@@ -500,11 +455,12 @@ export const FinalReviewTool = ({
             <ChevronDown className="h-4 w-4" />
           </button>
           {openMenu === 'aspect' && (
-            <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
               {ASPECT_RATIOS.map((ratio) => (
                 <button
                   key={ratio}
                   type="button"
+                  role="menuitemcheckbox" aria-checked={selectedAspectRatios.has(ratio)}
                   onClick={() => toggleAspectRatio(ratio)}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
                 >
@@ -515,13 +471,14 @@ export const FinalReviewTool = ({
                   <span className="font-mono text-xs text-muted-foreground">{aspectRatioCounts[ratio] ?? 0}</span>
                 </button>
               ))}
-            </div>
+            </MenuSurface>
           )}
         </div>
 
         <div className="relative">
           <button
             type="button"
+            aria-haspopup="menu" aria-expanded={openMenu === 'kind'}
             onClick={() => setOpenMenu((menu) => (menu === 'kind' ? null : 'kind'))}
             className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               openMenu === 'kind' ? 'bg-secondary' : 'hover:bg-secondary'
@@ -532,11 +489,12 @@ export const FinalReviewTool = ({
             <ChevronDown className="h-4 w-4" />
           </button>
           {openMenu === 'kind' && (
-            <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
               {REVIEW_KINDS.map((kind) => (
                 <button
                   key={kind}
                   type="button"
+                  role="menuitemcheckbox" aria-checked={selectedKinds.has(kind)}
                   onClick={() => toggleKind(kind)}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
                 >
@@ -547,13 +505,14 @@ export const FinalReviewTool = ({
                   <span className="font-mono text-xs text-muted-foreground">{kindCounts[kind]}</span>
                 </button>
               ))}
-            </div>
+            </MenuSurface>
           )}
         </div>
 
         <div className="relative">
           <button
             type="button"
+            aria-haspopup="menu" aria-expanded={openMenu === 'status'}
             onClick={() => setOpenMenu((menu) => (menu === 'status' ? null : 'status'))}
             className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               openMenu === 'status' ? 'bg-secondary' : 'hover:bg-secondary'
@@ -564,11 +523,12 @@ export const FinalReviewTool = ({
             <ChevronDown className="h-4 w-4" />
           </button>
           {openMenu === 'status' && (
-            <div className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
+            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
               {(['active', 'inactive'] as const).map((status) => (
                 <button
                   key={status}
                   type="button"
+                  role="menuitemcheckbox" aria-checked={selectedStatuses.has(status)}
                   onClick={() => toggleStatus(status)}
                   className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
                 >
@@ -579,13 +539,14 @@ export const FinalReviewTool = ({
                   <span className="font-mono text-xs text-muted-foreground">{statusCounts[status]}</span>
                 </button>
               ))}
-            </div>
+            </MenuSurface>
           )}
         </div>
 
         <div className="relative">
           <button
             type="button"
+            aria-haspopup="menu" aria-expanded={openMenu === 'sort'}
             onClick={() => setOpenMenu((menu) => (menu === 'sort' ? null : 'sort'))}
             className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               openMenu === 'sort' ? 'bg-secondary' : 'hover:bg-secondary'
@@ -597,11 +558,12 @@ export const FinalReviewTool = ({
             <ChevronDown className="h-4 w-4" />
           </button>
           {openMenu === 'sort' && (
-            <div className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
+            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
               {SORT_OPTIONS.map((option) => (
                 <button
                   key={option}
                   type="button"
+                  role="menuitemcheckbox" aria-checked={sortMode === option}
                   onClick={() => {
                     setSortMode(option);
                     setOpenMenu(null);
@@ -614,7 +576,7 @@ export const FinalReviewTool = ({
                   <span className="flex-1">{SORT_LABELS[option]}</span>
                 </button>
               ))}
-            </div>
+            </MenuSurface>
           )}
         </div>
 
@@ -652,7 +614,7 @@ export const FinalReviewTool = ({
       </div>
     </div>
   );
-  const reviewInspectorPortal = reviewInspectorRoot ? createPortal(reviewControls, reviewInspectorRoot) : null;
+  const reviewInspectorPortal = null;
 
   if (items.length === 0) {
     return (
@@ -663,11 +625,14 @@ export const FinalReviewTool = ({
           <div className="max-w-sm">
             <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
             <p className="text-sm font-medium">
-            {mode === 'select' ? 'No project assets available to add.' : 'No assets to review.'}
+              {mode === 'select' ? 'No more files to add' : 'No files to review'}
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Use Explorer or a Dataset tab to choose the assets for this view.
-            </p>
+            {(mode === 'review' && datasetId ? onAddFiles : onOpenImport) && (
+              <button type="button" className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                onClick={mode === 'review' && datasetId ? onAddFiles : onOpenImport}>
+                {mode === 'review' && datasetId ? 'Add files' : 'Import files'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -680,7 +645,9 @@ export const FinalReviewTool = ({
       {reviewInspectorPortal ? null : reviewControls}
 
       {sortedItems.length > 0 ? (
-        <BrickMasonry
+        <AssetGallery
+          active={active}
+          showOrder={false}
           items={sortedItems}
           getKey={(item) => item.id}
           getEstimate={(item) => item.height / Math.max(1, item.width)}
@@ -707,7 +674,7 @@ export const FinalReviewTool = ({
         <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
           <div>
             <p className="text-sm font-medium text-muted-foreground">No items match the selected filters</p>
-            <p className="mt-1 text-xs text-muted-foreground">Adjust the filters to bring assets back into view.</p>
+            <button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={() => { setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive'])); }}>Reset filters</button>
           </div>
         </div>
       )}
