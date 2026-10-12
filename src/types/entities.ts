@@ -145,6 +145,7 @@ export interface WorkspaceSettings {
   brickColumnCount: BrickColumnCount;
   localTaggerModelPath?: string;
   localTaggerTagsPath?: string;
+  excludedProjectCategories?: string[];
 }
 
 // ============ SIMILARITY ============

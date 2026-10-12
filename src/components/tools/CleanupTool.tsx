@@ -9,6 +9,7 @@ import { getImageDimensions } from '../../services/image/imageProcessor';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { useProjectStore } from '../../stores/useProjectStore';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { useUIStore } from '../../stores/useUIStore';
 import { createEditedAsset } from '../../types';
 import {
@@ -87,6 +88,7 @@ export const CleanupTool = ({
   const rootRef = useRef<HTMLDivElement>(null);
   const writeOperation = useOperation('Save edited image', rootRef, 'tool:clean');
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
@@ -116,10 +118,14 @@ export const CleanupTool = ({
   const [hasPhotopeaMounted, setHasPhotopeaMounted] = useState(false);
   const documentState = usePhotopeaDocumentState(rootRef, iframeRef, () => documentReady && (phaseRef.current === 'idle' || phaseRef.current === 'writing'));
 
-  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
+    isProjectPathIncluded(image.originalFilePath, excludedProjectCategories)
+  ), [excludedProjectCategories, sourceImagesById]);
   const editedAssets = useMemo(
-    () => Object.values(editedAssetsById).filter((item) => !item.deleted),
-    [editedAssetsById]
+    () => Object.values(editedAssetsById).filter((item) =>
+      !item.deleted && isProjectPathIncluded(item.imageDataPath ?? sourceImagesById[item.sourceImageId]?.originalFilePath, excludedProjectCategories)
+    ),
+    [editedAssetsById, excludedProjectCategories, sourceImagesById]
   );
 
   const workspaceImages = useMemo(

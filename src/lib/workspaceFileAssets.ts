@@ -7,8 +7,6 @@ import {
 } from '../services/project/projectDirectoryService';
 import { requestPhotopeaPsdPreview } from '../services/psd/photopeaPreviewQueue';
 import { createPsdPreview } from '../services/psd/psdPreviewService';
-import { filterLegacyProjectAssetPaths, LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from '../services/project/projectPathFilters';
-import { PROJECT_SHARED_DIRECTORY } from '../services/project/projectLayoutService';
 import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspaceImages';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
@@ -105,7 +103,7 @@ const collectAssetPaths = async (
   const paths: string[] = [];
 
   for await (const [entryName, entry] of directory.entries()) {
-    if (INTERNAL_DIRECTORY_NAMES.has(entryName) || (parentPath === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase()))) {
+    if (INTERNAL_DIRECTORY_NAMES.has(entryName)) {
       continue;
     }
 
@@ -124,28 +122,11 @@ const collectAssetPaths = async (
   return paths;
 };
 
-const collectSharedAssetPaths = async (root: ProjectDirectoryHandle): Promise<string[]> => {
-  try {
-    let sharedDirectory = root;
-    for (const part of PROJECT_SHARED_DIRECTORY.split('/')) {
-      sharedDirectory = await sharedDirectory.getDirectoryHandle(part);
-    }
-    return collectAssetPaths(sharedDirectory, `Project/${PROJECT_SHARED_DIRECTORY}`);
-  } catch {
-    return [];
-  }
-};
-
 export const collectWorkspaceFileAssets = async (
   root: ProjectDirectoryHandle,
   paths?: string[]
 ): Promise<WorkspaceFileAsset[]> => {
-  const requestedAssetPaths = paths ? [...new Set(paths)] : await collectSharedAssetPaths(root);
-  const assetPaths = paths ? filterLegacyProjectAssetPaths(requestedAssetPaths) : requestedAssetPaths;
-  const filteredCount = requestedAssetPaths.length - assetPaths.length;
-  if (filteredCount > 0) {
-    appLog.info(`Assets: skipped ${filteredCount} legacy asset path${filteredCount !== 1 ? 's' : ''}`);
-  }
+  const assetPaths = paths ? [...new Set(paths)] : await collectAssetPaths(root);
   const assets: WorkspaceFileAsset[] = [];
 
   for (const path of assetPaths) {
@@ -169,6 +150,8 @@ export const collectWorkspaceFileAssets = async (
         previewUrl,
         width: previewDimensions?.width,
         height: previewDimensions?.height,
+        byteSize: file.size,
+        modifiedAt: 'lastModified' in file ? file.lastModified : undefined,
       });
     } catch (error) {
       if (import.meta.env.DEV) {

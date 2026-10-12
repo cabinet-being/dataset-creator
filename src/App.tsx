@@ -253,6 +253,8 @@ type PersistedWorkspaceTab =
       kind: 'tool';
       tool: ToolName;
       pinned?: boolean;
+      id?: string;
+      scope?: Pick<ToolSelectionScope, 'review'>;
     }
   | {
       kind: 'dataset';
@@ -271,10 +273,13 @@ type PersistedWorkspaceTab =
       pinned?: boolean;
     };
 
-const createToolTab = (tool: ToolName): ToolWorkspaceTab => ({
-  id: `tool:${tool}`,
+const createToolTab = (tool: ToolName, scope?: ToolSelectionScope): ToolWorkspaceTab => ({
+  id: scope?.review
+    ? `tool:review:${encodeURIComponent(scope.review.kind === 'directory' ? scope.review.path : scope.review.paths.join('|'))}`
+    : `tool:${tool}`,
   kind: 'tool',
   tool,
+  scope,
 });
 
 const createFileTabId = (): string => `file:${crypto.randomUUID()}`;
@@ -286,7 +291,7 @@ const isDatasetToolName = (tool: unknown): tool is DatasetToolName =>
 
 const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceTab => {
   if (tab.kind === 'tool') {
-    return { ...createToolTab(tab.tool), pinned: tab.pinned };
+    return { ...createToolTab(tab.tool, tab.scope), id: tab.id ?? createToolTab(tab.tool, tab.scope).id, pinned: tab.pinned };
   }
   if (tab.kind === 'dataset') {
     return {
@@ -316,7 +321,7 @@ const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceT
 
 const persistWorkspaceTab = (tab: WorkspaceTab): PersistedWorkspaceTab | null => {
   if (tab.kind === 'tool') {
-    return { kind: 'tool', tool: tab.tool, pinned: tab.pinned };
+    return { kind: 'tool', tool: tab.tool, id: tab.id, scope: tab.scope?.review ? { review: tab.scope.review } : undefined, pinned: tab.pinned };
   }
   if (tab.kind === 'dataset') {
     return { kind: 'dataset', datasetId: tab.datasetId, pinned: tab.pinned };
@@ -1102,7 +1107,9 @@ function App() {
           : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
     const label =
       tab.kind === 'tool'
-        ? TOOL_LABELS[tab.tool]
+        ? tab.tool === 'review' && tab.scope?.review
+          ? `${TOOL_LABELS[tab.tool]}: ${tab.scope.review.label}`
+          : TOOL_LABELS[tab.tool]
         : tab.kind === 'window'
           ? tab.window === 'output' ? 'Output' : tab.window === 'project' ? 'Project' : tab.window === 'dataset' ? 'Dataset' : 'Inspector'
         : tab.kind === 'dataset-tool'
@@ -1275,7 +1282,7 @@ function App() {
   ) => {
     if (!profile.enabledTools.includes(tool)) return;
     setNavigationRecovery(false);
-    const nextTab = createToolTab(tool);
+    const nextTab = createToolTab(tool, scopes);
     dock.show(nextTab.id);
     setOpenTabs(tabs => setToolViewScope(tabs.some(tab => tab.id === nextTab.id) ? tabs : [...tabs, nextTab], nextTab.id, scopes));
     setActiveTabId(nextTab.id);
@@ -1350,7 +1357,12 @@ function App() {
       return false;
     });
 
-    const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool').map(tab => ({...tab,scope:undefined,nested:undefined,dirty:false}));
+    const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool').map(tab => ({
+      ...tab,
+      scope: tab.scope?.review ? { review: tab.scope.review } : undefined,
+      nested: undefined,
+      dirty: false,
+    }));
     const restoredToolTabs = restoredTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool');
     const nextTabs = dedupeWorkspaceTabs([
       ...(restoredToolTabs.length > 0 ? restoredToolTabs : currentToolTabs),
@@ -2389,6 +2401,21 @@ function App() {
     if (itemIds.length === nodes.length) {
       navigateToTool('tagging', { taggingItemIds: itemIds });
     }
+  };
+
+  const openExplorerFilesInReview = (sourceNode: ExplorerTreeNode, nodes: ExplorerTreeNode[]) => {
+    const contextEntries = getContextEntries(sourceNode);
+    const singleDirectory = contextEntries.length === 1 && contextEntries[0].kind === 'folder'
+      ? contextEntries[0]
+      : null;
+    const review = singleDirectory
+      ? { kind: 'directory' as const, path: singleDirectory.path, label: `${singleDirectory.name} / Review` }
+      : {
+          kind: 'selection' as const,
+          paths: [...new Set(nodes.map((entry) => entry.path))],
+          label: `Selected files · ${nodes.length}`,
+        };
+    navigateToTool('review', { review });
   };
 
   const openExplorerFilesInPhotopea = async (nodes: ExplorerTreeNode[]) => {
@@ -4040,6 +4067,9 @@ function App() {
             return openExplorerFilesInAnalysis(selectedFileNodes);
           } })
           : null,
+        selectedFileNodes.length > 0
+          ? createExplorerAction({ id: 'review', label: 'Review', icon: Layers3, onSelect: () => openExplorerFilesInReview(node, selectedFileNodes) })
+          : null,
         selectedFileNode && selectedFileKind === 'video'
           ? createExplorerAction({ id: 'video-frames', label: 'Video Frames', icon: Video, onSelect: () => openFileModeTab(selectedFileNode, 'video') })
           : null,
@@ -4087,7 +4117,7 @@ function App() {
     const contextEntries = getContextEntries(node);
     const fileToolActionGroups = getExplorerToolScopeFileNodes(node).length > 0
       ? getFileContextActionGroups(node)
-        .map((group) => group.filter((action) => !['cut', 'copy', 'duplicate', 'rename', 'delete'].includes(action.id)))
+        .map((group) => group.filter((action) => !['review', 'cut', 'copy', 'duplicate', 'rename', 'delete'].includes(action.id)))
         .filter((group) => group.length > 0)
       : [];
     const creationActions: ContextActionGroup =
@@ -4103,10 +4133,19 @@ function App() {
             }),
           ]
         : [];
+    const reviewAction: ContextActionGroup = [
+      createExplorerAction({
+        id: 'review-directory',
+        label: 'Review',
+        icon: Layers3,
+        onSelect: () => openExplorerFilesInReview(node, getExplorerToolScopeFileNodes(node)),
+      }),
+    ];
 
     if (node.path === 'Project') {
       return [
         ...fileToolActionGroups,
+        reviewAction,
         creationActions,
         explorerClipboard
           ? [createExplorerAction({ id: 'paste', label: 'Paste', icon: Copy, onSelect: () => handleExplorerPaste(node) })]
@@ -4116,6 +4155,7 @@ function App() {
 
     return [
       ...fileToolActionGroups,
+      reviewAction,
       creationActions,
       [
         createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
@@ -4220,6 +4260,7 @@ function App() {
       content: <div className="flex h-full min-h-0 flex-col">              {activeActivityView === 'explorer' ? (
                 <>
               <ExplorerPanel panelRef={explorerPanelRef} error={explorerError}
+                selectedPaths={selectedExplorerPaths}
                 onDismissContextMenu={() => setExplorerContextMenu(null)}
                 onSelectionChange={paths => { setSelectedExplorerPaths(new Set(paths)); setSelectionAnchorPath(paths[0] ?? null); setFocusedExplorerPath(paths[0] ?? null); }}
                 onRootContextMenu={(x, y) => { setActiveExplorerDirectoryPath('Project'); setExplorerContextMenu({ node: { name: projectName || 'Project', path: 'Project', kind: 'folder' }, x, y }); }}
@@ -4360,14 +4401,14 @@ function App() {
     return <>
       {tabMenuOpen && <>
         <button type="button" aria-label="Close tool menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setTabMenuOpen(false)} />
-        <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(toolMenuPosition.x, window.innerWidth - 220), top: toolMenuPosition.y }}>
+        <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: toolMenuPosition.x, top: toolMenuPosition.y }}>
           {TOOLS_MENU_ITEMS.filter((tool) => profile.enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
           <button type="button" className={menuClass} onClick={() => { reopenClosedTab(); setTabMenuOpen(false); }} disabled={!closedTabs.length}><RotateCcw className="h-3.5 w-3.5" />Reopen closed tab</button>
         </MenuSurface>
       </>}
       {workspaceContextMenu && contextView && <>
         <button type="button" aria-label="Close tab menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setWorkspaceContextMenu(null)} />
-        <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: Math.min(workspaceContextMenu.x, window.innerWidth - 220), top: Math.min(workspaceContextMenu.y, window.innerHeight - 340) }}>
+        <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: workspaceContextMenu.x, top: workspaceContextMenu.y }}>
           <button type="button" className={menuClass} onClick={() => {
             if (openTabs.some((tab) => tab.id === contextView.id)) toggleTabPinned(contextView.id);
             else dock.setLayout((layout) => ({ ...layout, pinned: contextView.pinned ? layout.pinned?.filter((id) => id !== contextView.id) : [...(layout.pinned ?? []), contextView.id] }));

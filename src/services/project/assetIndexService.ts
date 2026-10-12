@@ -5,8 +5,6 @@ import { getAssetManifestName, getAssetManifestPath } from './assetManifestServi
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from './projectDirectoryService';
 import { isInternalProjectFileName, isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
 import { snapshotFile } from './fileSnapshotService';
-import { LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from './projectPathFilters';
-import { PROJECT_SHARED_DIRECTORY } from './projectLayoutService';
 
 type IndexedAssetManifest = {
   id?: string;
@@ -16,6 +14,9 @@ type IndexedAssetManifest = {
   originalFilePath?: string;
   originalFileNameOnDisk?: string;
   assetPath?: string;
+  sourceImageId?: string;
+  imageDataPath?: string;
+  psdDataPath?: string;
   mimeType?: string;
   size?: number;
   width?: number;
@@ -103,7 +104,7 @@ const collectAssetFiles = async (
       continue;
     }
     if ('entries' in entry) {
-      if (!INTERNAL_DIRECTORY_NAMES.has(entryName) && !(relativeDirectory === '' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase()))) {
+      if (!INTERNAL_DIRECTORY_NAMES.has(entryName)) {
         assets.push(...await collectAssetFiles(entry, joinPath(relativeDirectory, entryName)));
       }
       continue;
@@ -133,20 +134,7 @@ export const indexProjectAssets = async (
   let createdManifestCount = 0;
 
   logger.info('Indexing project...');
-  let sharedDirectory: ProjectDirectoryHandle;
-  try {
-    sharedDirectory = await PROJECT_SHARED_DIRECTORY
-      .split('/')
-      .filter(Boolean)
-      .reduce<Promise<ProjectDirectoryHandle>>(
-        async (currentDirectory, part) => (await currentDirectory).getDirectoryHandle(part),
-        Promise.resolve(root)
-      );
-  } catch {
-    logger.warning('Shared workspace is unavailable; no global assets were indexed.');
-    return { discoveredCount: 0, indexedCount: 0, createdManifestCount: 0 };
-  }
-  const assetFiles = await collectAssetFiles(sharedDirectory, PROJECT_SHARED_DIRECTORY);
+  const assetFiles = await collectAssetFiles(root);
   logger.info(`Discovered ${assetFiles.length} supported file${assetFiles.length !== 1 ? 's' : ''}`);
 
   for (let index = 0; index < assetFiles.length; index += 1) {
@@ -156,6 +144,9 @@ export const indexProjectAssets = async (
     const manifestName = getAssetManifestName(file.name);
     const existingManifest = await readOptionalManifest(directory, manifestName);
     const kind = resolveProjectAssetKind(file.name, file.type);
+    const isRegisteredEditedAsset =
+      typeof existingManifest?.sourceImageId === 'string' &&
+      (existingManifest.imageDataPath === assetPath || existingManifest.psdDataPath === assetPath);
     const manifestIdOwner = typeof existingManifest?.id === 'string'
       ? existingById.get(existingManifest.id)
       : undefined;
@@ -165,7 +156,7 @@ export const indexProjectAssets = async (
       manifestIdOwner?.originalFilePath !== assetPath;
     let sourceImage: SourceImage | undefined;
 
-    if (kind === 'image' && !existingSource) {
+    if (kind === 'image' && !existingSource && !isRegisteredEditedAsset) {
       const { width, height } = await getImageDimensions(file);
       const id = manifestIdentityConflict ? undefined : existingManifest?.id;
       sourceImage = createSourceImage(file, file.name, width, height, URL.createObjectURL(file));
@@ -182,7 +173,7 @@ export const indexProjectAssets = async (
 
     const manifestValid =
       Boolean(existingManifest?.id) &&
-      (existingManifest?.assetPath === assetPath || existingManifest?.originalFilePath === assetPath) &&
+      (existingManifest?.assetPath === assetPath || existingManifest?.originalFilePath === assetPath || isRegisteredEditedAsset) &&
       !manifestIdentityConflict;
     if (!manifestValid) {
       await writeGenericAssetManifest(directory, file, assetPath, sourceImage ?? existingSource);

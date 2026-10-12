@@ -13,7 +13,12 @@ export type AnalysisScopeTarget = {
 export type ToolSelectionScope = {
   analysisFiles?: AnalysisScopeTarget[];
   taggingItemIds?: string[];
+  review?: ReviewScope;
 };
+
+export type ReviewScope =
+  | { kind: 'directory'; path: string; label: string }
+  | { kind: 'selection'; paths: string[]; label: string };
 
 /** Gallery callbacks can outlive their rendered items during a scope change. */
 export function resolveCurrentScope<T extends {id: string}>(items: T[], selection: readonly {id: string}[] | null): T[] {
@@ -25,7 +30,8 @@ export function resolveCurrentScope<T extends {id: string}>(items: T[], selectio
 export type ToolViewContext =
   | { tool: Exclude<ToolName, 'video'>; context: {kind: 'project'; selectedItemId?: string} }
   | { tool: 'analysis'; context: {kind: 'selection'; files: AnalysisScopeTarget[]} }
-  | { tool: 'tagging'; context: {kind: 'selection'; itemIds: string[]; selectedItemId?: string} };
+  | { tool: 'tagging'; context: {kind: 'selection'; itemIds: string[]; selectedItemId?: string} }
+  | { tool: 'review'; context: {kind: 'review'; scope: ReviewScope} };
 
 export function getToolViewContext(tool: Exclude<ToolName, 'video'>, scope?: ToolSelectionScope, selectedItemId?: string): ToolViewContext {
   if (tool === 'analysis' && scope?.analysisFiles !== undefined) {
@@ -33,6 +39,9 @@ export function getToolViewContext(tool: Exclude<ToolName, 'video'>, scope?: Too
   }
   if (tool === 'tagging' && scope?.taggingItemIds !== undefined) {
     return {tool, context:{kind:'selection', itemIds:scope.taggingItemIds, selectedItemId}};
+  }
+  if (tool === 'review' && scope?.review !== undefined) {
+    return {tool, context:{kind:'review', scope:scope.review}};
   }
   return {tool, context:{kind:'project', selectedItemId}};
 }
@@ -45,7 +54,8 @@ export function setToolViewScope<T extends ScopedTab>(tabs: T[], id: string, sco
     if (tab.id !== id || tab.kind !== 'tool') return tab;
     const next = tab.tool === 'analysis' && scope?.analysisFiles
       ? {analysisFiles:scope.analysisFiles}
-      : tab.tool === 'tagging' && scope?.taggingItemIds ? {taggingItemIds:scope.taggingItemIds} : undefined;
+      : tab.tool === 'tagging' && scope?.taggingItemIds ? {taggingItemIds:scope.taggingItemIds}
+      : tab.tool === 'review' && scope?.review ? {review:scope.review} : undefined;
     return {...tab, scope:next, nested:tab.scope || next ? undefined : tab.nested};
   });
 }
@@ -64,9 +74,22 @@ export function moveToolViewScope<T extends ScopedTab>(tab: T, moves: {from: str
     if (next !== id) changed = true;
     return next;
   });
+  const review = tab.scope?.review?.kind === 'selection'
+    ? {...tab.scope.review, paths:tab.scope.review.paths.map(path => {
+      const next = applyExplorerPathMoves(path, moves);
+      if (next !== path) changed = true;
+      return next;
+    })}
+    : tab.scope?.review?.kind === 'directory'
+      ? (() => {
+        const path = applyExplorerPathMoves(tab.scope!.review!.path, moves);
+        if (path !== tab.scope!.review!.path) changed = true;
+        return {...tab.scope!.review!, path};
+      })()
+      : undefined;
   const nestedId = applyWorkspaceAssetIdMoves(tab.nested?.itemId, moves);
   const nested = tab.nested && nestedId !== tab.nested.itemId ? {...tab.nested, itemId:nestedId!} : tab.nested;
-  return changed || nested !== tab.nested ? {...tab, nested, scope:tab.scope ? {...tab.scope, analysisFiles, taggingItemIds} : undefined} : tab;
+  return changed || nested !== tab.nested ? {...tab, nested, scope:tab.scope ? {...tab.scope, analysisFiles, taggingItemIds, review} : undefined} : tab;
 }
 
 export function pruneToolViewScope<T extends ScopedTab>(tab: T, paths: string[], removedIds: ReadonlySet<string>): T {
@@ -75,7 +98,12 @@ export function pruneToolViewScope<T extends ScopedTab>(tab: T, paths: string[],
   const deletedId = (id: string) => removedIds.has(id) || (id.startsWith('asset:') && deletedPath(id.slice('asset:'.length)));
   const analysisFiles = tab.scope?.analysisFiles?.filter(file => !deletedPath(file.path) && (!file.workspaceImageId || !deletedId(file.workspaceImageId)));
   const taggingItemIds = tab.scope?.taggingItemIds?.filter(id => !deletedId(id));
+  const review = tab.scope?.review?.kind === 'selection'
+    ? {...tab.scope.review, paths:tab.scope.review.paths.filter(path => !deletedPath(path))}
+    : tab.scope?.review?.kind === 'directory' && deletedPath(tab.scope.review.path)
+      ? {...tab.scope.review, path:'', label:'Unavailable directory'}
+      : tab.scope?.review;
   const nested = tab.nested && deletedId(tab.nested.itemId) ? undefined : tab.nested;
-  if (analysisFiles?.length === tab.scope?.analysisFiles?.length && taggingItemIds?.length === tab.scope?.taggingItemIds?.length && nested === tab.nested) return tab;
-  return {...tab, nested, scope:tab.scope ? {...tab.scope, analysisFiles, taggingItemIds} : undefined};
+  if (analysisFiles?.length === tab.scope?.analysisFiles?.length && taggingItemIds?.length === tab.scope?.taggingItemIds?.length && review === tab.scope?.review && nested === tab.nested) return tab;
+  return {...tab, nested, scope:tab.scope ? {...tab.scope, analysisFiles, taggingItemIds, review} : undefined};
 }

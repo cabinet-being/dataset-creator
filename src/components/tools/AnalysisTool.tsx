@@ -23,6 +23,7 @@ import {
 } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
 import { computeDistanceMatrix, findSimilarPairs, performClustering } from '../../services/similarity/similarityService';
 import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
@@ -941,6 +942,7 @@ export const AnalysisTool = ({
 }: AnalysisToolProps = {}) => {
   const controlId = useId();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
+  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
   const cleanupToolState = useProjectStore(
@@ -968,7 +970,9 @@ export const AnalysisTool = ({
   const [psdPreviewBlobsById, setPsdPreviewBlobsById] = useState<Record<string, PsdPreviewCacheEntry>>({});
 
   const targetMode: AnalysisTargetMode = fileTargets !== undefined || fileTarget !== undefined ? 'file' : dataset ? 'dataset' : 'project';
-  const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) => !image.hidden), [sourceImagesById]);
+  const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
+    !image.hidden && (targetMode !== 'project' || isProjectPathIncluded(image.originalFilePath, excludedProjectCategories))
+  ), [excludedProjectCategories, sourceImagesById, targetMode]);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const datasetFileAssetPaths = useMemo(
     () =>
@@ -1018,7 +1022,10 @@ export const AnalysisTool = ({
 
     const loadFileAssets = async () => {
       try {
-        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle, paths);
+        const collectedAssets = await collectWorkspaceFileAssets(projectDirectoryHandle, paths);
+        const assets = targetMode === 'project'
+          ? collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, excludedProjectCategories))
+          : collectedAssets;
         if (canceled) {
           return;
         }
@@ -1050,7 +1057,7 @@ export const AnalysisTool = ({
     return () => {
       canceled = true;
     };
-  }, [active, addNotification, assetPreviewRefreshKey, datasetFileAssetPaths, projectDirectoryHandle, targetMode]);
+  }, [active, addNotification, assetPreviewRefreshKey, datasetFileAssetPaths, excludedProjectCategories, projectDirectoryHandle, targetMode]);
 
   const baseItems = useMemo(
     () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupToolState.workingEdits, []),

@@ -8,12 +8,14 @@ import { downloadZipFile } from '../../services/export/exportService';
 import { flushProjectSave } from '../../hooks/useProjectSave';
 import { useCommands } from '../workspace/Commands';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 
 export function ExportTool({ active = true }: { active?: boolean }) {
   const sources = useProjectStore(state => state.sourceImages);
   const edits = useProjectStore(state => state.datasetItems);
   const dataset = useProjectStore(state => state.dataset);
   const blacklist = useProjectStore(state => state.taggingConfig.blacklist);
+  const excludedProjectCategories = useProjectStore(state => state.workspaceSettings.excludedProjectCategories ?? []);
   const directory = useUIStore(state => state.projectDirectoryHandle);
   const refresh = useUIStore(state => state.assetPreviewRefreshKey);
   const notify = useUIStore(state => state.addNotification);
@@ -27,7 +29,11 @@ export function ExportTool({ active = true }: { active?: boolean }) {
   const [error, setError] = useState(''); const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false); const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [revision, setRevision] = useState(0); const controller = useRef<AbortController>();
-  const items = useMemo(() => toWorkspaceImages(Object.values(sources), Object.values(edits).filter(item => !item.deleted)), [sources, edits]);
+  const allItems = useMemo(() => toWorkspaceImages(Object.values(sources), Object.values(edits).filter(item => !item.deleted)), [sources, edits]);
+  const items = useMemo(() => scope === 'workspace'
+    ? allItems.filter((item) => isProjectPathIncluded(item.assetPath, excludedProjectCategories))
+    : allItems,
+  [allItems, excludedProjectCategories, scope]);
   useEffect(() => {
     if (busy) return;
     let cancelled = false; setLoading(true); setLoadError(''); setPlan(undefined);

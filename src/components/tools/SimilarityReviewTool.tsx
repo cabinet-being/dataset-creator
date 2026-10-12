@@ -16,17 +16,23 @@ import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { AlertCircle, ChevronDown, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 
 export const SimilarityReviewTool = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
+  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
-  const sourceImages = useMemo(() => Object.values(sourceImagesById), [sourceImagesById]);
+  const sourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
+    isProjectPathIncluded(image.originalFilePath, excludedProjectCategories)
+  ), [excludedProjectCategories, sourceImagesById]);
   const editedAssets = useMemo(
-    () => Object.values(editedAssetsById).filter((item) => !item.deleted),
-    [editedAssetsById]
+    () => Object.values(editedAssetsById).filter((item) =>
+      !item.deleted && isProjectPathIncluded(item.imageDataPath ?? sourceImagesById[item.sourceImageId]?.originalFilePath, excludedProjectCategories)
+    ),
+    [editedAssetsById, excludedProjectCategories, sourceImagesById]
   );
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);

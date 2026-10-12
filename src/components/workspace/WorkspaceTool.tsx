@@ -57,6 +57,7 @@ export function WorkspaceTool({ tool, context, active, directory, onAssetContext
   const project = context.kind === 'project' ? context : undefined;
   const file = context.kind === 'file' ? context.file : undefined;
   const selection = context.kind === 'selection' ? context : undefined;
+  const review = context.kind === 'review' ? context.scope : undefined;
   switch (tool) {
     case 'import': return <ImportTool active={active} onImportFiles={onImportFiles} />;
     case 'select': return dataset
@@ -66,7 +67,7 @@ export function WorkspaceTool({ tool, context, active, directory, onAssetContext
     case 'analysis': return <AnalysisTool active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate} projectDirectoryHandle={directory}
       fileTarget={file} fileTargets={selection && 'files' in selection ? selection.files : undefined} onOpenAssetContextMenu={onAssetContextMenu} />;
     case 'review': return <FinalReviewTool active={active} datasetId={dataset?.datasetId} mode="review" onUpdateDataset={dataset?.onUpdate}
-      onAddFiles={dataset?.onAddFiles} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />;
+      scope={review} onAddFiles={dataset?.onAddFiles} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />;
     case 'tagging': return <TaggingTool active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate}
       selectedItemId={file ? file.workspaceImageId : selection && 'itemIds' in selection ? selection.selectedItemId ?? null : project?.selectedItemId ?? null} singleFileMode={Boolean(file)}
       scopedItemIds={selection && 'itemIds' in selection ? selection.itemIds : undefined} onOpenItem={onOpenItem} onOpenAssetContextMenu={onAssetContextMenu} />;

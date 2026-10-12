@@ -27,6 +27,7 @@ import {
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { orderWorkspaceItemsByDatasetOrder } from '../../lib/datasetAssets';
 import { AssetGallery } from '../ui/AssetGallery';
@@ -708,8 +709,11 @@ export const TaggingTool = ({
     [scopedItemIds]
   );
   const sourceImages = useMemo(
-    () => Object.values(sourceImagesById).filter((image) => !datasetId || datasetAssetIds.has(image.id)),
-    [datasetAssetIds, datasetId, sourceImagesById]
+    () => Object.values(sourceImagesById).filter((image) =>
+      (!datasetId || datasetAssetIds.has(image.id)) &&
+      (datasetId || scopedItemIds !== undefined || isProjectPathIncluded(image.originalFilePath, workspaceSettings.excludedProjectCategories ?? []))
+    ),
+    [datasetAssetIds, datasetId, scopedItemIds, sourceImagesById, workspaceSettings.excludedProjectCategories]
   );
   const editedAssets = useMemo(
     () =>
@@ -781,10 +785,13 @@ export const TaggingTool = ({
 
     const loadFileAssets = async () => {
       try {
-        const assets = await collectWorkspaceFileAssets(
+        const collectedAssets = await collectWorkspaceFileAssets(
           projectDirectoryHandle,
           datasetId ? [...datasetAssetPaths] : undefined
         );
+        const assets = datasetId || scopedItemIds !== undefined
+          ? collectedAssets
+          : collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, workspaceSettings.excludedProjectCategories ?? []));
         const pendingAssets = assets.map((asset) =>
           asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
         );
@@ -814,7 +821,7 @@ export const TaggingTool = ({
     return () => {
       canceled = true;
     };
-  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, projectDirectoryHandle]);
+  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, projectDirectoryHandle, scopedItemIds, workspaceSettings.excludedProjectCategories]);
 
   useEffect(() => {
     if (selectedItemIdProp !== undefined) {

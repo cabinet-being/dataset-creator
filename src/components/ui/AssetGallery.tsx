@@ -9,9 +9,10 @@ import { WorkspaceAssetFrame } from './WorkspaceAssetFrame';
 
 type Props = { membership?: 'add' | 'remove'; showOrder?: boolean; items: WorkspaceImage[]; renderItem: (item: WorkspaceImage) => ReactNode; active?: boolean;
   className?: string; getKey?: (item: WorkspaceImage) => string; getEstimate?: (item: WorkspaceImage) => number;
-  toolbarControls?: ReactNode; onScopeChange?: (items: WorkspaceImage[]) => void; onAdd?: (items: WorkspaceImage[]) => void | Promise<void> };
+  toolbarControls?: ReactNode; onScopeChange?: (items: WorkspaceImage[]) => void; onAdd?: (items: WorkspaceImage[]) => void | Promise<void>;
+  directInteraction?: boolean; externalFiltering?: boolean };
 const PAGE_SIZE = 100;
-export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', toolbarControls, onScopeChange, onAdd = addAssetsToDataset }: Props) {
+export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false }: Props) {
   const root = useRef<HTMLDivElement>(null); const search = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState(''); const [caption, setCaption] = useState('all');
   const [sort, setSort] = useState('original'); const [size, setSize] = useState(210);
@@ -22,6 +23,13 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
     const result = items.filter(item => `${item.fileName} ${item.originalFileName ?? ''} ${item.tags?.join(' ') ?? ''}`.toLowerCase().includes(query.toLowerCase()) && (caption === 'all' || Boolean(item.tags?.length) === (caption === 'captioned')));
     return sort === 'name' ? result.sort((a, b) => getWorkspaceDisplayName(a).localeCompare(getWorkspaceDisplayName(b), undefined, { numeric: true })) : result;
   }, [items, query, caption, sort]);
+  const filteredIds = useMemo(() => new Set(filtered.map((item) => item.id)), [filtered]);
+  useEffect(() => {
+    setSelected((current) => {
+      const next = new Set([...current].filter((id) => filteredIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [filteredIds]);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(filtered.length / PAGE_SIZE) - 1));
   const visible = filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const selectedItems = filtered.filter(item => selected.has(item.id));
@@ -38,7 +46,7 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
   const changeMembership = () => membership === 'remove' ? removeAssetsFromDataset(selectedItems) : onAdd(selectedItems);
   const exclude = selectedItems.some(item => !item.excludedFromDataset);
   useCommands([
-    { id: 'gallery.search', label: 'Search files', shortcut: '/', active: scopeActive, run: () => search.current?.focus() },
+    { id: 'gallery.search', label: 'Search files', shortcut: '/', active: scopeActive && !externalFiltering, run: () => search.current?.focus() },
     { id: membership === 'remove' ? 'gallery.remove' : 'gallery.add', label: membership === 'remove' ? 'Remove selected from Dataset' : 'Add selected to Dataset', shortcut: membership === 'remove' ? undefined : 'D', active: scopeActive, disabled: !selectedItems.length, run: changeMembership },
     { id: 'gallery.exclude', label: exclude ? 'Exclude selected from export' : 'Include selected in export', shortcut: 'E', active: scopeActive, disabled: !selectedItems.some(item => item.kind === 'image' || item.kind === 'edited'), run: () => setAssetsExcluded(selectedItems, exclude) },
   ], () => root.current?.closest<HTMLElement>('[data-dock-view]') ?? root.current);
@@ -46,12 +54,23 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
     const element = Array.from(root.current?.querySelectorAll<HTMLElement>('[data-asset-cell]') ?? []).find(node => node.dataset.assetCell === id); element?.focus(); element?.scrollIntoView({ block: 'nearest' });
   }); };
   const toggle = (id: string) => setSelected(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); anchor.current = id; return next; });
+  const selectDirect = (id: string, extend: boolean, additive: boolean) => setSelected(current => {
+    if (extend) {
+      const start = Math.max(0, filtered.findIndex(item => item.id === (anchor.current || id)));
+      const end = Math.max(0, filtered.findIndex(item => item.id === id));
+      if (!anchor.current) anchor.current = id;
+      return new Set(filtered.slice(Math.min(start, end), Math.max(start, end) + 1).map(item => item.id));
+    }
+    anchor.current = id;
+    if (!additive) return new Set([id]);
+    const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next;
+  });
   const reset = () => { setSelected(new Set()); setPage(0); };
   return <div ref={root} className={`asset-gallery ${className}`}>
     <div className="gallery-toolbar flex flex-wrap items-center gap-2 pb-3">
-      <input ref={search} type="search" aria-label="Search files" placeholder="Search files…" value={query} onChange={e => { setQuery(e.target.value); reset(); }} className="min-w-32 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" />
-      <select aria-label="Caption filter" value={caption} onChange={e => { setCaption(e.target.value); reset(); }} className="rounded-md border border-border bg-background p-2 text-sm"><option value="all">All captions</option><option value="captioned">Captioned</option><option value="missing">Missing captions</option></select>
-      {showOrder && <select aria-label="Gallery order" value={sort} onChange={e => { setSort(e.target.value); setPage(0); }} className="rounded-md border border-border bg-background p-2 text-sm"><option value="original">Original order</option><option value="name">Name</option></select>}
+      {!externalFiltering && <input ref={search} type="search" aria-label="Search files" placeholder="Search files…" value={query} onChange={e => { setQuery(e.target.value); reset(); }} className="min-w-32 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" />}
+      {!externalFiltering && <select aria-label="Caption filter" value={caption} onChange={e => { setCaption(e.target.value); reset(); }} className="rounded-md border border-border bg-background p-2 text-sm"><option value="all">All captions</option><option value="captioned">Captioned</option><option value="missing">Missing captions</option></select>}
+      {!externalFiltering && showOrder && <select aria-label="Gallery order" value={sort} onChange={e => { setSort(e.target.value); setPage(0); }} className="rounded-md border border-border bg-background p-2 text-sm"><option value="original">Original order</option><option value="name">Name</option></select>}
       <select aria-label="Thumbnail size" value={size} onChange={e => setSize(Number(e.target.value))} className="rounded-md border border-border bg-background p-2 text-sm"><option value={150}>Small</option><option value={210}>Medium</option><option value={300}>Large</option></select>
       {toolbarControls}
       <span className="text-xs text-muted-foreground">{filtered.length}/{items.length}</span>
@@ -61,7 +80,7 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
       {selectedItems.some(item => item.kind === 'image' || item.kind === 'edited') && <button className="rounded px-2 py-1" onClick={() => setAssetsExcluded(selectedItems, exclude)}>{exclude ? 'Exclude' : 'Include'}</button>}
       <button aria-label="Clear selection" className="rounded px-2 py-1" onClick={() => setSelected(new Set())}>Clear</button>
     </div>}
-    <div className="asset-grid grid gap-3" role="group" aria-label="Files" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(min(100%,${size}px),1fr))` }} onKeyDown={event => {
+    <div className="asset-grid grid gap-3" role={directInteraction ? 'listbox' : 'group'} aria-multiselectable={directInteraction || undefined} aria-label="Files" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(min(100%,${size}px),1fr))` }} onKeyDown={event => {
       if (isTextEntry(event.target) || event.nativeEvent.isComposing || event.defaultPrevented) return;
       if ((event.ctrlKey || event.metaKey) && event.code === 'KeyA') { event.preventDefault(); event.stopPropagation(); setSelected(new Set(filtered.map(item => item.id))); return; }
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSelected(new Set()); return; }
@@ -81,9 +100,12 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
       }
     }}>
       {visible.map((item, index) => <div key={item.id} data-asset-cell={item.id} tabIndex={item.id === focusId || (!visible.some(item => item.id === focusId) && index === 0) ? 0 : -1}
-        aria-label={`${getWorkspaceDisplayName(item)}${selected.has(item.id) ? ', selected' : ''}`} className={`group/asset relative min-w-0 rounded-lg ${selected.has(item.id) ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}`}
+        role={directInteraction ? 'option' : undefined} aria-selected={directInteraction ? selected.has(item.id) : undefined}
+        aria-label={`${getWorkspaceDisplayName(item)}${selected.has(item.id) ? ', selected' : ''}`} className={`group/asset relative min-w-0 rounded-lg ${directInteraction ? 'cursor-default' : ''} ${selected.has(item.id) ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}`}
+        onClick={event => { if (directInteraction && !(event.target as HTMLElement).closest('button,input,a,[contenteditable="true"]')) selectDirect(item.id, event.shiftKey, event.ctrlKey || event.metaKey); }}
+        onDoubleClick={event => { if (directInteraction && !(event.target as HTMLElement).closest('button,input,a,[contenteditable="true"]')) setPreviewId(item.id); }}
         onFocus={() => setFocusId(item.id)}>
-        <div className="mb-1 flex items-center justify-between gap-2"><label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} aria-label={`Select ${getWorkspaceDisplayName(item)}`} /><span className="truncate" title={getWorkspaceDisplayName(item)}>{getWorkspaceDisplayName(item)}</span></label><button className="shrink-0 rounded px-2 py-1 text-xs text-muted-foreground" aria-label={`Preview ${getWorkspaceDisplayName(item)}`} onClick={() => setPreviewId(item.id)}>Open</button></div>
+        {!directInteraction && <div className="mb-1 flex items-center justify-between gap-2"><label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} aria-label={`Select ${getWorkspaceDisplayName(item)}`} /><span className="truncate" title={getWorkspaceDisplayName(item)}>{getWorkspaceDisplayName(item)}</span></label><button className="shrink-0 rounded px-2 py-1 text-xs text-muted-foreground" aria-label={`Preview ${getWorkspaceDisplayName(item)}`} onClick={() => setPreviewId(item.id)}>Open</button></div>}
         {renderItem(item)}
       </div>)}
     </div>
