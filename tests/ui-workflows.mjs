@@ -8,13 +8,19 @@ import JSZip from 'jszip';
 
 const temp = await mkdtemp(join(tmpdir(), 'ui-workflows-'));
 try {
-  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/workspaceLayout.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
+  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
   const module = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
   const { getToolViewContext, setToolViewScope, moveToolViewScope, pruneToolViewScope, resolveCurrentScope } = await module('workspaceToolScope');
   assert.deepEqual(getToolViewContext('analysis',{analysisFiles:[]}),{tool:'analysis',context:{kind:'selection',files:[]}},'An empty explicit selection must not become project scope');
   assert.deepEqual(getToolViewContext('tagging',{taggingItemIds:[]}).context.itemIds,[]);
   assert.equal(getToolViewContext('review',{analysisFiles:[]}).context.kind,'project','Only the addressed tool consumes its selection');
+  assert.deepEqual(getToolViewContext('review',{review:{kind:'selection',paths:[],label:'Selected files · 0'}}).context,
+    {kind:'review',scope:{kind:'selection',paths:[],label:'Selected files · 0'}},'An empty Review selection stays empty');
   assert.equal(getToolViewContext('analysis').context.kind,'project');
+  const { isProjectPathIncluded } = await module('projectCategories');
+  assert.equal(isProjectPathIncluded('Project/people/a.png',['Project/people']),false);
+  assert.equal(isProjectPathIncluded('Project/people-old/a.png',['Project/people']),true,'Category prefixes stop at path boundaries');
+  assert.equal(isProjectPathIncluded('Project/people/nested/a.png',['Project/people/nested']),false);
   const staleScopeItem = {id:'one',tags:['stale']};
   const currentScopeItem = {id:'one',tags:['current']};
   assert.deepEqual(resolveCurrentScope([], [staleScopeItem]),[], 'Unmounted galleries cannot keep deleted/out-of-scope batch targets');
@@ -55,6 +61,9 @@ try {
   assert.deepEqual(deletedCaption.scope.taggingItemIds,[]);
   assert.equal(deletedCaption.nested,undefined);
   assert.equal(pruneToolViewScope(reviewTab,['Project/selected'],new Set()),reviewTab,'Unrelated views retain identity');
+  const directoryReview = {...reviewTab,scope:{review:{kind:'directory',path:'Project/selected',label:'selected / Review'}}};
+  assert.equal(moveToolViewScope(directoryReview,[{from:'Project/selected',to:'Project/renamed'}]).scope.review.path,'Project/renamed');
+  assert.equal(pruneToolViewScope(directoryReview,['Project/selected'],new Set()).scope.review.path,'','A removed Review directory becomes explicitly unavailable');
   const { applyProjectRelativePathMoves } = await module('datasetAssets');
   const assetMove = [{from:'Project/src/shared/image.png',to:'Project/src/shared/renamed.png'}];
   assert.equal(applyProjectRelativePathMoves('src/shared/image.png',assetMove),'src/shared/renamed.png');
@@ -170,13 +179,21 @@ try {
   assert.equal(welcome.groups[0].group.active, null, 'Back to Welcome keeps tabs without showing a stale editor');
   assert.equal(JSON.stringify(desktopLayout), originalLayout);
   const { matchesShortcut, captureShortcut } = await module('keyboard');
+  const { clampSurfaceToViewport, getEdgeScrollVelocity } = await module('viewportGeometry');
+  assert.deepEqual(clampSurfaceToViewport({left:950,top:760,width:200,height:180},{left:0,top:0,width:1000,height:800}),{x:792,y:612,maxHeight:784});
+  assert.deepEqual(clampSurfaceToViewport({left:-40,top:-20,width:120,height:60},{left:10,top:20,width:500,height:400}),{x:18,y:28,maxHeight:384});
+  assert.equal(getEdgeScrollVelocity(0,0,400),-28); assert.equal(getEdgeScrollVelocity(24,0,400),-14);
+  assert.equal(getEdgeScrollVelocity(200,0,400),0); assert.equal(getEdgeScrollVelocity(400,0,400),28);
   const { createSaveQueue } = await module('saveQueue');
   const { buildExportPlan, exportPlanAsZip, exportPlanToDirectory, renderExportCaption } = await module('exportPlan');
   const { convertPsdToPng } = await module('exportService');
   const { useOperationStore, isOperationRunning } = await module('useOperationStore');
   const { useHistoryStore } = await module('useHistoryStore');
   const { useProjectStore } = await module('useProjectStore');
-  const { importImageFiles } = await module('importService');
+  const { importImageFiles, getImportPairKey, parseImportedCaptionTags } = await module('importService');
+  assert.equal(getImportPairKey('animals/Cat.PNG'),getImportPairKey('animals/Cat.TxT'));
+  assert.notEqual(getImportPairKey('animals/cat.png'),getImportPairKey('portraits/cat.txt'),'Caption pairs cannot cross folders');
+  assert.deepEqual(parseImportedCaptionTags('\uFEFFКіт, Blue Sky\r\nsecond line'),['Кіт','Blue Sky\nsecond line'],'Caption import preserves Unicode, case and line breaks');
   let cancelled = 0;
   const operations = useOperationStore.getState();
   operations.start({ id: 'test', viewId: 'tool:import', label: 'Import', cancel: () => cancelled++, total: 3 });

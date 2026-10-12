@@ -6,6 +6,12 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'rolldown';
 import JSZip from 'jszip';
 
+globalThis.Image = class {
+  naturalWidth = 1;
+  naturalHeight = 1;
+  set src(_value) { queueMicrotask(() => this.onload?.()); }
+};
+
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
   await build({ input: ['src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
@@ -274,7 +280,8 @@ try {
     assert.equal(reopened.datasetItems[edited.id].sourceImageId,source.id);
     assert.equal(await reopened.datasetItems[edited.id].imageData.text(),'edited pixels');
     assert.equal(await reopened.datasetItems[edited.id].psdData.text(),'PSD layers');
-    assert.equal((await indexProjectAssets(root)).discoveredCount,0,'Moving a registered source does not enable discovery of arbitrary files outside shared');
+    const projectIndex = await indexProjectAssets(root,{existingSourceImages:{[source.id]:moved}});
+    assert.ok(projectIndex.discoveredCount >= 1,'The project index includes registered assets outside shared');
     let returned;
     await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/Archive/original.png'}],'Project/src/shared',change => {
       returned = {...reopened.sourceImages[source.id],originalFilePath:applyProjectRelativePathMoves(moved.originalFilePath,[change]),manifestPath:applyProjectRelativePathMoves(moved.manifestPath,[change],true)};
@@ -470,13 +477,13 @@ try {
   const privateAssetsDirectory = await (await layoutDirectory.getDirectoryHandle('src')).getDirectoryHandle('assets');
   const privateImageWriter = await (await privateAssetsDirectory.getFileHandle('private.png', { create: true })).createWritable();
   await privateImageWriter.write(new Blob(['png'], { type: 'image/png' })); await privateImageWriter.close();
-  assert.equal((await indexProjectAssets(layoutDirectory)).discoveredCount, 0);
+  assert.ok((await indexProjectAssets(layoutDirectory)).discoveredCount >= 1,'Indexing covers private and arbitrary project folders');
   const sharedDirectory = await (await layoutDirectory.getDirectoryHandle('src')).getDirectoryHandle('shared');
   const sharedVideoWriter = await (await sharedDirectory.getFileHandle('shared.webm', { create: true })).createWritable();
   await sharedVideoWriter.write(new Blob(['video'], { type: 'video/webm' })); await sharedVideoWriter.close();
   const privateVideoWriter = await (await privateAssetsDirectory.getFileHandle('private.webm', { create: true })).createWritable();
   await privateVideoWriter.write(new Blob(['video'], { type: 'video/webm' })); await privateVideoWriter.close();
-  assert.deepEqual((await collectWorkspaceFileAssets(layoutDirectory)).map((asset) => asset.path), ['Project/src/shared/shared.webm']);
+  assert.deepEqual((await collectWorkspaceFileAssets(layoutDirectory)).map((asset) => asset.path).sort(), ['Project/src/assets/private.webm','Project/src/shared/shared.webm']);
   const missingDatasetManifestDirectory = directory();
   await createProjectDirectory(missingDatasetManifestDirectory, createProject('No metadata', 'character'));
   await missingDatasetManifestDirectory.removeEntry(DATASET_MANIFEST_FILE);
@@ -514,5 +521,5 @@ try {
   assert.equal(await (await JSZip.loadAsync(saved)).file('unrelated.txt').async('string'), 'preserve me');
   await assert.rejects(resolveProjectType('invalid', 'Invalid'), /Unsupported/);
   await assert.rejects(resolveProjectType(null, 'Invalid'), /Unsupported/);
-  console.log('PASS: project types, global Dataset migration, required layout repair, shared-only indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
+  console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }
