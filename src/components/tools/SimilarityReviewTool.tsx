@@ -22,17 +22,18 @@ export const SimilarityReviewTool = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
+  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();
   const sourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
-    isProjectPathIncluded(image.originalFilePath, excludedProjectCategories)
-  ), [excludedProjectCategories, sourceImagesById]);
+    isProjectPathIncluded(image.originalFilePath, excludedProjectCategories, includedProjectCategories)
+  ), [excludedProjectCategories, includedProjectCategories, sourceImagesById]);
   const editedAssets = useMemo(
     () => Object.values(editedAssetsById).filter((item) =>
-      !item.deleted && isProjectPathIncluded(item.imageDataPath ?? sourceImagesById[item.sourceImageId]?.originalFilePath, excludedProjectCategories)
+      !item.deleted && isProjectPathIncluded(item.imageDataPath ?? sourceImagesById[item.sourceImageId]?.originalFilePath, excludedProjectCategories, includedProjectCategories)
     ),
-    [editedAssetsById, excludedProjectCategories, sourceImagesById]
+    [editedAssetsById, excludedProjectCategories, includedProjectCategories, sourceImagesById]
   );
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);

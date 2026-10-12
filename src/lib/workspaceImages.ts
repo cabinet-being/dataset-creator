@@ -62,6 +62,7 @@ export type WorkspaceImage = {
   hidden?: boolean;
   byteSize?: number;
   modifiedAt?: number;
+  dimensionsKnown?: boolean;
 };
 
 /** Human-readable UI name; storage and export names remain unchanged. */
@@ -81,6 +82,7 @@ export type WorkspaceFileAsset = {
   tags?: string[];
   byteSize?: number;
   modifiedAt?: number;
+  excludedFromDataset?: boolean;
 };
 
 export const WORKSPACE_KIND_STYLES: Record<
@@ -194,6 +196,7 @@ export const toWorkspaceImages = (
       excludedFromDataset: image.excludedFromDataset,
       byteSize: image.originalFile.size,
       modifiedAt: image.createdAt.getTime(),
+      dimensionsKnown: true,
       aspectRatio: inferWorkspaceAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
     };
   });
@@ -230,6 +233,7 @@ export const toWorkspaceImages = (
         deleted: image.deleted,
         byteSize: image.imageData.size,
         modifiedAt: image.createdAt.getTime(),
+        dimensionsKnown: true,
       };
     });
 
@@ -265,6 +269,8 @@ export const toWorkspaceReviewAssets = (
     tags: asset.tags,
     byteSize: asset.byteSize ?? asset.file.size,
     modifiedAt: asset.modifiedAt,
+    dimensionsKnown: asset.width !== undefined && asset.height !== undefined,
+    excludedFromDataset: asset.excludedFromDataset,
     aspectRatio: inferWorkspaceAspectRatio(asset.width ?? 1, asset.height ?? 1),
   }));
 

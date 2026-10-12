@@ -68,7 +68,7 @@ import {
   type WorkspaceFileAsset,
   type WorkspaceImage,
 } from './lib/workspaceImages';
-import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, invalidateWorkspaceFileAssetCache } from './lib/workspaceFileAssets';
 import {
   createProjectDirectory,
   clearProjectDirectory,
@@ -79,7 +79,7 @@ import {
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
 import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
-import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile, type ImportImagesOptions } from './services/import/importService';
+import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from './services/import/importService';
 import {
   deleteLocalTaggerFileHandle,
   saveLocalTaggerFileHandle,
@@ -138,7 +138,6 @@ import {
   PROJECT_DATASET_DIRECTORY,
   PROJECT_GIT_DIRECTORY,
   PROJECT_SHARED_DIRECTORY,
-  isProjectWorkspacePath,
 } from './services/project/projectLayoutService';
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
 import { useDockWorkspace } from './hooks/useDockWorkspace';
@@ -443,12 +442,24 @@ const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout> => {
             if (!tab || typeof tab !== 'object') {
               return null;
             }
-            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; window?: unknown; pinned?: unknown } & Record<string, unknown>;
+            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; window?: unknown; pinned?: unknown; id?: unknown; scope?: unknown } & Record<string, unknown>;
             const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
             const legacyTool = entry[`sta${'ge'}`];
             const entryTool = typeof entry.tool === 'string' ? entry.tool : legacyTool;
             if (entry.kind === 'tool' && typeof entryTool === 'string' && isToolName(entryTool)) {
-              return { kind: 'tool', tool: entryTool, pinned };
+              let scope: Pick<ToolSelectionScope, 'review'> | undefined;
+              if (entryTool === 'review' && entry.scope && typeof entry.scope === 'object') {
+                const review = (entry.scope as {review?:unknown}).review;
+                if (review && typeof review === 'object') {
+                  const value = review as {kind?:unknown;path?:unknown;paths?:unknown;label?:unknown};
+                  if (value.kind === 'directory' && typeof value.path === 'string' && typeof value.label === 'string') {
+                    scope = {review:{kind:'directory',path:value.path,label:value.label}};
+                  } else if (value.kind === 'selection' && Array.isArray(value.paths) && value.paths.every((path) => typeof path === 'string') && typeof value.label === 'string') {
+                    scope = {review:{kind:'selection',paths:value.paths as string[],label:value.label}};
+                  }
+                }
+              }
+              return { kind:'tool', tool:entryTool, pinned, scope, id:typeof entry.id === 'string' ? entry.id : undefined };
             }
             if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
               return { kind: 'dataset', datasetId: entry.datasetId, pinned };
@@ -1926,7 +1937,7 @@ function App() {
     return [...assetPaths];
   };
 
-  const indexSharedWorkspaceAssets = async (save = true) => {
+  const indexProjectWorkspaceAssets = async (save = true) => {
     if (!projectDirectoryHandle) {
       return;
     }
@@ -2257,7 +2268,8 @@ function App() {
       }
       return updateDatasetFileBackedState(latestDataset, updates);
     };
-    return <WorkspaceTool tool={tab.tool} active={activeTabId === tab.id} directory={projectDirectoryHandle}
+    return <WorkspaceTool tool={tab.tool} viewId={tab.id} active={activeTabId === tab.id} directory={projectDirectoryHandle}
+      onRefresh={() => indexProjectWorkspaceAssets()}
       context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select')}}
       onOpenImport={() => navigateToTool('import')}
       onAssetContextMenu={tab.tool === 'select' ? openAssetExplorerContextMenu : (item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)} />;
@@ -2519,7 +2531,7 @@ function App() {
               ? collectDatasetAssetPathsFromExplorerEntries(droppedEntries)
               : [];
             if (droppedEntries?.length && assetIds.length === 0 && assetPaths.length === 0) {
-              await indexSharedWorkspaceAssets();
+              await indexProjectWorkspaceAssets();
               assetIds = collectDatasetAssetIdsFromExplorerEntries(droppedEntries);
               assetPaths = collectDatasetAssetPathsFromExplorerEntries(droppedEntries);
             }
@@ -2845,7 +2857,10 @@ function App() {
     return projectDirectoryHandle;
   };
 
-  const refreshExplorer = () => setExplorerRefreshKey((key) => key + 1);
+  const refreshExplorer = () => {
+    if (projectDirectoryHandle) invalidateWorkspaceFileAssetCache(projectDirectoryHandle);
+    setExplorerRefreshKey((key) => key + 1);
+  };
 
   const runExplorerMutation = async <T,>(label: string, action: () => Promise<T>): Promise<T> => {
     const operations = useOperationStore.getState();
@@ -3116,11 +3131,9 @@ function App() {
 
   // Caller owns the save queue lane; updates are applied after each completed move.
   const moveWorkspaceEntries = async (directory: ProjectDirectoryHandle, entries: ExplorerClipboardEntry[], destinationPath: string) => {
-    let movedIntoShared = false;
     try {
       return await moveExplorerEntries(directory, entries, destinationPath, async move => {
         if (move.from === move.to) return;
-        movedIntoShared ||= isProjectWorkspacePath(move.to, 'shared');
         updateFileTabsForPathMoves([move]);
         await updateWorkspacePathsForPathMoves([move]);
         updateExplorerClipboardForPathMoves([move]);
@@ -3131,7 +3144,7 @@ function App() {
         }
       });
     } finally {
-      if (movedIntoShared) await indexSharedWorkspaceAssets(false);
+      if (entries.length > 0) await indexProjectWorkspaceAssets(false);
       refreshExplorer();
     }
   };
@@ -3255,9 +3268,7 @@ function App() {
           try {
             await copyExplorerEntries(directory, clipboard.entries.filter(isFilesystemExplorerEntry), node.path);
             for (const entry of clipboard.entries.filter(entry => entry.kind === 'dataset')) await duplicateDatasetEntry(entry,node.path);
-          } finally {
-            if (isProjectWorkspacePath(node.path,'shared')) await indexSharedWorkspaceAssets(false);
-          }
+          } finally { await indexProjectWorkspaceAssets(false); }
         }
         setExpandedExplorerPaths(paths => new Set([...paths,node.path]));
         refreshExplorer();
@@ -3283,11 +3294,7 @@ function App() {
           for (const entry of datasetEntries) {
             await duplicateDatasetEntry(entry);
           }
-        } finally {
-          if (filesystemEntries.some(entry => isProjectWorkspacePath(entry.path, 'shared'))) {
-            await indexSharedWorkspaceAssets(false);
-          }
-        }
+        } finally { if (filesystemEntries.length > 0) await indexProjectWorkspaceAssets(false); }
       });
       addNotification('success', 'Explorer entry duplicated');
     } catch (error) {
@@ -3374,14 +3381,13 @@ function App() {
     }
   };
 
-  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string, execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>): Promise<number> => {
+  const importExternalFilesIntoExplorer = async (files: ImportInputFile[], destinationPath: string, execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>): Promise<ImportImagesResult> => {
     const directory = requireProjectDirectory();
     if (!directory || files.length === 0) {
-      return 0;
+      return { importedImages: [], importedAssets: [], skippedCount: 0, summary: { pairedImages: 0, imagesWithoutCaption: 0, standaloneTextFiles: 0, captionConflicts: 0, errors: 0 } };
     }
 
     try {
-      const importsIntoSharedWorkspace = isProjectWorkspacePath(destinationPath, 'shared');
       let importedImageCount = 0;
       let importedAssetCount = 0;
       const result = await importImageFiles(files, {
@@ -3392,9 +3398,6 @@ function App() {
           explorerPath: destinationPath,
         },
         onImageImported: async (image) => {
-          if (!importsIntoSharedWorkspace) {
-            return;
-          }
           addSourceImage(image);
           importedImageCount += 1;
           await flushProjectSave();
@@ -3414,21 +3417,25 @@ function App() {
       });
 
       if (result.importedImages.length > 0 || result.importedAssets.length > 0) {
+        const details = [
+          result.summary.pairedImages ? `${result.summary.pairedImages} paired` : '',
+          result.summary.imagesWithoutCaption ? `${result.summary.imagesWithoutCaption} without caption` : '',
+          result.summary.standaloneTextFiles ? `${result.summary.standaloneTextFiles} standalone TXT` : '',
+          result.summary.captionConflicts ? `${result.summary.captionConflicts} caption conflicts` : '',
+        ].filter(Boolean).join(' · ');
         addNotification(
           'success',
-          `Imported ${importedAssetCount || importedImageCount} asset${(importedAssetCount || importedImageCount) !== 1 ? 's' : ''}`
+          `Imported ${importedAssetCount || importedImageCount} asset${(importedAssetCount || importedImageCount) !== 1 ? 's' : ''}${details ? ` · ${details}` : ''}`
         );
         setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
         refreshExplorer();
-        if (importsIntoSharedWorkspace) {
-          useUIStore.getState().refreshAssetPreviews();
-        }
+        useUIStore.getState().refreshAssetPreviews();
       }
-      return result.importedAssets.length || result.importedImages.length;
+      return result;
     } catch (error) {
       if (execution) throw error;
       addNotification('error', error instanceof Error ? error.message : 'Failed to import files');
-      return 0;
+      return { importedImages: [], importedAssets: [], skippedCount: 0, summary: { pairedImages: 0, imagesWithoutCaption: 0, standaloneTextFiles: 0, captionConflicts: 0, errors: 1 } };
     }
   };
 
@@ -4207,9 +4214,9 @@ function App() {
   const renderEditor = (tab: WorkspaceTab) => {
     const focused = tab.id === activeTabId;
     if (tab.kind === 'file-video' || (tab.kind === 'tool' && tab.tool === 'video')) {
-      return <WorkspaceTool tool="video" active={focused} directory={projectDirectoryHandle}
+      return <WorkspaceTool tool="video" viewId={tab.id} active={focused} directory={projectDirectoryHandle}
         context={{...(tab.kind === 'file-video' ? {kind:'file', file:tab} : {kind:'project'}), viewId:tab.id,
-          onSaved:async () => { refreshExplorer(); await indexSharedWorkspaceAssets(); }}} />;
+          onSaved:async () => { refreshExplorer(); await indexProjectWorkspaceAssets(); }}} />;
     }
     if (isFileBackedTab(tab)) return <div className="h-full min-h-0">                      {tab.kind === 'file-view' ? (
                         <InternalFileViewer
@@ -4232,14 +4239,14 @@ function App() {
                           }}
                         />
                       ) : tab.kind === 'file-analysis' ? (
-                        <WorkspaceTool tool="analysis" active={focused} directory={projectDirectoryHandle}
+                        <WorkspaceTool tool="analysis" viewId={tab.id} active={focused} directory={projectDirectoryHandle}
                           onAssetContextMenu={openAssetExplorerContextMenu}
                           context={{kind:'file', file:tab}} />
                       ) : tab.kind === 'file-edit' ? (
-                        <WorkspaceTool tool="clean" active={focused}
+                        <WorkspaceTool tool="clean" viewId={tab.id} active={focused}
                           context={{kind:'file', file:tab, onSavePsd:(buffer, saveCopy) => savePsdFileFromViewer(tab, buffer, saveCopy)}} />
                       ) : (
-                        <WorkspaceTool tool="tagging" active={focused} context={{kind:'file', file:tab}} />
+                        <WorkspaceTool tool="tagging" viewId={tab.id} active={focused} context={{kind:'file', file:tab}} />
                       )}
 </div>;
     if (tab.kind === 'dataset') return renderDatasetWorkspace(globalDataset);
@@ -4248,9 +4255,14 @@ function App() {
     return <div className="relative h-full min-h-0 overflow-auto p-4">
       {tab.nested && <button type="button" title="Back to tool" className="absolute left-2 top-2 z-30 rounded border border-border bg-card p-2"
         onClick={() => setToolTabNestedView(tab.id, undefined)}><ArrowLeft className="h-4 w-4" /></button>}
-      <WorkspaceTool {...getToolViewContext(tab.tool, tab.scope, tab.nested?.itemId)} active={focused} directory={projectDirectoryHandle}
+      <WorkspaceTool {...getToolViewContext(tab.tool, tab.scope, tab.nested?.itemId)} viewId={tab.id} active={focused} directory={projectDirectoryHandle}
+        onRefresh={() => indexProjectWorkspaceAssets()}
         onAssetContextMenu={openAssetExplorerContextMenu}
         onOpenItem={itemId => setToolTabNestedView(tab.id, {kind:'file', itemId})}
+        onOpenProjectFile={path => {
+          const node = findExplorerNodeByPath(path) ?? { name:path.split('/').pop() ?? path, path, kind:'file' as const };
+          void openFileModeTab(node, 'edit');
+        }}
         onImportFiles={projectDirectoryHandle ? (files, execution) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`, execution) : undefined}
         onOpenImport={() => navigateToTool('import')} />
     </div>;

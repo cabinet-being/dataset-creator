@@ -12,6 +12,7 @@ import {
   Folder,
   Minus,
   Plus,
+  RefreshCw,
   X,
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
@@ -23,7 +24,7 @@ import {
   type WorkspaceFileAsset,
   type WorkspaceImage,
 } from '../../lib/workspaceImages';
-import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, getWorkspaceFileAssetIssues, invalidateWorkspaceFileAssetCache } from '../../lib/workspaceFileAssets';
 import { appLog } from '../../services/logging/applicationLog';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
@@ -34,8 +35,8 @@ import type { AspectRatio, Dataset, WorkspaceImageKind } from '../../types';
 import type { ReviewScope } from '../../lib/workspaceToolScope';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 
-type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | null;
-type SortMode = 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc' | 'kind' | 'dimensions-desc' | 'dimensions-asc' | 'bytes-desc' | 'bytes-asc' | 'date-desc' | 'date-asc';
+type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | 'more' | null;
+type SortMode = 'dataset-order' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc' | 'kind-asc' | 'kind-desc' | 'format-asc' | 'format-desc' | 'dimensions-desc' | 'dimensions-asc' | 'bytes-desc' | 'bytes-asc' | 'date-desc' | 'date-asc';
 type ExportStatus = 'active' | 'inactive';
 
 type ReviewCardProps = {
@@ -76,11 +77,15 @@ const STATUS_LABELS: Record<ExportStatus, string> = {
 };
 
 const SORT_LABELS: Record<SortMode, string> = {
+  'dataset-order': 'Dataset order',
   'name-asc': 'Name ↑',
   'name-desc': 'Name ↓',
   'path-asc': 'Path ↑',
   'path-desc': 'Path ↓',
-  kind: 'Type',
+  'kind-asc': 'Type ↑',
+  'kind-desc': 'Type ↓',
+  'format-asc': 'Format ↑',
+  'format-desc': 'Format ↓',
   'dimensions-desc': 'Image area ↓',
   'dimensions-asc': 'Image area ↑',
   'bytes-desc': 'File size ↓',
@@ -96,6 +101,10 @@ const compareDisplayIdentity = (left: WorkspaceImage, right: WorkspaceImage) =>
     numeric: true,
     sensitivity: 'base',
   });
+const getReviewDirectory = (item: WorkspaceImage): string => {
+  const path = item.assetPath?.startsWith('Project/') ? item.assetPath : item.assetPath ? `Project/${item.assetPath}` : 'Project/Without folder/item';
+  return path.split('/').slice(0, -1).join('/') || 'Project';
+};
 
 const ReviewCard = memo(
   ({
@@ -157,6 +166,8 @@ type FinalReviewToolProps = {
   onOpenImport?: () => void;
   onAddFiles?: () => void;
   scope?: ReviewScope;
+  viewId?: string;
+  onRefresh?: () => void | Promise<void>;
 };
 
 export const FinalReviewTool = ({
@@ -168,11 +179,15 @@ export const FinalReviewTool = ({
   onOpenImport,
   onAddFiles,
   scope,
+  viewId = datasetId ? `dataset:${datasetId}:review` : 'tool:review',
+  onRefresh,
 }: FinalReviewToolProps = {}) => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const dataset = useProjectStore((state) => state.dataset);
+  const projectId = useProjectStore((state) => state.id);
   const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
+  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const cleanupToolState = useProjectStore(
     (state) =>
@@ -183,6 +198,7 @@ export const FinalReviewTool = ({
   const addNotification = useUIStore((state) => state.addNotification);
   const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
+  const refreshAssetPreviews = useUIStore((state) => state.refreshAssetPreviews);
 
   const [selectedAspectRatios, setSelectedAspectRatios] = useState<Set<AspectRatio>>(
     new Set(ASPECT_RATIOS)
@@ -194,14 +210,63 @@ export const FinalReviewTool = ({
     new Set(['active', 'inactive'])
   );
   const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
-  const [sortMode, setSortMode] = useState<SortMode>('name-asc');
+  const [sortMode, setSortMode] = useState<SortMode>(datasetId ? 'dataset-order' : 'name-asc');
   const [searchQuery, setSearchQuery] = useState('');
   const [captionFilter, setCaptionFilter] = useState<'all' | 'present' | 'missing'>('all');
   const [previewFilter, setPreviewFilter] = useState<'all' | 'ready' | 'missing' | 'failed'>('all');
+  const [folderFilter, setFolderFilter] = useState('all');
+  const [formatFilter, setFormatFilter] = useState('all');
+  const [datasetFilter, setDatasetFilter] = useState<'all' | 'member' | 'outside'>('all');
+  const [minimumPixels, setMinimumPixels] = useState('');
+  const [maximumPixels, setMaximumPixels] = useState('');
+  const [minimumBytes, setMinimumBytes] = useState('');
+  const [maximumBytes, setMaximumBytes] = useState('');
   const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const [assetIssues, setAssetIssues] = useState<string[]>([]);
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const excludedCategories = useMemo(() => new Set(excludedProjectCategories), [excludedProjectCategories]);
+  const includedCategories = useMemo(() => new Set(includedProjectCategories), [includedProjectCategories]);
   const psdDiagnosticsKeyRef = useRef('');
+  const preferencesLoadedKeyRef = useRef('');
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const preferencesKey = `review-view:${projectId}:${viewId}`;
+
+  useEffect(() => {
+    setPreferencesReady(false);
+    preferencesLoadedKeyRef.current = preferencesKey;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(preferencesKey) ?? 'null') as Record<string, unknown> | null;
+      if (saved) {
+        if (typeof saved.searchQuery === 'string') setSearchQuery(saved.searchQuery);
+        if (['all','present','missing'].includes(String(saved.captionFilter))) setCaptionFilter(saved.captionFilter as typeof captionFilter);
+        if (['all','ready','missing','failed'].includes(String(saved.previewFilter))) setPreviewFilter(saved.previewFilter as typeof previewFilter);
+        if (typeof saved.folderFilter === 'string') setFolderFilter(saved.folderFilter);
+        if (typeof saved.formatFilter === 'string') setFormatFilter(saved.formatFilter);
+        if (['all','member','outside'].includes(String(saved.datasetFilter))) setDatasetFilter(saved.datasetFilter as typeof datasetFilter);
+        if (typeof saved.minimumPixels === 'string') setMinimumPixels(saved.minimumPixels);
+        if (typeof saved.maximumPixels === 'string') setMaximumPixels(saved.maximumPixels);
+        if (typeof saved.minimumBytes === 'string') setMinimumBytes(saved.minimumBytes);
+        if (typeof saved.maximumBytes === 'string') setMaximumBytes(saved.maximumBytes);
+        if (typeof saved.sortMode === 'string' && saved.sortMode in SORT_LABELS) setSortMode(saved.sortMode as SortMode);
+        if (Array.isArray(saved.aspectRatios)) setSelectedAspectRatios(new Set(saved.aspectRatios.filter((value): value is AspectRatio => ASPECT_RATIOS.includes(value as AspectRatio))));
+        if (Array.isArray(saved.kinds)) setSelectedKinds(new Set(saved.kinds.filter((value): value is ReviewKind => REVIEW_KINDS.includes(value as ReviewKind))));
+        if (Array.isArray(saved.statuses)) setSelectedStatuses(new Set(saved.statuses.filter((value): value is ExportStatus => value === 'active' || value === 'inactive')));
+        if (Array.isArray(saved.collapsedCategories)) setCollapsedCategories(new Set(saved.collapsedCategories.filter((value): value is string => typeof value === 'string')));
+      }
+    } catch {
+      // Invalid per-view preferences fall back to defaults.
+    }
+    const timer = window.setTimeout(() => setPreferencesReady(true), 0);
+    return () => window.clearTimeout(timer);
+  }, [preferencesKey]);
+
+  useEffect(() => {
+    if (!preferencesReady || preferencesLoadedKeyRef.current !== preferencesKey) return;
+    window.localStorage.setItem(preferencesKey, JSON.stringify({ searchQuery, captionFilter, previewFilter, folderFilter,
+      formatFilter, datasetFilter, minimumPixels, maximumPixels, minimumBytes, maximumBytes, sortMode,
+      aspectRatios:[...selectedAspectRatios], kinds:[...selectedKinds], statuses:[...selectedStatuses],
+      collapsedCategories:[...collapsedCategories] }));
+  }, [captionFilter, collapsedCategories, datasetFilter, folderFilter, formatFilter, maximumBytes, maximumPixels, minimumBytes, minimumPixels, preferencesKey, preferencesReady, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses, sortMode]);
 
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const datasetAssetPaths = useMemo(
@@ -262,9 +327,10 @@ export const FinalReviewTool = ({
       name: path.split('/').pop() ?? path,
     })).sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true }));
   }, [allItems]);
+  const formatOptions = useMemo(() => [...new Set(allItems.map((item) => item.fileName.split('.').pop()?.toLocaleLowerCase()).filter((value): value is string => Boolean(value)))].sort(), [allItems]);
   const isCategoryExcluded = useCallback(
-    (path: string | undefined) => !isProjectPathIncluded(path, excludedProjectCategories),
-    [excludedProjectCategories]
+    (path: string | undefined) => !isProjectPathIncluded(path, excludedProjectCategories, includedProjectCategories),
+    [excludedProjectCategories, includedProjectCategories]
   );
   const items = useMemo(
     () => !datasetId && !scope ? allItems.filter((item) => !isCategoryExcluded(item.assetPath)) : allItems,
@@ -315,6 +381,7 @@ export const FinalReviewTool = ({
 
     if (!projectDirectoryHandle) {
       setFileAssets([]);
+      setAssetIssues([]);
       return;
     }
 
@@ -324,6 +391,7 @@ export const FinalReviewTool = ({
           projectDirectoryHandle,
           datasetId && mode !== 'select' ? [...datasetAssetPaths] : undefined
         );
+        if (!canceled) setAssetIssues(getWorkspaceFileAssetIssues(projectDirectoryHandle));
         const scopedAssets = assets.filter((asset) => matchesReviewScope(asset.path));
         const nextAssets =
           datasetId && mode === 'select'
@@ -348,6 +416,7 @@ export const FinalReviewTool = ({
       } catch (error) {
         if (!canceled) {
           setFileAssets([]);
+          setAssetIssues([error instanceof Error ? error.message : 'Unable to read project file assets']);
           addNotification('warning', error instanceof Error ? error.message : 'Unable to read project file assets');
         }
       }
@@ -415,30 +484,75 @@ export const FinalReviewTool = ({
           const hasCaption = Boolean(item.tags?.length);
           const matchesCaption = captionFilter === 'all' || (captionFilter === 'present' ? hasCaption : !hasCaption);
           const previewState = item.previewStatus === 'failed' ? 'failed' : item.previewUrl || item.kind === 'image' || item.kind === 'edited' || item.kind === 'video' ? 'ready' : 'missing';
+          const normalizedPath = item.assetPath?.startsWith('Project/') ? item.assetPath : item.assetPath ? `Project/${item.assetPath}` : 'Project/Without folder';
+          const extension = item.fileName.split('.').pop()?.toLocaleLowerCase() ?? '';
+          const inDataset = datasetAssetIds.has(item.sourceImageId) || Boolean(item.assetPath && datasetAssetPaths.has(item.assetPath));
+          const pixelArea = item.dimensionsKnown !== false && item.width > 0 && item.height > 0 ? item.width * item.height : undefined;
+          const minPixels = minimumPixels ? Number(minimumPixels) : undefined;
+          const maxPixels = maximumPixels ? Number(maximumPixels) : undefined;
+          const minBytes = minimumBytes ? Number(minimumBytes) : undefined;
+          const maxBytes = maximumBytes ? Number(maximumBytes) : undefined;
           return matchesQuery && matchesCaption && (previewFilter === 'all' || previewFilter === previewState) &&
+          (folderFilter === 'all' || normalizedPath.startsWith(`${folderFilter}/`) || normalizedPath === folderFilter) &&
+          (formatFilter === 'all' || extension === formatFilter) &&
+          (datasetFilter === 'all' || (datasetFilter === 'member' ? inDataset : !inDataset)) &&
+          (minPixels === undefined || (pixelArea !== undefined && pixelArea >= minPixels)) &&
+          (maxPixels === undefined || (pixelArea !== undefined && pixelArea <= maxPixels)) &&
+          (minBytes === undefined || (item.byteSize !== undefined && item.byteSize >= minBytes)) &&
+          (maxBytes === undefined || (item.byteSize !== undefined && item.byteSize <= maxBytes)) &&
           selectedAspectRatios.has(item.aspectRatio) &&
           isReviewKind(item.kind) &&
           selectedKinds.has(item.kind) &&
           selectedStatuses.has(item.excludedFromDataset ? 'inactive' : 'active');
         }
       ),
-    [captionFilter, items, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses]
+    [captionFilter, datasetAssetIds, datasetAssetPaths, datasetFilter, folderFilter, formatFilter, items, maximumBytes, maximumPixels, minimumBytes, minimumPixels, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses]
   );
+  const visibleCategoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of filteredItems) {
+      const parts = getReviewDirectory(item).split('/');
+      for (let index = 1; index <= parts.length; index += 1) {
+        const path = parts.slice(0, index).join('/'); counts.set(path, (counts.get(path) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [filteredItems]);
 
   const sortedItems = useMemo(() => {
     return [...filteredItems].sort((left, right) => {
+      if (!datasetId) {
+        const directoryOrder = getReviewDirectory(left).localeCompare(getReviewDirectory(right), undefined, { numeric:true, sensitivity:'base' });
+        if (directoryOrder !== 0) return directoryOrder;
+      }
       switch (sortMode) {
+        case 'dataset-order':
+          return 0;
         case 'name-desc':
           return right.fileName.localeCompare(left.fileName, undefined, { numeric: true }) || compareDisplayIdentity(left, right);
         case 'path-asc':
           return (left.assetPath ?? '').localeCompare(right.assetPath ?? '', undefined, { numeric: true }) || compareDisplayIdentity(left, right);
         case 'path-desc':
           return (right.assetPath ?? '').localeCompare(left.assetPath ?? '', undefined, { numeric: true }) || compareDisplayIdentity(left, right);
-        case 'kind':
+        case 'kind-asc':
           return left.kind.localeCompare(right.kind) || compareDisplayIdentity(left, right);
+        case 'kind-desc':
+          return right.kind.localeCompare(left.kind) || compareDisplayIdentity(left, right);
+        case 'format-asc':
+          return (left.fileName.split('.').pop() ?? '').localeCompare(right.fileName.split('.').pop() ?? '') || compareDisplayIdentity(left, right);
+        case 'format-desc':
+          return (right.fileName.split('.').pop() ?? '').localeCompare(left.fileName.split('.').pop() ?? '') || compareDisplayIdentity(left, right);
         case 'dimensions-desc':
+          if (left.dimensionsKnown === false || right.dimensionsKnown === false) {
+            if (left.dimensionsKnown === right.dimensionsKnown) return compareDisplayIdentity(left, right);
+            return left.dimensionsKnown === false ? 1 : -1;
+          }
           return right.width * right.height - left.width * left.height || compareDisplayIdentity(left, right);
         case 'dimensions-asc':
+          if (left.dimensionsKnown === false || right.dimensionsKnown === false) {
+            if (left.dimensionsKnown === right.dimensionsKnown) return compareDisplayIdentity(left, right);
+            return left.dimensionsKnown === false ? 1 : -1;
+          }
           return left.width * left.height - right.width * right.height || compareDisplayIdentity(left, right);
         case 'bytes-desc':
           return (right.byteSize ?? -1) - (left.byteSize ?? -1) || compareDisplayIdentity(left, right);
@@ -459,7 +573,7 @@ export const FinalReviewTool = ({
           return left.fileName.localeCompare(right.fileName, undefined, { numeric: true }) || compareDisplayIdentity(left, right);
       }
     });
-  }, [filteredItems, sortMode]);
+  }, [datasetId, filteredItems, sortMode]);
 
   const toggleAspectRatio = (ratio: AspectRatio) => {
     setSelectedAspectRatios((previous) => {
@@ -503,15 +617,17 @@ export const FinalReviewTool = ({
   }, [addNotification]);
 
   const toggleCategory = (path: string) => {
-    const next = new Set([...excludedCategories].filter((entry) => entry !== path && !entry.startsWith(`${path}/`)));
-    const disabledByAncestor = [...excludedCategories].some((entry) => path.startsWith(`${entry}/`));
-    if (!excludedCategories.has(path) && !disabledByAncestor) next.add(path);
-    updateWorkspaceSettings({ excludedProjectCategories: [...next] });
+    const state = categoryState(path);
+    const nextExcluded = new Set([...excludedCategories].filter((entry) => entry !== path && !entry.startsWith(`${path}/`)));
+    const nextIncluded = new Set([...includedCategories].filter((entry) => entry !== path && !entry.startsWith(`${path}/`)));
+    if (state === 'on') nextExcluded.add(path);
+    else if ([...excludedCategories].some((entry) => path.startsWith(`${entry}/`))) nextIncluded.add(path);
+    updateWorkspaceSettings({ excludedProjectCategories:[...nextExcluded], includedProjectCategories:[...nextIncluded] });
   };
   const categoryState = (path: string): 'on' | 'off' | 'partial' => {
-    if ([...excludedCategories].some((entry) => path === entry || path.startsWith(`${entry}/`))) return 'off';
-    if ([...excludedCategories].some((entry) => entry.startsWith(`${path}/`))) return 'partial';
-    return 'on';
+    const subtree = categoryRows.filter((row) => row.path === path || row.path.startsWith(`${path}/`));
+    const states = subtree.map((row) => isProjectPathIncluded(row.path, excludedProjectCategories, includedProjectCategories));
+    return states.every(Boolean) ? 'on' : states.every((value) => !value) ? 'off' : 'partial';
   };
   const categoryIsHidden = (path: string) => [...collapsedCategories].some(
     (entry) => path !== entry && path.startsWith(`${entry}/`)
@@ -530,7 +646,7 @@ export const FinalReviewTool = ({
       )}
 
       <div className="relative z-[1000] flex flex-wrap items-center gap-2">
-        {scope ? <div className="mr-1 rounded-md bg-secondary px-3 py-2 text-sm font-medium">{scope.label}</div> : null}
+        <div className="mr-1 rounded-md bg-secondary px-3 py-2 text-sm font-medium">{scope?.label ?? (datasetId ? `${dataset?.name ?? 'Dataset'} / Review` : 'Project / Review')}</div>
         <input type="search" aria-label="Search review files" placeholder="Search name, path, caption…" value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)} className="min-w-48 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" />
         <select aria-label="Caption filter" value={captionFilter} onChange={(event) => setCaptionFilter(event.target.value as typeof captionFilter)}
@@ -541,6 +657,33 @@ export const FinalReviewTool = ({
           className="rounded-md border border-border bg-background px-3 py-2 text-sm">
           <option value="all">All previews</option><option value="ready">Preview ready</option><option value="missing">Preview missing</option><option value="failed">Preview failed</option>
         </select>
+        <div className="relative">
+          <button type="button" aria-haspopup="menu" aria-expanded={openMenu === 'more'} onClick={() => setOpenMenu((menu) => menu === 'more' ? null : 'more')}
+            className={`rounded-md border border-border px-3 py-2 text-sm ${openMenu === 'more' ? 'bg-secondary' : ''}`}>More filters</button>
+          {openMenu === 'more' ? <MenuSurface role="dialog" aria-label="More review filters" closeOnTab={false} onDismiss={() => setOpenMenu(null)} className="absolute right-0 top-full z-20 mt-1 grid w-72 gap-2 rounded-md border border-border bg-popover p-3 shadow-xl">
+            <label className="grid gap-1 text-xs text-muted-foreground">Folder
+              <select value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)} className="rounded border border-border bg-background p-2 text-sm text-foreground">
+                <option value="all">All folders</option>{categoryRows.map((row) => <option key={row.path} value={row.path}>{row.path}</option>)}
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs text-muted-foreground">Format
+              <select value={formatFilter} onChange={(event) => setFormatFilter(event.target.value)} className="rounded border border-border bg-background p-2 text-sm text-foreground">
+                <option value="all">All formats</option>{formatOptions.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs text-muted-foreground">Dataset membership
+              <select value={datasetFilter} onChange={(event) => setDatasetFilter(event.target.value as typeof datasetFilter)} className="rounded border border-border bg-background p-2 text-sm text-foreground">
+                <option value="all">All files</option><option value="member">In Dataset</option><option value="outside">Outside Dataset</option>
+              </select>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-xs text-muted-foreground">Min pixels<input type="number" min="0" value={minimumPixels} onChange={(event) => setMinimumPixels(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
+              <label className="grid gap-1 text-xs text-muted-foreground">Max pixels<input type="number" min="0" value={maximumPixels} onChange={(event) => setMaximumPixels(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
+              <label className="grid gap-1 text-xs text-muted-foreground">Min bytes<input type="number" min="0" value={minimumBytes} onChange={(event) => setMinimumBytes(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
+              <label className="grid gap-1 text-xs text-muted-foreground">Max bytes<input type="number" min="0" value={maximumBytes} onChange={(event) => setMaximumBytes(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
+            </div>
+          </MenuSurface> : null}
+        </div>
         <div className="relative">
           <button
             type="button"
@@ -659,7 +802,7 @@ export const FinalReviewTool = ({
           </button>
           {openMenu === 'sort' && (
             <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
-              {SORT_OPTIONS.map((option) => (
+              {SORT_OPTIONS.filter((option) => option !== 'dataset-order' || Boolean(datasetId)).map((option) => (
                 <button
                   key={option}
                   type="button"
@@ -711,9 +854,13 @@ export const FinalReviewTool = ({
             </span>
           )}
         </div>
-        {(searchQuery || captionFilter !== 'all' || previewFilter !== 'all' || selectedAspectRatios.size !== ASPECT_RATIOS.length || selectedKinds.size !== REVIEW_KINDS.length || selectedStatuses.size !== 2) ? (
+        {projectDirectoryHandle ? <button type="button" className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm" onClick={() => {
+          invalidateWorkspaceFileAssetCache(projectDirectoryHandle); refreshAssetPreviews(); void onRefresh?.();
+        }}><RefreshCw className="h-4 w-4" />Refresh</button> : null}
+        {(searchQuery || captionFilter !== 'all' || previewFilter !== 'all' || folderFilter !== 'all' || formatFilter !== 'all' || datasetFilter !== 'all' || minimumPixels || maximumPixels || minimumBytes || maximumBytes || selectedAspectRatios.size !== ASPECT_RATIOS.length || selectedKinds.size !== REVIEW_KINDS.length || selectedStatuses.size !== 2) ? (
           <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={() => {
-            setSearchQuery(''); setCaptionFilter('all'); setPreviewFilter('all');
+            setSearchQuery(''); setCaptionFilter('all'); setPreviewFilter('all'); setFolderFilter('all'); setFormatFilter('all'); setDatasetFilter('all');
+            setMinimumPixels(''); setMaximumPixels(''); setMinimumBytes(''); setMaximumBytes('');
             setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive']));
           }}>Reset</button>
         ) : null}
@@ -721,6 +868,8 @@ export const FinalReviewTool = ({
     </div>
   );
   const reviewInspectorPortal = null;
+  const accessWarning = scope && !projectDirectoryHandle ? <div role="alert" className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700">Reconnect the project folder to refresh and restore access to this Review scope.</div> : null;
+  const issueWarning = assetIssues.length > 0 ? <div role="alert" className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700"><p className="font-medium">Some project folders or files could not be read.</p>{assetIssues.slice(0, 5).map((issue) => <p key={issue} className="mt-1 font-mono text-xs">{issue}</p>)}</div> : null;
   const categoryControls = !datasetId && !scope && categoryRows.length > 0 ? (
     <section className="rounded-md border border-border bg-card p-2" aria-label="Project categories">
       <div className="mb-1 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Project categories</div>
@@ -743,7 +892,7 @@ export const FinalReviewTool = ({
             </button>
             <Folder className="h-4 w-4 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate" title={row.path}>{row.name}</span>
-            <span className="font-mono text-xs text-muted-foreground">{row.count}</span>
+            <span className="font-mono text-xs text-muted-foreground" title={`${row.count} total`}>{visibleCategoryCounts.get(row.path) ?? 0}/{row.count}</span>
           </div>;
         })}
       </div>
@@ -755,19 +904,21 @@ export const FinalReviewTool = ({
       <div className="space-y-6">
         {reviewInspectorPortal}
         {reviewInspectorPortal ? null : reviewControls}
+        {accessWarning}
+        {issueWarning}
         {categoryControls}
         <div className="flex min-h-[320px] items-center justify-center px-4 text-center">
           <div className="max-w-sm">
             <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
             <p className="text-sm font-medium">
-              {mode === 'select' ? 'No more files to add' : 'No files to review'}
+              {scope && !projectDirectoryHandle ? 'Reconnect the project folder to restore this Review scope' : mode === 'select' ? 'No more files to add' : 'No files to review'}
             </p>
-            {(mode === 'review' && datasetId ? onAddFiles : onOpenImport) && (
+            {!scope || projectDirectoryHandle ? (mode === 'review' && datasetId ? onAddFiles : onOpenImport) && (
               <button type="button" className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
                 onClick={mode === 'review' && datasetId ? onAddFiles : onOpenImport}>
                 {mode === 'review' && datasetId ? 'Add files' : 'Import files'}
               </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
@@ -778,6 +929,8 @@ export const FinalReviewTool = ({
     <div className="space-y-6">
       {reviewInspectorPortal}
       {reviewInspectorPortal ? null : reviewControls}
+      {accessWarning}
+      {issueWarning}
       {categoryControls}
 
       {sortedItems.length > 0 ? (
@@ -785,10 +938,23 @@ export const FinalReviewTool = ({
           active={active}
           directInteraction
           externalFiltering
+          getGroup={datasetId ? undefined : getReviewDirectory}
+          collapsedGroups={collapsedCategories}
+          renderGroupHeader={datasetId ? undefined : (group, count) => {
+            const collapsed = collapsedCategories.has(group);
+            const state = categoryState(group);
+            return <div className="col-span-full flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2" role="group" aria-label={`${group}, ${count} files`}>
+              <button type="button" className="rounded p-1 hover:bg-secondary" aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${group}`} onClick={() => setCollapsedCategories((previous) => {
+                const next = new Set(previous); if (next.has(group)) next.delete(group); else next.add(group); return next;
+              })}>{collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</button>
+              {!scope ? <button type="button" role="checkbox" aria-checked={state === 'partial' ? 'mixed' : state === 'on'} className="flex h-6 w-6 items-center justify-center rounded border border-border" onClick={() => toggleCategory(group)}>
+                {state === 'on' ? <Check className="h-4 w-4" /> : state === 'partial' ? <Minus className="h-4 w-4" /> : null}
+              </button> : null}
+              <Folder className="h-4 w-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate font-medium" title={group}>{group}</span><span className="font-mono text-xs text-muted-foreground">{count}</span>
+            </div>;
+          }}
           showOrder={false}
           items={sortedItems}
-          getKey={(item) => item.id}
-          getEstimate={(item) => item.height / Math.max(1, item.width)}
           renderItem={(item) => (
             <ReviewCard
               item={item}
@@ -812,7 +978,7 @@ export const FinalReviewTool = ({
         <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
           <div>
             <p className="text-sm font-medium text-muted-foreground">No items match the selected filters</p>
-            <button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={() => { setSearchQuery(''); setCaptionFilter('all'); setPreviewFilter('all'); setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive'])); }}>Reset filters</button>
+            <button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={() => { setSearchQuery(''); setCaptionFilter('all'); setPreviewFilter('all'); setFolderFilter('all'); setFormatFilter('all'); setDatasetFilter('all'); setMinimumPixels(''); setMaximumPixels(''); setMinimumBytes(''); setMaximumBytes(''); setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive'])); }}>Reset filters</button>
           </div>
         </div>
       )}

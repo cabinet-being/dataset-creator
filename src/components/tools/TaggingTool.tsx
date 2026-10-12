@@ -711,9 +711,9 @@ export const TaggingTool = ({
   const sourceImages = useMemo(
     () => Object.values(sourceImagesById).filter((image) =>
       (!datasetId || datasetAssetIds.has(image.id)) &&
-      (datasetId || scopedItemIds !== undefined || isProjectPathIncluded(image.originalFilePath, workspaceSettings.excludedProjectCategories ?? []))
+      (datasetId || scopedItemIds !== undefined || isProjectPathIncluded(image.originalFilePath, workspaceSettings.excludedProjectCategories ?? [], workspaceSettings.includedProjectCategories ?? []))
     ),
-    [datasetAssetIds, datasetId, scopedItemIds, sourceImagesById, workspaceSettings.excludedProjectCategories]
+    [datasetAssetIds, datasetId, scopedItemIds, sourceImagesById, workspaceSettings.excludedProjectCategories, workspaceSettings.includedProjectCategories]
   );
   const editedAssets = useMemo(
     () =>
@@ -791,7 +791,7 @@ export const TaggingTool = ({
         );
         const assets = datasetId || scopedItemIds !== undefined
           ? collectedAssets
-          : collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, workspaceSettings.excludedProjectCategories ?? []));
+          : collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, workspaceSettings.excludedProjectCategories ?? [], workspaceSettings.includedProjectCategories ?? []));
         const pendingAssets = assets.map((asset) =>
           asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
         );
@@ -821,7 +821,7 @@ export const TaggingTool = ({
     return () => {
       canceled = true;
     };
-  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, projectDirectoryHandle, scopedItemIds, workspaceSettings.excludedProjectCategories]);
+  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, projectDirectoryHandle, scopedItemIds, workspaceSettings.excludedProjectCategories, workspaceSettings.includedProjectCategories]);
 
   useEffect(() => {
     if (selectedItemIdProp !== undefined) {
@@ -1854,8 +1854,6 @@ export const TaggingTool = ({
             active={active}
             onScopeChange={setGalleryScope}
             items={items}
-            getKey={(item) => item.id}
-            getEstimate={(item) => item.height / Math.max(1, item.width) + 0.85}
             renderItem={(item) => (
               <TaggingCard
                 item={item}

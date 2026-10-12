@@ -69,8 +69,6 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
                   {DATASET_BOARD_SORT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>}
                 items={boardItems}
-                getKey={(item) => item.id}
-                getEstimate={(item) => item.height / Math.max(1, item.width)}
                 className="p-3"
                 renderItem={(item) => (
                   <WorkspacePreviewCard

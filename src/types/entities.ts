@@ -146,6 +146,7 @@ export interface WorkspaceSettings {
   localTaggerModelPath?: string;
   localTaggerTagsPath?: string;
   excludedProjectCategories?: string[];
+  includedProjectCategories?: string[];
 }
 
 // ============ SIMILARITY ============

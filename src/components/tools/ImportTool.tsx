@@ -21,13 +21,15 @@ import {
   SUPPORTED_IMPORT_FILE_FORMATS,
   type ImportInputFile,
   type ImportImagesOptions,
+  type ImportImagesResult,
+  type ImportPairSummary,
 } from '../../services/import/importService';
 
 import { FolderOpen, ImageIcon, RotateCcw, Trash2, Upload } from 'lucide-react';
 
 type ImportToolProps = {
   active?: boolean;
-  onImportFiles?: (files: ImportInputFile[], execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>) => Promise<number>;
+  onImportFiles?: (files: ImportInputFile[], execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>) => Promise<ImportImagesResult>;
 };
 
 export const ImportTool = ({ onImportFiles, active = true }: ImportToolProps) => {
@@ -69,6 +71,7 @@ export const ImportTool = ({ onImportFiles, active = true }: ImportToolProps) =>
   const operation = useOperation('Import', commandRoot, 'tool:import');
   const controller = useRef<AbortController>();
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
+  const [lastSummary, setLastSummary] = useState<ImportPairSummary | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   useCommands([
@@ -99,8 +102,10 @@ export const ImportTool = ({ onImportFiles, active = true }: ImportToolProps) =>
 
       try {
         if (onImportFiles) {
-          const count = await onImportFiles(files, { signal: next.signal, onProgress });
+          const result = await onImportFiles(files, { signal: next.signal, onProgress });
           next.signal.throwIfAborted();
+          const count = result.importedAssets.length || result.importedImages.length;
+          setLastSummary(result.summary);
           operation.finish('completed', `${count} assets imported`);
           return count;
         }
@@ -118,6 +123,7 @@ export const ImportTool = ({ onImportFiles, active = true }: ImportToolProps) =>
           onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
         });
         const newImages = result.importedImages;
+        setLastSummary(result.summary);
 
         if (newImages.length > 0) {
           logDev('import', 'processed images', newImages.length);
@@ -222,6 +228,11 @@ export const ImportTool = ({ onImportFiles, active = true }: ImportToolProps) =>
   return (
     <div ref={commandRoot} className="flex h-full min-h-0 flex-col gap-4">
       {isLoading && <div role="status" className="flex items-center gap-3 text-sm"><progress aria-label="Import progress" value={progress.completed} max={progress.total || 1} className="flex-1" /><span>{progress.completed}/{progress.total}</span><button onClick={() => controller.current?.abort()}>Cancel</button></div>}
+      {lastSummary && <div role="status" className="flex flex-wrap gap-x-4 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+        <span>{lastSummary.pairedImages} paired images</span><span>{lastSummary.imagesWithoutCaption} without caption</span>
+        <span>{lastSummary.standaloneTextFiles} standalone TXT</span><span>{lastSummary.captionConflicts} conflicts</span>
+        {lastSummary.errors > 0 ? <span className="text-destructive">{lastSummary.errors} errors</span> : null}
+      </div>}
       <div 
         className={`rounded-md border border-dashed transition-colors ${
           isDragOver 

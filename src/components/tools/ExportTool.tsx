@@ -16,6 +16,7 @@ export function ExportTool({ active = true }: { active?: boolean }) {
   const dataset = useProjectStore(state => state.dataset);
   const blacklist = useProjectStore(state => state.taggingConfig.blacklist);
   const excludedProjectCategories = useProjectStore(state => state.workspaceSettings.excludedProjectCategories ?? []);
+  const includedProjectCategories = useProjectStore(state => state.workspaceSettings.includedProjectCategories ?? []);
   const directory = useUIStore(state => state.projectDirectoryHandle);
   const refresh = useUIStore(state => state.assetPreviewRefreshKey);
   const notify = useUIStore(state => state.addNotification);
@@ -31,9 +32,9 @@ export function ExportTool({ active = true }: { active?: boolean }) {
   const [revision, setRevision] = useState(0); const controller = useRef<AbortController>();
   const allItems = useMemo(() => toWorkspaceImages(Object.values(sources), Object.values(edits).filter(item => !item.deleted)), [sources, edits]);
   const items = useMemo(() => scope === 'workspace'
-    ? allItems.filter((item) => isProjectPathIncluded(item.assetPath, excludedProjectCategories))
+    ? allItems.filter((item) => isProjectPathIncluded(item.assetPath, excludedProjectCategories, includedProjectCategories))
     : allItems,
-  [allItems, excludedProjectCategories, scope]);
+  [allItems, excludedProjectCategories, includedProjectCategories, scope]);
   useEffect(() => {
     if (busy) return;
     let cancelled = false; setLoading(true); setLoadError(''); setPlan(undefined);

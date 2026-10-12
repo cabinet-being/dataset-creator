@@ -943,6 +943,7 @@ export const AnalysisTool = ({
   const controlId = useId();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
+  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
   const cleanupToolState = useProjectStore(
@@ -971,8 +972,8 @@ export const AnalysisTool = ({
 
   const targetMode: AnalysisTargetMode = fileTargets !== undefined || fileTarget !== undefined ? 'file' : dataset ? 'dataset' : 'project';
   const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
-    !image.hidden && (targetMode !== 'project' || isProjectPathIncluded(image.originalFilePath, excludedProjectCategories))
-  ), [excludedProjectCategories, sourceImagesById, targetMode]);
+    !image.hidden && (targetMode !== 'project' || isProjectPathIncluded(image.originalFilePath, excludedProjectCategories, includedProjectCategories))
+  ), [excludedProjectCategories, includedProjectCategories, sourceImagesById, targetMode]);
   const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
   const datasetFileAssetPaths = useMemo(
     () =>
@@ -1024,7 +1025,7 @@ export const AnalysisTool = ({
       try {
         const collectedAssets = await collectWorkspaceFileAssets(projectDirectoryHandle, paths);
         const assets = targetMode === 'project'
-          ? collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, excludedProjectCategories))
+          ? collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, excludedProjectCategories, includedProjectCategories))
           : collectedAssets;
         if (canceled) {
           return;
@@ -1057,7 +1058,7 @@ export const AnalysisTool = ({
     return () => {
       canceled = true;
     };
-  }, [active, addNotification, assetPreviewRefreshKey, datasetFileAssetPaths, excludedProjectCategories, projectDirectoryHandle, targetMode]);
+  }, [active, addNotification, assetPreviewRefreshKey, datasetFileAssetPaths, excludedProjectCategories, includedProjectCategories, projectDirectoryHandle, targetMode]);
 
   const baseItems = useMemo(
     () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupToolState.workingEdits, []),

@@ -90,6 +90,44 @@ export type ImportImagesResult = {
   importedImages: SourceImage[];
   importedAssets: ImportedProjectAsset[];
   skippedCount: number;
+  summary: ImportPairSummary;
+};
+
+export type ImportPairSummary = {
+  pairedImages: number;
+  imagesWithoutCaption: number;
+  standaloneTextFiles: number;
+  captionConflicts: number;
+  errors: number;
+};
+
+const createImportPairSummary = (): ImportPairSummary => ({ pairedImages:0, imagesWithoutCaption:0, standaloneTextFiles:0, captionConflicts:0, errors:0 });
+const mergeImportPairSummary = (target: ImportPairSummary, source: ImportPairSummary) => {
+  target.pairedImages += source.pairedImages; target.imagesWithoutCaption += source.imagesWithoutCaption;
+  target.standaloneTextFiles += source.standaloneTextFiles; target.captionConflicts += source.captionConflicts; target.errors += source.errors;
+};
+
+export const summarizeImportPairPaths = (paths: readonly string[]): ImportPairSummary => {
+  const summary = createImportPairSummary();
+  const imagesByKey = new Map<string, number>();
+  const textsByKey = new Map<string, number>();
+  for (const path of paths) {
+    const kind = resolveProjectAssetKind(path);
+    const target = kind === 'image' ? imagesByKey : kind === 'text' && getArchiveExtension(path) === '.txt' ? textsByKey : null;
+    if (!target) continue;
+    const key = getImportPairKey(path);
+    target.set(key, (target.get(key) ?? 0) + 1);
+  }
+  for (const [key, imageCount] of imagesByKey) {
+    const textCount = textsByKey.get(key) ?? 0;
+    if (textCount === 1) summary.pairedImages += imageCount;
+    else if (textCount === 0) summary.imagesWithoutCaption += imageCount;
+  }
+  for (const [key, textCount] of textsByKey) {
+    if (!imagesByKey.has(key)) summary.standaloneTextFiles += textCount;
+    if (textCount > 1) summary.captionConflicts += 1;
+  }
+  return summary;
 };
 
 const getArchivePathStem = (path: string): string => path.replace(/\.[^/.]+$/, '');
@@ -99,7 +137,7 @@ const isUnsafeArchivePath = (path: string): boolean => {
   const normalized = path.replace(/\\/g, '/');
   return normalized.startsWith('/') || /^[a-z]:\//i.test(normalized) || normalized.split('/').includes('..');
 };
-const INTERNAL_IMPORT_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
+const INTERNAL_IMPORT_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data', '.git']);
 const isInternalImportPath = (path: string): boolean =>
   path.split('/').some((part) => INTERNAL_IMPORT_DIRECTORY_NAMES.has(part)) || isLegacyProjectRootPath(path);
 
@@ -226,21 +264,40 @@ const getUniqueReservedName = (name: string, reservedNames: Set<string>): string
   return `${baseStem} ${index}${extension}`;
 };
 
+const importEntryExists = async (directory: ProjectDirectoryHandle, name: string): Promise<boolean> => {
+  try { await directory.getFileHandle(name); return true; }
+  catch (error) { if (error instanceof DOMException && error.name === 'NotFoundError') return false; throw error; }
+};
+
 const resolveImportFileName = async (
   fileName: string,
   destination: ImportDestination | undefined,
   reservedNames: Set<string>,
-  explorerDirectoryPath?: string
+  explorerDirectoryPath?: string,
+  options: { reserveCaptionSidecar?: boolean; useReservedTarget?: boolean } = {}
 ): Promise<string> => {
+  if (options.useReservedTarget) return fileName;
   if (destination?.projectDirectory && explorerDirectoryPath) {
     const directory = await getOrCreateDirectoryAtExplorerPath(destination.projectDirectory, explorerDirectoryPath);
-    const filesystemName = await getUniqueExplorerName(directory, fileName);
-    const targetName = getUniqueReservedName(filesystemName, reservedNames);
+    let targetName = getUniqueReservedName(await getUniqueExplorerName(directory, fileName), reservedNames);
+    if (options.reserveCaptionSidecar) {
+      while (reservedNames.has(getCaptionSidecarPath(targetName)) || reservedNames.has(getAssetManifestName(getCaptionSidecarPath(targetName))) ||
+        await importEntryExists(directory, getCaptionSidecarPath(targetName)) || await importEntryExists(directory, getAssetManifestName(getCaptionSidecarPath(targetName)))) {
+        reservedNames.add(targetName);
+        targetName = getUniqueReservedName(await getUniqueExplorerName(directory, fileName), reservedNames);
+      }
+      reservedNames.add(getCaptionSidecarPath(targetName));
+      reservedNames.add(getAssetManifestName(getCaptionSidecarPath(targetName)));
+    }
     reservedNames.add(targetName);
     reservedNames.add(getAssetManifestName(targetName));
     return targetName;
   }
   const targetName = getUniqueReservedName(fileName, reservedNames);
+  if (options.reserveCaptionSidecar) {
+    reservedNames.add(getCaptionSidecarPath(targetName));
+    reservedNames.add(getAssetManifestName(getCaptionSidecarPath(targetName)));
+  }
   reservedNames.add(targetName);
   reservedNames.add(getAssetManifestName(targetName));
   return targetName;
@@ -250,7 +307,8 @@ const getImportTarget = async (
   fileName: string,
   relativePath: string | undefined,
   destination: ImportDestination | undefined,
-  reservedNamesByDirectory: Map<string, Set<string>>
+  reservedNamesByDirectory: Map<string, Set<string>>,
+  options: { reserveCaptionSidecar?: boolean; useReservedTarget?: boolean } = {}
 ): Promise<{ explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string }> => {
   const relativeDirectory = relativePath ? getParentPath(relativePath) : '';
   const explorerDirectoryPath = destination?.explorerPath
@@ -259,7 +317,7 @@ const getImportTarget = async (
   const reservedKey = explorerDirectoryPath ?? '';
   const reservedNames = reservedNamesByDirectory.get(reservedKey) ?? new Set<string>();
   reservedNamesByDirectory.set(reservedKey, reservedNames);
-  const targetFileName = await resolveImportFileName(fileName, destination, reservedNames, explorerDirectoryPath);
+  const targetFileName = await resolveImportFileName(fileName, destination, reservedNames, explorerDirectoryPath, options);
 
   if (!explorerDirectoryPath) {
     return { fileName: targetFileName };
@@ -373,7 +431,8 @@ const processImportedFile = async (
   tags: string[],
   destination: ImportDestination | undefined,
   logger: OperationLogger,
-  reservedNamesByDirectory: Map<string, Set<string>>
+  reservedNamesByDirectory: Map<string, Set<string>>,
+  targetOptions: { reserveCaptionSidecar?: boolean; useReservedTarget?: boolean } = {}
 ): Promise<{ sourceImage: SourceImage | null; asset: ImportedProjectAsset | null }> => {
   const file = await snapshotFile(inputFile);
 
@@ -387,7 +446,7 @@ const processImportedFile = async (
     return { sourceImage: null, asset: null };
   }
 
-  const target = await getImportTarget(file.name, relativePath, destination, reservedNamesByDirectory);
+  const target = await getImportTarget(file.name, relativePath, destination, reservedNamesByDirectory, targetOptions);
   const asset = await writeProjectAsset(file, target, destination, tags);
 
   if (resolveProjectAssetKind(file.name, file.type) !== 'image') {
@@ -418,7 +477,7 @@ const processArchiveFile = async (
   onImageImported?: ImportImagesOptions['onImageImported'],
   onAssetImported?: ImportImagesOptions['onAssetImported'],
   signal?: AbortSignal
-): Promise<{ importedImages: SourceImage[]; importedAssets: ImportedProjectAsset[] }> => {
+): Promise<{ importedImages: SourceImage[]; importedAssets: ImportedProjectAsset[]; summary: ImportPairSummary }> => {
   signal?.throwIfAborted();
   const zip = await JSZip.loadAsync(file);
   const archiveEntries = Object.values(zip.files);
@@ -444,9 +503,11 @@ const processArchiveFile = async (
 
   const importedImages: SourceImage[] = [];
   const importedAssets: ImportedProjectAsset[] = [];
+  const summary = createImportPairSummary();
   const captionTargetByPairKey = new Map<string, string>();
   const imageEntries = entries.filter((entry) => resolveProjectAssetKind(entry.name) === 'image');
   const textEntries = entries.filter((entry) => getArchiveExtension(entry.name) === '.txt');
+  Object.assign(summary, summarizeImportPairPaths(entries.map((entry) => entry.name)));
   const importEntries = [...imageEntries, ...textEntries];
   logger.info(`archive ${file.name} contains ${imageEntries.length} image files and ${textEntries.length} text files`);
 
@@ -464,7 +525,8 @@ const processArchiveFile = async (
         [],
         destination,
         logger,
-        reservedNamesByDirectory
+        reservedNamesByDirectory,
+        { useReservedTarget: captionTargetByPairKey.has(getImportPairKey(entry.name)) }
       );
       if (asset) {
         importedAssets.push(asset);
@@ -489,7 +551,8 @@ const processArchiveFile = async (
       tags,
       destination,
       logger,
-      reservedNamesByDirectory
+      reservedNamesByDirectory,
+      { reserveCaptionSidecar: captionEntries.length === 1 }
     );
     if (asset) {
       importedAssets.push(asset);
@@ -510,7 +573,7 @@ const processArchiveFile = async (
     }
   }
 
-  return { importedImages, importedAssets };
+  return { importedImages, importedAssets, summary };
 };
 
 export const importImageFiles = async (
@@ -520,6 +583,7 @@ export const importImageFiles = async (
   const logger = options.logger ?? createOperationLogger('Import');
   const importedImages: SourceImage[] = [];
   const importedAssets: ImportedProjectAsset[] = [];
+  const summary = createImportPairSummary();
   const reservedNamesByDirectory = new Map<string, Set<string>>();
   const normalizedInputs = files.map(normalizeImportInput);
   const orderedInputs = [...normalizedInputs].sort((left, right) => {
@@ -539,10 +603,12 @@ export const importImageFiles = async (
     const key = getImportPairKey(path);
     directCaptions.set(key, [...(directCaptions.get(key) ?? []), input.file]);
   }
+  Object.assign(summary, summarizeImportPairPaths(normalizedInputs.filter((input) => input.file && !isImportArchiveFile(input.file))
+    .map((input) => input.relativePath || input.file!.name)));
   let skippedCount = 0;
 
   if (files.length === 0) {
-    return { importedImages, importedAssets, skippedCount };
+    return { importedImages, importedAssets, skippedCount, summary };
   }
 
   const destinationLabel = options.destination?.explorerPath
@@ -577,6 +643,7 @@ export const importImageFiles = async (
         );
         importedImages.push(...archiveResult.importedImages);
         importedAssets.push(...archiveResult.importedAssets);
+        mergeImportPairSummary(summary, archiveResult.summary);
       } else {
         const kind = resolveProjectAssetKind(file.name, file.type);
         const originalPath = input.relativePath || file.name;
@@ -593,7 +660,8 @@ export const importImageFiles = async (
           tags,
           options.destination,
           logger,
-          reservedNamesByDirectory
+          reservedNamesByDirectory,
+          { reserveCaptionSidecar: kind === 'image' && captionEntries.length === 1, useReservedTarget: Boolean(pairedTargetPath) }
         );
         if (asset) {
           importedAssets.push(asset);
@@ -615,6 +683,7 @@ export const importImageFiles = async (
     } catch (error) {
       if (options.signal?.aborted) throw error;
       logger.error(`failed to process ${file.name}: ${error instanceof Error ? error.message : 'unknown error'}`);
+      summary.errors += 1;
       options.onError?.(file.name, error);
     }
 
@@ -637,5 +706,5 @@ export const importImageFiles = async (
     logger.warning('completed with no assets imported');
   }
 
-  return { importedImages, importedAssets, skippedCount };
+  return { importedImages, importedAssets, skippedCount, summary };
 };

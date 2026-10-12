@@ -8,14 +8,24 @@ import {
 import { requestPhotopeaPsdPreview } from '../services/psd/photopeaPreviewQueue';
 import { createPsdPreview } from '../services/psd/psdPreviewService';
 import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspaceImages';
+import { getAssetManifestPath } from '../services/project/assetManifestService';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
 
 const REVIEW_FILE_KINDS = new Set<WorkspaceFileAssetKind>(['video', 'psd']);
-const INTERNAL_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data']);
+const INTERNAL_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data', '.git']);
 const PSD_PREVIEW_CONCURRENCY = 3;
 type PsdPreviewUpdate = Pick<WorkspaceFileAsset, 'previewUrl' | 'previewStatus' | 'width' | 'height'>;
 const pendingPsdPreviewByRoot = new WeakMap<ProjectDirectoryHandle, Map<string, Promise<PsdPreviewUpdate>>>();
+const workspaceAssetScanByRoot = new WeakMap<ProjectDirectoryHandle, Promise<WorkspaceFileAsset[]>>();
+const workspaceAssetIssuesByRoot = new WeakMap<ProjectDirectoryHandle, string[]>();
+
+export const getWorkspaceFileAssetIssues = (root: ProjectDirectoryHandle): string[] => [...(workspaceAssetIssuesByRoot.get(root) ?? [])];
+
+export const invalidateWorkspaceFileAssetCache = (root: ProjectDirectoryHandle) => {
+  workspaceAssetScanByRoot.delete(root);
+  workspaceAssetIssuesByRoot.delete(root);
+};
 
 const getFileName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path;
 
@@ -98,7 +108,8 @@ const getOrCreateWorkspacePsdPreview = (
 
 const collectAssetPaths = async (
   directory: ProjectDirectoryHandle,
-  parentPath = 'Project'
+  parentPath = 'Project',
+  issues: string[] = []
 ): Promise<string[]> => {
   const paths: string[] = [];
 
@@ -109,7 +120,8 @@ const collectAssetPaths = async (
 
     const path = `${parentPath}/${entryName}`;
     if ('entries' in entry) {
-      paths.push(...await collectAssetPaths(entry, path));
+      try { paths.push(...await collectAssetPaths(entry, path, issues)); }
+      catch { issues.push(`${path}: folder could not be read`); }
       continue;
     }
 
@@ -126,41 +138,46 @@ export const collectWorkspaceFileAssets = async (
   root: ProjectDirectoryHandle,
   paths?: string[]
 ): Promise<WorkspaceFileAsset[]> => {
-  const assetPaths = paths ? [...new Set(paths)] : await collectAssetPaths(root);
-  const assets: WorkspaceFileAsset[] = [];
+  let scan = workspaceAssetScanByRoot.get(root);
+  if (!scan) {
+    scan = (async () => {
+      const issues: string[] = [];
+      const assetPaths = await collectAssetPaths(root, 'Project', issues);
+      const assets: WorkspaceFileAsset[] = [];
 
-  for (const path of assetPaths) {
-    try {
-      const fileName = getFileName(path);
-      const file = await readExplorerFile(root, path);
-      const kind = getExplorerFileKind(fileName, 'type' in file ? file.type : undefined);
-      if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) {
-        continue;
+      for (const path of assetPaths) {
+        try {
+          const fileName = getFileName(path);
+          const file = await readExplorerFile(root, path);
+          const kind = getExplorerFileKind(fileName, 'type' in file ? file.type : undefined);
+          if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
+          const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
+          const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
+          let metadata: {tags?:unknown;caption?:unknown;excludedFromDataset?:unknown;createdAt?:unknown} = {};
+          try { metadata = JSON.parse(await (await readExplorerFile(root, getAssetManifestPath(path))).text()); } catch { /* metadata is optional */ }
+          const tags = Array.isArray(metadata.tags)
+            ? metadata.tags.filter((tag): tag is string => typeof tag === 'string')
+            : typeof metadata.caption === 'string' ? metadata.caption.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined;
+          assets.push({ id:createWorkspaceFileAssetId(path), path, fileName, kind:kind as WorkspaceFileAssetKind, file,
+            previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
+            modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
+            tags, excludedFromDataset:metadata.excludedFromDataset === true });
+        } catch (error) {
+          issues.push(`${path}: file could not be read`);
+          appLog.warning(`Assets: unable to read ${path}`);
+          if (import.meta.env.DEV) console.warn(`[workspace-assets] unable to read ${path}`, error);
+        }
       }
-
-      let previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
-      const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
-
-      assets.push({
-        id: createWorkspaceFileAssetId(path),
-        path,
-        fileName,
-        kind: kind as WorkspaceFileAssetKind,
-        file,
-        previewUrl,
-        width: previewDimensions?.width,
-        height: previewDimensions?.height,
-        byteSize: file.size,
-        modifiedAt: 'lastModified' in file ? file.lastModified : undefined,
-      });
-    } catch (error) {
-      if (import.meta.env.DEV) {
-        console.warn(`[workspace-assets] unable to read ${path}`, error);
-      }
-    }
+      workspaceAssetIssuesByRoot.set(root, issues);
+      return assets;
+    })();
+    workspaceAssetScanByRoot.set(root, scan);
+    void scan.catch(() => workspaceAssetScanByRoot.delete(root));
   }
-
-  return assets;
+  const scannedAssets = await scan;
+  if (!paths) return scannedAssets.map((asset) => ({ ...asset }));
+  const requested = new Set(paths.map((path) => path.startsWith('Project/') ? path : `Project/${path}`));
+  return scannedAssets.filter((asset) => requested.has(asset.path)).map((asset) => ({ ...asset }));
 };
 
 export const generateMissingWorkspacePsdPreviews = async (

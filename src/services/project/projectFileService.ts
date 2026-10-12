@@ -242,6 +242,9 @@ const deserializeWorkspaceSettings = (
   excludedProjectCategories: Array.isArray(workspaceSettings?.excludedProjectCategories)
     ? workspaceSettings.excludedProjectCategories.filter((path): path is string => typeof path === 'string')
     : [],
+  includedProjectCategories: Array.isArray(workspaceSettings?.includedProjectCategories)
+    ? workspaceSettings.includedProjectCategories.filter((path): path is string => typeof path === 'string')
+    : [],
 });
 
 const readJsonFile = async <T>(zip: JSZip, path: string): Promise<T> => {

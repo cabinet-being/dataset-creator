@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getWorkspaceDisplayName, type WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { addAssetsToDataset, removeAssetsFromDataset, setAssetsExcluded } from '../../lib/assetActions';
@@ -8,11 +8,12 @@ import { useCommands } from '../workspace/Commands';
 import { WorkspaceAssetFrame } from './WorkspaceAssetFrame';
 
 type Props = { membership?: 'add' | 'remove'; showOrder?: boolean; items: WorkspaceImage[]; renderItem: (item: WorkspaceImage) => ReactNode; active?: boolean;
-  className?: string; getKey?: (item: WorkspaceImage) => string; getEstimate?: (item: WorkspaceImage) => number;
+  className?: string;
   toolbarControls?: ReactNode; onScopeChange?: (items: WorkspaceImage[]) => void; onAdd?: (items: WorkspaceImage[]) => void | Promise<void>;
-  directInteraction?: boolean; externalFiltering?: boolean };
+  directInteraction?: boolean; externalFiltering?: boolean; getGroup?: (item: WorkspaceImage) => string;
+  renderGroupHeader?: (group: string, count: number) => ReactNode; collapsedGroups?: ReadonlySet<string> };
 const PAGE_SIZE = 100;
-export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false }: Props) {
+export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false, getGroup, renderGroupHeader, collapsedGroups }: Props) {
   const root = useRef<HTMLDivElement>(null); const search = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState(''); const [caption, setCaption] = useState('all');
   const [sort, setSort] = useState('original'); const [size, setSize] = useState(210);
@@ -32,6 +33,9 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
   }, [filteredIds]);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(filtered.length / PAGE_SIZE) - 1));
   const visible = filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+  const isGroupCollapsed = (group: string) => [...(collapsedGroups ?? [])].some((path) => group === path || group.startsWith(`${path}/`));
+  const navigable = getGroup ? filtered.filter((item) => !isGroupCollapsed(getGroup(item))) : filtered;
+  const firstNavigableVisibleId = visible.find((item) => !getGroup || !isGroupCollapsed(getGroup(item)))?.id;
   const selectedItems = filtered.filter(item => selected.has(item.id));
   const scope = selectedItems.length ? selectedItems : filtered;
   const onScopeRef = useRef(onScopeChange); onScopeRef.current = onScopeChange;
@@ -86,20 +90,27 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSelected(new Set()); return; }
       const cell = (event.target as HTMLElement).closest<HTMLElement>('[data-asset-cell]');
       if (!cell || event.target !== cell) return;
-      const index = filtered.findIndex(item => item.id === cell.dataset.assetCell);
-      if (event.key === ' ') { event.preventDefault(); toggle(filtered[index].id); }
-      if (event.key === 'Enter') { event.preventDefault(); setPreviewId(filtered[index].id); }
+      const index = navigable.findIndex(item => item.id === cell.dataset.assetCell);
+      if (index < 0) return;
+      if (event.key === ' ') { event.preventDefault(); toggle(navigable[index].id); }
+      if (event.key === 'Enter') { event.preventDefault(); setPreviewId(navigable[index].id); }
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageDown', 'PageUp'].includes(event.key)) {
         event.preventDefault(); event.stopPropagation();
         const columns = Math.max(1, getComputedStyle(event.currentTarget).gridTemplateColumns.split(' ').length);
         const offsets: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -columns, ArrowDown: columns, PageDown: PAGE_SIZE, PageUp: -PAGE_SIZE };
-        const next = event.key === 'Home' ? 0 : event.key === 'End' ? filtered.length - 1 : Math.max(0, Math.min(filtered.length - 1, index + offsets[event.key]));
-        if (event.shiftKey) { const start = Math.max(0, filtered.findIndex(item => item.id === (anchor.current || filtered[index].id))); if (!anchor.current) anchor.current = filtered[index].id; setSelected(new Set(filtered.slice(Math.min(start, next), Math.max(start, next) + 1).map(item => item.id))); }
-        else anchor.current = filtered[next].id;
-        setPage(Math.floor(next / PAGE_SIZE)); focus(filtered[next].id);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? navigable.length - 1 : Math.max(0, Math.min(navigable.length - 1, index + offsets[event.key]));
+        if (event.shiftKey) { const start = Math.max(0, filtered.findIndex(item => item.id === (anchor.current || navigable[index].id))); const end = filtered.findIndex(item => item.id === navigable[next].id); if (!anchor.current) anchor.current = navigable[index].id; setSelected(new Set(filtered.slice(Math.min(start, end), Math.max(start, end) + 1).map(item => item.id))); }
+        else anchor.current = navigable[next].id;
+        setPage(Math.floor(filtered.findIndex(item => item.id === navigable[next].id) / PAGE_SIZE)); focus(navigable[next].id);
       }
     }}>
-      {visible.map((item, index) => <div key={item.id} data-asset-cell={item.id} tabIndex={item.id === focusId || (!visible.some(item => item.id === focusId) && index === 0) ? 0 : -1}
+      {visible.map((item, index) => {
+        const group = getGroup?.(item);
+        const previousGroup = index > 0 ? getGroup?.(visible[index - 1]) : undefined;
+        const groupCount = group ? filtered.filter((candidate) => getGroup?.(candidate) === group).length : 0;
+        const header = group && group !== previousGroup && renderGroupHeader ? renderGroupHeader(group, groupCount) : null;
+        if (group && isGroupCollapsed(group)) return header ? <Fragment key={`group:${group}`}>{header}</Fragment> : null;
+        return <Fragment key={item.id}>{header}<div data-asset-cell={item.id} tabIndex={item.id === focusId || (!visible.some(item => item.id === focusId) && item.id === firstNavigableVisibleId) ? 0 : -1}
         role={directInteraction ? 'option' : undefined} aria-selected={directInteraction ? selected.has(item.id) : undefined}
         aria-label={`${getWorkspaceDisplayName(item)}${selected.has(item.id) ? ', selected' : ''}`} className={`group/asset relative min-w-0 rounded-lg ${directInteraction ? 'cursor-default' : ''} ${selected.has(item.id) ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}`}
         onClick={event => { if (directInteraction && !(event.target as HTMLElement).closest('button,input,a,[contenteditable="true"]')) selectDirect(item.id, event.shiftKey, event.ctrlKey || event.metaKey); }}
@@ -107,7 +118,7 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
         onFocus={() => setFocusId(item.id)}>
         {!directInteraction && <div className="mb-1 flex items-center justify-between gap-2"><label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} aria-label={`Select ${getWorkspaceDisplayName(item)}`} /><span className="truncate" title={getWorkspaceDisplayName(item)}>{getWorkspaceDisplayName(item)}</span></label><button className="shrink-0 rounded px-2 py-1 text-xs text-muted-foreground" aria-label={`Preview ${getWorkspaceDisplayName(item)}`} onClick={() => setPreviewId(item.id)}>Open</button></div>}
         {renderItem(item)}
-      </div>)}
+      </div></Fragment>;})}
     </div>
     {!filtered.length && <div className="py-12 text-center text-sm text-muted-foreground"><p>{items.length ? 'No matching files' : 'No files'}</p>{items.length > 0 && <button className="mt-3 rounded border border-border px-3 py-2" onClick={() => { setQuery(''); setCaption('all'); reset(); }}>Reset filters</button>}</div>}
     {filtered.length > PAGE_SIZE && <nav aria-label="Gallery pages" className="mt-4 flex items-center justify-center gap-4 text-sm"><button disabled={!currentPage} onClick={() => { setPage(currentPage - 1); focus(filtered[(currentPage - 1) * PAGE_SIZE].id); }}>Previous</button><span>{currentPage + 1} / {Math.ceil(filtered.length / PAGE_SIZE)}</span><button disabled={(currentPage + 1) * PAGE_SIZE >= filtered.length} onClick={() => { setPage(currentPage + 1); focus(filtered[(currentPage + 1) * PAGE_SIZE].id); }}>Next</button></nav>}

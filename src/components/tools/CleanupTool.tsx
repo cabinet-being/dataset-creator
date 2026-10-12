@@ -24,6 +24,7 @@ import {
 } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { readExplorerFile } from '../../services/project/explorerFileService';
+import { collectWorkspaceFileAssets } from '../../lib/workspaceFileAssets';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import {
   CLOSE_ALL_DOCUMENTS_SCRIPT,
@@ -76,6 +77,7 @@ type CleanupToolProps = {
   active?: boolean;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   onSelectImage?: (imageId: string) => void;
+  onOpenProjectFile?: (path: string) => void;
 };
 
 export const CleanupTool = ({
@@ -84,16 +86,20 @@ export const CleanupTool = ({
   active = true,
   projectDirectoryHandle = null,
   onSelectImage,
+  onOpenProjectFile,
 }: CleanupToolProps = {}) => {
   const rootRef = useRef<HTMLDivElement>(null);
   const writeOperation = useOperation('Save edited image', rootRef, 'tool:clean');
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
+  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const addNotification = useUIStore((state) => state.addNotification);
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
+  const [projectPsdPaths, setProjectPsdPaths] = useState<string[]>([]);
   const runCommand = useCommandRunner();
   const runCommandRef = useRef(runCommand); runCommandRef.current = runCommand;
   const initialSelectedImageId = useProjectStore(
@@ -119,19 +125,28 @@ export const CleanupTool = ({
   const documentState = usePhotopeaDocumentState(rootRef, iframeRef, () => documentReady && (phaseRef.current === 'idle' || phaseRef.current === 'writing'));
 
   const sourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
-    isProjectPathIncluded(image.originalFilePath, excludedProjectCategories)
-  ), [excludedProjectCategories, sourceImagesById]);
+    isProjectPathIncluded(image.originalFilePath, excludedProjectCategories, includedProjectCategories)
+  ), [excludedProjectCategories, includedProjectCategories, sourceImagesById]);
   const editedAssets = useMemo(
     () => Object.values(editedAssetsById).filter((item) =>
-      !item.deleted && isProjectPathIncluded(item.imageDataPath ?? sourceImagesById[item.sourceImageId]?.originalFilePath, excludedProjectCategories)
+      !item.deleted && isProjectPathIncluded(item.imageDataPath ?? sourceImagesById[item.sourceImageId]?.originalFilePath, excludedProjectCategories, includedProjectCategories)
     ),
-    [editedAssetsById, excludedProjectCategories, sourceImagesById]
+    [editedAssetsById, excludedProjectCategories, includedProjectCategories, sourceImagesById]
   );
 
   const workspaceImages = useMemo(
     () => toWorkspaceImages(sourceImages, editedAssets),
     [sourceImages, editedAssets]
   );
+  useEffect(() => {
+    let disposed = false;
+    if (!projectDirectoryHandle || singleFileMode) { setProjectPsdPaths([]); return; }
+    void collectWorkspaceFileAssets(projectDirectoryHandle).then((assets) => {
+      const registeredPsdPaths = new Set(Object.values(editedAssetsById).map((item) => item.psdDataPath).filter((path): path is string => Boolean(path)).map((path) => path.startsWith('Project/') ? path : `Project/${path}`));
+      if (!disposed) setProjectPsdPaths(assets.filter((asset) => asset.kind === 'psd' && !registeredPsdPaths.has(asset.path) && isProjectPathIncluded(asset.path, excludedProjectCategories, includedProjectCategories)).map((asset) => asset.path));
+    }).catch((error) => { if (!disposed) addNotification('warning', error instanceof Error ? error.message : 'Unable to list project PSD files'); });
+    return () => { disposed = true; };
+  }, [addNotification, assetPreviewRefreshKey, editedAssetsById, excludedProjectCategories, includedProjectCategories, projectDirectoryHandle, singleFileMode]);
   const previewUrls = useWorkspacePreviewUrls(workspaceImages);
 
   const selectedImage = useMemo(
@@ -540,7 +555,7 @@ export const CleanupTool = ({
     { id: 'document.cancel', label: 'Close image editor', active, disabled: !selectedImage || isProcessing, run: async () => { try { if (!await documentState.check() || window.confirm('Close this image with unsaved changes?')) closeEditor(); } catch (error) { addNotification('error', error instanceof Error ? error.message : 'Could not verify changes'); } } },
   ]);
 
-  if (workspaceImages.length === 0 || (singleFileMode && !selectedImage)) {
+  if ((workspaceImages.length === 0 && projectPsdPaths.length === 0) || (singleFileMode && !selectedImage)) {
     return (
       <div className="flex h-full min-h-[320px] items-center justify-center px-4 text-center">
         <div className="max-w-sm">
@@ -565,6 +580,12 @@ export const CleanupTool = ({
         <p role="status" className="text-xs text-muted-foreground">{editorStatus}</p>
       </div>}
       <div className={selectedImage || singleFileMode ? 'hidden' : 'h-full min-h-0 overflow-y-auto'}>
+        {projectPsdPaths.length > 0 && onOpenProjectFile ? <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3">
+          <span className="text-sm font-medium">Project PSD</span>
+          <select aria-label="Open project PSD in Photopea" defaultValue="" className="min-w-48 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" onChange={(event) => {
+            if (event.target.value) onOpenProjectFile(event.target.value); event.currentTarget.value = '';
+          }}><option value="">Choose a PSD…</option>{projectPsdPaths.map((path) => <option key={path} value={path}>{path}</option>)}</select>
+        </div> : null}
         <BrickMasonry
           items={workspaceImages}
           getKey={(image) => image.id}

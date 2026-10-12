@@ -87,7 +87,7 @@ export const WorkspacePreviewCard = ({
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-white">{getWorkspaceDisplayName(item)}</p>
               <p className="text-xs text-gray-300">
-                {ASPECT_RATIO_LABELS[item.aspectRatio]} · {item.width} x {item.height}
+                {item.dimensionsKnown === false ? 'Dimensions unknown' : `${ASPECT_RATIO_LABELS[item.aspectRatio]} · ${item.width} x ${item.height}`}
               </p>
             </div>
             <span

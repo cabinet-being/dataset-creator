@@ -1,13 +1,13 @@
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type HTMLAttributes } from 'react';
 import { createPortal } from 'react-dom';
 import { clampSurfaceToViewport } from '../../lib/viewportGeometry';
-export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...props }: HTMLAttributes<HTMLDivElement> & { onDismiss: () => void; initialFocus?: 'first' | 'last' }) {
+export function MenuSurface({ onDismiss, children, initialFocus = 'first', closeOnTab = true, ...props }: HTMLAttributes<HTMLDivElement> & { onDismiss: () => void; initialFocus?: 'first' | 'last'; closeOnTab?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const dismissRef = useRef(onDismiss); dismissRef.current = onDismiss;
   const returnFocus = useRef<HTMLElement | null>(null);
   const [viewportStyle, setViewportStyle] = useState<CSSProperties>({ visibility: 'hidden' });
-  const buttons = () => Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
+  const buttons = () => Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled)') ?? []);
   const place = useCallback(() => {
     const element = ref.current;
     if (!element) return;
@@ -44,7 +44,7 @@ export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...pr
     // StrictMode replays this effect after it has already focused the first item.
     // Keep the original trigger rather than capturing an item that will unmount.
     returnFocus.current ??= document.activeElement as HTMLElement;
-    buttons().forEach(button => { if (!button.hasAttribute('role')) button.setAttribute('role', 'menuitem'); button.tabIndex = -1; });
+    buttons().forEach(button => { if (button.tagName === 'BUTTON' && !button.hasAttribute('role')) button.setAttribute('role', 'menuitem'); if (button.tagName === 'BUTTON') button.tabIndex = -1; });
     place();
     const entries = buttons();
     entries[initialFocus === 'last' ? entries.length - 1 : 0]?.focus();
@@ -58,9 +58,10 @@ export function MenuSurface({ onDismiss, children, initialFocus = 'first', ...pr
       requestAnimationFrame(() => { if (document.activeElement === document.body && returnFocus.current?.isConnected) returnFocus.current.focus(); });
     };
   }, [initialFocus, place]);
-  const surface = <div {...props} style={{ ...props.style, ...viewportStyle }} ref={ref} role="menu" data-state="open" onKeyDown={event => {
-    const entries = buttons(); const index = entries.indexOf(document.activeElement as HTMLButtonElement);
-    if (event.key === 'Escape' || event.key === 'Tab') { event.preventDefault(); event.stopPropagation(); onDismiss(); returnFocus.current?.focus(); return; }
+  const surface = <div {...props} style={{ ...props.style, ...viewportStyle }} ref={ref} role={props.role ?? 'menu'} data-state="open" onKeyDown={event => {
+    const entries = buttons(); const index = entries.indexOf(document.activeElement as HTMLElement);
+    if (event.key === 'Escape' || (event.key === 'Tab' && closeOnTab)) { event.preventDefault(); event.stopPropagation(); onDismiss(); returnFocus.current?.focus(); return; }
+    if ((event.target as HTMLElement).matches('input,select,textarea')) return;
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault(); event.stopPropagation();
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? entries.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length;

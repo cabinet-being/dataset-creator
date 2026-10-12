@@ -6,6 +6,9 @@ import { ChevronLeft, ChevronRight, Download, Pin, Video, X } from 'lucide-react
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { createOperationLogger } from '../../services/logging/applicationLog';
 import { useUIStore } from '../../stores/useUIStore';
+import { useProjectStore } from '../../stores/useProjectStore';
+import { collectWorkspaceFileAssets } from '../../lib/workspaceFileAssets';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { VideoClient, setVideoTabBusy, hasBusyVideoTasks } from '../../services/video/videoClient';
 import { inspectVideo, readVideoFrame, findFrameIndex } from '../../services/video/videoReader';
 import { clearVideoCache, hasVideoModel, getVideoThumbnail } from '../../services/video/videoCache';
@@ -39,6 +42,8 @@ const FrameThumbnail = ({ run, frame }: { run: string; frame: FrameReference }) 
 };
 
 export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileName, projectDirectoryHandle, onSaved }: Props) => {
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const [file, setFile] = useState<Blob | undefined>(initialFile);
   const [name, setName] = useState(fileName ?? 'video');
   const [info, setInfo] = useState<VideoInfo>();
@@ -63,6 +68,7 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
   const [error, setError] = useState<string>();
   const [savedPaths, setSavedPaths] = useState<string[]>([]);
   const [directories, setDirectories] = useState<string[]>([]);
+  const [projectVideos, setProjectVideos] = useState<Array<{ path:string; name:string; file:Blob }>>([]);
   const [destination, setDestination] = useState('Project/src/shared');
   const [replacement, setReplacement] = useState<number>();
   const commandRoot = useRef<HTMLDivElement>(null);
@@ -98,6 +104,17 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
     }).catch((reason) => { if (!disposed) setError(String(reason)); });
     return () => { disposed = true; };
   }, [projectDirectoryHandle]);
+  useEffect(() => {
+    let disposed = false;
+    if (!projectDirectoryHandle || initialFile) { setProjectVideos([]); return; }
+    void collectWorkspaceFileAssets(projectDirectoryHandle).then((assets) => {
+      if (disposed) return;
+      setProjectVideos(assets.filter((asset) => asset.kind === 'video' && isProjectPathIncluded(asset.path,
+        workspaceSettings.excludedProjectCategories ?? [], workspaceSettings.includedProjectCategories ?? []))
+        .map((asset) => ({path:asset.path,name:asset.fileName,file:asset.file})));
+    }).catch((reason) => { if (!disposed) reportError(reason); });
+    return () => { disposed = true; };
+  }, [assetPreviewRefreshKey, initialFile, projectDirectoryHandle, workspaceSettings.excludedProjectCategories, workspaceSettings.includedProjectCategories]);
 
   const reportError = (reason: unknown) => {
     if (!mounted.current) return;
@@ -252,6 +269,10 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
   return <div ref={commandRoot} className="flex h-full min-h-0 flex-col overflow-auto p-3 text-sm" data-video-frames-tool>
     <div className="flex flex-wrap items-center gap-2 border-b border-border pb-2">
       <Video className="h-4 w-4" /><strong>Video Frames</strong><span className="min-w-0 truncate text-xs text-muted-foreground">{file ? name : ''}</span>
+      {!initialFile && projectVideos.length > 0 ? <select aria-label="Project video" value={projectVideos.find((video) => video.file === file)?.path ?? ''} disabled={busy} className={inputClass}
+        onChange={(event) => { const video = projectVideos.find((candidate) => candidate.path === event.target.value); if (video) { setFile(video.file); setName(video.name); } }}>
+        <option value="">Choose project video…</option>{projectVideos.map((video) => <option key={video.path} value={video.path}>{video.path}</option>)}
+      </select> : null}
       {!initialFile && <label className={buttonClass} tabIndex={0} role="button" onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.currentTarget.querySelector('input')?.click(); } }}>Open video<input aria-label="Open video" type="file" accept="video/mp4,video/webm,.mp4,.webm" className="hidden" disabled={busy} onChange={(event) => {
         const chosen = event.target.files?.[0]; if (chosen) { setFile(chosen); setName(chosen.name); }
         event.target.value = '';
