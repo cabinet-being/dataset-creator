@@ -75,8 +75,6 @@ export const serializeDatasetFile = (dataset: Dataset): string => {
       assetPaths,
       psdAssetPaths,
       assetOrder: normalizeDatasetAssetOrder(dataset.assetOrder, dataset.assetIds, assetPaths),
-      overwriteCaptions: dataset.overwriteCaptions,
-      captionOverrides: dataset.captionOverrides,
       createdAt: dataset.createdAt.toISOString(),
       updatedAt: dataset.updatedAt.toISOString(),
     } satisfies DatasetFileManifest,
@@ -112,8 +110,6 @@ export const readDatasetFile = async (
     assetPaths,
     psdAssetPaths,
     assetOrder: normalizeDatasetAssetOrder(manifest.assetOrder, assetIds, assetPaths),
-    overwriteCaptions: manifest.overwriteCaptions ?? false,
-    captionOverrides: manifest.captionOverrides ?? {},
     createdAt: new Date(manifest.createdAt),
     updatedAt: new Date(manifest.updatedAt),
   };

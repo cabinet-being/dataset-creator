@@ -17,7 +17,7 @@ type Props = {
   dataset: Dataset; items: WorkspaceImage[]; active: boolean; suggestion: EmptyDatasetSuggestion | null;
   onTool: (tool: Extract<ToolName, 'select' | 'review' | 'tagging' | 'analysis'>) => void;
   onExport: () => void;
-  onUpdate: (updates: Partial<Pick<Dataset, 'triggerWord' | 'overwriteCaptions'>>) => void;
+  onUpdate: (updates: Partial<Pick<Dataset, 'triggerWord'>>) => void;
   canDrop: (event: DragEvent<HTMLDivElement>) => boolean;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
   onContextMenu: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
@@ -70,7 +70,6 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
           <label className="flex min-w-0 flex-wrap items-center gap-2 text-sm">Trigger
             <input value={dataset.triggerWord} onChange={event => onUpdate({ triggerWord: event.target.value })} className="w-44 max-w-full rounded border border-border bg-background px-2 py-1.5" />
           </label>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={dataset.overwriteCaptions} onChange={event => onUpdate({ overwriteCaptions: event.target.checked })} />Overwrite captions</label>
           <button className="rounded border border-border px-3 py-1.5 text-sm hover:bg-secondary" onClick={() => onTool('analysis')}>Analysis</button>
         </div>
       </details>
@@ -78,6 +77,7 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
       {items.length > 0 ? (
               <AssetGallery
                 active={active}
+                directInteraction
                 membership="remove" showOrder={false}
                 toolbarControls={<select aria-label="Dataset order" value={sort} onChange={event => setSort(event.target.value as DatasetBoardSortMode)} className="rounded-md border border-border bg-background p-2 text-sm">
                   {DATASET_BOARD_SORT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}

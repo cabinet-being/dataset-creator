@@ -260,7 +260,7 @@ try {
       psdData:new Blob(['PSD layers']),psdDataPath:'src/assets/edited.psd'};
     const base = createProject('Move original','character');
     const before = {...base,sourceImages:{[source.id]:source},datasetItems:{[edited.id]:edited},
-      dataset:{...base.dataset,assetIds:[source.id],assetOrder:[`image:${source.id}`],captionOverrides:{[`source:${source.id}`]:['keep caption']}}};
+      dataset:{...base.dataset,assetIds:[source.id],assetOrder:[`image:${source.id}`]}};
     await createProjectDirectory(root,before);
     await root.getDirectoryHandle('Archive',{create:true});
     let moved;
@@ -276,7 +276,7 @@ try {
     assert.deepEqual(reopened.sourceImages[source.id].tags,['source tag']);
     assert.deepEqual(reopened.dataset.assetIds,before.dataset.assetIds);
     assert.deepEqual(reopened.dataset.assetOrder,before.dataset.assetOrder);
-    assert.deepEqual(reopened.dataset.captionOverrides,before.dataset.captionOverrides);
+    assert.equal(reopened.dataset.captionOverrides,undefined,'Current Dataset files do not recreate legacy caption overrides');
     assert.equal(reopened.datasetItems[edited.id].sourceImageId,source.id);
     assert.equal(await reopened.datasetItems[edited.id].imageData.text(),'edited pixels');
     assert.equal(await reopened.datasetItems[edited.id].psdData.text(),'PSD layers');
@@ -384,8 +384,11 @@ try {
   assert.equal((await readDatasetManifest(layoutDirectory)).version, 3);
   const globalDatasetZip = await JSZip.loadAsync(await (await createProjectFileBlob(layoutProject)).arrayBuffer());
   assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.datasets, undefined);
-  assert.equal(JSON.parse(await globalDatasetZip.file('dataset.json').async('string')).version, 3);
-  assert.equal(JSON.parse(await globalDatasetZip.file('dataset.json').async('string')).triggerWord, 'trigger');
+  const globalDatasetDocument = JSON.parse(await globalDatasetZip.file('dataset.json').async('string'));
+  assert.equal(globalDatasetDocument.version, 3);
+  assert.equal(globalDatasetDocument.triggerWord, 'trigger');
+  assert.equal(globalDatasetDocument.overwriteCaptions, undefined);
+  assert.equal(globalDatasetDocument.captionOverrides, undefined);
   const migrationDirectory = directory();
   await createProjectDirectory(migrationDirectory, createProject('Dataset migration', 'character'));
   const migrationDatasetDirectory = await migrationDirectory.getDirectoryHandle('dataset');

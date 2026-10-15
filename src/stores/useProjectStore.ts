@@ -19,6 +19,7 @@ import { createDatasetImageAssetKey, normalizeDatasetAssetOrder } from '../lib/d
 import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
 import { snapshotFileIfNeeded } from '../services/project/fileSnapshotService';
 import { filterLegacyProjectAssetPaths, isLegacyProjectRootPath } from '../services/project/projectPathFilters';
+import { migrateLegacyCaptions } from '../services/caption/captionMigrationService';
 
 const revokePreviewUrl = (previewUrl: string | undefined) => {
   if (!previewUrl) {
@@ -45,20 +46,20 @@ const isLegacyDatasetItem = (item: EditedAsset): boolean =>
 const getPsdAssetPaths = (assetPaths: string[]): string[] =>
   filterLegacyProjectAssetPaths(assetPaths).filter((path) => path.toLowerCase().endsWith('.psd'));
 
-const normalizeDataset = (dataset: Dataset): Dataset => {
+type LegacyDatasetState = Dataset & { overwriteCaptions?: boolean; captionOverrides?: Record<string, string[]> };
+const normalizeDataset = (dataset: LegacyDatasetState): Dataset => {
+  const { overwriteCaptions: _overwriteCaptions, captionOverrides: _captionOverrides, ...current } = dataset;
   const assetIds = [...new Set(dataset.assetIds ?? [])];
   const assetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]);
   const psdAssetPaths = filterLegacyProjectAssetPaths([
     ...new Set([...(dataset.psdAssetPaths ?? []), ...getPsdAssetPaths(assetPaths)]),
   ]);
   return {
-    ...dataset,
+    ...current,
     assetIds,
     assetPaths,
     psdAssetPaths,
     assetOrder: normalizeDatasetAssetOrder(dataset.assetOrder, assetIds, assetPaths),
-    overwriteCaptions: dataset.overwriteCaptions ?? false,
-    captionOverrides: dataset.captionOverrides ?? {},
   };
 };
 
@@ -80,7 +81,7 @@ interface ProjectStore extends ProjectState {
   // Datasets
   createDataset: (name?: string) => Dataset;
   upsertDataset: (dataset: Dataset) => void;
-  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>) => void;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>) => void;
   removeDataset: (id: string) => void;
   addAssetsToDataset: (id: string, assetIds: string[]) => void;
   
@@ -146,11 +147,22 @@ export const useProjectStore = create<ProjectStore>()(
 
             const legacyDatasets = (project as ProjectState & { datasets?: Record<string, Dataset> }).datasets;
             const fallbackDataset = Object.values(legacyDatasets ?? {})[0] ?? createDataset(project.name);
+            const legacyDatasetState = (project.dataset ?? fallbackDataset) as LegacyDatasetState;
+            const dataset = normalizeDataset(legacyDatasetState);
+            const migrated = project.captionMigration ? null : migrateLegacyCaptions({
+              legacy: legacyDatasetState,
+              dataset,
+              sourceImages: project.sourceImages ?? {},
+              datasetItems: supportedDatasetItems,
+              pathAssets: [...dataset.assetPaths, ...dataset.psdAssetPaths].map((path) => ({ path, available: false })),
+            });
             return {
               ...defaults,
               ...project,
-              datasetItems: supportedDatasetItems,
-              dataset: normalizeDataset(project.dataset ?? fallbackDataset),
+              sourceImages: migrated?.sourceImages ?? project.sourceImages,
+              datasetItems: migrated?.datasetItems ?? supportedDatasetItems,
+              dataset,
+              captionMigration: project.captionMigration ?? migrated?.report,
               workspaceSettings: {
                 ...defaults.workspaceSettings,
                 ...project.workspaceSettings,
@@ -346,8 +358,6 @@ export const useProjectStore = create<ProjectStore>()(
                 assetPaths,
                 psdAssetPaths: normalizedPsdAssetPaths,
                 assetOrder: normalizeDatasetAssetOrder(updates.assetOrder ?? dataset.assetOrder, assetIds, assetPaths),
-                overwriteCaptions: updates.overwriteCaptions ?? dataset.overwriteCaptions ?? false,
-                captionOverrides: updates.captionOverrides ?? dataset.captionOverrides ?? {},
                 updatedAt: new Date(),
               },
               lastModified: new Date(),

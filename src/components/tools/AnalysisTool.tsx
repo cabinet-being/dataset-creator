@@ -33,6 +33,8 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import type { AspectRatio, Dataset, SimilarityCluster, SimilarityResult } from '../../types';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
+import { persistCaptionTagsForItems } from '../../services/caption/captionMutationService';
+import { flushProjectSave } from '../../hooks/useProjectSave';
 
 type AnalysisTargetMode = 'project' | 'dataset' | 'file';
 type AnalysisView = 'overview' | 'duplicates' | 'similar' | 'coverage' | 'tags' | 'outliers';
@@ -166,7 +168,7 @@ type AnalysisToolProps = {
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
   onAutoAssemble?: () => void;
   onUpdateDataset?: (
-    updates: Partial<Pick<Dataset, 'assetIds' | 'assetOrder' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'assetIds' | 'assetOrder'>>
   ) => void | Promise<void>;
 };
 
@@ -214,19 +216,7 @@ const createAnalysisVisualItem = (
 const normalizeTags = (tags: string[] = []): string[] =>
   [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
 
-const getCaptionTags = (item: WorkspaceImage, dataset?: Dataset): string[] => {
-  if (!dataset) {
-    return normalizeTags(item.tags);
-  }
-
-  const overrideKeys = [
-    item.id,
-    item.sourceImageId,
-    item.assetPath ? createWorkspaceFileAssetId(item.assetPath) : '',
-  ].filter(Boolean);
-  const overrideTags = overrideKeys.map((key) => dataset.captionOverrides[key]).find((tags) => tags?.length);
-  return normalizeTags(overrideTags ?? item.tags);
-};
+const getCaptionTags = (item: WorkspaceImage, _dataset?: Dataset): string[] => normalizeTags(item.tags);
 
 const getOrientation = (item: WorkspaceImage): 'portrait' | 'landscape' | 'square' => {
   const ratio = item.width / Math.max(1, item.height);
@@ -251,12 +241,6 @@ const hammingDistance = (left: string, right: string): number => {
 };
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
-
-const getCaptionOverridesSignature = (captionOverrides: Dataset['captionOverrides'] = {}): string =>
-  Object.entries(captionOverrides)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, tags]) => `${key}:${normalizeTags(tags).join(',')}`)
-    .join('|');
 
 const colorDistance = (left?: VisualTraits, right?: VisualTraits): number => {
   if (!left || !right) {
@@ -946,7 +930,6 @@ export const AnalysisTool = ({
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
   const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
-  const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
   const cleanupToolState = useProjectStore(
     (state) =>
@@ -992,19 +975,19 @@ export const AnalysisTool = ({
         targetMode,
         dataset?.id ?? '',
         dataset?.updatedAt ? new Date(dataset.updatedAt).getTime() : '',
-        dataset?.overwriteCaptions ? 'overwrite' : 'source-captions',
         [...(dataset?.assetIds ?? [])].sort().join(','),
         datasetFileAssetPaths.join(','),
-        getCaptionOverridesSignature(dataset?.captionOverrides),
+        allSourceImages.map((image) => `${image.id}:${normalizeTags(image.tags).join(',')}`).sort().join('|'),
+        assetPreviewRefreshKey,
         scopedFileTargets.map((target) => target.path).sort().join(','),
       ].join('::'),
     [
       dataset?.assetIds,
-      dataset?.captionOverrides,
       dataset?.id,
-      dataset?.overwriteCaptions,
       dataset?.updatedAt,
       datasetFileAssetPaths,
+      allSourceImages,
+      assetPreviewRefreshKey,
       scopedFileTargets,
       targetMode,
     ]
@@ -1519,26 +1502,17 @@ export const AnalysisTool = ({
       return;
     }
 
-    if (dataset) {
-      if (!onUpdateDataset || !dataset.overwriteCaptions) {
-        addNotification('warning', 'Enable Overwrite captions in Dataset Inspector before editing Dataset captions');
-        return;
-      }
-      const nextOverrides = { ...(dataset.captionOverrides ?? {}) };
-      for (const item of targetItems) {
-        nextOverrides[item.id] = normalizeTags(updater(getCaptionTags(item, dataset)));
-      }
-      await onUpdateDataset({ captionOverrides: nextOverrides });
+    try {
+      await persistCaptionTagsForItems({
+        items: targetItems,
+        resolveTags: (item) => normalizeTags(updater(getCaptionTags(item))),
+        directory: projectDirectoryHandle,
+        flush: flushProjectSave,
+      });
       addNotification('success', `Updated captions for ${targetItems.length} asset${targetItems.length === 1 ? '' : 's'}`);
-      return;
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Unable to save captions');
     }
-
-    for (const item of targetItems) {
-      if (item.kind === 'image' && item.sourceImageId) {
-        updateSourceImage(item.sourceImageId, { tags: normalizeTags(updater(getCaptionTags(item))) });
-      }
-    }
-    addNotification('success', `Updated tags for ${targetItems.length} asset${targetItems.length === 1 ? '' : 's'}`);
   };
 
   const removeTagFromItems = (tag: string, targetItems: WorkspaceImage[]) => {

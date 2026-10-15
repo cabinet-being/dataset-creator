@@ -131,8 +131,6 @@ export interface Dataset {
   assetPaths: string[];
   psdAssetPaths: string[];
   assetOrder: string[];
-  overwriteCaptions: boolean;
-  captionOverrides: Record<string, string[]>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -180,6 +178,7 @@ export interface ProjectState {
   toolState: Record<ToolName, unknown>;
   taggingConfig: TaggingConfig;
   workspaceSettings: WorkspaceSettings;
+  captionMigration?: import('../services/caption/captionMigrationService').CaptionMigrationReport;
   lastModified: Date;
   createdAt: Date;
 }
@@ -281,8 +280,6 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   assetPaths: [],
   psdAssetPaths: [],
   assetOrder: [],
-  overwriteCaptions: false,
-  captionOverrides: {},
   createdAt: new Date(),
   updatedAt: new Date(),
 });

@@ -15,6 +15,7 @@ import type {
 import { getAssetManifestName, PROJECT_MANIFEST_NAME } from './assetManifestService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
 import { createDatasetManifest, type DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
+import { migrateLegacyCaptions } from '../caption/captionMigrationService';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -110,6 +111,7 @@ type ProjectFileManifest = {
     datasetItemManifests?: Record<string, string>;
     cleanupOverlays?: {};
     toolState?: Record<string, unknown>;
+    captionMigration?: ProjectState['captionMigration'];
     lastModified: string;
     createdAt: string;
   };
@@ -331,6 +333,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       editedAssetManifests,
       taggingConfig: serializeTaggingConfig(project.taggingConfig),
       workspaceSettings: project.workspaceSettings,
+      captionMigration: project.captionMigration,
       lastModified: toIsoString(project.lastModified, exportedAt),
       createdAt: toIsoString(project.createdAt, exportedAt),
     },
@@ -576,25 +579,37 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     currentTool,
     typeof legacyCurrentTool === 'string' && isToolName(legacyCurrentTool) ? legacyCurrentTool : 'import'
   );
+  const dataset = {
+    ...defaultDataset,
+    name: restoredDataset?.name ?? defaultDataset.name,
+    triggerWord: restoredDataset?.triggerWord ?? defaultDataset.triggerWord,
+    assetIds: restoredDataset?.assetIds ?? defaultDataset.assetIds,
+    assetPaths: restoredDataset?.assetPaths ?? defaultDataset.assetPaths,
+    psdAssetPaths: globalDatasetManifest?.psdAssetPaths ?? defaultDataset.psdAssetPaths,
+    assetOrder: restoredDataset?.assetOrder ?? defaultDataset.assetOrder,
+    createdAt: globalDatasetManifest?.createdAt ? new Date(globalDatasetManifest.createdAt) : defaultDataset.createdAt,
+    updatedAt: globalDatasetManifest?.updatedAt ? new Date(globalDatasetManifest.updatedAt) : defaultDataset.updatedAt,
+  };
+  const storedCaptionMigration = manifest.project.captionMigration;
+  const migration = storedCaptionMigration ? { sourceImages, datasetItems, report: storedCaptionMigration } : migrateLegacyCaptions({
+    legacy: {
+      overwriteCaptions: globalDatasetManifest?.overwriteCaptions,
+      captionOverrides: globalDatasetManifest?.captionOverrides,
+      triggerWord: dataset.triggerWord,
+    },
+    dataset,
+    sourceImages,
+    datasetItems,
+    pathAssets: [...dataset.assetPaths, ...dataset.psdAssetPaths].map((path) => ({ path, available: false })),
+  });
 
   return {
     ...projectMetadata,
     projectType,
-    sourceImages,
-    datasetItems,
-    dataset: {
-      ...defaultDataset,
-      name: restoredDataset?.name ?? defaultDataset.name,
-      triggerWord: restoredDataset?.triggerWord ?? defaultDataset.triggerWord,
-      assetIds: restoredDataset?.assetIds ?? defaultDataset.assetIds,
-      assetPaths: restoredDataset?.assetPaths ?? defaultDataset.assetPaths,
-      psdAssetPaths: globalDatasetManifest?.psdAssetPaths ?? defaultDataset.psdAssetPaths,
-      assetOrder: restoredDataset?.assetOrder ?? defaultDataset.assetOrder,
-      overwriteCaptions: globalDatasetManifest?.overwriteCaptions ?? defaultDataset.overwriteCaptions,
-      captionOverrides: globalDatasetManifest?.captionOverrides ?? defaultDataset.captionOverrides,
-      createdAt: globalDatasetManifest?.createdAt ? new Date(globalDatasetManifest.createdAt) : defaultDataset.createdAt,
-      updatedAt: globalDatasetManifest?.updatedAt ? new Date(globalDatasetManifest.updatedAt) : defaultDataset.updatedAt,
-    },
+    sourceImages: migration.sourceImages,
+    datasetItems: migration.datasetItems,
+    dataset,
+    captionMigration: migration.report,
     cleanupOverlays: {},
     currentTool: restoredCurrentTool,
     toolState: {

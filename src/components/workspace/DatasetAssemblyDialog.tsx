@@ -5,7 +5,7 @@ import type { Dataset, ProjectType } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
-import { resolveDatasetCaption } from '../../services/caption/captionResolver';
+import { resolveAssetCaption } from '../../services/caption/captionResolver';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { assembleDataset, createAssemblyFingerprint, type AssemblyInputAsset, type DatasetAssemblyPlan } from '../../services/dataset/datasetAssemblyService';
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
@@ -23,7 +23,7 @@ type Props = {
   includedCategories: string[];
   onApply: (paths: string[]) => Promise<void>;
 };
-type Result = { plan: DatasetAssemblyPlan; candidates: AssemblyInputAsset[]; skipped: number };
+type Result = { plan: DatasetAssemblyPlan; candidates: AssemblyInputAsset[]; fingerprintAssets: AssemblyInputAsset[]; skipped: number };
 const percent = (value: number | null) => value === null ? 'Insufficient data' : `${Math.round(value * 100)}%`;
 
 export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, directory, projectId, projectType, excludedCategories, includedCategories, onApply }: Props) {
@@ -76,7 +76,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
           controller.signal.throwIfAborted();
           const item = all[index];
           setPhase('Understanding images and captions'); setProgress({ completed: index, total: all.length });
-          const caption = resolveDatasetCaption(dataset, item).normalized;
+          const caption = resolveAssetCaption(item, dataset.triggerWord).normalized;
           features.push({ item, caption, feature: await encoder.encode(item, caption), quality: item.dimensionsKnown === false ? 0 : Math.min(1, Math.sqrt(item.width * item.height) / 1024) });
           await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
         }
@@ -88,7 +88,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
           mode: mode === 'auto' ? { kind: 'auto' } : { kind: 'limit', limit }, target,
           excludedKeys: constraints.excluded, pinnedKeys: constraints.pinned,
         });
-        setResult({ plan, candidates: encodedCandidates, skipped: scan.skipped.length });
+        setResult({ plan, candidates: encodedCandidates, fingerprintAssets: features, skipped: scan.skipped.length });
       } finally { await encoder.dispose(); }
     } catch (nextError) {
       if (!(nextError instanceof DOMException && nextError.name === 'AbortError')) setError(nextError instanceof Error ? nextError.message : 'Automatic assembly failed.');
@@ -104,7 +104,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
     if (!result || applying) return;
     setApplying(true); setError('');
     try {
-      const fingerprint = await createAssemblyFingerprint(dataset, result.candidates, target.trim());
+      const fingerprint = await createAssemblyFingerprint(dataset, result.fingerprintAssets.map((asset) => ({ ...asset, caption: resolveAssetCaption(asset.item, dataset.triggerWord).normalized })), target.trim());
       if (fingerprint !== result.plan.fingerprint) throw new Error('This preview is stale because the Dataset or captions changed. Run the selection again.');
       await onApply(result.plan.selected.map((step) => step.path));
       onOpenChange(false);

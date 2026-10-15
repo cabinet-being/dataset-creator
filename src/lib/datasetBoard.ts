@@ -9,12 +9,9 @@ export const DATASET_BOARD_SORT_OPTIONS: Array<{ value: DatasetBoardSortMode; la
   { value: 'aspect', label: 'Aspect ratio' },
 ];
 
-/** Project the dataset export caption policy before filtering and sorting. */
-export function datasetBoardItems(items: WorkspaceImage[], dataset: Dataset, sort: DatasetBoardSortMode): WorkspaceImage[] {
-  const projected = items.map(item => ({
-    ...item,
-    tags: dataset.overwriteCaptions ? dataset.captionOverrides[item.id] ?? item.tags : item.tags,
-  }));
+/** Sort the Dataset's asset-owned captions without projecting Dataset-local state. */
+export function datasetBoardItems(items: WorkspaceImage[], _dataset: Dataset, sort: DatasetBoardSortMode): WorkspaceImage[] {
+  const projected = [...items];
   const byName = (left: WorkspaceImage, right: WorkspaceImage) =>
     (left.originalFileName ?? left.fileName).localeCompare(right.originalFileName ?? right.fileName, undefined, { numeric: true, sensitivity: 'base' });
   return projected.sort((left, right) => {

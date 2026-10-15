@@ -94,18 +94,15 @@ import {
   LEGACY_PROJECT_ROOT_DIRECTORY_NAMES,
 } from './services/project/projectPathFilters';
 import {
-  createDatasetForFile,
   getDatasetDisplayName,
   getDatasetFileName,
   isDatasetFileName,
   readDatasetFile,
-  writeDatasetFile,
 } from './services/project/datasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
 import {
-  applyCaptionOverridePathMoves,
   applyExplorerPathMoves,
   applyProjectRelativePathMoves,
   applyFileAssetOrderPathMoves,
@@ -121,7 +118,6 @@ import {
   createExplorerDirectory,
   deleteExplorerEntry,
   duplicateExplorerEntries,
-  getDirectoryAtExplorerPath,
   getExplorerParentDirectory,
   getExplorerFileKind,
   getUniqueExplorerName,
@@ -668,33 +664,6 @@ const readExplorerDirectory = async (
   };
 };
 
-const readProjectDatasetsFromDirectory = async (
-  root: ProjectDirectoryHandle,
-  directory: ProjectDirectoryHandle = root,
-  path = 'Project'
-): Promise<Dataset[]> => {
-  const datasets: Dataset[] = [];
-  for await (const [entryName, entry] of directory.entries()) {
-    if (entryName === '.cache' || entryName === '.dataset-creator-data') {
-      continue;
-    }
-    if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
-      continue;
-    }
-    const childPath = `${path}/${entryName}`;
-    if ('entries' in entry) {
-      datasets.push(...await readProjectDatasetsFromDirectory(root, entry, childPath));
-    } else if (isDatasetFileName(entryName)) {
-      try {
-        datasets.push(await readDatasetFile(root, childPath));
-      } catch (error) {
-        console.warn('Failed to read Dataset file', childPath, error);
-      }
-    }
-  }
-  return datasets;
-};
-
 const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
   name: projectName || 'Project',
   path: 'Project',
@@ -758,8 +727,11 @@ function App() {
     [datasetItems, sourceImages]
   );
   const globalDatasetTags = useMemo(
-    () => [...new Set(Object.values(globalDataset.captionOverrides).flat())].sort((left, right) => left.localeCompare(right)),
-    [globalDataset.captionOverrides]
+    () => [...new Set([
+      ...sourceImages.filter((image) => globalDataset.assetIds.includes(image.id)).flatMap((image) => image.tags ?? []),
+      ...datasetItems.filter((item) => globalDataset.assetIds.includes(item.sourceImageId)).flatMap((item) => item.tags ?? []),
+    ])].sort((left, right) => left.localeCompare(right)),
+    [datasetItems, globalDataset.assetIds, sourceImages]
   );
   const projectTags = useMemo(
     () => [...new Set([...sourceImages.flatMap((image) => image.tags ?? []), ...globalDatasetTags])]
@@ -1070,26 +1042,6 @@ function App() {
     }
 
     const captionEntries: { label: string; tags: string[] }[] = [];
-    const captionKeys = [
-      activeFileWorkspaceItem?.id,
-      activeTab.workspaceImageId,
-      createWorkspaceFileAssetId(activeTab.path),
-    ].filter((key): key is string => Boolean(key));
-    const orderedDatasets = [
-      ...(activeDataset ? [activeDataset] : []),
-      ...Object.values(datasetsById).filter((dataset) => dataset.id !== activeDataset?.id),
-    ];
-
-    for (const dataset of orderedDatasets) {
-      const overrideTags = captionKeys.map((key) => dataset.captionOverrides[key]).find((tags) => tags?.length);
-      if (overrideTags?.length) {
-        captionEntries.push({
-          label: `Dataset: ${dataset.name}`,
-          tags: overrideTags,
-        });
-      }
-    }
-
     const baseTags = activeFileWorkspaceItem?.tags;
     if (baseTags?.length) {
       const alreadyShown = captionEntries.some((entry) => entry.tags.join('\n') === baseTags.join('\n'));
@@ -1102,7 +1054,7 @@ function App() {
     }
 
     return captionEntries;
-  }, [activeDataset, activeFileWorkspaceItem, activeTab, datasetsById]);
+  }, [activeFileWorkspaceItem, activeTab]);
   const getWorkspaceTabChrome = (tab: WorkspaceTab) => {
     const Icon =
       tab.kind === 'tool'
@@ -2004,23 +1956,6 @@ function App() {
     return { assetIds: importedAssetIds, assetPaths: importedAssetPaths, psdAssetPaths: importedPsdPaths };
   };
 
-  const getUniqueDatasetName = (baseName = 'New Dataset', parentPath?: string): string => {
-    const existingNames = new Set(
-      Object.values(datasetsById)
-        .filter((dataset) => !parentPath || (dataset.parentPath || 'Project') === parentPath)
-        .map((dataset) => dataset.name.toLowerCase())
-    );
-    if (!existingNames.has(baseName.toLowerCase())) {
-      return baseName;
-    }
-
-    let index = 2;
-    while (existingNames.has(`${baseName} ${index}`.toLowerCase())) {
-      index += 1;
-    }
-    return `${baseName} ${index}`;
-  };
-
   const getExplorerPathName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path;
 
   const toPhysicalExplorerEntry = (entry: ExplorerItemEntry): ExplorerClipboardEntry => ({
@@ -2028,63 +1963,6 @@ function App() {
     name: entry.kind === 'dataset' ? getExplorerPathName(entry.path) : entry.name,
     kind: entry.kind === 'folder' ? 'folder' : 'file',
   });
-
-  const readDatasetEntry = async (entry: ExplorerItemEntry): Promise<Dataset> => {
-    const directory = requireProjectDirectory();
-    if (!directory) {
-      throw new Error('Open a project directory before using Datasets.');
-    }
-    if (!isDatasetFileName(getExplorerPathName(entry.path))) {
-      throw new Error('Dataset file is no longer available.');
-    }
-    const dataset = await readDatasetFile(directory, entry.path);
-    upsertProjectDataset(dataset);
-    return dataset;
-  };
-
-  const createDatasetFileInDirectory = async (
-    parentPath: string,
-    name: string,
-    source?: Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>
-  ): Promise<Dataset> => {
-    const directory = requireProjectDirectory();
-    if (!directory) {
-      throw new Error('Open a project directory before creating a Dataset.');
-    }
-    const parentDirectory = await getDirectoryAtExplorerPath(directory, parentPath);
-    const fileName = await getUniqueExplorerName(parentDirectory, getDatasetFileName(name));
-    const filePath = `${parentPath}/${fileName}`;
-    const assetIds = [...new Set(source?.assetIds ?? [])];
-    const assetPaths = filterLegacyProjectAssetPaths([...new Set([...(source?.assetPaths ?? []), ...(source?.psdAssetPaths ?? [])])]);
-    const dataset = {
-      ...createDatasetForFile(getDatasetDisplayName(fileName), filePath),
-      triggerWord: source?.triggerWord ?? profile.defaults.triggerWord,
-      assetIds,
-      assetPaths,
-      psdAssetPaths: filterLegacyProjectAssetPaths([...new Set(source?.psdAssetPaths ?? [])]),
-      assetOrder: normalizeDatasetAssetOrder(source?.assetOrder, assetIds, assetPaths),
-      overwriteCaptions: source?.overwriteCaptions ?? false,
-      captionOverrides: source?.captionOverrides ?? {},
-    };
-    await writeDatasetFile(directory, dataset);
-    upsertProjectDataset(dataset);
-    return dataset;
-  };
-
-  const duplicateDatasetEntry = async (entry: ExplorerItemEntry, parentPath?: string): Promise<Dataset | null> => {
-    const dataset = await readDatasetEntry(entry);
-    const copyParentPath =
-      parentPath ?? dataset.parentPath ?? (entry.path.split('/').slice(0, -1).join('/') || 'Project');
-    return createDatasetFileInDirectory(copyParentPath, `${dataset.name} Copy`, {
-      triggerWord: dataset.triggerWord,
-      assetIds: dataset.assetIds,
-      assetPaths: dataset.assetPaths,
-      psdAssetPaths: dataset.psdAssetPaths,
-      assetOrder: dataset.assetOrder,
-      overwriteCaptions: dataset.overwriteCaptions,
-      captionOverrides: dataset.captionOverrides,
-    });
-  };
 
   const openProjectDataset = () => {
     const dataset = useProjectStore.getState().dataset;
@@ -2134,7 +2012,7 @@ function App() {
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>
   ) => {
     // Merge only the changed fields into the latest store snapshot. Passing a
     // captured Dataset back here can overwrite membership added by another panel.
@@ -2247,7 +2125,7 @@ function App() {
       );
     }
 
-    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>) => {
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>) => {
       const latestDataset = useProjectStore.getState().dataset;
       if (!latestDataset) {
         addNotification('warning', 'Dataset is no longer available');
@@ -2796,18 +2674,6 @@ function App() {
                   className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-sm text-foreground"
                 />
               </label>
-              <label className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
-                <input
-                  type="checkbox"
-                  checked={Boolean(activeDataset.overwriteCaptions)}
-                  onChange={(event) =>
-                    void updateDatasetFileBackedState(activeDataset, { overwriteCaptions: event.target.checked })
-                  }
-                  className="h-4 w-4"
-                />
-                <span>Overwrite captions</span>
-              </label>
-
             </div>
           </InspectorSection>
         ) : null}
@@ -2979,7 +2845,6 @@ function App() {
         applyExplorerPathMoves(path, moves)
       );
       const assetOrder = applyFileAssetOrderPathMoves(dataset.assetOrder, moves);
-      const captionOverrides = applyCaptionOverridePathMoves(dataset.captionOverrides, moves);
       const nextDataset = {
         ...dataset,
         parentPath,
@@ -2987,7 +2852,6 @@ function App() {
         assetPaths,
         psdAssetPaths,
         assetOrder: normalizeDatasetAssetOrder(assetOrder, dataset.assetIds, assetPaths),
-        captionOverrides,
         updatedAt: new Date(),
       };
       if (
@@ -2995,8 +2859,7 @@ function App() {
         filePath !== dataset.filePath ||
         assetPaths.some((path, index) => path !== (dataset.assetPaths ?? [])[index]) ||
         psdAssetPaths.some((path, index) => path !== (dataset.psdAssetPaths ?? [])[index]) ||
-        nextDataset.assetOrder.some((key, index) => key !== (dataset.assetOrder ?? [])[index]) ||
-        Object.keys(captionOverrides).some((key) => captionOverrides[key] !== dataset.captionOverrides[key])
+        nextDataset.assetOrder.some((key, index) => key !== (dataset.assetOrder ?? [])[index])
       ) {
         updateProjectDataset(dataset.id, nextDataset);
       }
@@ -3086,14 +2949,6 @@ function App() {
       const assetIds = dataset.assetIds.filter((assetId) => !removedSourceIds.includes(assetId));
       const assetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((path) => !isDeletedPath(path));
       const psdAssetPaths = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((path) => !isDeletedPath(path));
-      const captionOverrides = Object.fromEntries(
-        Object.entries(dataset.captionOverrides ?? {}).filter(([key]) => {
-          if (!key.startsWith('asset:')) {
-            return true;
-          }
-          return !isDeletedPath(key.slice('asset:'.length));
-        })
-      );
       const assetOrder = normalizeDatasetAssetOrder(
         (dataset.assetOrder ?? []).filter((key) => !key.startsWith('file:') || !isDeletedPath(key.slice('file:'.length))),
         assetIds,
@@ -3105,8 +2960,7 @@ function App() {
         assetIds.length !== dataset.assetIds.length ||
         assetPaths.length !== (dataset.assetPaths ?? []).length ||
         psdAssetPaths.length !== (dataset.psdAssetPaths ?? []).length ||
-        assetOrder.length !== (dataset.assetOrder ?? []).length ||
-        Object.keys(captionOverrides).length !== Object.keys(dataset.captionOverrides ?? {}).length
+        assetOrder.length !== (dataset.assetOrder ?? []).length
       ) {
         const nextDataset = {
           ...dataset,
@@ -3114,7 +2968,6 @@ function App() {
           assetPaths,
           psdAssetPaths,
           assetOrder,
-          captionOverrides,
           updatedAt: new Date(),
         };
         updateProjectDataset(dataset.id, nextDataset);
@@ -3260,7 +3113,6 @@ function App() {
         } else {
           try {
             await copyExplorerEntries(directory, clipboard.entries.filter(isFilesystemExplorerEntry), node.path);
-            for (const entry of clipboard.entries.filter(entry => entry.kind === 'dataset')) await duplicateDatasetEntry(entry,node.path);
           } finally { await indexProjectWorkspaceAssets(false); }
         }
         setExpandedExplorerPaths(paths => new Set([...paths,node.path]));
@@ -3277,15 +3129,11 @@ function App() {
       await runExplorerMutation('Duplicate files', async () => {
         const entries = getContextEntries(node);
         const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
-        const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
         try {
           if (filesystemEntries.length > 0) {
             const directory = requireProjectDirectory();
             if (!directory) return;
             await duplicateExplorerEntries(directory, filesystemEntries);
-          }
-          for (const entry of datasetEntries) {
-            await duplicateDatasetEntry(entry);
           }
         } finally { if (filesystemEntries.length > 0) await indexProjectWorkspaceAssets(false); }
       });
@@ -3302,19 +3150,6 @@ function App() {
     }
 
     try {
-      if (edit.kind === 'dataset' && edit.mode === 'create') {
-        const dataset = await runExplorerMutation('Create Dataset', () => createDatasetFileInDirectory(
-          edit.parentPath,
-          edit.value.trim() || getUniqueDatasetName(profile.defaults.datasetName, edit.parentPath)
-        ));
-        setSelectedExplorerPaths(new Set([dataset.filePath!]));
-        setSelectionAnchorPath(dataset.filePath!);
-        setFocusedExplorerPath(dataset.filePath!);
-        setInlineExplorerEdit(null);
-        refreshExplorer();
-        return;
-      }
-
       if (edit.kind === 'dataset' && edit.mode === 'rename' && edit.path) {
         const nextName = edit.value.trim() || 'Dataset';
         const nextPath = await renameExplorerItem(edit.path, 'dataset', nextName);
@@ -4076,8 +3911,6 @@ function App() {
       ].filter((action): action is ContextAction => Boolean(action)),
       [
         createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
-        createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
-        createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
       ],
       [
         isSingleFileSelection
@@ -4456,14 +4289,14 @@ function App() {
   const explorerSelectionNode = explorerSelection.length ? findExplorerNodeByPath(explorerSelection[0].path) : null;
   const explorerCommandScope = () => explorerPanelRef.current;
   const explorerCommands: Command[] = [
-    {id:'explorer.copy', label:'Explorer: Copy', shortcut:'Mod+C', disabled:!explorerSelection.length,
+    {id:'explorer.copy', label:'Explorer: Copy', shortcut:'Mod+C', disabled:!explorerSelection.length || explorerSelection.some(entry => entry.kind === 'dataset'),
       run:() => setExplorerClipboard({mode:'copy', entries:explorerSelection})},
     {id:'explorer.cut', label:'Explorer: Cut', shortcut:'Mod+X', disabled:!explorerSelection.length,
       run:() => setExplorerClipboard({mode:'cut', entries:explorerSelection})},
     {id:'explorer.paste', label:'Explorer: Paste', shortcut:'Mod+V', disabled:!explorerClipboard || !projectDirectoryHandle,
       reason:!projectDirectoryHandle ? 'Open a project directory first' : !explorerClipboard ? 'Copy or cut files first' : undefined,
       run:() => handleExplorerPaste({name:activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path:activeExplorerDirectoryPath, kind:'folder'})},
-    {id:'explorer.duplicate', label:'Explorer: Duplicate', shortcut:'Mod+B', disabled:!explorerSelectionNode || !projectDirectoryHandle,
+    {id:'explorer.duplicate', label:'Explorer: Duplicate', shortcut:'Mod+B', disabled:!explorerSelectionNode || explorerSelection.some(entry => entry.kind === 'dataset') || !projectDirectoryHandle,
       run:() => {if (explorerSelectionNode) return handleExplorerDuplicate(explorerSelectionNode);}},
     {id:'explorer.rename', label:'Explorer: Rename', shortcut:'F2', disabled:explorerSelection.length !== 1 || !explorerSelectionNode || !projectDirectoryHandle,
       reason:!projectDirectoryHandle ? 'Open a project directory first' : 'Select one file or folder',

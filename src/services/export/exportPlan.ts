@@ -7,7 +7,7 @@ import { getExplorerParentDirectory, readExplorerFile } from '../project/explore
 import { getAssetManifestName } from '../project/assetManifestService';
 import { getProjectDatasetAssets } from './datasetExportService';
 import { convertPsdToPng } from './exportService';
-import { resolveDatasetCaption } from '../caption/captionResolver';
+import { resolveAssetCaption } from '../caption/captionResolver';
 import { resolveDatasetMembership } from '../dataset/datasetMembershipResolver';
 
 export type ExportScope = 'dataset' | 'workspace' | 'directory';
@@ -57,7 +57,7 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
     const membership = scope === 'dataset' ? resolveDatasetMembership(dataset, items) : null;
     const selected = scope === 'workspace' ? items : membership!.members;
     const captionFor = (item: WorkspaceImage, tags: string[]) => scope === 'dataset'
-      ? resolveDatasetCaption(dataset, { ...item, tags }).tags
+      ? resolveAssetCaption({ ...item, tags }, dataset.triggerWord).tags
       : tags;
     for (const item of selected) {
       if (item.assetPath) includedPaths.add(item.assetPath);
@@ -76,7 +76,7 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
         const metadata = await readLinkedMetadata(directory, path);
         if (metadata.excludedFromDataset) { plan.skipped.push(`${path} · excluded`); continue; }
         const tags = metadata.caption ? metadata.caption.split(',').map(tag => tag.trim()).filter(Boolean) : metadata.tags ?? [];
-        add(file, path, resolveDatasetCaption(dataset, { id: `asset:${path}`, sourceImageId: '', assetPath: path, tags }).tags, createDatasetFileAssetKey(path), '', /\.psd$/i.test(path) ? 'psd' : undefined);
+        add(file, path, resolveAssetCaption({ id: `asset:${path}`, sourceImageId: '', assetPath: path, tags }, dataset.triggerWord).tags, createDatasetFileAssetKey(path), '', /\.psd$/i.test(path) ? 'psd' : undefined);
       }
       const order = new Map(normalizeDatasetAssetOrder(dataset.assetOrder, [...ids], [...paths]).map((key, i) => [key, i]));
       ordered.sort((a, b) => (order.get(a.key) ?? Infinity) - (order.get(b.key) ?? Infinity));

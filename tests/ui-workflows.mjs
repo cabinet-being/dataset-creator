@@ -8,7 +8,7 @@ import JSZip from 'jszip';
 
 const temp = await mkdtemp(join(tmpdir(), 'ui-workflows-'));
 try {
-  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
+  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
   const module = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
   const { getToolViewContext, setToolViewScope, moveToolViewScope, pruneToolViewScope, resolveCurrentScope } = await module('workspaceToolScope');
   assert.deepEqual(getToolViewContext('analysis',{analysisFiles:[]}),{tool:'analysis',context:{kind:'selection',files:[]}},'An empty explicit selection must not become project scope');
@@ -122,13 +122,13 @@ try {
     { id: 'source:two', fileName: 'a.png', originalFileName: 'Photo 10.png', kind: 'image', tags: ['fallback'], width: 1000, height: 100 },
     { id: 'asset:Project/test.psd', fileName: 'test.psd', kind: 'psd', tags: ['disk'], width: 100, height: 200 },
   ];
-  const boardDataset = { overwriteCaptions: true, captionOverrides: { 'source:one': [], 'asset:Project/test.psd': ['changed', 'caption'] } };
+  const boardDataset = { triggerWord: '' };
   const boardBefore = JSON.stringify(boardFixture);
   const projected = datasetBoardItems(boardFixture, boardDataset, 'captioned');
-  assert.deepEqual(projected.map(item => item.tags), [['changed', 'caption'], ['fallback'], []], 'Explicit empty overrides remove captions; absent overrides retain source captions');
+  assert.deepEqual(projected.map(item => item.tags), [['original'], ['fallback'], ['disk']], 'Dataset cards read the caption owned by each asset');
   assert.deepEqual(datasetBoardItems(boardFixture, boardDataset, 'aspect').map(item => item.width / item.height), [0.5, 2, 10], 'Aspect ordering must compare dimensions numerically');
-  assert.deepEqual(datasetBoardItems(boardFixture, { ...boardDataset, overwriteCaptions: false }, 'name').map(item => item.tags), [['original'], ['fallback'], ['disk']]);
-  assert.equal(JSON.stringify(boardFixture), boardBefore, 'Dataset caption projection must not mutate source tags');
+  assert.deepEqual(datasetBoardItems(boardFixture, boardDataset, 'name').map(item => item.tags), [['original'], ['fallback'], ['disk']]);
+  assert.equal(JSON.stringify(boardFixture), boardBefore, 'Dataset sorting must not mutate asset captions');
   const { createCommandRegistry } = await module('commandRegistry');
   const commands = createCommandRegistry(); let activeDocument = 'first'; let saves = []; let busy = false;
   let changes = 0; const unsubscribeCommands = commands.subscribe(() => changes++);
@@ -373,6 +373,30 @@ try {
   }
   const write = async (dir, name, data) => { const stream = await (await dir.getFileHandle(name, { create: true })).createWritable(); await stream.write(data); await stream.close(); };
   const bytes = async (dir, name) => new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer());
+  const readJson = async (dir, name) => JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text());
+  const { persistCaptionTagsForItems } = await module('captionMutationService');
+  const captionDirectory = directory('caption-project');
+  const captionAssets = await captionDirectory.getDirectoryHandle('assets', {create:true});
+  await write(captionAssets, 'one.psd', new Blob(['one']));
+  await write(captionAssets, 'one.psd.manifest.json', JSON.stringify({id:'one',tags:['old'],custom:true}));
+  await write(captionAssets, 'two.psd', new Blob(['two']));
+  await write(captionAssets, 'two.psd.manifest.json', JSON.stringify({id:'two'}));
+  const captionItems = [
+    {id:'asset:Project/assets/one.psd',sourceImageId:'',assetPath:'Project/assets/one.psd',fileName:'one.psd',kind:'psd',tags:['old']},
+    {id:'asset:Project/assets/two.psd',sourceImageId:'',assetPath:'Project/assets/two.psd',fileName:'two.psd',kind:'psd',tags:undefined},
+  ];
+  useProjectStore.setState({id:'caption-test'}); useHistoryStore.setState({past:[],future:[]});
+  let captionFlushes = 0;
+  await persistCaptionTagsForItems({items:captionItems,resolveTags:item => item.id.includes('one') ? ['new'] : [],directory:captionDirectory,flush:async()=>{captionFlushes++;}});
+  assert.deepEqual((await readJson(captionAssets,'one.psd.manifest.json')).tags,['new']);
+  assert.deepEqual((await readJson(captionAssets,'two.psd.manifest.json')).tags,[],'An explicit empty caption is persisted, not treated as missing');
+  assert.equal(useHistoryStore.getState().past.length,1,'A multi-asset caption edit creates one undo entry');
+  await useHistoryStore.getState().undo();
+  assert.deepEqual((await readJson(captionAssets,'one.psd.manifest.json')).tags,['old']);
+  assert.equal('tags' in await readJson(captionAssets,'two.psd.manifest.json'),false,'Undo restores a previously missing caption');
+  await useHistoryStore.getState().redo();
+  assert.deepEqual((await readJson(captionAssets,'two.psd.manifest.json')).tags,[]);
+  assert.equal(captionFlushes,3,'Save runs for edit, undo and redo');
   const { writeProjectDirectoryChanges, readProjectDirectory, createProjectDirectory } = await module('projectDirectoryService');
   const projectDirectory = directory('snapshot-project');
   const initialProject = useProjectStore.getState();
@@ -419,8 +443,8 @@ try {
   assert.equal(reopenedCreated.dataset.parentPath, 'Project/nested');
   const nested = await createdDirectory.getDirectoryHandle('nested');
   assert.equal(JSON.parse(await (await (await nested.getFileHandle('check.dataset.json')).getFile()).text()).triggerWord, 'first', 'Initial project creation also writes its linked Dataset');
-  const dataset = { id: 'dataset', name: 'Test', assetIds: ['a', 'b'], assetPaths: [], psdAssetPaths: [], assetOrder: ['image:b', 'image:a'], triggerWord: 'Trigger', overwriteCaptions: true, captionOverrides: { 'source:a': ['replacement', 'blocked'] } };
-  const a = { id: 'source:a', sourceImageId: 'a', kind: 'image', fileName: 'same.png', imageData: new Blob(['PNG contents'], { type: 'image/png' }), tags: ['original', 'TRIGGER'] };
+  const dataset = { id: 'dataset', name: 'Test', assetIds: ['a', 'b'], assetPaths: [], psdAssetPaths: [], assetOrder: ['image:b', 'image:a'], triggerWord: 'Trigger' };
+  const a = { id: 'source:a', sourceImageId: 'a', kind: 'image', fileName: 'same.png', imageData: new Blob(['PNG contents'], { type: 'image/png' }), tags: ['replacement', 'blocked'] };
   const b = { id: 'source:b', sourceImageId: 'b', kind: 'image', fileName: 'same.jpg', imageData: new Blob(['JPEG contents'], { type: 'image/jpeg' }), tags: ['blue', 'BLUE'] };
   const excluded = { ...a, id: 'source:c', sourceImageId: 'c', excludedFromDataset: true };
   const args = { scope: 'dataset', items: [a, b, excluded], dataset, blacklist: [' blocked '] };
@@ -429,7 +453,7 @@ try {
   assert.deepEqual(plan.entries.map(entry => entry.imageName), ['same-2.jpg', 'same.png']);
   assert.deepEqual(plan.entries.map(entry => entry.caption), ['Trigger, blue', 'Trigger, replacement']);
   // Mutating source captions after preview cannot silently change the output.
-  dataset.captionOverrides['source:a'] = ['changed after preview'];
+  a.tags = ['changed after preview'];
   const zip = await JSZip.loadAsync(await (await exportPlanAsZip(plan)).arrayBuffer());
   const target = directory(); const progress = [];
   await exportPlanToDirectory(plan, target, undefined, (done, total) => progress.push([done, total]));
@@ -441,7 +465,7 @@ try {
     for (const name of [entry.imageName, entry.textName]) assert.deepEqual(await bytes(target, name), await zip.file(name).async('uint8array'));
   }
   const workspace = await buildExportPlan({ ...args, scope: 'workspace' });
-  assert.equal(workspace.entries[0].caption, 'Trigger, original', 'Dataset overrides must not leak into workspace export');
+  assert.equal(workspace.entries[0].caption, 'Trigger, changed after preview', 'Dataset and workspace export read the same asset-owned caption');
   assert.equal(workspace.skipped.length, 1);
   await assert.rejects(buildExportPlan({ ...args, dataset: { ...dataset, assetIds: ['missing'] } }), /unavailable/);
   const collision = directory(); await write(collision, 'same.png', 'Keep me');
@@ -463,7 +487,7 @@ try {
   await write(data, 'linked.jpg', new Blob(['linked'], { type: 'image/jpeg' }));
   await write(data, 'linked.jpg.manifest.json', JSON.stringify({ tags: ['disk tags'] }));
   await write(data, 'document.psd', new Blob(['psd']));
-  const linkedDataset = { ...dataset, assetIds: [], assetPaths: ['Project/dataset/linked.jpg', 'Project/dataset/document.psd'], overwriteCaptions: false, assetOrder: ['file:Project/dataset/document.psd', 'file:Project/dataset/linked.jpg'] };
+  const linkedDataset = { ...dataset, assetIds: [], assetPaths: ['Project/dataset/linked.jpg', 'Project/dataset/document.psd'], assetOrder: ['file:Project/dataset/document.psd', 'file:Project/dataset/linked.jpg'] };
   const linked = await buildExportPlan({ ...args, dataset: linkedDataset, directory: root });
   assert.equal(linked.entries[0].imageName, 'document.png');
   assert.equal(linked.entries[0].conversion, 'psd');

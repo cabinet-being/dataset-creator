@@ -14,6 +14,7 @@ try {
       'src/services/dataset/sharedCandidateService.ts',
       'src/services/dataset/coverageService.ts',
       'src/services/dataset/datasetAssemblyService.ts',
+      'src/services/caption/captionMigrationService.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -23,6 +24,7 @@ try {
   const shared = await import(pathToFileURL(join(temp, 'sharedCandidateService.mjs')));
   const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
   const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
+  const migration = await import(pathToFileURL(join(temp, 'captionMigrationService.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/src/shared/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -74,6 +76,23 @@ try {
   assert.equal(plan.selected[0].path, 'Project/src/shared/back.png', 'a missing view should beat a near-duplicate portrait');
   assert.deepEqual(plan.rejectedDuplicates, ['src/shared/z-back-copy.png']);
   assert.ok(plan.after.total > plan.before.total);
+  const sourceRecord = { outside: { id:'outside', originalFilePath:'private/outside.png', tags:['original'] }, group: { id:'group', originalFilePath:'src/shared/group.png', tags:['source'] } };
+  const editedRecord = { crop: { id:'crop', sourceImageId:'group', imageDataPath:'src/shared/crop.png', tags:['crop'], deleted:false } };
+  const migratedCaptions = migration.migrateLegacyCaptions({
+    legacy:{overwriteCaptions:true,captionOverrides:{'source:outside':[], 'source:group':['shared override'], 'edited:crop':['crop override'], 'asset:Project/src/shared/direct.png':['path override']}},
+    dataset:{...dataset,triggerWord:'hero'}, sourceImages:sourceRecord, datasetItems:editedRecord,
+    pathAssets:[{path:'Project/src/shared/direct.png',tags:['path']}],
+  });
+  assert.deepEqual(migratedCaptions.sourceImages.outside.tags, [], 'an explicit empty override stays empty');
+  assert.deepEqual(migratedCaptions.sourceImages.group.tags, ['shared override']);
+  assert.deepEqual(migratedCaptions.datasetItems.crop.tags, ['crop override']);
+  assert.deepEqual(migratedCaptions.pathCaptions['Project/src/shared/direct.png'], ['path override']);
+  assert.equal(migratedCaptions.report.status, 'complete');
+  const disabledMigration = migration.migrateLegacyCaptions({
+    legacy:{overwriteCaptions:false,captionOverrides:{'source:outside':['disabled']}}, dataset:{...dataset,triggerWord:'hero'}, sourceImages:sourceRecord, datasetItems:editedRecord,
+  });
+  assert.deepEqual(disabledMigration.sourceImages.outside.tags, ['original'], 'disabled overrides remain archival only');
+  assert.deepEqual(disabledMigration.report.legacyOverrides, {'source:outside':['disabled']});
   console.log('dataset assembly contracts: ok');
 } finally {
   await rm(temp, { recursive: true, force: true });

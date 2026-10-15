@@ -33,12 +33,10 @@ const cosine = (left: Float32Array, right: Float32Array) => {
   for (let index = 0; index < Math.min(left.length, right.length); index += 1) result += left[index] * right[index];
   return Math.max(0, Math.min(1, result));
 };
-export const createAssemblyFingerprint = async (dataset: Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'captionOverrides' | 'overwriteCaptions'>, candidates: AssemblyInputAsset[], target: string) => {
+export const createAssemblyFingerprint = async (dataset: Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths'>, assets: AssemblyInputAsset[], target: string) => {
   const value = JSON.stringify({
     membership: [dataset.assetIds, dataset.assetPaths, dataset.psdAssetPaths],
-    captions: dataset.captionOverrides,
-    overwrite: dataset.overwriteCaptions,
-    candidates: candidates.map((asset) => [stableKey(asset), asset.feature.imageHash, asset.caption]),
+    assets: assets.map((asset) => [stableKey(asset), asset.feature.imageHash, asset.caption]),
     target,
   });
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
@@ -109,7 +107,7 @@ export async function assembleDataset(options: {
   return {
     projectId: options.projectId,
     datasetId: options.dataset.id,
-    fingerprint: await createAssemblyFingerprint(options.dataset, options.candidates, target),
+    fingerprint: await createAssemblyFingerprint(options.dataset, [...options.baseline, ...options.candidates], target),
     algorithm: DATASET_ASSEMBLY_VERSION,
     model: SEMANTIC_FEATURE_MODEL_KEY,
     mode: options.mode,

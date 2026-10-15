@@ -13,6 +13,7 @@ import {
 import { createThumbnail } from '../image/imageProcessor';
 import { getAssetManifestName } from './assetManifestService';
 import { snapshotFileIfNeeded } from './fileSnapshotService';
+import { migrateLegacyCaptions, type PathCaptionAsset } from '../caption/captionMigrationService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
 import { isDatasetFileName, writeDatasetFile } from './datasetFileService';
 import {
@@ -72,6 +73,7 @@ type DirectoryProjectManifest = {
     editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
     datasetFilePath?: string;
+    captionMigration?: ProjectState['captionMigration'];
     lastModified: string;
     createdAt: string;
   };
@@ -358,6 +360,7 @@ const getProjectManifest = (
     sourceImageManifests: paths.sourceImageManifests,
     editedAssetManifests: paths.editedAssetManifests,
     datasetFilePath: project.dataset.filePath,
+    captionMigration: project.captionMigration,
     lastModified: toIsoString(project.lastModified),
     createdAt: toIsoString(project.createdAt),
   },
@@ -684,8 +687,6 @@ export const createProjectDirectory = async (
       assetPaths: project.dataset.assetPaths,
       psdAssetPaths: project.dataset.psdAssetPaths,
       assetOrder: project.dataset.assetOrder,
-      overwriteCaptions: project.dataset.overwriteCaptions,
-      captionOverrides: project.dataset.captionOverrides,
       createdAt: project.dataset.createdAt.toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -803,8 +804,6 @@ export const writeProjectDirectoryChanges = async (
       assetPaths: project.dataset.assetPaths,
       psdAssetPaths: project.dataset.psdAssetPaths,
       assetOrder: project.dataset.assetOrder,
-      overwriteCaptions: project.dataset.overwriteCaptions,
-      captionOverrides: project.dataset.captionOverrides,
       createdAt: project.dataset.createdAt.toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -964,6 +963,33 @@ const readOptionalProjectChildren = async <T>(
   }
 };
 
+const readCaptionPathAssets = async (root: ProjectDirectoryHandle, paths: string[]): Promise<{ assets: PathCaptionAsset[]; manifests: Map<string, Record<string, unknown>> }> => {
+  const assets: PathCaptionAsset[] = [];
+  const manifests = new Map<string, Record<string, unknown>>();
+  for (const path of [...new Set(paths)]) {
+    const relative = toProjectRelativePath(path);
+    try {
+      const directory = await getDirectoryForFilePath(root, relative);
+      await directory.getFileHandle(getFileName(relative));
+      const manifestName = getAssetManifestName(getFileName(relative));
+      let manifest: Record<string, unknown> = { assetPath: path.startsWith('Project/') ? path : `Project/${path}`, fileName: getFileName(relative) };
+      try { manifest = JSON.parse(await readTextFile(directory, manifestName)) as Record<string, unknown>; } catch (error) { if (!isNotFoundError(error)) throw error; }
+      manifests.set(path.startsWith('Project/') ? path : `Project/${path}`, manifest);
+      assets.push({ path, tags: Array.isArray(manifest.tags) ? manifest.tags.filter((tag): tag is string => typeof tag === 'string') : undefined, available: true });
+    } catch { assets.push({ path, available: false }); }
+  }
+  return { assets, manifests };
+};
+
+const writeMigratedPathCaptions = async (root: ProjectDirectoryHandle, captions: Record<string, string[] | undefined>, manifests: Map<string, Record<string, unknown>>) => {
+  for (const [path, tags] of Object.entries(captions)) {
+    const relative = toProjectRelativePath(path);
+    const directory = await getDirectoryForFilePath(root, relative);
+    const manifest = { ...(manifests.get(path) ?? { assetPath: path, fileName: getFileName(relative) }), tags };
+    await writeTextFile(directory, getAssetManifestName(getFileName(relative)), JSON.stringify(manifest, null, 2));
+  }
+};
+
 export const readProjectDirectory = async (
   directory: ProjectDirectoryHandle,
   selectProjectType?: ProjectTypeResolver
@@ -1072,7 +1098,7 @@ export const readProjectDirectory = async (
   const legacyCurrentTool = projectRecord[`currentSta${'ge'}`];
   const currentTool = manifest.project.currentTool ?? (typeof legacyCurrentTool === 'string' ? getToolFromSlug(legacyCurrentTool) : 'import');
 
-  return {
+  const loadedProject: ProjectState = {
     ...defaults,
     id: manifest.project.id,
     name: manifest.project.name,
@@ -1089,8 +1115,6 @@ export const readProjectDirectory = async (
       assetPaths: datasetManifest.assetPaths ?? [],
       psdAssetPaths: datasetManifest.psdAssetPaths ?? [],
       assetOrder: datasetManifest.assetOrder ?? [],
-      overwriteCaptions: datasetManifest.overwriteCaptions ?? false,
-      captionOverrides: datasetManifest.captionOverrides ?? {},
       createdAt: datasetManifest.createdAt ? toDate(datasetManifest.createdAt, defaults.dataset.createdAt) : defaults.dataset.createdAt,
       updatedAt: toDate(datasetManifest.updatedAt, defaults.dataset.updatedAt),
     },
@@ -1103,7 +1127,39 @@ export const readProjectDirectory = async (
       ...defaults.workspaceSettings,
       ...manifest.project.workspaceSettings,
     },
+    captionMigration: manifest.project.captionMigration,
     lastModified: toDate(manifest.project.lastModified, new Date()),
     createdAt: toDate(manifest.project.createdAt, new Date()),
   };
+  const previousMigration = manifest.project.captionMigration;
+  const legacyOverrides = previousMigration?.status === 'pending'
+    ? Object.fromEntries(Object.entries(previousMigration.legacyOverrides).filter(([key]) => previousMigration.unresolved.includes(key)))
+    : datasetManifest.captionOverrides ?? {};
+  const legacyOverwriteEnabled = previousMigration?.overwriteEnabled ?? datasetManifest.overwriteCaptions === true;
+  const migrationNeeded = manifest.project.captionMigration?.status !== 'complete' && (legacyOverwriteEnabled || Object.keys(legacyOverrides).length > 0);
+  if (!migrationNeeded) return loadedProject;
+  const paths = [...loadedProject.dataset.assetPaths, ...loadedProject.dataset.psdAssetPaths];
+  const pathState = await readCaptionPathAssets(directory, paths);
+  const migration = migrateLegacyCaptions({
+    legacy: { overwriteCaptions: legacyOverwriteEnabled, captionOverrides: legacyOverrides, triggerWord: loadedProject.dataset.triggerWord },
+    dataset: loadedProject.dataset,
+    sourceImages: loadedProject.sourceImages,
+    datasetItems: loadedProject.datasetItems,
+    pathAssets: pathState.assets,
+  });
+  const previous = previousMigration;
+  const migratedProject: ProjectState = {
+    ...loadedProject,
+    sourceImages: migration.sourceImages,
+    datasetItems: migration.datasetItems,
+    captionMigration: {
+      ...migration.report,
+      legacyOverrides: previous?.legacyOverrides ?? migration.report.legacyOverrides,
+      applied: [...new Set([...(previous?.applied ?? []), ...migration.report.applied])],
+      conflicts: [...(previous?.conflicts ?? []), ...migration.report.conflicts],
+    },
+  };
+  await writeMigratedPathCaptions(directory, migration.pathCaptions, pathState.manifests);
+  await writeProjectDirectoryChanges(migratedProject, loadedProject, directory);
+  return migratedProject;
 };

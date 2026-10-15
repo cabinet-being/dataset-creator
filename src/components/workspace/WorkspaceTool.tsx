@@ -18,7 +18,7 @@ const VideoFramesTool = lazy(() => import('../tools/VideoFramesTool').then(modul
 
 export type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 export type DatasetToolName = Extract<ToolName, 'select' | 'review' | 'analysis' | 'tagging'>;
-type DatasetUpdates = Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>>;
+type DatasetUpdates = Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>;
 
 type DatasetContext = {
   kind: 'dataset';
@@ -72,7 +72,7 @@ export function WorkspaceTool({ tool, context, active, viewId, directory, onAsse
       fileTarget={file} fileTargets={selection && 'files' in selection ? selection.files : undefined} onOpenAssetContextMenu={onAssetContextMenu} onAutoAssemble={dataset?.onAutoAssemble} />;
     case 'review': return <FinalReviewTool active={active} datasetId={dataset?.datasetId} mode="review" onUpdateDataset={dataset?.onUpdate}
       scope={review} viewId={viewId} onRefresh={onRefresh} onAddFiles={dataset?.onAddFiles} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />;
-    case 'tagging': return <TaggingTool active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate}
+    case 'tagging': return <TaggingTool active={active} datasetId={dataset?.datasetId}
       selectedItemId={file ? file.workspaceImageId : selection && 'itemIds' in selection ? selection.selectedItemId ?? null : project?.selectedItemId ?? null} singleFileMode={Boolean(file)}
       scopedItemIds={selection && 'itemIds' in selection ? selection.itemIds : undefined} onOpenItem={onOpenItem} onOpenAssetContextMenu={onAssetContextMenu} />;
     case 'export': return <ExportTool active={active} />;

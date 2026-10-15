@@ -62,7 +62,7 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
     if (manifest?.hidden || manifest?.deleted || manifest?.excludedFromDataset) { skipped.push({ path, reason: 'excluded' }); continue; }
     const size = await dimensions(file, manifest);
     const stem = file.name.replace(/\.[^.]+$/, '');
-    const textCaption = manifest?.caption === undefined && !(manifest?.tags?.length) ? await readOptionalFile(entry.directory, `${stem}.txt`) : null;
+    const textCaption = manifest?.caption === undefined && manifest?.tags === undefined ? await readOptionalFile(entry.directory, `${stem}.txt`) : null;
     const tags = manifest?.caption !== undefined ? [manifest.caption] : manifest?.tags ?? (textCaption ? [await textCaption.text()] : []);
     const sourceImageId = manifest?.sourceImageId ?? manifest?.id ?? '';
     candidates.push({
@@ -88,4 +88,3 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
   }
   return { candidates, skipped, sharedAvailable: true };
 }
-

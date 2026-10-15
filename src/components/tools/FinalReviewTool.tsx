@@ -159,7 +159,7 @@ type FinalReviewToolProps = {
   active?: boolean;
   onUpdateDataset?: (
     updates: Partial<
-      Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder' | 'overwriteCaptions' | 'captionOverrides'>
+      Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>
     >
   ) => void | Promise<void>;
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;

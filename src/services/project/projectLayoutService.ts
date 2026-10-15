@@ -104,8 +104,6 @@ export const createDatasetManifest = (project: Pick<ProjectState, 'name' | 'proj
   assetPaths: project.dataset.assetPaths,
   psdAssetPaths: project.dataset.psdAssetPaths,
   assetOrder: project.dataset.assetOrder,
-  overwriteCaptions: project.dataset.overwriteCaptions,
-  captionOverrides: project.dataset.captionOverrides,
   createdAt: project.dataset.createdAt.toISOString(),
   updatedAt: new Date().toISOString(),
 });
@@ -147,8 +145,6 @@ export const ensureProjectLayout = async (
         assetPaths: existing.assetPaths ?? (needsAssetIndex ? indexedAssetPaths : project.dataset.assetPaths),
         psdAssetPaths: existing.psdAssetPaths ?? (needsAssetIndex ? indexedPsdAssetPaths : project.dataset.psdAssetPaths),
         assetOrder: existing.assetOrder ?? (needsAssetIndex ? indexedAssetPaths.map((path) => `file:${path}`) : project.dataset.assetOrder),
-        overwriteCaptions: existing.overwriteCaptions ?? project.dataset.overwriteCaptions,
-        captionOverrides: existing.captionOverrides ?? project.dataset.captionOverrides,
         createdAt: existing.createdAt ?? project.dataset.createdAt.toISOString(),
       }
     : createDatasetManifest(project);
