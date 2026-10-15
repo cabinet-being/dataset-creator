@@ -48,6 +48,26 @@ try {
   assert.deepEqual(readWorkspacePersistence(storage,'project-a'),projectA,'Temporary workspace and another project cannot overwrite A geometry');
   assert.ok(findDockGroup(readWorkspacePersistence(storage,'project-b').dock,'tool:review'),'Temporary edits cannot overwrite B geometry');
   assert.equal(findDockGroup(readWorkspacePersistence(storage,'project-b').dock,'tool:analysis'),null);
+  const datasetStorageValues = new Map();
+  const datasetStorage = {getItem:key => datasetStorageValues.get(key) ?? null,setItem:(key,value) => datasetStorageValues.set(key,value)};
+  let dualDatasetDock = migrateDockLayout({}, ['dataset:old', 'dataset:old:analysis', 'tool:review']);
+  dualDatasetDock = floatDockSource(dualDatasetDock, {type:'tab',id:'dataset:old'}, {x:80,y:60,width:500,height:420});
+  dualDatasetDock = openDockView(dualDatasetDock, layoutApi.DATASET_VIEW);
+  dualDatasetDock = layoutApi.focusDockView(dualDatasetDock, 'dataset:old');
+  datasetStorageValues.set(WORKSPACE_STORAGE_KEY, JSON.stringify({version:2, workspace:{projectId:'project-a',activeTabId:'dataset:old',openTabs:[
+    {kind:'window',window:'dataset'}, {kind:'dataset',datasetId:'old',pinned:true}, {kind:'dataset-tool',datasetId:'old',tool:'analysis'},
+  ]}, dock:dualDatasetDock, projects:{}}));
+  const normalizedDataset = readWorkspacePersistence(datasetStorage);
+  assert.equal(normalizedDataset.workspace.activeTabId, layoutApi.DATASET_VIEW);
+  assert.deepEqual(normalizedDataset.workspace.openTabs, [
+    {kind:'window',window:'dataset',pinned:true}, {kind:'dataset-tool',datasetId:'global',tool:'analysis'},
+  ]);
+  assert.equal(viewIds(normalizedDataset.dock).filter(id => id === layoutApi.DATASET_VIEW).length, 1);
+  assert.equal(viewIds(normalizedDataset.dock).some(id => id === 'dataset:old'), false);
+  assert.equal(viewIds(normalizedDataset.dock).some(id => id === 'dataset:old:analysis'), false);
+  assert.equal(viewIds(normalizedDataset.dock).includes('dataset:global:analysis'), true);
+  assert.equal(findDockGroup(normalizedDataset.dock, layoutApi.DATASET_VIEW).host.startsWith('float:'), true, 'The active legacy Dataset placement wins');
+  assert.ok(normalizedDataset.dock.pinned.includes(layoutApi.DATASET_VIEW));
   values.set(WORKSPACE_STORAGE_KEY,'broken JSON');
   assert.deepEqual(readWorkspacePersistence(storage).workspace,{projectId:'stale-legacy'},'Malformed canonical data can recover from retained legacy keys');
 

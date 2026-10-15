@@ -142,7 +142,7 @@ import {
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
 import { useDockWorkspace } from './hooks/useDockWorkspace';
 import { useWorkspaceNavigation } from './hooks/useWorkspaceNavigation';
-import { EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from './lib/workspaceLayout';
+import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from './lib/workspaceLayout';
 import { hasBusyVideoTabs } from './services/video/videoClient';
 
 const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
@@ -282,7 +282,6 @@ const createToolTab = (tool: ToolName, scope?: ToolSelectionScope): ToolWorkspac
 });
 
 const createFileTabId = (): string => `file:${crypto.randomUUID()}`;
-const createDatasetTabId = (datasetId: string): string => `dataset:${datasetId}`;
 const createDatasetToolTabId = (datasetId: string, tool: DatasetToolName): string => `dataset:${datasetId}:${tool}`;
 
 const isDatasetToolName = (tool: unknown): tool is DatasetToolName =>
@@ -293,12 +292,7 @@ const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceT
     return { ...createToolTab(tab.tool, tab.scope), id: tab.id ?? createToolTab(tab.tool, tab.scope).id, pinned: tab.pinned };
   }
   if (tab.kind === 'dataset') {
-    return {
-      id: createDatasetTabId(tab.datasetId),
-      kind: 'dataset',
-      datasetId: tab.datasetId,
-      pinned: tab.pinned,
-    };
+    return { id: DATASET_VIEW, kind: 'window', window: 'dataset', pinned: tab.pinned };
   }
   if (tab.kind === 'window') {
     const workspaceTab: WindowWorkspaceTab = {
@@ -322,9 +316,7 @@ const persistWorkspaceTab = (tab: WorkspaceTab): PersistedWorkspaceTab | null =>
   if (tab.kind === 'tool') {
     return { kind: 'tool', tool: tab.tool, id: tab.id, scope: tab.scope?.review ? { review: tab.scope.review } : undefined, pinned: tab.pinned };
   }
-  if (tab.kind === 'dataset') {
-    return { kind: 'dataset', datasetId: tab.datasetId, pinned: tab.pinned };
-  }
+  if (tab.kind === 'dataset') return { kind: 'window', window: 'dataset', pinned: tab.pinned };
   if (tab.kind === 'dataset-tool') {
     return { kind: 'dataset-tool', datasetId: tab.datasetId, tool: tab.tool, pinned: tab.pinned };
   }
@@ -356,7 +348,7 @@ const getInspectorContext = (tab: WorkspaceTab | null, activeTool: ToolName | nu
     return 'empty';
   }
 
-  if (tab.kind === 'dataset') {
+  if (tab.kind === 'dataset' || (tab.kind === 'window' && tab.window === 'dataset')) {
     return 'dataset';
   }
 
@@ -417,7 +409,7 @@ const getRestorableWorkspaceTabs = (
 ): WorkspaceTab[] => {
   const restoreProjectTabs = Boolean(projectId && layout.projectId === projectId);
   return (layout.openTabs ?? [])
-    .filter((tab) => tab.kind === 'tool' || restoreProjectTabs)
+    .filter((tab) => tab.kind === 'tool' || tab.kind === 'window' || restoreProjectTabs)
     .map(createWorkspaceTabFromPersisted);
 };
 
@@ -809,7 +801,7 @@ function App() {
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const persistWorkspaceRef = useRef<(() => void) | null>(null);
   const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
-    getRestorableWorkspaceTabs(storedWorkspaceLayout).filter((tab) => tab.kind !== 'window')
+    getRestorableWorkspaceTabs(storedWorkspaceLayout).filter((tab) => tab.kind !== 'window' || tab.window === 'dataset')
   );
   const [openTabs, setOpenTabsState] = useState<WorkspaceTab[]>(initialWorkspaceTabs);
   const openTabsRef = useRef(openTabs);
@@ -1371,7 +1363,7 @@ function App() {
       if (tab.kind === 'dataset-tool') {
         return Boolean(datasets[tab.datasetId]);
       }
-      return false;
+      return tab.kind === 'window' && tab.window === 'dataset';
     });
 
     const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool').map(tab => ({
@@ -2094,20 +2086,18 @@ function App() {
     });
   };
 
-  const openDatasetTab = (datasetId: string) => {
+  const openProjectDataset = () => {
     const dataset = useProjectStore.getState().dataset;
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
       return;
     }
 
-    const tab: DatasetWorkspaceTab = {
-      id: createDatasetTabId(datasetId),
-      kind: 'dataset',
-      datasetId,
-    };
+    const tab: WindowWorkspaceTab = { id: DATASET_VIEW, kind: 'window', window: 'dataset' };
     setOpenTabs((tabs) => (tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab]));
     setActiveTabId(tab.id);
+    dock.show(DATASET_VIEW);
+    requestAnimationFrame(() => document.getElementById(`panel-${DATASET_VIEW}`)?.focus());
   };
 
   const openDatasetToolTab = (datasetId: string, tool: DatasetToolName) => {
@@ -2131,9 +2121,6 @@ function App() {
   const refreshOpenDatasetTabs = (datasetId: string) => {
     setOpenTabs((tabs) =>
       tabs.map((tab) => {
-        if (tab.kind === 'dataset' && tab.datasetId === datasetId) {
-          return { ...tab, id: createDatasetTabId(datasetId) };
-        }
         if (tab.kind === 'dataset-tool' && tab.datasetId === datasetId) {
           return { ...tab, id: createDatasetToolTabId(datasetId, tab.tool) };
         }
@@ -2142,14 +2129,8 @@ function App() {
     );
   };
 
-  const openDatasetToolFromExplorer = async (node: ExplorerTreeNode, tool: DatasetToolName) => {
-    try {
-      const dataset = await readDatasetEntry(node);
-      openDatasetToolTab(dataset.id, tool);
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to open Dataset tool');
-    }
-  };
+  const openDatasetToolFromExplorer = async (_node: ExplorerTreeNode, tool: DatasetToolName) =>
+    openDatasetToolTab(globalDataset.id, tool);
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
@@ -2276,19 +2257,14 @@ function App() {
     };
     return <WorkspaceTool tool={tab.tool} viewId={tab.id} active={activeTabId === tab.id} directory={projectDirectoryHandle}
       onRefresh={() => indexProjectWorkspaceAssets()}
-      context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select'), onAutoAssemble:() => { setDatasetAssemblyRequestToken(Date.now()); openDatasetTab(dataset.id); }}}
+      context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select'), onAutoAssemble:() => { setDatasetAssemblyRequestToken(Date.now()); openProjectDataset(); }}}
       onOpenImport={() => navigateToTool('import')}
       onAssetContextMenu={tab.tool === 'select' ? openAssetExplorerContextMenu : (item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)} />;
   };
 
   const openExplorerFile = async (node: ExplorerTreeNode) => {
     if (node.kind === 'dataset') {
-      try {
-        const dataset = await readDatasetEntry(node);
-        openDatasetTab(dataset.id);
-      } catch (error) {
-        addNotification('error', error instanceof Error ? error.message : 'Failed to open Dataset');
-      }
+      openProjectDataset();
       return;
     }
 
@@ -2503,7 +2479,7 @@ function App() {
   };
 
   const renderDatasetWorkspace = (dataset: Dataset) => (
-    <DatasetBoard dataset={dataset} items={activeDatasetPreviewItems} active={activeTab?.kind === 'dataset'} suggestion={activeEmptyDatasetSuggestion}
+    <DatasetBoard dataset={dataset} items={activeDatasetPreviewItems} active={activeTab?.id === DATASET_VIEW} suggestion={activeEmptyDatasetSuggestion}
       projectDirectoryHandle={projectDirectoryHandle} projectId={projectId} projectType={projectType}
       assemblyRequestToken={datasetAssemblyRequestToken}
       onAssemblyRequestHandled={() => setDatasetAssemblyRequestToken(0)}
@@ -2539,7 +2515,7 @@ function App() {
           setCurrentDraggedExplorerEntries(null);
           const operationId = crypto.randomUUID();
           const operations = useOperationStore.getState();
-          operations.start({ id: operationId, viewId: createDatasetTabId(dataset.id), label: 'Add files to Dataset' });
+          operations.start({ id: operationId, viewId: DATASET_VIEW, label: 'Add files to Dataset' });
           void (async () => {
             let assetIds = droppedEntries?.length
               ? collectDatasetAssetIdsFromExplorerEntries(droppedEntries)
@@ -2800,7 +2776,7 @@ function App() {
           </InspectorSection>
         ) : null}
 
-        {showDatasetInspector && activeDataset && activeTab?.kind !== 'dataset' ? (
+        {showDatasetInspector && activeDataset && activeTab?.id !== DATASET_VIEW ? (
           <InspectorSection
             title="Dataset"
             open={inspectorSectionsOpen.dataset}
@@ -4392,28 +4368,7 @@ function App() {
               </div>
             </div>
 </div> },
-    { id: 'window:dataset', title: 'Dataset', icon: Layers3, content: <div className="h-full overflow-auto p-3">            <div className="space-y-3 text-xs">
-              <div className="rounded border border-border bg-background p-3">
-                <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Global Dataset</p>
-                <p className="mt-1 truncate text-sm font-semibold">{globalDataset.name}</p>
-                <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 text-muted-foreground">
-                  <span>Assets</span><span className="text-right text-foreground">{globalDataset.assetIds.length + globalDataset.assetPaths.length}</span>
-                  <span>Trigger word</span><span className="truncate text-right text-foreground">{globalDataset.triggerWord || '—'}</span>
-                  <span>Tags</span><span className="text-right text-foreground">{globalDatasetTags.length}</span>
-                </div>
-              </div>
-              <div>
-                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Tags</p>
-                {globalDatasetTags.length > 0 ? (
-                  <div className="flex flex-wrap gap-1">
-                    {globalDatasetTags.map((tag) => <span key={tag} className="rounded border border-border bg-background px-2 py-1">{tag}</span>)}
-                  </div>
-                ) : (
-                  <p className="rounded border border-border px-2 py-2 text-muted-foreground">No Dataset tags yet</p>
-                )}
-              </div>
-            </div>
-<button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={() => openDatasetTab(globalDataset.id)}>Open Dataset</button></div> },
+    { id: DATASET_VIEW, title: 'Dataset', icon: Layers3, content: renderDatasetWorkspace(globalDataset) },
     ...openTabs.filter((tab) => tab.kind !== 'window').map((tab) => {
       const chrome = getWorkspaceTabChrome(tab);
       return { id: tab.id, title: chrome.label, icon: chrome.Icon, pinned: tab.pinned, dirty: isTabDirty(tab),
@@ -4534,9 +4489,10 @@ function App() {
     ...WORKSPACE_WINDOWS.map(window => ({ id: `window.${window.id}`, label: `Toggle ${window.label}`, run: () => {
       const id = `window:${window.id}`;
       if (dock.isOpen(id)) return closeWorkspaceViews([id]);
+      if (id === DATASET_VIEW) return openProjectDataset();
       dock.show(id);
     } })),
-    { id: 'dataset.open', label: 'Open Dataset', run: () => openDatasetTab(globalDataset.id) },
+    { id: 'dataset.open', label: 'Open Dataset', run: openProjectDataset },
     { id: 'dataset.add', label: 'Add files to Dataset', run: () => openDatasetToolTab(globalDataset.id, 'select') },
     { id: 'settings', label: 'Settings', run: () => setIsWorkspaceSettingsOpen(true) },
     { id: 'help', label: 'Keyboard shortcuts', run: () => openCommands(true) },

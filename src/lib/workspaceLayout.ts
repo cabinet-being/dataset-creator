@@ -18,6 +18,7 @@ export type DockLayout = {
 export type DockSource = { type: 'tab'; id: string } | { type: 'group'; id: string } | { type: 'host'; id: string };
 export type DockTarget = { host: string; group: string; side: DockSide; index?: number };
 export const EXPLORER_VIEW = 'window:explorer';
+export const DATASET_VIEW = 'window:dataset';
 export const DOCK_STORAGE_KEY = 'dataset-creator-docking-v1';
 export const DOCK_HEADER_HEIGHT = 36;
 export const DOCK_GUTTER = 6;
@@ -31,6 +32,49 @@ export const ensureDockEditorGroup = (layout: DockLayout): DockLayout => {
   return { ...layout, main: dockSplit(dockGroup(), layout.main, 'horizontal', 0.75) };
 };
 export const dockViews = (node: DockNode | null): string[] => dockGroups(node).flatMap((group) => group.tabs);
+export const isLegacyDatasetView = (id: string): boolean => /^dataset:[^:]+$/.test(id);
+
+/** Collapse legacy Dataset editors and the Dataset utility window into one canonical dock view. */
+export const normalizeDatasetDockLayout = (layout: DockLayout): DockLayout => {
+  const aliases = (id: string) => id === DATASET_VIEW || isLegacyDatasetView(id);
+  const normalizeScopedTool = (id: string) => id.replace(/^dataset:[^:]+:(select|analysis|review|tagging)$/, 'dataset:global:$1');
+  const groups = dockHosts(layout).flatMap((host) => dockGroups(host.root).map((group) => ({ host: host.id, group })));
+  const candidates = groups.filter(({ group }) => group.tabs.some(aliases));
+  if (!candidates.length) return layout;
+  const activeCandidate = candidates.find(({ group }) => group.id === layout.focusedGroup && aliases(group.active ?? ''));
+  const canonicalCandidate = candidates.find(({ group }) => group.tabs.includes(DATASET_VIEW));
+  const winner = activeCandidate ?? canonicalCandidate ?? candidates[0];
+  const pinned = new Set(layout.pinned ?? []);
+  const datasetPinned = [...pinned].some(aliases);
+  for (const id of [...pinned]) if (aliases(id)) pinned.delete(id);
+  if (datasetPinned) pinned.add(DATASET_VIEW);
+  const prune = (node: DockNode): DockNode | null => {
+    if (node.type === 'tabs') {
+      const aliasIndexes = node.tabs.flatMap((id, index) => aliases(id) ? [index] : []);
+      let tabs = [...new Set(node.tabs.filter((id) => !aliases(id)).map(normalizeScopedTool))];
+      if (node.id === winner.group.id) tabs.splice(Math.min(aliasIndexes[0] ?? tabs.length, tabs.length), 0, DATASET_VIEW);
+      if (!tabs.length) return null;
+      const normalizedActive = normalizeScopedTool(node.active ?? '');
+      const active = aliases(node.active ?? '')
+        ? node.id === winner.group.id ? DATASET_VIEW : tabs[0]
+        : tabs.includes(normalizedActive) ? normalizedActive : tabs[0];
+      return { ...node, tabs, active };
+    }
+    const first = prune(node.first);
+    const second = prune(node.second);
+    return first && second ? { ...node, first, second } : first ?? second;
+  };
+  const left = layout.left ? prune(layout.left) : null;
+  const main = prune(layout.main) ?? dockGroup([], 'main-empty');
+  const floating = layout.floating.flatMap((host) => {
+    const root = prune(host.root);
+    return root ? [{ ...host, root }] : [];
+  });
+  const locations = Object.fromEntries(Object.entries(layout.locations).filter(([id]) => !aliases(id)).map(([id, location]) => [normalizeScopedTool(id), location]));
+  const previousLocation = layout.locations[DATASET_VIEW] ?? Object.entries(layout.locations).find(([id]) => isLegacyDatasetView(id))?.[1];
+  if (previousLocation) locations[DATASET_VIEW] = previousLocation;
+  return { ...layout, left, main, floating, locations, pinned: [...pinned], focusedGroup: activeCandidate ? winner.group.id : layout.focusedGroup };
+};
 export const dockHosts = (layout: DockLayout): { id: string; root: DockNode | null }[] => [
   { id: 'left', root: layout.left }, { id: 'main', root: layout.main }, ...layout.floating.map((host) => ({ id: host.id, root: host.root })),
 ];
