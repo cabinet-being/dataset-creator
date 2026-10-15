@@ -1,5 +1,5 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { VIDEO_MODEL_KEY, loadVideoModel, rgbModelTensor } from '../video/videoModel';
+import { VIDEO_MODEL_KEY, downloadVideoModel, loadVideoModel, rgbModelTensor } from '../video/videoModel';
 import { getCachedImageFeature, getCachedTextFeature, setCachedImageFeature, setCachedTextFeature } from './semanticFeatureCache';
 
 export const SEMANTIC_FEATURE_MODEL = {
@@ -48,6 +48,8 @@ export const extractCaptionContexts = (caption: string): string[] => {
 };
 
 export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progress?: (phase: string) => void) => {
+  progress?.('Preparing semantic model');
+  await downloadVideoModel(signal, (value) => progress?.(value.phase));
   progress?.('Loading semantic model');
   const model = await loadVideoModel(signal, (value) => progress?.(value.phase));
   const canvas = new OffscreenCanvas(224, 224);
