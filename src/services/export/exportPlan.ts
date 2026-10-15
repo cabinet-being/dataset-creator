@@ -7,6 +7,8 @@ import { getExplorerParentDirectory, readExplorerFile } from '../project/explore
 import { getAssetManifestName } from '../project/assetManifestService';
 import { getProjectDatasetAssets } from './datasetExportService';
 import { convertPsdToPng } from './exportService';
+import { resolveDatasetCaption } from '../caption/captionResolver';
+import { resolveDatasetMembership } from '../dataset/datasetMembershipResolver';
 
 export type ExportScope = 'dataset' | 'workspace' | 'directory';
 export type ExportEntry = { imageName: string; textName: string; caption: string; blob: Blob; source: string; conversion?: 'psd' };
@@ -52,17 +54,20 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
     const ids = new Set(dataset.assetIds);
     const paths = new Set([...dataset.assetPaths, ...(dataset.psdAssetPaths ?? [])]);
     const includedPaths = new Set<string>();
-    const selected = items.filter(item => scope === 'workspace' || ids.has(item.sourceImageId) || (item.assetPath && paths.has(item.assetPath)));
-    const captionFor = (id: string, tags: string[]) => scope === 'dataset' && dataset.overwriteCaptions ? dataset.captionOverrides[id] ?? tags : tags;
+    const membership = scope === 'dataset' ? resolveDatasetMembership(dataset, items) : null;
+    const selected = scope === 'workspace' ? items : membership!.members;
+    const captionFor = (item: WorkspaceImage, tags: string[]) => scope === 'dataset'
+      ? resolveDatasetCaption(dataset, { ...item, tags }).tags
+      : tags;
     for (const item of selected) {
       if (item.assetPath) includedPaths.add(item.assetPath);
       if (item.excludedFromDataset) { plan.skipped.push(`${item.fileName} · excluded`); continue; }
       if (item.kind === 'video') { plan.skipped.push(`${item.fileName} · video; save frames before exporting`); continue; }
       const key = item.assetPath && (item.kind === 'psd' || !ids.has(item.sourceImageId)) ? createDatasetFileAssetKey(item.assetPath) : createDatasetImageAssetKey(item.sourceImageId);
-      add(item.kind === 'psd' ? item.psdData ?? item.imageData : item.imageData, item.fileName, captionFor(item.id, item.tags ?? []), key, '', item.kind === 'psd' ? 'psd' : undefined);
+      add(item.kind === 'psd' ? item.psdData ?? item.imageData : item.imageData, item.fileName, captionFor(item, item.tags ?? []), key, '', item.kind === 'psd' ? 'psd' : undefined);
     }
     if (scope === 'dataset') {
-      for (const id of ids) if (!items.some(item => item.sourceImageId === id)) throw new Error(`Dataset image is unavailable: ${id}`);
+      for (const id of membership!.missingAssetIds) throw new Error(`Dataset image is unavailable: ${id}`);
       for (const path of paths) {
         if (includedPaths.has(path)) continue;
         if (!/\.(png|jpe?g|webp|gif|bmp|psd)$/i.test(path)) { plan.skipped.push(`${path} · unsupported image format`); continue; }
@@ -71,7 +76,7 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
         const metadata = await readLinkedMetadata(directory, path);
         if (metadata.excludedFromDataset) { plan.skipped.push(`${path} · excluded`); continue; }
         const tags = metadata.caption ? metadata.caption.split(',').map(tag => tag.trim()).filter(Boolean) : metadata.tags ?? [];
-        add(file, path, captionFor(`asset:${path}`, tags), createDatasetFileAssetKey(path), '', /\.psd$/i.test(path) ? 'psd' : undefined);
+        add(file, path, resolveDatasetCaption(dataset, { id: `asset:${path}`, sourceImageId: '', assetPath: path, tags }).tags, createDatasetFileAssetKey(path), '', /\.psd$/i.test(path) ? 'psd' : undefined);
       }
       const order = new Map(normalizeDatasetAssetOrder(dataset.assetOrder, [...ids], [...paths]).map((key, i) => [key, i]));
       ordered.sort((a, b) => (order.get(a.key) ?? Infinity) - (order.get(b.key) ?? Infinity));
