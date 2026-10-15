@@ -730,6 +730,7 @@ const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTreeNode |
 function App() {
   const projectId = useProjectStore((state) => state.id);
   const projectName = useProjectStore((state) => state.name);
+  const projectType = useProjectStore((state) => state.projectType);
   const currentTool = useProjectStore((state) => state.currentTool);
   const profile = useProjectStore((state) => PROJECT_TYPE_PROFILES[state.projectType]);
   const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType } | null) => void } | null>(null);
@@ -785,6 +786,7 @@ function App() {
   const [openMenu, setOpenMenu] = useState<WorkspaceMenu | null>(null);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
+  const [datasetAssemblyRequestToken, setDatasetAssemblyRequestToken] = useState(0);
   const projectMenuButtonRef = useRef<HTMLButtonElement>(null);
   const projectOperationOriginRef = useRef<HTMLElement | null>(null);
   const projectWasBusyRef = useRef(false);
@@ -995,12 +997,16 @@ function App() {
   );
   const activeDatasetWorkspaceAssetPaths = activeDatasetFileAssetPaths;
   const activeDatasetSourceImages = useMemo(
-    () => globalDataset.assetIds.map((id) => sourceImagesById[id]).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset)),
-    [globalDataset.assetIds, sourceImagesById]
+    () => {
+      const ids = new Set(globalDataset.assetIds);
+      const paths = new Set(activeDatasetFileAssetPaths.map((path) => path.replace(/^Project\//, '')));
+      return Object.values(sourceImagesById).filter((asset) => ids.has(asset.id) || Boolean(asset.originalFilePath && paths.has(asset.originalFilePath.replace(/^Project\//, ''))));
+    },
+    [activeDatasetFileAssetPaths, globalDataset.assetIds, sourceImagesById]
   );
   const activeDatasetPreviewItems = useMemo(
-    () => orderDatasetBoardItems(toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets), globalDataset.assetOrder, globalDataset.assetIds),
-    [globalDataset, activeDatasetSourceImages, datasetWorkspaceFileAssets]
+    () => orderDatasetBoardItems(toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets, {}, datasetItems), globalDataset.assetOrder, globalDataset.assetIds),
+    [globalDataset, activeDatasetSourceImages, datasetItems, datasetWorkspaceFileAssets]
   );
   const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
     const isEmpty =
@@ -2270,7 +2276,7 @@ function App() {
     };
     return <WorkspaceTool tool={tab.tool} viewId={tab.id} active={activeTabId === tab.id} directory={projectDirectoryHandle}
       onRefresh={() => indexProjectWorkspaceAssets()}
-      context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select')}}
+      context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select'), onAutoAssemble:() => { setDatasetAssemblyRequestToken(Date.now()); openDatasetTab(dataset.id); }}}
       onOpenImport={() => navigateToTool('import')}
       onAssetContextMenu={tab.tool === 'select' ? openAssetExplorerContextMenu : (item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)} />;
   };
@@ -2498,11 +2504,22 @@ function App() {
 
   const renderDatasetWorkspace = (dataset: Dataset) => (
     <DatasetBoard dataset={dataset} items={activeDatasetPreviewItems} active={activeTab?.kind === 'dataset'} suggestion={activeEmptyDatasetSuggestion}
+      projectDirectoryHandle={projectDirectoryHandle} projectId={projectId} projectType={projectType}
+      assemblyRequestToken={datasetAssemblyRequestToken}
+      onAssemblyRequestHandled={() => setDatasetAssemblyRequestToken(0)}
+      excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []}
       onTool={tool => openDatasetToolTab(dataset.id, tool)} onExport={() => navigateToTool('export')}
       onUpdate={updates => { void updateDatasetFileBackedState(dataset, updates).catch(error => addNotification('error', `Could not save Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
       onContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
       onApplySuggestion={suggestion => { void applyEmptyDatasetSuggestion(dataset, suggestion).catch(error => addNotification('error', `Could not add suggested files: ${error instanceof Error ? error.message : String(error)}`)); }}
       onDismissSuggestion={dismissEmptyDatasetSuggestion}
+      onApplyAssembly={async paths => {
+        await indexProjectWorkspaceAssets(false);
+        const addedCount = addDatasetReferences({ assetPaths: paths });
+        if (!addedCount) { addNotification('info', 'Selected images are already in this Dataset'); return; }
+        await flushProjectSave();
+        addNotification('success', `Added ${addedCount} coverage image${addedCount === 1 ? '' : 's'} to ${dataset.name}`);
+      }}
       canDrop={event => !event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE) && Boolean(draggedExplorerEntriesRef.current?.length || draggedExplorerEntries?.length || event.dataTransfer.types.includes('text/plain') || event.dataTransfer.types.includes('Files'))}
       onDrop={event => {
           if (event.dataTransfer.types.includes(WORKSPACE_TAB_DRAG_TYPE)) {

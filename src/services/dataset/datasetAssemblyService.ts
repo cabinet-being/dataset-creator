@@ -1,7 +1,7 @@
 import type { Dataset, ProjectType } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { SemanticFeature } from '../analysis/semanticFeatureService';
-import { SEMANTIC_FEATURE_MODEL_KEY } from '../analysis/semanticFeatureService';
+import { encodeCaptionText, SEMANTIC_FEATURE_MODEL_KEY } from '../analysis/semanticFeatureService';
 import { measureCoverage, type CoverageAsset, type CoverageMetrics } from './coverageService';
 import { normalizeDatasetPath } from './datasetMembershipResolver';
 
@@ -28,6 +28,11 @@ export type DatasetAssemblyPlan = {
 
 const stableKey = (asset: AssemblyInputAsset) => normalizeDatasetPath(asset.item.assetPath ?? asset.item.id);
 const coverageAsset = (asset: AssemblyInputAsset): CoverageAsset => ({ key: stableKey(asset), feature: asset.feature });
+const cosine = (left: Float32Array, right: Float32Array) => {
+  let result = 0;
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) result += left[index] * right[index];
+  return Math.max(0, Math.min(1, result));
+};
 export const createAssemblyFingerprint = async (dataset: Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'captionOverrides' | 'overwriteCaptions'>, candidates: AssemblyInputAsset[], target: string) => {
   const value = JSON.stringify({
     membership: [dataset.assetIds, dataset.assetPaths, dataset.psdAssetPaths],
@@ -52,6 +57,7 @@ export async function assembleDataset(options: {
   pinnedKeys?: ReadonlySet<string>;
 }): Promise<DatasetAssemblyPlan> {
   const target = options.target?.trim() ?? '';
+  const targetFeature = target ? encodeCaptionText(target) : null;
   const existingHashes = new Set(options.baseline.map((asset) => asset.feature.imageHash));
   const seenHashes = new Set(existingHashes);
   const rejectedDuplicates: string[] = [];
@@ -78,7 +84,8 @@ export async function assembleDataset(options: {
       const candidate = remaining[index];
       const nextMetrics = measureCoverage([...selectedAssets, candidate].map(coverageAsset), universe);
       const pinned = options.pinnedKeys?.has(stableKey(candidate));
-      const gain = nextMetrics.total - metrics.total + (pinned ? 1 : 0);
+      const targetRelevance = targetFeature && candidate.caption ? cosine(targetFeature, candidate.feature.text) : 0;
+      const gain = nextMetrics.total - metrics.total + targetRelevance * 0.08 + (pinned ? 1 : 0);
       if (gain > bestGain + 1e-9 || (Math.abs(gain - bestGain) <= 1e-9 && (candidate.quality ?? 0) > (remaining[bestIndex]?.quality ?? 0))) {
         bestIndex = index; bestGain = gain; bestMetrics = nextMetrics;
       }

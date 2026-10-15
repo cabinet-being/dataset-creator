@@ -164,6 +164,7 @@ type AnalysisToolProps = {
   fileTarget?: AnalysisFileTarget;
   fileTargets?: AnalysisFileTarget[];
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
+  onAutoAssemble?: () => void;
   onUpdateDataset?: (
     updates: Partial<Pick<Dataset, 'assetIds' | 'assetOrder' | 'captionOverrides'>>
   ) => void | Promise<void>;
@@ -938,6 +939,7 @@ export const AnalysisTool = ({
   fileTarget,
   fileTargets,
   onOpenAssetContextMenu,
+  onAutoAssemble,
   onUpdateDataset,
 }: AnalysisToolProps = {}) => {
   const controlId = useId();
@@ -1613,7 +1615,7 @@ export const AnalysisTool = ({
             <button
               key={id}
               type="button"
-              onClick={() => setActiveView(id)}
+              onClick={() => id === 'coverage' && onAutoAssemble ? onAutoAssemble() : setActiveView(id)}
               className={`flex items-center justify-between rounded-md border px-2 py-2 text-left transition-colors ${
                 activeView === id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-secondary'
               }`}

@@ -60,7 +60,10 @@ export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progres
       const imageKey = `${imageHash}:${SEMANTIC_FEATURE_MODEL.visual}`;
       let image = getCachedImageFeature(imageKey);
       if (!image) {
-        const bitmap = await createImageBitmap(item.imageData);
+        const visualBlob = item.kind === 'psd' && item.previewUrl
+          ? await fetch(item.previewUrl, { signal }).then((response) => response.blob())
+          : item.imageData;
+        const bitmap = await createImageBitmap(visualBlob);
         try {
           const scale = 256 / Math.min(bitmap.width, bitmap.height);
           const width = Math.floor(bitmap.width * scale);
@@ -80,4 +83,3 @@ export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progres
     dispose: () => model.dispose(),
   };
 };
-

@@ -1,6 +1,6 @@
-import { useMemo, useState, type DragEvent, type MouseEvent } from 'react';
-import { Download, Layers3, Plus, Tags } from 'lucide-react';
-import type { Dataset, ToolName } from '../../types';
+import { useEffect, useMemo, useState, type DragEvent, type MouseEvent } from 'react';
+import { Download, Layers3, Plus, Sparkles, Tags } from 'lucide-react';
+import type { Dataset, ProjectType, ToolName } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
@@ -9,6 +9,8 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import { ContextActionGroups } from '../ui/ContextActions';
 import { datasetBoardItems, DATASET_BOARD_SORT_OPTIONS, type DatasetBoardSortMode } from '../../lib/datasetBoard';
+import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
+import { DatasetAssemblyDialog } from './DatasetAssemblyDialog';
 
 export type EmptyDatasetSuggestion = { signature: string; items: WorkspaceImage[]; assetIds: string[]; totalCount: number };
 type Props = {
@@ -21,11 +23,22 @@ type Props = {
   onContextMenu: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
   onApplySuggestion: (suggestion: EmptyDatasetSuggestion) => void;
   onDismissSuggestion: (signature: string) => void;
+  projectDirectoryHandle?: ProjectDirectoryHandle;
+  projectId: string;
+  projectType: ProjectType;
+  excludedCategories: string[];
+  includedCategories: string[];
+  onApplyAssembly: (paths: string[]) => Promise<void>;
+  assemblyRequestToken?: number;
+  onAssemblyRequestHandled?: () => void;
 };
 const EMPTY_ITEMS: WorkspaceImage[] = [];
-export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExport, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion }: Props) {
+export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExport, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion,
+  projectDirectoryHandle, projectId, projectType, excludedCategories, includedCategories, onApplyAssembly, assemblyRequestToken, onAssemblyRequestHandled }: Props) {
   const [sort, setSort] = useState<DatasetBoardSortMode>('name');
   const [dropActive, setDropActive] = useState(false);
+  const [assemblyOpen, setAssemblyOpen] = useState(false);
+  useEffect(() => { if (assemblyRequestToken) { setAssemblyOpen(true); onAssemblyRequestHandled?.(); } }, [assemblyRequestToken, onAssemblyRequestHandled]);
   const boardItems = useMemo(() => datasetBoardItems(items, dataset, sort), [items, dataset, sort]);
   const previewUrls = useWorkspacePreviewUrls(boardItems);
   const suggestionPreviewUrls = useWorkspacePreviewUrls(suggestion?.items ?? EMPTY_ITEMS);
@@ -44,6 +57,7 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
         </div>
         <ContextActionGroups mode="toolbar" groups={[[
           { id: 'add', label: 'Add files', icon: Plus, onSelect: () => onTool('select') },
+          { id: 'assemble', label: 'Auto assemble', icon: Sparkles, onSelect: () => setAssemblyOpen(true) },
           { id: 'review', label: 'Review', icon: Layers3, onSelect: () => onTool('review') },
           { id: 'caption', label: 'Caption', icon: Tags, onSelect: () => onTool('tagging') },
           { id: 'export', label: 'Export', icon: Download, variant: 'primary', onSelect: onExport },
@@ -149,5 +163,8 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
         <div className="py-10 text-center"><p className="text-sm text-muted-foreground">{linked ? 'No linked files available' : 'Empty Dataset'}</p></div>
       )}
     </div>
+    <DatasetAssemblyDialog open={assemblyOpen} onOpenChange={setAssemblyOpen} dataset={dataset} items={items}
+      directory={projectDirectoryHandle} projectId={projectId} projectType={projectType}
+      excludedCategories={excludedCategories} includedCategories={includedCategories} onApply={onApplyAssembly} />
   </div>;
 }

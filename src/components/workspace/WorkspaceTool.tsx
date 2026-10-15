@@ -25,6 +25,7 @@ type DatasetContext = {
   datasetId: string;
   onUpdate: (updates: DatasetUpdates) => void | Promise<void>;
   onAddFiles: () => void;
+  onAutoAssemble: () => void;
 };
 type FileContext = { kind: 'file'; file: AnalysisScopeTarget };
 type Props = {
@@ -68,7 +69,7 @@ export function WorkspaceTool({ tool, context, active, viewId, directory, onAsse
       : <SimilarityReviewTool />;
     case 'clean': return <CleanupTool active={active} selectedImageId={project?.selectedItemId ?? null} onSelectImage={onOpenItem} onOpenProjectFile={onOpenProjectFile} projectDirectoryHandle={directory} />;
     case 'analysis': return <AnalysisTool active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate} projectDirectoryHandle={directory}
-      fileTarget={file} fileTargets={selection && 'files' in selection ? selection.files : undefined} onOpenAssetContextMenu={onAssetContextMenu} />;
+      fileTarget={file} fileTargets={selection && 'files' in selection ? selection.files : undefined} onOpenAssetContextMenu={onAssetContextMenu} onAutoAssemble={dataset?.onAutoAssemble} />;
     case 'review': return <FinalReviewTool active={active} datasetId={dataset?.datasetId} mode="review" onUpdateDataset={dataset?.onUpdate}
       scope={review} viewId={viewId} onRefresh={onRefresh} onAddFiles={dataset?.onAddFiles} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />;
     case 'tagging': return <TaggingTool active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate}
