@@ -106,23 +106,3 @@ export const applyFileAssetOrderPathMoves = (
 
 export const applyWorkspaceAssetIdMoves = (id: string | undefined, moves: ExplorerPathMove[]): string | undefined =>
   id?.startsWith('asset:') ? createWorkspaceFileAssetId(applyExplorerPathMoves(id.slice('asset:'.length), moves)) : id;
-
-export const applyCaptionOverridePathMoves = (
-  captionOverrides: Record<string, string[]> = {},
-  moves: ExplorerPathMove[]
-): Record<string, string[]> => {
-  const nextOverrides: Record<string, string[]> = {};
-
-  Object.entries(captionOverrides).forEach(([key, tags]) => {
-    if (!key.startsWith('asset:')) {
-      nextOverrides[key] = tags;
-      return;
-    }
-
-    const path = key.slice('asset:'.length);
-    const nextPath = applyExplorerPathMoves(path, moves);
-    nextOverrides[createWorkspaceFileAssetId(nextPath)] = tags;
-  });
-
-  return nextOverrides;
-};

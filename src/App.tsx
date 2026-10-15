@@ -140,6 +140,7 @@ import { useDockWorkspace } from './hooks/useDockWorkspace';
 import { useWorkspaceNavigation } from './hooks/useWorkspaceNavigation';
 import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from './lib/workspaceLayout';
 import { hasBusyVideoTabs } from './services/video/videoClient';
+import { resolveDatasetMembership } from './services/dataset/datasetMembershipResolver';
 
 const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
 type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'review' | 'analysis' | 'caption';
@@ -726,18 +727,6 @@ function App() {
     () => toWorkspaceImages(sourceImages, datasetItems),
     [datasetItems, sourceImages]
   );
-  const globalDatasetTags = useMemo(
-    () => [...new Set([
-      ...sourceImages.filter((image) => globalDataset.assetIds.includes(image.id)).flatMap((image) => image.tags ?? []),
-      ...datasetItems.filter((item) => globalDataset.assetIds.includes(item.sourceImageId)).flatMap((item) => item.tags ?? []),
-    ])].sort((left, right) => left.localeCompare(right)),
-    [datasetItems, globalDataset.assetIds, sourceImages]
-  );
-  const projectTags = useMemo(
-    () => [...new Set([...sourceImages.flatMap((image) => image.tags ?? []), ...globalDatasetTags])]
-      .sort((left, right) => left.localeCompare(right)),
-    [globalDatasetTags, sourceImages]
-  );
   const setDarkMode = useUIStore(state => state.setDarkMode);
   const documentStates = useDocumentStateStore(state => state.documents);
   const addNotification = useUIStore(state => state.addNotification);
@@ -971,6 +960,16 @@ function App() {
   const activeDatasetPreviewItems = useMemo(
     () => orderDatasetBoardItems(toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets, {}, datasetItems), globalDataset.assetOrder, globalDataset.assetIds),
     [globalDataset, activeDatasetSourceImages, datasetItems, datasetWorkspaceFileAssets]
+  );
+  const globalDatasetTags = useMemo(
+    () => [...new Set(resolveDatasetMembership(globalDataset, activeDatasetPreviewItems).members.flatMap((item) => item.tags ?? []))]
+      .sort((left, right) => left.localeCompare(right)),
+    [activeDatasetPreviewItems, globalDataset]
+  );
+  const projectTags = useMemo(
+    () => [...new Set([...sourceImages.flatMap((image) => image.tags ?? []), ...globalDatasetTags])]
+      .sort((left, right) => left.localeCompare(right)),
+    [globalDatasetTags, sourceImages]
   );
   const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
     const isEmpty =

@@ -348,3 +348,8 @@ Code audit found the PSD save callback was the last UI-level filesystem writer o
 ### Live PSD → PNG export — 2026-10-11
 
 Created a 32×24 PSD fixture with red and blue halves, referenced it from a Dataset, and ran the real ExportTool with Folder destination. The normal Photopea conversion completed and wrote `sentinel.png` plus `sentinel.txt` to a fresh OPFS directory. Reopening the persisted result verified the PNG signature, 32×24 dimensions, left pixel `255,0,0,255`, right pixel `0,0,255,255`, and caption `sentinel\n`. This closes the live PSD conversion gap for folder export; the protocol/cancellation suite already covers cancellation and ZIP/folder plan parity.
+## Unified Dataset captions and direct grid — 2026-10-15
+
+`tests/caption-browser.html` now loads two captioned Dataset members with portrait and panorama dimensions. In the actual App fixture, Dataset exposed one `Dataset` tab and its cards had no checkbox/Open row. Click and Ctrl+click produced one- and two-card selection; opening a card action menu retained both selections. Double-click opened preview and Escape returned focus to the selected card.
+
+The Dataset Caption action replaced both asset-owned captions in one operation. Dataset search immediately found both by the new caption, and the command palette exposed one `Undo · Edit 2 captions`; Undo restored both original captions. At a 320 × 720 viewport the Dataset panel measured 280 px client/scroll width, the panorama and portrait cards did not overlap, and the long filenames remained inside the panel. The temporary viewport override was reset after verification.

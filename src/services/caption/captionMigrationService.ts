@@ -1,6 +1,6 @@
 import { createWorkspaceFileAssetId, normalizeWorkspaceAssetPath } from '../../lib/workspaceImages';
 import type { Dataset, EditedAsset, SourceImage } from '../../types';
-import { captionKeysForItem, resolveLegacyDatasetCaption, type LegacyCaptionDataset } from './captionResolver';
+import { captionKeyGroupsForItem, resolveLegacyDatasetCaption, type LegacyCaptionDataset } from './captionResolver';
 
 export const CAPTION_MIGRATION_VERSION = 1;
 export type CaptionMigrationReport = {
@@ -8,6 +8,7 @@ export type CaptionMigrationReport = {
   status: 'complete' | 'pending';
   overwriteEnabled: boolean;
   legacyOverrides: Record<string, string[]>;
+  assetSnapshots: Record<string, string[] | null>;
   applied: string[];
   unresolved: string[];
   unavailable: string[];
@@ -27,16 +28,23 @@ export function migrateLegacyCaptions(options: {
   const overrides = options.legacy.captionOverrides ?? {};
   const consumed = new Set<string>();
   const applied: string[] = [];
+  const assetSnapshots: Record<string, string[] | null> = {};
   const conflicts: CaptionMigrationReport['conflicts'] = [];
   const sources = { ...options.sourceImages };
   const edited = { ...options.datasetItems };
   const pathCaptions: Record<string, string[] | undefined> = {};
   const apply = (asset: string, item: { id: string; sourceImageId: string; assetPath?: string; tags?: string[] }, update: (tags: string[]) => void) => {
-    const keys = captionKeysForItem(item).filter((key) => Object.prototype.hasOwnProperty.call(overrides, key));
+    const keys = captionKeyGroupsForItem(item)
+      .map((group) => group.filter((key) => Object.prototype.hasOwnProperty.call(overrides, key)))
+      .find((group) => group.length > 0) ?? [];
+    if (distinct(keys.map((key) => overrides[key] ?? [])) > 1) {
+      conflicts.push({ asset, keys });
+      return;
+    }
     keys.forEach((key) => consumed.add(key));
-    if (distinct(keys.map((key) => overrides[key] ?? [])) > 1) conflicts.push({ asset, keys });
     if (!options.legacy.overwriteCaptions || !keys.length) return;
     const tags = resolveLegacyDatasetCaption({ ...options.legacy, triggerWord: options.dataset.triggerWord }, item).tags;
+    assetSnapshots[asset] = item.tags ? [...item.tags] : null;
     update([...tags]); applied.push(asset);
   };
   for (const id of options.dataset.assetIds) {
@@ -67,6 +75,7 @@ export function migrateLegacyCaptions(options: {
       status: unresolved.length || unavailablePaths.length ? 'pending' : 'complete',
       overwriteEnabled: options.legacy.overwriteCaptions === true,
       legacyOverrides: structuredClone(overrides),
+      assetSnapshots,
       applied,
       unresolved,
       unavailable: [...new Set(unavailablePaths)],

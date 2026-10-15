@@ -38,8 +38,8 @@ try {
   assert.deepEqual(result.missingAssetPaths, []);
   assert.equal(result.members.length, 5);
   assert.equal(result.effective.length, 4);
-  assert.equal(caption.resolveDatasetCaption(dataset, outside).source, 'override');
-  assert.equal(caption.resolveDatasetCaption(dataset, outside).text, '');
+  assert.equal(caption.resolveLegacyDatasetCaption(dataset, outside).source, 'override');
+  assert.equal(caption.resolveLegacyDatasetCaption(dataset, outside).text, '');
   assert.equal(caption.normalizeCaptionForAnalysis('Hero,  Back view\nCAPTION: ignored', 'hero'), 'back view');
 
   const file = (name, contents, type = '') => ({ name, getFile: async () => new File([contents], name, { type, lastModified: 7 }) });
@@ -87,7 +87,21 @@ try {
   assert.deepEqual(migratedCaptions.sourceImages.group.tags, ['shared override']);
   assert.deepEqual(migratedCaptions.datasetItems.crop.tags, ['crop override']);
   assert.deepEqual(migratedCaptions.pathCaptions['Project/src/shared/direct.png'], ['path override']);
+  assert.deepEqual(migratedCaptions.report.assetSnapshots['source:outside'],['original']);
+  assert.deepEqual(migratedCaptions.report.assetSnapshots['asset:Project/src/shared/direct.png'],['path']);
   assert.equal(migratedCaptions.report.status, 'complete');
+  const relativePathMigration = migration.migrateLegacyCaptions({
+    legacy:{overwriteCaptions:true,captionOverrides:{'asset:src/shared/direct.png':['relative path']}}, dataset:{...dataset,triggerWord:'hero'},
+    sourceImages:sourceRecord,datasetItems:editedRecord,pathAssets:[{path:'Project/src/shared/direct.png',tags:['path']}],
+  });
+  assert.deepEqual(relativePathMigration.pathCaptions['Project/src/shared/direct.png'],['relative path'],'Legacy path keys work with or without Project/');
+  const conflictingMigration = migration.migrateLegacyCaptions({
+    legacy:{overwriteCaptions:true,captionOverrides:{'asset:Project/src/shared/direct.png':['first'],'asset:src/shared/direct.png':['second']}}, dataset:{...dataset,triggerWord:'hero'},
+    sourceImages:sourceRecord,datasetItems:editedRecord,pathAssets:[{path:'Project/src/shared/direct.png',tags:['path']}],
+  });
+  assert.equal(conflictingMigration.pathCaptions['Project/src/shared/direct.png'],undefined,'Ambiguous aliases are not resolved by key order');
+  assert.equal(conflictingMigration.report.conflicts.length,1);
+  assert.equal(conflictingMigration.report.status,'pending');
   const disabledMigration = migration.migrateLegacyCaptions({
     legacy:{overwriteCaptions:false,captionOverrides:{'source:outside':['disabled']}}, dataset:{...dataset,triggerWord:'hero'}, sourceImages:sourceRecord, datasetItems:editedRecord,
   });

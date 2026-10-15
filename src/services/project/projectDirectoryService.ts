@@ -1155,6 +1155,7 @@ export const readProjectDirectory = async (
     captionMigration: {
       ...migration.report,
       legacyOverrides: previous?.legacyOverrides ?? migration.report.legacyOverrides,
+      assetSnapshots: { ...(previous?.assetSnapshots ?? {}), ...migration.report.assetSnapshots },
       applied: [...new Set([...(previous?.applied ?? []), ...migration.report.applied])],
       conflicts: [...(previous?.conflicts ?? []), ...migration.report.conflicts],
     },

@@ -1,4 +1,4 @@
-import type { WorkspaceImage } from '../../lib/workspaceImages';
+import { normalizeWorkspaceAssetPath, type WorkspaceImage } from '../../lib/workspaceImages';
 
 export type ResolvedCaption = {
   text: string;
@@ -19,11 +19,27 @@ export const normalizeCaptionForAnalysis = (value: string, triggerWord = ''): st
     .join(', ');
 };
 
-export const captionKeysForItem = (item: Pick<WorkspaceImage, 'id' | 'sourceImageId' | 'assetPath'>): string[] => [
-  item.id,
-  item.sourceImageId ? `source:${item.sourceImageId}` : '',
-  item.assetPath ? `asset:${item.assetPath}` : '',
-].filter(Boolean);
+export const captionKeyGroupsForItem = (item: Pick<WorkspaceImage, 'id' | 'sourceImageId' | 'assetPath'>): string[][] => {
+  const normalizedPath = item.assetPath ? normalizeWorkspaceAssetPath(item.assetPath) : '';
+  const relativePath = normalizedPath.replace(/^Project\//, '');
+  const pathKeys = [...new Set([
+    item.id.startsWith('asset:') ? item.id : '',
+    normalizedPath ? `asset:${normalizedPath}` : '',
+    relativePath ? `asset:${relativePath}` : '',
+    normalizedPath,
+    relativePath,
+  ].filter(Boolean))];
+  const sourceKeys = [...new Set([
+    item.sourceImageId ? `source:${item.sourceImageId}` : '',
+    item.sourceImageId,
+  ].filter(Boolean))];
+  if (item.id.startsWith('asset:')) return [pathKeys];
+  if (item.id.startsWith('source:')) return [[...new Set([item.id, ...sourceKeys])], pathKeys];
+  return [[item.id], sourceKeys, pathKeys].filter((keys) => keys.length > 0);
+};
+
+export const captionKeysForItem = (item: Pick<WorkspaceImage, 'id' | 'sourceImageId' | 'assetPath'>): string[] =>
+  captionKeyGroupsForItem(item).flat();
 
 export const resolveAssetCaption = (
   item: Pick<WorkspaceImage, 'id' | 'sourceImageId' | 'assetPath' | 'tags'>,
@@ -56,6 +72,3 @@ export const resolveLegacyDatasetCaption = (
   }
   return resolveAssetCaption(item, dataset.triggerWord ?? '', fallbackText);
 };
-
-/** @deprecated Use resolveAssetCaption. Kept temporarily for legacy loaders. */
-export const resolveDatasetCaption = resolveLegacyDatasetCaption;
