@@ -12,6 +12,8 @@ try {
       'src/services/caption/captionResolver.ts',
       'src/services/dataset/datasetMembershipResolver.ts',
       'src/services/dataset/sharedCandidateService.ts',
+      'src/services/dataset/coverageService.ts',
+      'src/services/dataset/datasetAssemblyService.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -19,6 +21,8 @@ try {
   const caption = await import(pathToFileURL(join(temp, 'captionResolver.mjs')));
   const membership = await import(pathToFileURL(join(temp, 'datasetMembershipResolver.mjs')));
   const shared = await import(pathToFileURL(join(temp, 'sharedCandidateService.mjs')));
+  const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
+  const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/src/shared/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -55,6 +59,21 @@ try {
   assert.equal(scan.candidates[0].assetPath, 'Project/src/shared/scene.png');
   assert.deepEqual(scan.candidates[0].tags, ['back view']);
   assert.equal(scan.skipped.some((entry) => entry.reason === 'video'), true);
+
+  const vector = (...values) => new Float32Array(values);
+  const feature = (hash, image, caption, contexts = []) => ({ imageHash: hash, image: vector(...image), text: vector(...image), caption, contexts });
+  const assemblyItem = (path, semantic, quality = 1) => ({ item: item(`asset:${path}`, '', path), feature: semantic, caption: semantic.caption, quality });
+  const baseline = assemblyItem('Project/private/front.png', feature('front', [1, 0], 'front portrait', ['front', 'portrait']));
+  const back = assemblyItem('Project/src/shared/back.png', feature('back', [0, 1], 'back view', ['back', 'view']));
+  const backDuplicate = assemblyItem('Project/src/shared/z-back-copy.png', feature('back', [0, 1], 'duplicate words', ['duplicate']));
+  const similarFront = assemblyItem('Project/src/shared/front-2.png', feature('front-2', [0.99, 0.01], 'front portrait', ['front', 'portrait']));
+  const metrics = coverage.measureCoverage([assembly.coverageAsset?.(baseline) ?? { key: 'front', feature: baseline.feature }], [{ key: 'front', feature: baseline.feature }, { key: 'back', feature: back.feature }]);
+  assert.ok(metrics.total > 0 && metrics.total < 1);
+  const datasetForAssembly = { ...dataset, id: 'global' };
+  const plan = await assembly.assembleDataset({ projectId: 'project', projectType: 'character', dataset: datasetForAssembly, baseline: [baseline], candidates: [similarFront, backDuplicate, back], mode: { kind: 'limit', limit: 2 } });
+  assert.equal(plan.selected[0].path, 'Project/src/shared/back.png', 'a missing view should beat a near-duplicate portrait');
+  assert.deepEqual(plan.rejectedDuplicates, ['src/shared/z-back-copy.png']);
+  assert.ok(plan.after.total > plan.before.total);
   console.log('dataset assembly contracts: ok');
 } finally {
   await rm(temp, { recursive: true, force: true });
