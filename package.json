@@ -12,7 +12,8 @@
     "test:workspace-layout": "node tests/workspace-layout.mjs",
     "test:video-frames": "node tests/video-frames.mjs",
     "test:ui-workflows": "node tests/ui-workflows.mjs",
-    "test:dataset-assembly": "node tests/dataset-assembly.mjs"
+    "test:dataset-assembly": "node tests/dataset-assembly.mjs",
+    "test:browser-fixtures": "vite build --config vite.browser.config.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.1",

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -565,5 +565,13 @@ try {
   assert.equal(await (await JSZip.loadAsync(saved)).file('unrelated.txt').async('string'), 'preserve me');
   await assert.rejects(resolveProjectType('invalid', 'Invalid'), /Unsupported/);
   await assert.rejects(resolveProjectType(null, 'Invalid'), /Unsupported/);
+  const entitySource = await readFile('src/types/entities.ts','utf8');
+  const datasetType = entitySource.match(/export interface Dataset \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.doesNotMatch(datasetType,/assetIds|assetPaths|psdAssetPaths|filePath|parentPath/,'Runtime Dataset contains settings only');
+  const explorerSource = await readFile('src/components/workspace/ExplorerTree.tsx','utf8');
+  assert.doesNotMatch(explorerSource,/kind:\s*'dataset'|\|\s*'dataset'/,'Explorer has no special Dataset node');
+  const storeSource = await readFile('src/stores/useProjectStore.ts','utf8');
+  assert.doesNotMatch(storeSource,/addAssetsToDataset:\s*\(|upsertDataset:\s*\(|removeDataset:\s*\(/,'Runtime Dataset membership API was removed');
+  await assert.rejects(access('src/services/project/datasetFileService.ts'),'Dataset file runtime service must stay removed');
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createProject, createSourceImage, type ProjectState } from '../src/types';
 import { readProjectDirectory, writeProjectDirectoryChanges, type ProjectDirectoryHandle } from '../src/services/project/projectDirectoryService';
-import { readDatasetFile } from '../src/services/project/datasetFileService';
 import { applyProjectRelativePathMoves } from '../src/lib/datasetAssets';
 import { renameExplorerEntry } from '../src/services/project/explorerFileService';
 import { createSaveQueue } from '../src/services/project/saveQueue';
@@ -25,20 +24,18 @@ const getFixture = async (create = false) => {
   if (create || !name) { name = `dataset-creator-check-${crypto.randomUUID()}`; localStorage.setItem(KEY, name); }
   return await (await navigator.storage.getDirectory()).getDirectoryHandle(name, {create}) as unknown as ProjectDirectoryHandle;
 };
-async function verify(directory: ProjectDirectoryHandle, expectedPath = 'Project/renamed.dataset.json') {
+async function verify(directory: ProjectDirectoryHandle) {
   const project = await readProjectDirectory(directory);
   const sources = Object.values(project.sourceImages);
   assert(sources.length === 2, `Expected 2 reopened images, got ${sources.length}`);
   assert(sources.every(source => source.originalFile.size > 0), 'Image bytes must survive reopening');
   assert(project.dataset.triggerWord === 'fixture-trigger', 'Latest trigger must survive reopening');
-  assert(project.dataset.assetIds.length === 2, 'Membership must survive reopening');
-  const named = await readDatasetFile(directory, expectedPath);
-  assert(JSON.stringify(named.assetOrder) === JSON.stringify(project.dataset.assetOrder), 'Named Dataset and project order must agree');
-  assert(named.triggerWord === project.dataset.triggerWord, 'Named Dataset and project trigger must agree');
-  assert(project.dataset.filePath === expectedPath, 'Reopening lost the linked Dataset file path');
+  assert(!('assetIds' in project.dataset), 'Runtime Dataset must not restore legacy membership');
+  assert(sources.every(source => source.originalFilePath?.startsWith('dataset/')), 'Dataset membership must come from physical paths');
+  assert(JSON.stringify(project.dataset.assetOrder) === JSON.stringify(['file:Project/dataset/blue.jpg','file:Project/dataset/amber.png']), 'Dataset order must survive reopening');
   const plan = await buildExportPlan({scope:'dataset', items:toWorkspaceImages(sources, []), dataset:project.dataset, directory, blacklist:[]});
   assert(plan.entries.length === 2, 'Reopened Dataset must export both images');
-  assert(plan.entries[0].caption === 'fixture-trigger, override', 'Caption override or order was lost');
+  assert(plan.entries.some(entry => entry.caption === 'fixture-trigger, override'), 'Physical caption was lost');
   const result = await exportPlanAsZip(plan);
   const archive = await JSZip.loadAsync(await result.arrayBuffer());
   const output = await directory.getDirectoryHandle(`export-${crypto.randomUUID()}`, {create:true});
@@ -54,7 +51,7 @@ async function verify(directory: ProjectDirectoryHandle, expectedPath = 'Project
     const diskCaption = await (await output.getFileHandle(entry.textName)).getFile();
     assert(await diskCaption.text() === `${entry.caption}\n`, 'Directory caption differs from plan');
   }
-  return `PASS: reopened ${sources.length} images, linked Dataset, final captions/order and byte-identical ZIP/directory contents`;
+  return `PASS: reopened ${sources.length} physical Dataset images with final captions/order and byte-identical ZIP/directory contents`;
 }
 async function verifyVersions(directory: ProjectDirectoryHandle) {
   const observable = <T,>(initial:T) => {
@@ -90,7 +87,9 @@ function Harness() {
     const directory = await getFixture(true);
     const first = createSourceImage(await imageBlob('#edac40'),'amber.png',32,24);
     const second = createSourceImage(await imageBlob('#476c94','image/jpeg'),'blue.jpg',32,24);
-    first.tags = ['original']; second.tags = ['blue'];
+    first.tags = ['original']; second.tags = ['override'];
+    first.originalFilePath = 'dataset/amber.png'; first.manifestPath = 'dataset/amber.png.manifest.json';
+    second.originalFilePath = 'dataset/blue.jpg'; second.manifestPath = 'dataset/blue.jpg.manifest.json';
     const initial: ProjectState = {...createProject('Persistence fixture','character'), sourceImages:{[first.id]:first,[second.id]:second}};
     await writeProjectDirectoryChanges(initial, undefined, directory);
     add('Created PNG and JPEG files in isolated browser storage');
@@ -103,31 +102,12 @@ function Harness() {
         await writeProjectDirectoryChanges(snapshot,previous,directory);
       } finally {activeWrites--;}
     }, state=>add(`Save: ${state.status}`));
-    const draft = {...initial,dataset:{...initial.dataset,filePath:'Project/check.dataset.json',triggerWord:'draft',assetIds:[first.id]}};
+    const draft = {...initial,dataset:{...initial.dataset,triggerWord:'draft'}};
     queue.enqueue(draft); const pending = queue.flush();
-    const final = {...draft,dataset:{...draft.dataset,triggerWord:'fixture-trigger',assetIds:[first.id,second.id],assetOrder:[`image:${second.id}`,`image:${first.id}`],overwriteCaptions:true,captionOverrides:{[`source:${second.id}`]:['override']}}};
+    const final = {...draft,dataset:{...draft.dataset,triggerWord:'fixture-trigger',assetOrder:['file:Project/dataset/blue.jpg','file:Project/dataset/amber.png']}};
     queue.enqueue(final); release(); await pending;
     assert(peakWrites === 1 && !queue.isDirty(),'Writes overlapped or latest snapshot was not saved');
     add('PASS: queued edits wrote sequentially and saved the latest snapshot');
-    add(await verify(directory, 'Project/check.dataset.json'));
-    let renamed!: () => void; let finishRename!: () => void;
-    const renameStarted = new Promise<void>(resolve=>{renamed=resolve;});
-    const editDuringRename = {...final, name:'Edited while renaming'};
-    const mutation = queue.runExclusive(async () => {
-      const filePath = await renameExplorerEntry(directory, 'Project/check.dataset.json', 'file', 'renamed.dataset.json');
-      renamed();
-      await new Promise<void>(resolve=>{finishRename=resolve;});
-      queue.enqueue({...editDuringRename,dataset:{...editDuringRename.dataset,filePath}});
-    });
-    await Promise.race([renameStarted, mutation]);
-    queue.enqueue(editDuringRename); const waitingSave = queue.flush();
-    const oldFileMissing = await directory.getFileHandle('check.dataset.json').then(()=>false, error=>{
-      if (error.name === 'NotFoundError') return true; throw error;
-    });
-    assert(oldFileMissing, 'Autosave recreated the old Dataset file during rename');
-    finishRename(); await Promise.all([mutation,waitingSave]);
-    assert((await readProjectDirectory(directory)).name === 'Edited while renaming', 'Concurrent metadata edit was lost');
-    add('PASS: filesystem rename and concurrent autosave retained the new path and latest metadata');
     add(await verify(directory));
     const beforeImageRename = await readProjectDirectory(directory);
     const imageToRename = Object.values(beforeImageRename.sourceImages).find(source => source.mimeType === 'image/png')!;
@@ -143,9 +123,9 @@ function Harness() {
     const renamedImage = afterImageRename.sourceImages[imageToRename.id];
     assert(renamedImage.originalFilePath?.endsWith('/renamed-source.png'), 'Image path was not retained');
     assert(renamedImage.manifestPath?.endsWith('/renamed-source.png.manifest.json'), 'Sidecar path did not follow image rename');
-    const shared = await (await directory.getDirectoryHandle('src')).getDirectoryHandle('shared');
+    const datasetDirectory = await directory.getDirectoryHandle('dataset');
     const oldSidecar = imageToRename.manifestPath!.split('/').pop()!;
-    assert(await shared.getFileHandle(oldSidecar).then(()=>false, error=>{if(error.name==='NotFoundError') return true; throw error;}), 'Saving recreated the old image metadata');
+    assert(await datasetDirectory.getFileHandle(oldSidecar).then(()=>false, error=>{if(error.name==='NotFoundError') return true; throw error;}), 'Saving recreated the old image metadata');
     imageQueue.stop();
     add('PASS: image rename retained source identity and the new sidecar path without recreating old metadata');
     add(await verify(directory));
