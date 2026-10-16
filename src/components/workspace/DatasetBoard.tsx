@@ -3,7 +3,6 @@ import { Download, Layers3, Plus, Sparkles, Tags } from 'lucide-react';
 import type { Dataset, ProjectType, ToolName } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
-import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
 import { AssetGallery } from '../ui/AssetGallery';
 import { BrickMasonry } from '../ui/BrickMasonry';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
@@ -42,9 +41,8 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
   const boardItems = useMemo(() => datasetBoardItems(items, dataset, sort), [items, dataset, sort]);
   const previewUrls = useWorkspacePreviewUrls(boardItems);
   const suggestionPreviewUrls = useWorkspacePreviewUrls(suggestion?.items ?? EMPTY_ITEMS);
-  const linked = new Set(dataset.assetIds).size + new Set(filterLegacyProjectAssetPaths([...dataset.assetPaths, ...dataset.psdAssetPaths])).size;
+  const linked = items.length;
   const captioned = boardItems.filter(item => item.tags?.length).length;
-  const missing = Math.max(0, linked - items.length);
   return <div className={`h-full min-h-0 overflow-auto p-3 sm:p-5 ${dropActive ? 'ring-2 ring-inset ring-primary bg-primary/5' : ''}`}
     onDragOver={event => { if (canDrop(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropActive(true); } }}
     onDragEnter={event => { if (canDrop(event)) setDropActive(true); }}
@@ -63,7 +61,6 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
           { id: 'export', label: 'Export', icon: Download, variant: 'primary', onSelect: onExport },
         ]]} />
       </header>
-      {missing > 0 && <p role="status" className="text-sm text-amber-700 dark:text-amber-300">{missing} linked {missing === 1 ? 'asset is' : 'assets are'} unavailable. Reconnect the project folder or restore the missing files.</p>}
       <details className="rounded border border-border px-3 py-2">
         <summary className="cursor-pointer text-sm">Dataset options</summary>
         <div className="mt-3 flex flex-wrap items-center gap-3">

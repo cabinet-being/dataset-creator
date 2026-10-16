@@ -303,7 +303,7 @@ export const FinalReviewTool = ({
       editedAssets
     );
     return dataset && mode !== 'select'
-      ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder, dataset.assetIds)
+      ? orderWorkspaceItemsByDatasetOrder(nextItems, dataset.assetOrder)
       : nextItems;
   }, [cleanupToolState.workingEdits, dataset, fileAssets, mode, sourceImages, editedAssets]);
   const categoryRows = useMemo(() => {

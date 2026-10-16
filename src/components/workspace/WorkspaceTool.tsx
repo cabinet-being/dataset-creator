@@ -18,7 +18,7 @@ const VideoFramesTool = lazy(() => import('../tools/VideoFramesTool').then(modul
 
 export type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 export type DatasetToolName = Extract<ToolName, 'select' | 'review' | 'analysis' | 'tagging'>;
-type DatasetUpdates = Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>;
+type DatasetUpdates = Partial<Pick<Dataset, 'assetOrder'>>;
 
 type DatasetContext = {
   kind: 'dataset';

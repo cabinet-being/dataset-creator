@@ -54,9 +54,6 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
 
   const run = async (constraints = { excluded, pinned }) => {
     if (!directory) { setError('Reconnect the project folder to read src/shared.'); return; }
-    if (membership.missingAssetIds.length || membership.missingAssetPaths.length) {
-      setError('The Dataset baseline is incomplete. Restore unavailable linked files before automatic assembly.'); return;
-    }
     abortRef.current?.abort();
     const controller = new AbortController(); abortRef.current = controller;
     setError(''); setResult(null); setPhase('Scanning src/shared'); setProgress({ completed: 0, total: 0 });
@@ -64,8 +61,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
       const scan = await scanSharedCandidates(directory, { excludedCategories, includedCategories, signal: controller.signal, onProgress: (completed, total) => setProgress({ completed, total }) });
       if (!scan.sharedAvailable) throw new Error('Project/src/shared was not found. Create the folder or restore access.');
       const memberPaths = new Set(membership.members.flatMap((item) => item.assetPath ? [item.assetPath.replace(/^Project\//, '')] : []));
-      const memberIds = new Set(dataset.assetIds);
-      const candidates = scan.candidates.filter((item) => !memberIds.has(item.sourceImageId) && !memberPaths.has((item.assetPath ?? '').replace(/^Project\//, '')));
+      const candidates = scan.candidates.filter((item) => !memberPaths.has((item.assetPath ?? '').replace(/^Project\//, '')));
       if (!candidates.length) throw new Error('No eligible new images were found in src/shared.');
       setPhase('Loading semantic model');
       const encoder = await createSemanticFeatureEncoder(controller.signal, setPhase);

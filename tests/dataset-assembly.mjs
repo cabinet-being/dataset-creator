@@ -28,11 +28,11 @@ try {
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/src/shared/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
-  const outside = item('source:outside', 'outside', 'Project/private/outside.png');
-  const groupSource = item('source:group', 'group', 'Project/src/shared/group.png');
-  const groupCrop = item('edited:crop', 'group', 'Project/.dataset-creator-data/crop.png', { kind: 'edited' });
-  const direct = item('asset:Project/src/shared/direct.png', '', 'src/shared/direct.png');
-  const excluded = item('source:excluded', 'group', 'Project/src/shared/excluded.png', { excludedFromDataset: true });
+  const outside = item('source:outside', 'outside', 'Project/dataset/outside.png');
+  const groupSource = item('source:group', 'group', 'Project/dataset/group.png');
+  const groupCrop = item('edited:crop', 'group', 'Project/dataset/crop.png', { kind: 'edited' });
+  const direct = item('asset:Project/dataset/direct.png', '', 'dataset/direct.png');
+  const excluded = item('source:excluded', 'group', 'Project/dataset/excluded.png', { excludedFromDataset: true });
   const result = membership.resolveDatasetMembership(dataset, [outside, groupSource, groupCrop, direct, excluded]);
   assert.deepEqual(result.missingAssetIds, []);
   assert.deepEqual(result.missingAssetPaths, []);
