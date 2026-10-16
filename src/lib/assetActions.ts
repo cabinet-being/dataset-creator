@@ -1,43 +1,65 @@
 import type { WorkspaceImage } from './workspaceImages';
+import { normalizeWorkspaceAssetPath, toWorkspaceImages } from './workspaceImages';
 import { useProjectStore } from '../stores/useProjectStore';
+import { useUIStore } from '../stores/useUIStore';
 import { useHistoryStore } from '../stores/useHistoryStore';
-import { createDatasetFileAssetKey, createDatasetImageAssetKey, normalizeDatasetAssetOrder } from './datasetAssets';
-import { filterLegacyProjectAssetPaths } from '../services/project/projectPathFilters';
+import { runProjectFileOperation } from '../hooks/useProjectSave';
+import { readExplorerFile, getExplorerFileKind } from '../services/project/explorerFileService';
+import { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, type DatasetFolderOperationResult } from '../services/dataset/datasetFolderService';
 
-export function addAssetsToDataset(items: WorkspaceImage[]) {
-  addDatasetReferences({
-    assetIds: items.filter(item => item.kind === 'image' || item.kind === 'edited').map(item => item.sourceImageId),
-    assetPaths: items.filter(item => item.kind !== 'image' && item.kind !== 'edited').flatMap(item => item.assetPath ? [item.assetPath] : []),
+const requireDirectory = () => {
+  const directory = useUIStore.getState().projectDirectoryHandle;
+  if (!directory) throw new Error('Open a project directory before changing Dataset files.');
+  return directory;
+};
+
+const pushMoveHistory = (label: string, result: DatasetFolderOperationResult) => {
+  if (!result.completed.length) return;
+  const directory = requireDirectory();
+  let current = result.completed;
+  useHistoryStore.getState().push({ label,
+    undo: async () => { current = await runProjectFileOperation(() => reverseDatasetFolderChanges(directory, current)); },
+    redo: async () => { current = await runProjectFileOperation(() => reverseDatasetFolderChanges(directory, current)); },
   });
-}
+};
 
-/** Explorer uses the same membership action as the gallery, retaining original files. */
-export function addWorkspacePathsToDataset(paths: string[]): number {
-  const sources = Object.values(useProjectStore.getState().sourceImages);
-  const assetIds: string[] = [];
-  const assetPaths: string[] = [];
-  for (const path of new Set(paths)) {
-    const relative = path.replace(/^Project\//, '');
-    const source = sources.find(item => item.originalFilePath?.replace(/^Project\//, '') === relative);
-    if (source) assetIds.push(source.id);
-    else assetPaths.push(path);
+const addItemsToDataset = async (items: WorkspaceImage[]): Promise<number> => {
+  const result = await addItemsToDatasetFolder(requireDirectory(), items);
+  pushMoveHistory('Add to Dataset', result);
+  if (result.failed.length) throw new Error(result.failed[0].message);
+  return result.completed.length;
+};
+
+export async function addAssetsToDataset(items: WorkspaceImage[]): Promise<void> { await addItemsToDataset(items); }
+
+const resolvePathItems = async (paths: string[]): Promise<WorkspaceImage[]> => {
+  const store = useProjectStore.getState();
+  const registered = toWorkspaceImages(Object.values(store.sourceImages), Object.values(store.datasetItems));
+  const byPath = new Map(registered.flatMap(item => item.assetPath ? [[normalizeWorkspaceAssetPath(item.assetPath), item] as const] : []));
+  const items: WorkspaceImage[] = [];
+  for (const path of [...new Set(paths.map(normalizeWorkspaceAssetPath))]) {
+    const registeredItem = byPath.get(path);
+    if (registeredItem) { items.push(registeredItem); continue; }
+    const file = await readExplorerFile(requireDirectory(), path);
+    const kind = getExplorerFileKind(file.name, file.type);
+    if (kind !== 'image' && kind !== 'psd') continue;
+    items.push({ id:`asset:${path}`, sourceImageId:'', kind, label:kind === 'psd' ? 'PSD' : 'Image', displayIdentity:path,
+      fileName:file.name, assetPath:path, imageData:file, psdData:kind === 'psd' ? file : undefined,
+      width:1, height:1, aspectRatio:'1:1' });
   }
-  return addDatasetReferences({assetIds,assetPaths});
+  return items;
+};
+
+export async function addWorkspacePathsToDataset(paths: string[]): Promise<number> {
+  return addItemsToDataset(await resolvePathItems(paths));
 }
 
-/** All intake paths share one membership change and one undo entry. */
-export function addDatasetReferences(references: { assetIds?: string[]; assetPaths?: string[] }): number {
-  const store = useProjectStore.getState(); const before = store.dataset;
-  const previousPaths = filterLegacyProjectAssetPaths([...new Set([...before.assetPaths, ...before.psdAssetPaths])]);
-  const assetIds = [...new Set([...before.assetIds, ...(references.assetIds ?? []).filter(Boolean)])];
-  const assetPaths = filterLegacyProjectAssetPaths([...new Set([...previousPaths, ...(references.assetPaths ?? []).filter(Boolean)])]);
-  const addedCount = assetIds.length - before.assetIds.length + assetPaths.length - previousPaths.length;
-  if (!addedCount) return 0;
-  const next = { assetIds, assetPaths, psdAssetPaths: assetPaths.filter(path => /\.psd$/i.test(path)), assetOrder: normalizeDatasetAssetOrder([...(before.assetOrder ?? []), ...assetIds.map(createDatasetImageAssetKey), ...assetPaths.map(createDatasetFileAssetKey)], assetIds, assetPaths) };
-  const redo = () => store.updateDataset(before.id, next);
-  const undo = () => store.updateDataset(before.id, { assetIds: before.assetIds, assetPaths: before.assetPaths, psdAssetPaths: before.psdAssetPaths, assetOrder: before.assetOrder });
-  redo(); useHistoryStore.getState().push({ label: 'Add to Dataset', redo, undo });
-  return addedCount;
+export async function addDatasetReferences(references: { assetIds?: string[]; assetPaths?: string[] }): Promise<number> {
+  const store = useProjectStore.getState();
+  const ids = new Set((references.assetIds ?? []).filter(Boolean));
+  const items = toWorkspaceImages(Object.values(store.sourceImages), Object.values(store.datasetItems))
+    .filter(item => ids.has(item.kind === 'edited' ? item.editedAssetId ?? '' : item.sourceImageId));
+  return addItemsToDataset([...items, ...await resolvePathItems(references.assetPaths ?? [])]);
 }
 
 export function setAssetsExcluded(items: WorkspaceImage[], excluded: boolean) {
@@ -51,15 +73,8 @@ export function setAssetsExcluded(items: WorkspaceImage[], excluded: boolean) {
   apply(false); if (targets.length) useHistoryStore.getState().push({ label: excluded ? 'Exclude from export' : 'Include in export', undo: () => apply(true), redo: () => apply(false) });
 }
 
-export function removeAssetsFromDataset(items: WorkspaceImage[]) {
-  const store = useProjectStore.getState(); const before = store.dataset;
-  const ids = new Set(items.filter(item => item.kind === 'image' || item.kind === 'edited').map(item => item.sourceImageId));
-  const paths = new Set(items.flatMap(item => item.assetPath ? [item.assetPath] : []));
-  const assetIds = before.assetIds.filter(id => !ids.has(id));
-  const assetPaths = before.assetPaths.filter(path => !paths.has(path));
-  if (assetIds.length === before.assetIds.length && assetPaths.length === before.assetPaths.length) return;
-  const next = { assetIds, assetPaths, psdAssetPaths: (before.psdAssetPaths ?? []).filter(path => !paths.has(path)), assetOrder: normalizeDatasetAssetOrder(before.assetOrder, assetIds, assetPaths) };
-  const redo = () => store.updateDataset(before.id, next);
-  const undo = () => store.updateDataset(before.id, { assetIds: before.assetIds, assetPaths: before.assetPaths, psdAssetPaths: before.psdAssetPaths, assetOrder: before.assetOrder });
-  redo(); useHistoryStore.getState().push({ label: 'Remove from Dataset', redo, undo });
+export async function removeAssetsFromDataset(items: WorkspaceImage[]): Promise<void> {
+  const result = await removeItemsFromDatasetFolder(requireDirectory(), items);
+  pushMoveHistory('Remove from Dataset', result);
+  if (result.failed.length) throw new Error(result.failed[0].message);
 }

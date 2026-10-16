@@ -14,13 +14,15 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  await build({ input: ['src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
   const { createProjectDirectory, readProjectDirectory, writeProjectDirectoryChanges } = await import(pathToFileURL(join(temp, 'projectDirectoryService.mjs')));
   const { createProjectFileBlob, readProjectFile } = await import(pathToFileURL(join(temp, 'projectFileService.mjs')));
   const { useProjectStore } = await import(pathToFileURL(join(temp, 'useProjectStore.mjs')));
+  const { useUIStore } = await import(pathToFileURL(join(temp, 'useUIStore.mjs')));
+  const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
   const { DATASET_MANIFEST_FILE, REQUIRED_PROJECT_DIRECTORIES, readDatasetManifest } = await import(pathToFileURL(join(temp, 'projectLayoutService.mjs')));
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
@@ -420,11 +422,32 @@ try {
   await imageWritable.write(new Blob(['png'], { type: 'image/png' })); await imageWritable.close();
   const metadataWritable = await (await classDirectory.getFileHandle('portrait.png.manifest.json', { create: true })).createWritable();
   await metadataWritable.write(JSON.stringify({ tags: ['portrait', 'blue hair'] })); await metadataWritable.close();
-  const { blob: exportedDataset, count: exportedCount } = await exportProjectDatasetAsZip(layoutDirectory);
+  const { blob: exportedDataset, count: exportedCount } = await exportProjectDatasetAsZip(layoutDirectory, [], undefined, 'trigger');
   assert.equal(exportedCount, 1);
   const datasetZip = await JSZip.loadAsync(await exportedDataset.arrayBuffer());
   assert.ok(datasetZip.file('3_character/1.png'));
   assert.equal(await datasetZip.file('3_character/1.txt').async('string'), 'trigger, portrait, blue hair\n');
+  {
+    const root = directory('physical-dataset');
+    const project = createProject('Physical Dataset', 'character');
+    await createProjectDirectory(root, project);
+    const shared = await (await root.getDirectoryHandle('src')).getDirectoryHandle('shared');
+    const image = await shared.getFileHandle('physical.psd', {create:true});
+    const imageWriter = await image.createWritable(); await imageWriter.write(new Blob(['pixels'], {type:'image/vnd.adobe.photoshop'})); await imageWriter.close();
+    const captionWriter = await (await shared.getFileHandle('physical.txt', {create:true})).createWritable(); await captionWriter.write('physical caption'); await captionWriter.close();
+    useProjectStore.getState().loadProject(project);
+    useUIStore.getState().setProjectDirectory({handle:root,name:project.name});
+    const item = {id:'asset:physical',sourceImageId:'',kind:'psd',label:'PSD',displayIdentity:'1',fileName:'physical.psd',assetPath:'Project/src/shared/physical.psd',imageData:await image.getFile(),psdData:await image.getFile(),width:1,height:1,aspectRatio:'1:1'};
+    const added = await addItemsToDatasetFolder(root,[item]);
+    assert.equal(added.completed.length,1);
+    assert.ok(isProjectDatasetPath(added.completed[0].to));
+    const physicalDataset = await root.getDirectoryHandle('dataset');
+    assert.equal(await (await (await physicalDataset.getFileHandle('physical.txt')).getFile()).text(),'physical caption','Caption sidecars move with Dataset images');
+    await assert.rejects(shared.getFileHandle('physical.psd'),{name:'NotFoundError'});
+    const removed = await removeItemsFromDatasetFolder(root,[{...item,assetPath:'Project/dataset/physical.psd'}]);
+    assert.equal(removed.completed.length,1);
+    assert.equal(await (await (await shared.getFileHandle('physical.psd')).getFile()).text(),'pixels');
+  }
   const versionOne = await createProjectVersion(layoutDirectory, 'v1');
   const addedWritable = await (await datasetDirectory.getFileHandle('later.txt', { create: true })).createWritable();
   await addedWritable.write('later'); await addedWritable.close();
@@ -501,7 +524,7 @@ try {
   const missingDatasetManifestDirectory = directory();
   await createProjectDirectory(missingDatasetManifestDirectory, createProject('No metadata', 'character'));
   await missingDatasetManifestDirectory.removeEntry(DATASET_MANIFEST_FILE);
-  await assert.rejects(exportProjectDatasetAsZip(missingDatasetManifestDirectory), /missing or invalid/);
+  await assert.rejects(exportProjectDatasetAsZip(missingDatasetManifestDirectory), /contains no images/);
   const missingDatasetDirectory = directory();
   await createProjectDirectory(missingDatasetDirectory, createProject('No dataset directory', 'character'));
   await missingDatasetDirectory.removeEntry('dataset', { recursive: true });

@@ -30,7 +30,7 @@ export async function addSavedFramesToDataset(directory: ProjectDirectoryHandle,
     }
   } finally {
     if (sources.length) {
-      addAssetsToDataset(toWorkspaceImages(sources, []));
+      await addAssetsToDataset(toWorkspaceImages(sources, []));
       await flushProjectSave();
     }
   }

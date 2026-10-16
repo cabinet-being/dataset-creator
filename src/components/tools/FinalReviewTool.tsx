@@ -34,6 +34,7 @@ import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { AspectRatio, Dataset, WorkspaceImageKind } from '../../types';
 import type { ReviewScope } from '../../lib/workspaceToolScope';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
+import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 
 type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | 'more' | null;
 type SortMode = 'dataset-order' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc' | 'kind-asc' | 'kind-desc' | 'format-asc' | 'format-desc' | 'dimensions-desc' | 'dimensions-asc' | 'bytes-desc' | 'bytes-asc' | 'date-desc' | 'date-asc';
@@ -268,11 +269,6 @@ export const FinalReviewTool = ({
       collapsedCategories:[...collapsedCategories] }));
   }, [captionFilter, collapsedCategories, datasetFilter, folderFilter, formatFilter, maximumBytes, maximumPixels, minimumBytes, minimumPixels, preferencesKey, preferencesReady, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses, sortMode]);
 
-  const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
-  const datasetAssetPaths = useMemo(
-    () => new Set([...(dataset?.assetPaths ?? []), ...(dataset?.psdAssetPaths ?? [])]),
-    [dataset?.assetPaths, dataset?.psdAssetPaths]
-  );
   const matchesReviewScope = useCallback((path: string | undefined) => {
     if (!scope) return true;
     if (!path || (scope.kind === 'directory' && !scope.path)) return false;
@@ -287,17 +283,17 @@ export const FinalReviewTool = ({
       return allSources;
     }
     if (mode === 'select') {
-      return allSources.filter((image) => !datasetAssetIds.has(image.id));
+      return allSources.filter((image) => !isProjectDatasetPath(image.originalFilePath));
     }
-    return allSources.filter((image) => datasetAssetIds.has(image.id));
-  }, [datasetAssetIds, datasetId, matchesReviewScope, mode, sourceImagesById]);
+    return allSources.filter((image) => isProjectDatasetPath(image.originalFilePath));
+  }, [datasetId, matchesReviewScope, mode, sourceImagesById]);
   const editedAssets = useMemo(
     () =>
       Object.values(editedAssetsById).filter(
-        (image) => !image.deleted && (!datasetId || datasetAssetIds.has(image.sourceImageId)) &&
+        (image) => !image.deleted && (!datasetId || (mode === 'select' ? !isProjectDatasetPath(image.imageDataPath) : isProjectDatasetPath(image.imageDataPath))) &&
           (!scope || matchesReviewScope(image.imageDataPath) || matchesReviewScope(sourceImagesById[image.sourceImageId]?.originalFilePath))
       ),
-    [datasetAssetIds, datasetId, editedAssetsById, matchesReviewScope, scope, sourceImagesById]
+    [datasetId, editedAssetsById, matchesReviewScope, mode, scope, sourceImagesById]
   );
   const allItems = useMemo(() => {
     const nextItems = toWorkspaceReviewAssets(
@@ -387,15 +383,12 @@ export const FinalReviewTool = ({
 
     const loadFileAssets = async () => {
       try {
-        const assets = await collectWorkspaceFileAssets(
-          projectDirectoryHandle,
-          datasetId && mode !== 'select' ? [...datasetAssetPaths] : undefined
-        );
+        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle);
         if (!canceled) setAssetIssues(getWorkspaceFileAssetIssues(projectDirectoryHandle));
         const scopedAssets = assets.filter((asset) => matchesReviewScope(asset.path));
         const nextAssets =
-          datasetId && mode === 'select'
-            ? scopedAssets.filter((asset) => !datasetAssetPaths.has(asset.path))
+          datasetId
+            ? scopedAssets.filter((asset) => mode === 'select' ? !isProjectDatasetPath(asset.path) : isProjectDatasetPath(asset.path))
             : scopedAssets;
         const pendingAssets = nextAssets.map((asset) =>
           asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
@@ -427,7 +420,7 @@ export const FinalReviewTool = ({
     return () => {
       canceled = true;
     };
-  }, [addNotification, assetPreviewRefreshKey, datasetAssetPaths, datasetId, matchesReviewScope, mode, projectDirectoryHandle]);
+  }, [addNotification, assetPreviewRefreshKey, datasetId, matchesReviewScope, mode, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!openMenu) {
@@ -486,7 +479,7 @@ export const FinalReviewTool = ({
           const previewState = item.previewStatus === 'failed' ? 'failed' : item.previewUrl || item.kind === 'image' || item.kind === 'edited' || item.kind === 'video' ? 'ready' : 'missing';
           const normalizedPath = item.assetPath?.startsWith('Project/') ? item.assetPath : item.assetPath ? `Project/${item.assetPath}` : 'Project/Without folder';
           const extension = item.fileName.split('.').pop()?.toLocaleLowerCase() ?? '';
-          const inDataset = datasetAssetIds.has(item.sourceImageId) || Boolean(item.assetPath && datasetAssetPaths.has(item.assetPath));
+          const inDataset = isProjectDatasetPath(item.assetPath);
           const pixelArea = item.dimensionsKnown !== false && item.width > 0 && item.height > 0 ? item.width * item.height : undefined;
           const minPixels = minimumPixels ? Number(minimumPixels) : undefined;
           const maxPixels = maximumPixels ? Number(maximumPixels) : undefined;
@@ -506,7 +499,7 @@ export const FinalReviewTool = ({
           selectedStatuses.has(item.excludedFromDataset ? 'inactive' : 'active');
         }
       ),
-    [captionFilter, datasetAssetIds, datasetAssetPaths, datasetFilter, folderFilter, formatFilter, items, maximumBytes, maximumPixels, minimumBytes, minimumPixels, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses]
+    [captionFilter, datasetFilter, folderFilter, formatFilter, items, maximumBytes, maximumPixels, minimumBytes, minimumPixels, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses]
   );
   const visibleCategoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -611,9 +604,9 @@ export const FinalReviewTool = ({
     });
   };
 
-  const addItemsToDataset = useCallback((nextItems: WorkspaceImage[]) => {
-    addAssetsToDataset(nextItems);
-    void flushProjectSave().catch(error => addNotification('error', error instanceof Error ? error.message : 'Unable to save Dataset'));
+  const addItemsToDataset = useCallback(async (nextItems: WorkspaceImage[]) => {
+    try { await addAssetsToDataset(nextItems); await flushProjectSave(); }
+    catch (error) { addNotification('error', error instanceof Error ? error.message : 'Unable to save Dataset'); }
   }, [addNotification]);
 
   const toggleCategory = (path: string) => {

@@ -26,9 +26,9 @@ import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from 
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
 import { computeDistanceMatrix, findSimilarPairs, performClustering } from '../../services/similarity/similarityService';
-import { filterLegacyProjectAssetPaths } from '../../services/project/projectPathFilters';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
-import { createDatasetImageAssetKey } from '../../lib/datasetAssets';
+import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
+import { addAssetsToDataset, removeAssetsFromDataset } from '../../lib/assetActions';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import type { AspectRatio, Dataset, SimilarityCluster, SimilarityResult } from '../../types';
@@ -959,33 +959,19 @@ export const AnalysisTool = ({
   const allSourceImages = useMemo(() => Object.values(sourceImagesById).filter((image) =>
     !image.hidden && (targetMode !== 'project' || isProjectPathIncluded(image.originalFilePath, excludedProjectCategories, includedProjectCategories))
   ), [excludedProjectCategories, includedProjectCategories, sourceImagesById, targetMode]);
-  const datasetAssetIds = useMemo(() => new Set(dataset?.assetIds ?? []), [dataset?.assetIds]);
-  const datasetFileAssetPaths = useMemo(
-    () =>
-      dataset
-        ? filterLegacyProjectAssetPaths([
-            ...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])]),
-          ])
-        : [],
-    [dataset]
-  );
   const analysisInputKey = useMemo(
     () =>
       [
         targetMode,
         dataset?.id ?? '',
         dataset?.updatedAt ? new Date(dataset.updatedAt).getTime() : '',
-        [...(dataset?.assetIds ?? [])].sort().join(','),
-        datasetFileAssetPaths.join(','),
         allSourceImages.map((image) => `${image.id}:${normalizeTags(image.tags).join(',')}`).sort().join('|'),
         assetPreviewRefreshKey,
         scopedFileTargets.map((target) => target.path).sort().join(','),
       ].join('::'),
     [
-      dataset?.assetIds,
       dataset?.id,
       dataset?.updatedAt,
-      datasetFileAssetPaths,
       allSourceImages,
       assetPreviewRefreshKey,
       scopedFileTargets,
@@ -993,8 +979,8 @@ export const AnalysisTool = ({
     ]
   );
   const sourceImages = useMemo(
-    () => allSourceImages.filter((image) => targetMode !== 'dataset' || datasetAssetIds.has(image.id)),
-    [allSourceImages, datasetAssetIds, targetMode]
+    () => allSourceImages.filter((image) => targetMode !== 'dataset' || isProjectDatasetPath(image.originalFilePath)),
+    [allSourceImages, targetMode]
   );
 
   useEffect(() => {
@@ -1004,14 +990,12 @@ export const AnalysisTool = ({
     }
 
     let canceled = false;
-    const paths = targetMode === 'dataset' ? datasetFileAssetPaths : targetMode === 'file' ? [] : undefined;
-
     const loadFileAssets = async () => {
       try {
-        const collectedAssets = await collectWorkspaceFileAssets(projectDirectoryHandle, paths);
+        const collectedAssets = targetMode === 'file' ? [] : await collectWorkspaceFileAssets(projectDirectoryHandle);
         const assets = targetMode === 'project'
           ? collectedAssets.filter((asset) => isProjectPathIncluded(asset.path, excludedProjectCategories, includedProjectCategories))
-          : collectedAssets;
+          : targetMode === 'dataset' ? collectedAssets.filter((asset) => isProjectDatasetPath(asset.path)) : collectedAssets;
         if (canceled) {
           return;
         }
@@ -1043,7 +1027,7 @@ export const AnalysisTool = ({
     return () => {
       canceled = true;
     };
-  }, [active, addNotification, assetPreviewRefreshKey, datasetFileAssetPaths, excludedProjectCategories, includedProjectCategories, projectDirectoryHandle, targetMode]);
+  }, [active, addNotification, assetPreviewRefreshKey, excludedProjectCategories, includedProjectCategories, projectDirectoryHandle, targetMode]);
 
   const baseItems = useMemo(
     () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, cleanupToolState.workingEdits, []),
@@ -1147,12 +1131,12 @@ export const AnalysisTool = ({
     () =>
       dataset
         ? toWorkspaceImages(
-            allSourceImages.filter((image) => !datasetAssetIds.has(image.id)),
+            allSourceImages.filter((image) => !isProjectDatasetPath(image.originalFilePath)),
             [],
             cleanupToolState.workingEdits
           ).slice(0, COVERAGE_CANDIDATE_LIMIT)
         : [],
-    [allSourceImages, cleanupToolState.workingEdits, dataset, datasetAssetIds]
+    [allSourceImages, cleanupToolState.workingEdits, dataset]
   );
   const analysisVisualItems = useMemo(() => {
     const byId = new Map<string, WorkspaceImage>();
@@ -1374,8 +1358,8 @@ export const AnalysisTool = ({
     return sortSimilarGroups(filtered, similarSort);
   }, [similarFilter, similarGroups, similarSort]);
   const datasetItems = useMemo(
-    () => visualItems.filter((item) => !dataset || datasetAssetIds.has(item.sourceImageId)),
-    [dataset, datasetAssetIds, visualItems]
+    () => visualItems.filter((item) => !dataset || isProjectDatasetPath(item.assetPath)),
+    [dataset, visualItems]
   );
   const coverageCandidateRedundancyById = useMemo(
     () =>
@@ -1475,25 +1459,14 @@ export const AnalysisTool = ({
     if (!dataset || !onUpdateDataset) {
       return;
     }
-    const sourceImageId = recommendation.item.sourceImageId;
-    if (!sourceImageId) {
-      return;
-    }
     if (recommendation.kind === 'add') {
-      if (dataset.assetIds.includes(sourceImageId)) {
-        return;
-      }
-      await onUpdateDataset({
-        assetIds: [...dataset.assetIds, sourceImageId],
-        assetOrder: [...(dataset.assetOrder ?? []), createDatasetImageAssetKey(sourceImageId)],
-      });
+      await addAssetsToDataset([recommendation.item]);
+      await flushProjectSave();
       addNotification('success', 'Asset added to Dataset');
       return;
     }
-    await onUpdateDataset({
-      assetIds: dataset.assetIds.filter((assetId) => assetId !== sourceImageId),
-      assetOrder: (dataset.assetOrder ?? []).filter((key) => key !== createDatasetImageAssetKey(sourceImageId)),
-    });
+    await removeAssetsFromDataset([recommendation.item]);
+    await flushProjectSave();
     addNotification('info', 'Asset removed from Dataset');
   };
 

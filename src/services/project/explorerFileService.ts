@@ -216,6 +216,8 @@ const rewriteAssetManifest = (
   value: string,
   previousName: string,
   nextName: string,
+  previousPath?: string,
+  nextPath?: string,
   options: { preserveAssetIdentity?: boolean } = {}
 ): string => {
   try {
@@ -228,9 +230,14 @@ const rewriteAssetManifest = (
         manifest[key] = nextName;
       }
     }
-    for (const key of ['originalFilePath', 'imageDataPath', 'psdDataPath']) {
+    const normalizedPreviousPath = previousPath?.replace(/^Project\//, '');
+    const normalizedNextPath = nextPath?.replace(/^Project\//, '');
+    for (const key of ['assetPath', 'originalFilePath', 'manifestPath', 'imageDataPath', 'psdDataPath']) {
       if (typeof manifest[key] === 'string') {
-        manifest[key] = (manifest[key] as string).replace(new RegExp(`${escapeRegExp(previousName)}$`), nextName);
+        const current = (manifest[key] as string).replace(/^Project\//, '');
+        manifest[key] = normalizedPreviousPath && normalizedNextPath && current === normalizedPreviousPath
+          ? normalizedNextPath
+          : current.replace(new RegExp(`${escapeRegExp(previousName)}$`), nextName);
       }
     }
     return JSON.stringify(manifest, null, 2);
@@ -265,6 +272,12 @@ const splitExtension = (name: string): { stem: string; extension: string } => {
   return { stem: name.slice(0, index), extension: name.slice(index) };
 };
 
+const getCaptionSidecarName = (name: string): string | null => {
+  const kind = resolveProjectAssetKind(name);
+  if (kind !== 'image' && kind !== 'psd') return null;
+  return `${splitExtension(name).stem}.txt`;
+};
+
 export const getUniqueExplorerName = async (
   directory: ProjectDirectoryHandle,
   desiredName: string
@@ -273,7 +286,8 @@ export const getUniqueExplorerName = async (
   assertValidName(trimmed);
   const canUseName = async (name: string): Promise<boolean> =>
     !(await entryExists(directory, name)) &&
-    (isAssetManifestName(name) || !(await entryExists(directory, getAssetManifestName(name))));
+    (isAssetManifestName(name) || !(await entryExists(directory, getAssetManifestName(name)))) &&
+    (!getCaptionSidecarName(name) || !(await entryExists(directory, getCaptionSidecarName(name)!)));
 
   if (await canUseName(trimmed)) {
     return trimmed;
@@ -316,6 +330,8 @@ const copyAssetManifest = async (
   destinationDirectory: ProjectDirectoryHandle,
   sourceName: string,
   targetName: string,
+  sourcePath?: string,
+  targetPath?: string,
   options: { preserveAssetIdentity?: boolean } = {}
 ) => {
   const manifest = await readOptionalTextFile(sourceDirectory, getAssetManifestName(sourceName));
@@ -325,7 +341,7 @@ const copyAssetManifest = async (
   await writeFile(
     destinationDirectory,
     getAssetManifestName(targetName),
-    rewriteAssetManifest(manifest, sourceName, targetName, options)
+    rewriteAssetManifest(manifest, sourceName, targetName, sourcePath, targetPath, options)
   );
 };
 
@@ -333,12 +349,44 @@ const moveAssetManifest = async (
   sourceDirectory: ProjectDirectoryHandle,
   destinationDirectory: ProjectDirectoryHandle,
   sourceName: string,
-  targetName: string
+  targetName: string,
+  sourcePath: string,
+  targetPath: string
 ) => {
-  await copyAssetManifest(sourceDirectory, destinationDirectory, sourceName, targetName, {
+  await copyAssetManifest(sourceDirectory, destinationDirectory, sourceName, targetName, sourcePath, targetPath, {
     preserveAssetIdentity: true,
   });
   await removeOptionalFile(sourceDirectory, getAssetManifestName(sourceName));
+};
+
+const hasOtherCaptionOwner = async (directory: ProjectDirectoryHandle, sourceName: string): Promise<boolean> => {
+  const caption = getCaptionSidecarName(sourceName);
+  if (!caption) return false;
+  const stem = splitExtension(sourceName).stem.toLowerCase();
+  for await (const [name, entry] of directory.entries()) {
+    if ('entries' in entry || name === sourceName) continue;
+    const kind = resolveProjectAssetKind(name);
+    if ((kind === 'image' || kind === 'psd') && splitExtension(name).stem.toLowerCase() === stem) return true;
+  }
+  return false;
+};
+
+const copyAssetCaption = async (
+  sourceDirectory: ProjectDirectoryHandle,
+  destinationDirectory: ProjectDirectoryHandle,
+  sourceName: string,
+  targetName: string
+) => {
+  const sourceCaption = getCaptionSidecarName(sourceName);
+  const targetCaption = getCaptionSidecarName(targetName);
+  if (!sourceCaption || !targetCaption) return;
+  const caption = await readOptionalTextFile(sourceDirectory, sourceCaption);
+  if (caption !== null) await writeFile(destinationDirectory, targetCaption, caption);
+};
+
+const removeMovedAssetCaption = async (sourceDirectory: ProjectDirectoryHandle, sourceName: string) => {
+  const sourceCaption = getCaptionSidecarName(sourceName);
+  if (sourceCaption && !await hasOtherCaptionOwner(sourceDirectory, sourceName)) await removeOptionalFile(sourceDirectory, sourceCaption);
 };
 
 const copyDirectoryContents = async (
@@ -408,13 +456,15 @@ export const copyExplorerEntry = async (
 
   const file = await readExplorerFile(root, source.path);
   const { directory: sourceDirectory, name: sourceName } = await getExplorerParentDirectory(root, source.path);
+  const targetPath = `${destinationPath}/${targetName}`;
   try {
     await writeFile(destination, targetName, file);
-    await copyAssetManifest(sourceDirectory, destination, sourceName, targetName, options);
+    await copyAssetManifest(sourceDirectory, destination, sourceName, targetName, source.path, targetPath, options);
+    await copyAssetCaption(sourceDirectory, destination, sourceName, targetName);
   } catch (error) {
     return discardFailedCopy(destination, destinationPath, targetName, source.kind, error);
   }
-  return `${destinationPath}/${targetName}`;
+  return targetPath;
 };
 
 const assertCanPlaceExplorerEntries = (
@@ -489,7 +539,9 @@ const relocateExplorerEntry = async (
       await movable.move(destination, targetName);
       moved = true;
       if (source.kind === 'file') {
-        await moveAssetManifest(directory, destination, name, targetName);
+        await moveAssetManifest(directory, destination, name, targetName, source.path, change.to);
+        await copyAssetCaption(directory, destination, name, targetName);
+        await removeMovedAssetCaption(directory, name);
       }
     } else {
       await copyExplorerEntry(root, source, destinationPath, targetName, {
@@ -518,6 +570,7 @@ const relocateExplorerEntry = async (
       moved = true;
       if (source.kind === 'file') {
         await removeOptionalFile(directory, getAssetManifestName(name));
+        await removeMovedAssetCaption(directory, name);
       }
     }
   } catch (error) {

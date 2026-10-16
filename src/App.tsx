@@ -141,7 +141,7 @@ import { useDockWorkspace } from './hooks/useDockWorkspace';
 import { useWorkspaceNavigation } from './hooks/useWorkspaceNavigation';
 import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from './lib/workspaceLayout';
 import { hasBusyVideoTabs } from './services/video/videoClient';
-import { resolveDatasetMembership } from './services/dataset/datasetMembershipResolver';
+import { DATASET_EXPLORER_PATH, isProjectDatasetPath } from './services/dataset/datasetFolderService';
 
 const WORKSPACE_TAB_DRAG_TYPE = 'application/x-dataset-creator-workspace-tab';
 type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'review' | 'analysis' | 'caption';
@@ -945,27 +945,23 @@ function App() {
       : activeTab?.kind === 'window' && activeTab.window === 'dataset'
         ? globalDataset
       : null;
-  const activeDatasetFileAssetPaths = useMemo(
-    () => filterLegacyProjectAssetPaths([...new Set([...globalDataset.assetPaths, ...globalDataset.psdAssetPaths])]),
-    [globalDataset]
-  );
-  const activeDatasetWorkspaceAssetPaths = activeDatasetFileAssetPaths;
   const activeDatasetSourceImages = useMemo(
-    () => {
-      const ids = new Set(globalDataset.assetIds);
-      const paths = new Set(activeDatasetFileAssetPaths.map((path) => path.replace(/^Project\//, '')));
-      return Object.values(sourceImagesById).filter((asset) => ids.has(asset.id) || Boolean(asset.originalFilePath && paths.has(asset.originalFilePath.replace(/^Project\//, ''))));
-    },
-    [activeDatasetFileAssetPaths, globalDataset.assetIds, sourceImagesById]
+    () => Object.values(sourceImagesById).filter((asset) => isProjectDatasetPath(asset.originalFilePath)),
+    [sourceImagesById]
   );
   const activeDatasetPreviewItems = useMemo(
-    () => orderDatasetBoardItems(toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets, {}, datasetItems), globalDataset.assetOrder, globalDataset.assetIds),
-    [globalDataset, activeDatasetSourceImages, datasetItems, datasetWorkspaceFileAssets]
+    () => orderDatasetBoardItems(
+      toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets, {}, datasetItems)
+        .filter(item => isProjectDatasetPath(item.assetPath)),
+      globalDataset.assetOrder,
+      activeDatasetSourceImages.map(item => item.id)
+    ),
+    [globalDataset.assetOrder, activeDatasetSourceImages, datasetItems, datasetWorkspaceFileAssets]
   );
   const globalDatasetTags = useMemo(
-    () => [...new Set(resolveDatasetMembership(globalDataset, activeDatasetPreviewItems).members.flatMap((item) => item.tags ?? []))]
+    () => [...new Set(activeDatasetPreviewItems.flatMap((item) => item.tags ?? []))]
       .sort((left, right) => left.localeCompare(right)),
-    [activeDatasetPreviewItems, globalDataset]
+    [activeDatasetPreviewItems]
   );
   const projectTags = useMemo(
     () => [...new Set([...sourceImages.flatMap((image) => image.tags ?? []), ...globalDatasetTags])]
@@ -973,10 +969,7 @@ function App() {
     [globalDatasetTags, sourceImages]
   );
   const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
-    const isEmpty =
-      globalDataset.assetIds.length === 0 &&
-      filterLegacyProjectAssetPaths(globalDataset.assetPaths ?? []).length === 0 &&
-      filterLegacyProjectAssetPaths(globalDataset.psdAssetPaths ?? []).length === 0;
+    const isEmpty = activeDatasetPreviewItems.length === 0;
     if (!isEmpty) {
       return null;
     }
@@ -1018,7 +1011,7 @@ function App() {
       assetIds,
       totalCount: assetIds.length,
     };
-  }, [globalDataset, dismissedEmptyDatasetSuggestionSignatures, workspaceImages]);
+  }, [activeDatasetPreviewItems.length, globalDataset, dismissedEmptyDatasetSuggestionSignatures, workspaceImages]);
   const missingDatasetSourceCount = useMemo(
     () => [...new Set(activeDataset?.assetIds ?? [])].filter(id => !sourceImagesById[id]).length,
     [activeDataset?.assetIds, sourceImagesById]
@@ -1143,14 +1136,14 @@ function App() {
   useEffect(() => {
     let canceled = false;
 
-    if (!projectDirectoryHandle || activeDatasetWorkspaceAssetPaths.length === 0) {
+    if (!projectDirectoryHandle) {
       setDatasetWorkspaceFileAssets([]);
       return;
     }
 
     const loadDatasetWorkspaceFileAssets = async () => {
       try {
-        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle, activeDatasetWorkspaceAssetPaths);
+        const assets = (await collectWorkspaceFileAssets(projectDirectoryHandle)).filter(asset => isProjectDatasetPath(asset.path));
         const pendingAssets = assets.map((asset) =>
           asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
         );
@@ -1183,7 +1176,7 @@ function App() {
     return () => {
       canceled = true;
     };
-  }, [activeDatasetWorkspaceAssetPaths, addNotification, assetPreviewRefreshKey, projectDirectoryHandle]);
+  }, [addNotification, assetPreviewRefreshKey, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!activeTab || !isFileBackedTab(activeTab)) {
@@ -1918,7 +1911,7 @@ function App() {
 
   const importDroppedFilesIntoDataset = async (
     dataTransfer: DataTransfer,
-    dataset: Dataset
+    _dataset: Dataset
   ): Promise<{ assetIds: string[]; assetPaths: string[]; psdAssetPaths: string[] }> => {
     if (!projectDirectoryHandle) {
       addNotification('warning', 'Open a project directory before importing files into a Dataset');
@@ -1937,7 +1930,7 @@ function App() {
       logger: createOperationLogger('Dataset'),
       destination: {
         projectDirectory: projectDirectoryHandle,
-        explorerPath: dataset.parentPath ?? 'Project',
+        explorerPath: DATASET_EXPLORER_PATH,
       },
       onImageImported: (image) => {
         addSourceImage(image);
@@ -2042,7 +2035,7 @@ function App() {
       return;
     }
 
-    const addedCount = addDatasetReferences({ assetIds: suggestion.assetIds });
+    const addedCount = await addDatasetReferences({ assetIds: suggestion.assetIds });
     if (addedCount <= 0) {
       dismissEmptyDatasetSuggestion(suggestion.signature);
       addNotification('info', 'Suggested assets are already in this Dataset');
@@ -2053,7 +2046,7 @@ function App() {
   };
 
   const removeDatasetBoardAsset = async (_dataset: Dataset, item: WorkspaceImage) => {
-    removeAssetsFromDataset([item]);
+    await removeAssetsFromDataset([item]);
     await flushProjectSave();
     addNotification('info', 'Asset removed from Dataset');
   };
@@ -2375,8 +2368,7 @@ function App() {
       onApplySuggestion={suggestion => { void applyEmptyDatasetSuggestion(dataset, suggestion).catch(error => addNotification('error', `Could not add suggested files: ${error instanceof Error ? error.message : String(error)}`)); }}
       onDismissSuggestion={dismissEmptyDatasetSuggestion}
       onApplyAssembly={async paths => {
-        await indexProjectWorkspaceAssets(false);
-        const addedCount = addDatasetReferences({ assetPaths: paths });
+        const addedCount = await addDatasetReferences({ assetPaths: paths });
         if (!addedCount) { addNotification('info', 'Selected images are already in this Dataset'); return; }
         await flushProjectSave();
         addNotification('success', `Added ${addedCount} coverage image${addedCount === 1 ? '' : 's'} to ${dataset.name}`);
@@ -2419,7 +2411,7 @@ function App() {
               assetPaths = [...assetPaths, ...imported.assetPaths];
             }
             if (assetIds.length > 0 || assetPaths.length > 0) {
-              const addedCount = addDatasetReferences({ assetIds, assetPaths });
+              const addedCount = await addDatasetReferences({ assetIds, assetPaths });
               if (addedCount > 0) {
                 await flushProjectSave();
                 addNotification('success', `Added ${addedCount} asset${addedCount !== 1 ? 's' : ''} to ${dataset.name}`);
@@ -2872,6 +2864,18 @@ function App() {
       }
     }
   };
+
+  useEffect(() => {
+    const handleDatasetFolderMoves = (event: Event) => {
+      const moves = (event as CustomEvent<ExplorerPathMove[]>).detail;
+      if (!Array.isArray(moves) || moves.length === 0) return;
+      updateFileTabsForPathMoves(moves);
+      updateExplorerClipboardForPathMoves(moves);
+      refreshExplorer();
+    };
+    window.addEventListener('dataset-folder-paths-changed', handleDatasetFolderMoves);
+    return () => window.removeEventListener('dataset-folder-paths-changed', handleDatasetFolderMoves);
+  });
 
   const renameExplorerItem = async (
     path: string,

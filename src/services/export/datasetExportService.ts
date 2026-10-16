@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { getAssetManifestName } from '../project/assetManifestService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
-import { DATASET_MANIFEST_FILE, PROJECT_DATASET_DIRECTORY, readDatasetManifest, writeDatasetManifest } from '../project/projectLayoutService';
+import { PROJECT_DATASET_DIRECTORY } from '../project/projectLayoutService';
 import { getProjectAssetExtension, isSupportedProjectAsset, resolveProjectAssetKind } from '../project/assetTypeService';
 import type { OperationLogger } from '../logging/applicationLog';
 
@@ -51,7 +51,7 @@ const collectDatasetAssets = async (
       assets.push(...await collectDatasetAssets(entry, joinPath(relativeDirectory, name)));
       continue;
     }
-    if (!isSupportedProjectAsset(name) || resolveProjectAssetKind(name) !== 'image') {
+    if (!isSupportedProjectAsset(name) || !['image', 'psd'].includes(resolveProjectAssetKind(name))) {
       continue;
     }
     const file = await entry.getFile();
@@ -93,39 +93,20 @@ export const getProjectDatasetAssets = async (root: ProjectDirectoryHandle): Pro
     if (error instanceof Error && error.name === 'NotFoundError') return [];
     throw error;
   }
-  return collectDatasetAssets(directory);
+  return (await collectDatasetAssets(directory)).sort((left, right) => left.sourcePath.localeCompare(right.sourcePath, undefined, { numeric:true, sensitivity:'base' }));
 };
 
 export const syncProjectDatasetManifest = async (root: ProjectDirectoryHandle): Promise<DatasetExportAsset[]> => {
-  const manifest = await readDatasetManifest(root);
-  if (!manifest) {
-    throw new Error(`${DATASET_MANIFEST_FILE} is missing or invalid.`);
-  }
-  const assets = await getProjectDatasetAssets(root);
-  const classRepeats: Record<string, number> = {};
-  for (const asset of assets) {
-    if (!asset.targetDirectory) continue;
-    const match = asset.targetDirectory.match(/^(\d+)_/);
-    if (match) classRepeats[asset.targetDirectory] = Number(match[1]);
-  }
-  await writeDatasetManifest(root, {
-    ...manifest,
-    imageCount: assets.length,
-    classCount: Object.keys(classRepeats).length,
-    classRepeats,
-    updatedAt: new Date().toISOString(),
-  });
-  return assets;
+  return getProjectDatasetAssets(root);
 };
 
 export const exportProjectDatasetAsZip = async (
   root: ProjectDirectoryHandle,
   blacklist: string[] = [],
-  logger?: OperationLogger
+  logger?: OperationLogger,
+  triggerWord = ''
 ): Promise<{ blob: Blob; count: number }> => {
-  const manifest = await readDatasetManifest(root);
-  if (!manifest) throw new Error(`${DATASET_MANIFEST_FILE} is missing or invalid.`);
-  const assets = await syncProjectDatasetManifest(root);
+  const assets = await getProjectDatasetAssets(root);
   if (assets.length === 0) {
     throw new Error('The dataset directory contains no images to export.');
   }
@@ -135,7 +116,7 @@ export const exportProjectDatasetAsZip = async (
     const extension = getProjectAssetExtension(asset.file.name) || 'png';
     const relativePath = asset.targetDirectory ? `${asset.targetDirectory}/${order}` : order;
     zip.file(`${relativePath}.${extension}`, await asset.file.arrayBuffer());
-    zip.file(`${relativePath}.txt`, getCaption(asset.tags, manifest.triggerWord, blacklist));
+    zip.file(`${relativePath}.txt`, getCaption(asset.tags, triggerWord, blacklist));
     logger?.progress({ current: index + 1, total: assets.length, label: 'prepared dataset files' });
   }
   logger?.info('compressing dataset ZIP');
