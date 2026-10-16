@@ -5,7 +5,7 @@ import { encodeCaptionText, SEMANTIC_FEATURE_MODEL_KEY } from '../analysis/seman
 import { cosineSimilarity, createCoverageUniverse, getStableSceneGroup, measureCoverage, type CoverageAsset, type CoverageMetrics } from './coverageService';
 import { normalizeDatasetPath } from './datasetMembershipResolver';
 
-export const DATASET_ASSEMBLY_VERSION = 'diversity-v2';
+export const DATASET_ASSEMBLY_VERSION = 'diversity-v3';
 export const DATASET_ASSEMBLY_CACHE_VERSION = `${DATASET_ASSEMBLY_VERSION}:${SEMANTIC_FEATURE_MODEL_KEY}`;
 export const NEAR_DUPLICATE_THRESHOLD = 0.985;
 export type AssemblyMode =
@@ -100,6 +100,9 @@ export async function assembleDataset(options: {
       const candidate = remaining[index];
       const nextMetrics = measureCoverage([...selectedAssets, candidate].map(coverageAsset), universe);
       const pinned = options.pinnedKeys?.has(stableKey(candidate));
+      // Bonuses rank useful candidates; they must not let a saturated candidate
+      // stop selection while another candidate still improves coverage.
+      if (!pinned && steps.length >= minimum && nextMetrics.total - metrics.total < saturationGain) continue;
       const targetRelevance = targetFeature && candidate.caption ? cosineSimilarity(targetFeature, candidate.feature.text) : 0;
       const group = getStableSceneGroup(coverageAsset(candidate));
       const repeatedSeries = selectedAssets.filter((asset) => getStableSceneGroup(coverageAsset(asset)) === group).length;
@@ -108,11 +111,9 @@ export async function assembleDataset(options: {
         bestIndex=index; bestGain=gain; bestMetrics=nextMetrics;
       }
     }
-    if (bestIndex < 0) break;
+    if (bestIndex < 0) { saturated = true; break; }
     const candidate = remaining[bestIndex];
-    const pinned = options.pinnedKeys?.has(stableKey(candidate));
     const actualGain = Math.max(0, bestMetrics.total - metrics.total);
-    if (!pinned && steps.length >= minimum && actualGain < saturationGain) { saturated=true; break; }
     remaining.splice(bestIndex,1); selectedAssets.push(candidate); metrics=bestMetrics;
     const sceneGroup = getStableSceneGroup(coverageAsset(candidate));
     const newContexts = candidate.feature.contexts.filter((context) => !selectedAssets.slice(0,-1).some((asset) => asset.feature.contexts.includes(context)));

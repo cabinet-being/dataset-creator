@@ -38,12 +38,14 @@ export const createCoverageUniverse = (assets: CoverageAsset[]): CoverageUnivers
 
 export const measureCoverage = (selected: CoverageAsset[], input: CoverageAsset[] | CoverageUniverse): CoverageMetrics => {
   const universe = Array.isArray(input) ? createCoverageUniverse(input) : input;
-  if (!universe.assets.length || !selected.length) return { visual: 0, text: null, context: null, total: 0 };
+  if (!universe.assets.length) return { visual: 0, text: null, context: null, total: 0 };
   const visual = universe.assets.reduce((sum, target, index) => sum + universe.weights[index] * selected.reduce(
     (best, item) => Math.max(best, cosineSimilarity(target.feature.image, item.feature.image)), 0
   ), 0) / Math.max(universe.denominator, 0.0001);
   const textSelected = selected.filter((item) => item.feature.caption.trim());
-  const text = universe.textDenominator > 0 && textSelected.length
+  // Available signals belong to the fixed universe, even before a selected item
+  // covers them. Changing the denominator mid-selection can lower coverage.
+  const text = universe.textDenominator > 0
     ? universe.assets.reduce((sum, target, index) => target.feature.caption.trim()
       ? sum + universe.weights[index] * textSelected.reduce((best, item) => Math.max(best, cosineSimilarity(target.feature.text, item.feature.text)), 0)
       : sum, 0) / universe.textDenominator

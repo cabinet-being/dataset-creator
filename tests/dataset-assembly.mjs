@@ -14,6 +14,7 @@ try {
       'src/services/dataset/sharedCandidateService.ts',
       'src/services/dataset/coverageService.ts',
       'src/services/dataset/datasetAssemblyService.ts',
+      'src/services/analysis/semanticFeatureService.ts',
       'src/services/caption/captionMigrationService.ts',
     ],
     platform: 'node',
@@ -89,6 +90,45 @@ try {
   const fingerprintA = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{target:'one',mode:{kind:'auto'},pinnedKeys:new Set()});
   const fingerprintB = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{target:'one',mode:{kind:'auto'},pinnedKeys:new Set(['src/shared/back.png'])});
   assert.notEqual(fingerprintA,fingerprintB,'pins invalidate an assembly preview');
+
+  // Signal weights must not change when the first caption enters the selection.
+  const blank = assemblyItem('blank.png', feature('blank', [1, 0], ''));
+  const topics = [0, 1, 2].map(index => assemblyItem(`topic-${index}.png`, {
+    ...feature(`topic-${index}`, [1, 0], `topic-${index}`, [`topic-${index}`]),
+    text: vector(...[0, 1, 2].map(value => Number(value === index))),
+  }));
+  const fixedUniverse = coverage.createCoverageUniverse([blank, ...topics].map(assembly.coverageAsset));
+  let previousCoverage = coverage.measureCoverage([], fixedUniverse);
+  assert.equal(previousCoverage.text, 0, 'An available but uncovered text signal is zero, not missing');
+  const selectedCoverage = [];
+  for (const asset of [blank, ...topics]) {
+    selectedCoverage.push(assembly.coverageAsset(asset));
+    const next = coverage.measureCoverage(selectedCoverage, fixedUniverse);
+    assert.ok(next.total >= previousCoverage.total, 'Adding the first caption cannot lower coverage');
+    previousCoverage = next;
+  }
+  assert.ok(Math.abs(previousCoverage.total - 1) < 1e-6);
+
+  // A text bonus must not select a saturated candidate and hide useful ones.
+  const targetBaseline = [0, 1, 2].map(index => assemblyItem(`base-${index}.png`,
+    feature(`base-${index}`, [1, 0, 0], 'target', ['target'])));
+  const bait = assemblyItem('a-bait.png', feature('bait-near', [0.984, Math.sqrt(1 - 0.984 ** 2), 0], 'target', ['target']));
+  const useful = assemblyItem('b-useful.png', feature('useful', [0.9, 0, Math.sqrt(0.19)], ''));
+  // Match the actual text encoder rather than the image-vector test shortcut.
+  const { encodeCaptionText } = await import(pathToFileURL(join(temp, 'semanticFeatureService.mjs')));
+  for (const asset of [...targetBaseline, bait, useful]) asset.feature.text = encodeCaptionText(asset.caption);
+  for (const mode of [{kind:'auto'}, {kind:'max-new',maxNew:3}, {kind:'range',min:3,max:6}]) {
+    const result = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
+      baseline:targetBaseline,candidates:[bait,useful],mode,target:'target'});
+    assert.equal(result.selected[0]?.path, 'b-useful.png', 'Saturation must consider every eligible candidate');
+    assert.ok(result.after.total > result.before.total);
+  }
+  const forcedTarget = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
+    baseline:targetBaseline,candidates:[bait,useful],mode:{kind:'total',target:5},target:'target'});
+  assert.equal(forcedTarget.selected.length, 2, 'A requested total still fills beyond the saturation threshold');
+  const pinnedLowGain = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
+    baseline:targetBaseline,candidates:[bait],mode:{kind:'auto'},pinnedKeys:new Set(['a-bait.png'])});
+  assert.equal(pinnedLowGain.selected.length, 1, 'A pinned eligible item bypasses saturation');
   const sourceRecord = { outside: { id:'outside', originalFilePath:'private/outside.png', tags:['original'] }, group: { id:'group', originalFilePath:'src/shared/group.png', tags:['source'] } };
   const editedRecord = { crop: { id:'crop', sourceImageId:'group', imageDataPath:'src/shared/crop.png', tags:['crop'], deleted:false } };
   const migratedCaptions = migration.migrateLegacyCaptions({
