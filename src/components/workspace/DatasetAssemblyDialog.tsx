@@ -7,9 +7,10 @@ import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { resolveAssetCaption } from '../../services/caption/captionResolver';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
-import { assembleDataset, createAssemblyFingerprint, type AssemblyInputAsset, type DatasetAssemblyPlan } from '../../services/dataset/datasetAssemblyService';
+import { assembleDataset, createAssemblyFingerprint, type AssemblyInputAsset, type AssemblyMode, type DatasetAssemblyPlan } from '../../services/dataset/datasetAssemblyService';
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
 import { scanSharedCandidates } from '../../services/dataset/sharedCandidateService';
+import { useUIStore } from '../../stores/useUIStore';
 
 type Props = {
   open: boolean;
@@ -27,8 +28,11 @@ type Result = { plan: DatasetAssemblyPlan; candidates: AssemblyInputAsset[]; fin
 const percent = (value: number | null) => value === null ? 'Insufficient data' : `${Math.round(value * 100)}%`;
 
 export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, directory, projectId, projectType, excludedCategories, includedCategories, onApply }: Props) {
-  const [mode, setMode] = useState<'auto' | 'limit'>('auto');
-  const [limit, setLimit] = useState(20);
+  const [mode, setMode] = useState<AssemblyMode['kind']>('auto');
+  const [totalTarget, setTotalTarget] = useState(100);
+  const [rangeMin, setRangeMin] = useState(80);
+  const [rangeMax, setRangeMax] = useState(120);
+  const [maxNew, setMaxNew] = useState(20);
   const [target, setTarget] = useState('');
   const [phase, setPhase] = useState('');
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
@@ -38,6 +42,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [applying, setApplying] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const membership = useMemo(() => resolveDatasetMembership(dataset, items), [dataset, items]);
   const proposedItems = useMemo(() => {
     if (!result) return [];
@@ -51,6 +56,15 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => { if (!open) abortRef.current?.abort(); }, [open]);
+  useEffect(() => { setResult(null); }, [assetPreviewRefreshKey, mode, totalTarget, rangeMin, rangeMax, maxNew, target]);
+
+  const assemblyMode: AssemblyMode = mode === 'total'
+    ? { kind:'total', target:Math.max(0,totalTarget) }
+    : mode === 'range'
+      ? { kind:'range', min:Math.max(0,Math.min(rangeMin,rangeMax)), max:Math.max(rangeMin,rangeMax) }
+      : mode === 'max-new'
+        ? { kind:'max-new', maxNew:Math.max(0,maxNew) }
+        : { kind:'auto' };
 
   const run = async (constraints = { excluded, pinned }) => {
     if (!directory) { setError('Reconnect the project folder to read src/shared.'); return; }
@@ -81,7 +95,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
         setPhase('Maximizing coverage'); setProgress({ completed: all.length, total: all.length });
         const plan = await assembleDataset({
           projectId, projectType, dataset, baseline, candidates: encodedCandidates,
-          mode: mode === 'auto' ? { kind: 'auto' } : { kind: 'limit', limit }, target,
+          mode: assemblyMode, target,
           excludedKeys: constraints.excluded, pinnedKeys: constraints.pinned,
         });
         setResult({ plan, candidates: encodedCandidates, fingerprintAssets: features, skipped: scan.skipped.length });
@@ -100,7 +114,9 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
     if (!result || applying) return;
     setApplying(true); setError('');
     try {
-      const fingerprint = await createAssemblyFingerprint(dataset, result.fingerprintAssets.map((asset) => ({ ...asset, caption: resolveAssetCaption(asset.item, dataset.triggerWord).normalized })), target.trim());
+      const fingerprint = await createAssemblyFingerprint(dataset, result.fingerprintAssets.map((asset) => ({ ...asset, caption: resolveAssetCaption(asset.item, dataset.triggerWord).normalized })), {
+        target:target.trim(), mode:assemblyMode, excludedKeys:excluded, pinnedKeys:pinned,
+      });
       if (fingerprint !== result.plan.fingerprint) throw new Error('This preview is stale because the Dataset or captions changed. Run the selection again.');
       await onApply(result.plan.selected.map((step) => step.path));
       onOpenChange(false);
@@ -120,8 +136,10 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
           <div className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-2">
             <p className="text-sm"><span className="font-medium">Source</span><br /><span className="text-muted-foreground">Project/src/shared · fixed</span></p>
             <p className="text-sm"><span className="font-medium">Baseline</span><br /><span className="text-muted-foreground">Existing {existingCount} {existingCount === 1 ? 'image will' : 'images will'} be preserved</span></p>
-            <label className="text-sm"><span className="font-medium">Selection mode</span><select value={mode} onChange={(event) => setMode(event.target.value as 'auto' | 'limit')} className="mt-1 w-full rounded border border-border bg-background px-2 py-2"><option value="auto">Auto · stop at saturation</option><option value="limit">Limit new images</option></select></label>
-            {mode === 'limit' && <label className="text-sm"><span className="font-medium">Maximum new images</span><input type="number" min={1} max={10000} value={limit} onChange={(event) => setLimit(Math.max(1, Number(event.target.value) || 1))} className="mt-1 w-full rounded border border-border bg-background px-2 py-2" /></label>}
+            <label className="text-sm"><span className="font-medium">Selection mode</span><select value={mode} onChange={(event) => setMode(event.target.value as AssemblyMode['kind'])} className="mt-1 w-full rounded border border-border bg-background px-2 py-2"><option value="auto">Auto · stop at saturation</option><option value="total">Total Dataset size</option><option value="range">Inclusive total range</option><option value="max-new">Maximum new images</option></select></label>
+            {mode === 'total' && <label className="text-sm"><span className="font-medium">Total images</span><input type="number" min={0} max={100000} value={totalTarget} onChange={(event) => setTotalTarget(Math.max(0,Number(event.target.value)||0))} className="mt-1 w-full rounded border border-border bg-background px-2 py-2" /></label>}
+            {mode === 'range' && <div className="grid grid-cols-2 gap-2"><label className="text-sm"><span className="font-medium">Minimum total</span><input type="number" min={0} value={rangeMin} onChange={(event)=>setRangeMin(Math.max(0,Number(event.target.value)||0))} className="mt-1 w-full rounded border border-border bg-background px-2 py-2" /></label><label className="text-sm"><span className="font-medium">Maximum total</span><input type="number" min={0} value={rangeMax} onChange={(event)=>setRangeMax(Math.max(0,Number(event.target.value)||0))} className="mt-1 w-full rounded border border-border bg-background px-2 py-2" /></label></div>}
+            {mode === 'max-new' && <label className="text-sm"><span className="font-medium">Maximum new images</span><input type="number" min={0} max={10000} value={maxNew} onChange={(event) => setMaxNew(Math.max(0,Number(event.target.value)||0))} className="mt-1 w-full rounded border border-border bg-background px-2 py-2" /></label>}
             <label className="text-sm sm:col-span-2"><span className="font-medium">What should this Dataset cover? <span className="font-normal text-muted-foreground">Optional</span></span><textarea value={target} onChange={(event) => setTarget(event.target.value)} rows={2} placeholder="For example: the character in varied poses, angles and indoor/outdoor scenes" className="mt-1 w-full resize-y rounded border border-border bg-background px-3 py-2" /></label>
           </div>
           {phase && <div role="status" className="rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm"><div className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />{phase}</div>{progress.total > 0 && <div className="mt-2 h-1.5 overflow-hidden rounded bg-secondary"><div className="h-full bg-primary" style={{ width: `${Math.round(progress.completed / progress.total * 100)}%` }} /></div>}</div>}
@@ -130,7 +148,13 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {[['Existing', result.plan.baselineCount], ['Proposed', result.plan.selected.length], ['Together', result.plan.baselineCount + result.plan.selected.length], ['Coverage', `${percent(result.plan.before.total)} → ${percent(result.plan.after.total)}`]].map(([label, value]) => <div key={label} className="rounded-lg bg-secondary p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-semibold">{value}</p></div>)}
             </div>
-            <p className="text-xs text-muted-foreground">Visual {percent(result.plan.after.visual)} · Captions {percent(result.plan.after.text)} · Context {percent(result.plan.after.context)} · {result.plan.rejectedDuplicates.length} exact duplicates skipped · {result.skipped} unavailable or excluded files</p>
+            <p className="text-xs text-muted-foreground">Visual {percent(result.plan.after.visual)} · Captions {percent(result.plan.after.text)} · Context {percent(result.plan.after.context)} · stopped: {result.plan.stoppedBecause}{result.plan.shortfall ? ` · shortfall ${result.plan.shortfall}` : ''}</p>
+            <p className="text-xs text-muted-foreground">Pool {result.plan.funnel.pool} → {result.plan.funnel.eligible} eligible · {result.plan.funnel.exactDuplicates} exact + {result.plan.funnel.nearDuplicates} near duplicates · {result.plan.funnel.excluded} excluded · {result.plan.funnel.evaluated} evaluations · {result.skipped} unavailable files</p>
+            <details className="rounded border border-border px-3 py-2 text-xs"><summary className="cursor-pointer font-medium">Pool balance and rejections</summary><div className="mt-2 space-y-1 text-muted-foreground">
+              {result.plan.sceneGroups.map((group) => <p key={group.id}>{group.id}: {group.baseline} existing · {group.pool} eligible · {group.selected} selected</p>)}
+              {result.plan.duplicatePairs.map((pair) => <p key={`${pair.kind}:${pair.rejected}`}>{pair.rejected}: {pair.kind} duplicate of {pair.kept} ({Math.round(pair.similarity*100)}%)</p>)}
+              {result.plan.rejectedCandidates.filter((entry)=>entry.reason==='not-selected').slice(0,20).map((entry)=><p key={entry.path}>{entry.path}: not selected before {result.plan.stoppedBecause}</p>)}
+            </div></details>
             {result.plan.selected.length ? <div className="divide-y divide-border rounded-lg border border-border">
               {result.plan.selected.map((step, index) => { const item = proposedByPath.get(step.key); return <div key={step.key} className="flex items-start gap-3 p-3 text-sm">{item && previewUrls[item.id] ? <img src={previewUrls[item.id]} alt="" className="h-14 w-14 shrink-0 rounded object-cover" /> : <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs text-primary">{index + 1}</span>}<div className="min-w-0 flex-1"><p className="truncate font-medium" title={step.path}>{step.path}</p>{item?.tags?.length ? <p className="truncate text-xs text-muted-foreground">{item.tags.join(', ')}</p> : null}<p className="mt-0.5 text-xs text-muted-foreground">{step.reason} · +{(step.gain * 100).toFixed(1)} coverage points</p></div><button type="button" aria-label={`Pin ${step.path}`} title="Keep this candidate" onClick={() => updateConstraint(step.key, 'pin')} className={`rounded p-1 ${pinned.has(step.key) ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-secondary'}`}><Pin className="h-4 w-4" /></button><button type="button" aria-label={`Remove ${step.path}`} title="Remove and recalculate" onClick={() => updateConstraint(step.key, 'exclude')} className="rounded p-1 text-muted-foreground hover:bg-secondary"><X className="h-4 w-4" /></button></div>; })}
             </div> : <p className="rounded-lg border border-border p-4 text-sm text-muted-foreground">The available pool is already covered; no useful additions passed the saturation threshold.</p>}
