@@ -1697,6 +1697,12 @@ function App() {
     return true;
   };
 
+  const handleExplorerMarqueeSelection = useCallback((paths: string[]) => {
+    setSelectedExplorerPaths(new Set(paths));
+    setSelectionAnchorPath(paths[0] ?? null);
+    setFocusedExplorerPath(paths[0] ?? null);
+  }, []);
+
   const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
     setActiveExplorerNode(node);
     if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
@@ -4099,7 +4105,7 @@ function App() {
               <ExplorerPanel panelRef={explorerPanelRef} error={explorerError}
                 selectedPaths={selectedExplorerPaths}
                 onDismissContextMenu={() => setExplorerContextMenu(null)}
-                onSelectionChange={paths => { setSelectedExplorerPaths(new Set(paths)); setSelectionAnchorPath(paths[0] ?? null); setFocusedExplorerPath(paths[0] ?? null); }}
+                onSelectionChange={handleExplorerMarqueeSelection}
                 onRootContextMenu={(x, y) => { setActiveExplorerDirectoryPath('Project'); setExplorerContextMenu({ node: { name: projectName || 'Project', path: 'Project', kind: 'folder' }, x, y }); }}
                 onDropTargetChange={setExplorerDropTargetPath}
                 onDropFiles={event => handleExplorerDrop(event, 'Project')}>

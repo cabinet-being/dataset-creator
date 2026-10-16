@@ -29,6 +29,24 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
   const [explorerMarquee, setExplorerMarquee] = useState<ExplorerMarquee | null>(null);
   const marqueeRef = useRef<ExplorerMarquee | null>(null);
   const frameRef = useRef<number>();
+  const selectionChangeRef = useRef(onSelectionChange);
+  const emittedSelectionRef = useRef<string[]>([...selectedPaths]);
+  const pointerDirtyRef = useRef(false);
+
+  useEffect(() => { selectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
+  useEffect(() => {
+    if (!marqueeRef.current) emittedSelectionRef.current = [...selectedPaths];
+  }, [selectedPaths]);
+
+  const emitSelection = useCallback((paths: string[]) => {
+    const previous = emittedSelectionRef.current;
+    if (previous.length === paths.length) {
+      const values = new Set(previous);
+      if (paths.every(path => values.has(path))) return;
+    }
+    emittedSelectionRef.current = paths;
+    selectionChangeRef.current(paths);
+  }, []);
 
   const updateSelection = useCallback((marquee: ExplorerMarquee) => {
     const panel = panelRef.current;
@@ -47,16 +65,16 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
       })
       .map(row => row.dataset.explorerPath)
       .filter((path): path is string => Boolean(path) && path !== 'Project');
-    onSelectionChange(marquee.additive ? [...new Set([...marquee.previousPaths, ...hit])] : hit);
-  }, [onSelectionChange, panelRef]);
+    emitSelection(marquee.additive ? [...new Set([...marquee.previousPaths, ...hit])] : hit);
+  }, [emitSelection, panelRef]);
 
   const stopMarquee = useCallback((restore = false) => {
     const marquee = marqueeRef.current;
     if (!marquee) return;
     if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
-    frameRef.current = undefined; marqueeRef.current = null; setExplorerMarquee(null);
-    if (restore) onSelectionChange(marquee.previousPaths);
-  }, [onSelectionChange]);
+    frameRef.current = undefined; marqueeRef.current = null; pointerDirtyRef.current = false; setExplorerMarquee(null);
+    if (restore) emitSelection(marquee.previousPaths);
+  }, [emitSelection]);
 
   const tick = useCallback(() => {
     const panel = panelRef.current; const marquee = marqueeRef.current;
@@ -64,12 +82,19 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
     const bounds = panel.getBoundingClientRect();
     const dx = getEdgeScrollVelocity(marquee.clientX, bounds.left, bounds.right);
     const dy = getEdgeScrollVelocity(marquee.clientY, bounds.top, bounds.bottom);
+    const previousScrollLeft = panel.scrollLeft; const previousScrollTop = panel.scrollTop;
     if (dx || dy) panel.scrollBy(dx, dy);
+    const scrollChanged = previousScrollLeft !== panel.scrollLeft || previousScrollTop !== panel.scrollTop;
+    if (!pointerDirtyRef.current && !scrollChanged) {
+      frameRef.current = requestAnimationFrame(tick);
+      return;
+    }
     const next = {
       ...marquee,
       currentContentX: marquee.clientX - bounds.left + panel.scrollLeft,
       currentContentY: marquee.clientY - bounds.top + panel.scrollTop,
     };
+    pointerDirtyRef.current = false;
     marqueeRef.current = next; setExplorerMarquee(next); updateSelection(next);
     frameRef.current = requestAnimationFrame(tick);
   }, [panelRef, updateSelection]);
@@ -109,18 +134,16 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
       const marquee = { pointerId:event.pointerId, startContentX:event.clientX-bounds.left+panel.scrollLeft, startContentY:event.clientY-bounds.top+panel.scrollTop,
         currentContentX:event.clientX-bounds.left+panel.scrollLeft, currentContentY:event.clientY-bounds.top+panel.scrollTop,
         clientX:event.clientX, clientY:event.clientY, additive, previousPaths };
-      marqueeRef.current = marquee; setExplorerMarquee(marquee); if (!additive) onSelectionChange([]);
+      marqueeRef.current = marquee; pointerDirtyRef.current = true; setExplorerMarquee(marquee); if (!additive) emitSelection([]);
     }}
     onPointerMove={event => {
       const marquee = marqueeRef.current; if (!marquee || marquee.pointerId !== event.pointerId) return;
-      const bounds = event.currentTarget.getBoundingClientRect();
-      const next = { ...marquee, clientX:event.clientX, clientY:event.clientY,
-        currentContentX:event.clientX-bounds.left+event.currentTarget.scrollLeft,
-        currentContentY:event.clientY-bounds.top+event.currentTarget.scrollTop };
-      marqueeRef.current = next; setExplorerMarquee(next); updateSelection(next);
+      if (marquee.clientX === event.clientX && marquee.clientY === event.clientY) return;
+      marqueeRef.current = { ...marquee, clientX:event.clientX, clientY:event.clientY };
+      pointerDirtyRef.current = true;
     }}
-    onPointerUp={event => { if (marqueeRef.current?.pointerId !== event.pointerId) return; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); stopMarquee(); }}
-    onPointerCancel={event => { if (marqueeRef.current?.pointerId === event.pointerId) stopMarquee(true); }}
+    onPointerUp={event => { if (marqueeRef.current?.pointerId !== event.pointerId) return; stopMarquee(); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
+    onPointerCancel={event => { if (marqueeRef.current?.pointerId !== event.pointerId) return; stopMarquee(true); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
     onLostPointerCapture={() => { if (marqueeRef.current) stopMarquee(); }}
     onContextMenu={event => { if ((event.target as HTMLElement).closest('[data-explorer-row]')) return; event.preventDefault(); onRootContextMenu(event.clientX,event.clientY); }}
     onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect=event.dataTransfer.types.includes('Files')?'copy':'move'; onDropTargetChange('Project'); }}
