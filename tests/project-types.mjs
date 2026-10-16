@@ -14,7 +14,7 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
@@ -27,7 +27,7 @@ try {
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
   const { indexProjectAssets } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
-  const { collectWorkspaceFileAssets } = await import(pathToFileURL(join(temp, 'workspaceFileAssets.mjs')));
+  const { collectWorkspaceFileAssets, updateWorkspaceFileAssetCache } = await import(pathToFileURL(join(temp, 'workspaceFileAssets.mjs')));
   // In-memory File System Access handles exercise the real directory serializer and reader.
   function directory(name = 'test') {
     const entries = new Map();
@@ -36,6 +36,7 @@ try {
       async getDirectoryHandle(name, options) {
         if (!entries.has(name) && options?.create) entries.set(name, directory(name));
         if (!entries.has(name)) throw new DOMException('Missing', 'NotFoundError');
+        if (!('entries' in entries.get(name))) throw new DOMException('Not a directory', 'TypeMismatchError');
         return entries.get(name);
       },
       async getFileHandle(name, options) {
@@ -44,10 +45,52 @@ try {
           entries.set(name, { name, getFile: async () => new File([contents], name), createWritable: async () => ({ write: async (data) => { contents = data; }, close: async () => {} }) });
         }
         if (!entries.has(name)) throw new DOMException('Missing', 'NotFoundError');
+        if ('entries' in entries.get(name)) throw new DOMException('Not a file', 'TypeMismatchError');
         return entries.get(name);
       },
       async removeEntry(name) { entries.delete(name); },
     };
+  }
+  {
+    const { moveExplorerTreeNodes, replaceExplorerTreeNode } = await import(pathToFileURL(join(temp, 'explorerTreeUpdates.mjs')));
+    const untouched = {name:'unrelated',path:'Project/unrelated',kind:'folder',children:[]};
+    const tree = {name:'Project',path:'Project',kind:'folder',children:[
+      {name:'from',path:'Project/from',kind:'folder',children:[{name:'clip.webm',path:'Project/from/clip.webm',kind:'file'}]},
+      {name:'to',path:'Project/to',kind:'folder',children:[]}, untouched,
+    ]};
+    const move = {from:'Project/from/clip.webm',to:'Project/to/renamed.webm'};
+    const moved = moveExplorerTreeNodes(tree,[move]);
+    assert.equal(moved.children.find(node=>node.path===untouched.path),untouched,'Unrelated tree branches retain identity');
+    assert.equal(moved.children[0].children.length,0);
+    assert.equal(moved.children[1].children[0].path,move.to);
+    assert.equal(tree.children[0].children.length,1,'Updating the tree does not mutate the previous snapshot');
+    const folderMove=moveExplorerTreeNodes(tree,[{from:'Project/from',to:'Project/to/renamed'}]);
+    assert.equal(folderMove.children.find(node=>node.path==='Project/to').children[0].children[0].path,'Project/to/renamed/clip.webm');
+    assert.equal(replaceExplorerTreeNode(moved,move.to).children[1].children.length,0);
+
+    const root=directory();
+    const from=await root.getDirectoryHandle('from',{create:true});
+    const to=await root.getDirectoryHandle('to',{create:true});
+    const unrelated=await root.getDirectoryHandle('unrelated',{create:true});
+    await from.getFileHandle('clip.webm',{create:true});
+    const other=await unrelated.getFileHandle('large.webm',{create:true});
+    let unrelatedReads=0; let unrelatedListings=0;
+    const read=other.getFile; other.getFile=async()=>{unrelatedReads++;return read();};
+    const list=unrelated.entries; unrelated.entries=async function*(){unrelatedListings++;yield* list();};
+    const before=await collectWorkspaceFileAssets(root);
+    await moveExplorerEntries(root,[{path:'Project/from/clip.webm',name:'clip.webm',kind:'file'}],'Project/to');
+    unrelatedReads=0; unrelatedListings=0;
+    await updateWorkspaceFileAssetCache(root,{moves:[{from:'Project/from/clip.webm',to:'Project/to/clip.webm'}],paths:[]});
+    const after=await collectWorkspaceFileAssets(root);
+    assert.equal(after.find(asset=>asset.path==='Project/to/clip.webm').file,before.find(asset=>asset.path==='Project/from/clip.webm').file,'Moves preserve cached file snapshots');
+    await to.getFileHandle('new.webm',{create:true});
+    await updateWorkspaceFileAssetCache(root,{moves:[],paths:['Project/to/new.webm']});
+    assert.equal((await collectWorkspaceFileAssets(root)).length,3);
+    await to.removeEntry('new.webm');
+    await updateWorkspaceFileAssetCache(root,{moves:[],paths:['Project/to/new.webm']});
+    assert.equal((await collectWorkspaceFileAssets(root)).length,2);
+    assert.equal(unrelatedReads,0,'Moves, additions and deletions never reread unrelated file bytes');
+    assert.equal(unrelatedListings,0,'Scoped cache updates never enumerate unrelated branches');
   }
   {
     const root = directory();

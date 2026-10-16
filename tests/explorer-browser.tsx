@@ -8,6 +8,7 @@ import { createProjectDirectory, type ProjectDirectoryHandle } from '../src/serv
 import { useProjectStore } from '../src/stores/useProjectStore';
 import { useUIStore } from '../src/stores/useUIStore';
 import '../src/index.css';
+import { checkExplorerMarquee } from './explorer-marquee-checks';
 
 // Mount the actual App against disposable OPFS files. No directory picker or
 // user-selected folder is involved; normal App selection/rename/save code runs.
@@ -15,6 +16,7 @@ function Harness() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [checks, setChecks] = useState('');
   const start = async () => {
     setBusy(true);
     try {
@@ -37,6 +39,12 @@ function Harness() {
     <main className="space-y-4 p-4"><h1>Explorer workflow checks</h1>
       <p>Start the actual workspace with three disposable text files in browser storage.</p>
       <button disabled={busy} onClick={() => void start()}>Start Explorer fixture</button>
+      <button disabled={busy} onClick={async () => {
+        setBusy(true);
+        try { setChecks(await checkExplorerMarquee()); } catch (cause) { setError(String(cause)); }
+        finally { setBusy(false); }
+      }}>Run marquee regressions</button>
+      {checks && <p role="status">{checks}</p>}
       {error && <p role="alert">{error}</p>}
     </main>;
 }

@@ -32,6 +32,7 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
   const selectionChangeRef = useRef(onSelectionChange);
   const emittedSelectionRef = useRef<string[]>([...selectedPaths]);
   const pointerDirtyRef = useRef(false);
+  const capturedPanelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { selectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
   useEffect(() => {
@@ -73,6 +74,9 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
     if (!marquee) return;
     if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
     frameRef.current = undefined; marqueeRef.current = null; pointerDirtyRef.current = false; setExplorerMarquee(null);
+    const panel = capturedPanelRef.current;
+    capturedPanelRef.current = null;
+    if (panel?.hasPointerCapture(marquee.pointerId)) panel.releasePointerCapture(marquee.pointerId);
     if (restore) emitSelection(marquee.previousPaths);
   }, [emitSelection]);
 
@@ -129,6 +133,8 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
     onPointerDown={event => {
       if (event.button !== 0 || (event.target as HTMLElement).closest('[data-explorer-row], input, button, [contenteditable="true"]')) return;
       const panel = event.currentTarget; const bounds = panel.getBoundingClientRect();
+      event.preventDefault();
+      capturedPanelRef.current = panel;
       panel.focus(); panel.setPointerCapture(event.pointerId); onDismissContextMenu();
       const previousPaths = [...selectedPaths]; const additive = event.ctrlKey || event.metaKey;
       const marquee = { pointerId:event.pointerId, startContentX:event.clientX-bounds.left+panel.scrollLeft, startContentY:event.clientY-bounds.top+panel.scrollTop,
@@ -142,9 +148,20 @@ export function ExplorerPanel({ panelRef, error, children, selectedPaths, onDism
       marqueeRef.current = { ...marquee, clientX:event.clientX, clientY:event.clientY };
       pointerDirtyRef.current = true;
     }}
-    onPointerUp={event => { if (marqueeRef.current?.pointerId !== event.pointerId) return; stopMarquee(); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
-    onPointerCancel={event => { if (marqueeRef.current?.pointerId !== event.pointerId) return; stopMarquee(true); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
-    onLostPointerCapture={() => { if (marqueeRef.current) stopMarquee(); }}
+    onPointerUp={event => {
+      const marquee = marqueeRef.current;
+      if (!marquee || marquee.pointerId !== event.pointerId) return;
+      // Pointerup may arrive before the next animation frame. Commit its final
+      // position before releasing capture, including very short drags.
+      const panel = event.currentTarget; const bounds = panel.getBoundingClientRect();
+      updateSelection({ ...marquee,
+        currentContentX: event.clientX - bounds.left + panel.scrollLeft,
+        currentContentY: event.clientY - bounds.top + panel.scrollTop,
+      });
+      stopMarquee();
+    }}
+    onPointerCancel={event => { if (marqueeRef.current?.pointerId === event.pointerId) stopMarquee(true); }}
+    onLostPointerCapture={() => stopMarquee(true)}
     onContextMenu={event => { if ((event.target as HTMLElement).closest('[data-explorer-row]')) return; event.preventDefault(); onRootContextMenu(event.clientX,event.clientY); }}
     onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect=event.dataTransfer.types.includes('Files')?'copy':'move'; onDropTargetChange('Project'); }}
     onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node|null)) onDropTargetChange(null); }}

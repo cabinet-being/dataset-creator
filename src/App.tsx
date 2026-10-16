@@ -66,7 +66,8 @@ import {
   type WorkspaceFileAsset,
   type WorkspaceImage,
 } from './lib/workspaceImages';
-import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, invalidateWorkspaceFileAssetCache } from './lib/workspaceFileAssets';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, invalidateWorkspaceFileAssetCache, updateWorkspaceFileAssetCache } from './lib/workspaceFileAssets';
+import { emptyExplorerChanges, findExplorerTreeNode, moveExplorerTreeNodes, replaceExplorerTreeNode, type ExplorerChanges } from './lib/explorerTreeUpdates';
 import {
   createProjectDirectory,
   clearProjectDirectory,
@@ -111,6 +112,7 @@ import {
   deleteExplorerEntry,
   duplicateExplorerEntries,
   getExplorerParentDirectory,
+  getDirectoryAtExplorerPath,
   getExplorerFileKind,
   getUniqueExplorerName,
   isExplorerImageFileName,
@@ -118,6 +120,7 @@ import {
   readExplorerFile,
   renameExplorerEntry,
   ExplorerBatchError,
+  ExplorerRecoveryError,
   type ExplorerClipboardEntry,
 } from './services/project/explorerFileService';
 import { createProject, type ProjectState, type Dataset, type ToolName } from './types';
@@ -772,6 +775,10 @@ function App() {
     storedWorkspaceLayout.activeActivityView ?? 'explorer'
   );
   const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
+  const explorerTreeRef = useRef(explorerTree);
+  explorerTreeRef.current = explorerTree;
+  const explorerReadRevision = useRef(0);
+  const explorerMutationChanges = useRef<ExplorerChanges | null>(null);
   const [explorerDropTargetPath, setExplorerDropTargetPath] = useState<string | null>(null);
   const visibleExplorerTree = useMemo(() => sanitizeExplorerTree(explorerTree), [explorerTree]);
   const [, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
@@ -1416,6 +1423,7 @@ function App() {
     let canceled = false;
 
     const loadExplorerTree = async () => {
+      const revision = ++explorerReadRevision.current;
       if (projectDirectoryHandle) {
         setExplorerStatus('loading');
         setExplorerError(null);
@@ -1425,12 +1433,12 @@ function App() {
             projectDirectoryName ?? projectDirectoryHandle.name,
             'Project'
           );
-          if (!canceled) {
+          if (!canceled && revision === explorerReadRevision.current) {
             setExplorerTree(tree);
             setExplorerStatus('ready');
           }
         } catch (error) {
-          if (!canceled) {
+          if (!canceled && revision === explorerReadRevision.current) {
             setExplorerTree(buildEmptyExplorerTree(projectName));
             setExplorerStatus('error');
             setExplorerError(error instanceof Error ? error.message : 'Unable to read project files');
@@ -2671,6 +2679,51 @@ function App() {
     setExplorerRefreshKey((key) => key + 1);
   };
 
+  const refreshChangedExplorer = async (directory: ProjectDirectoryHandle, changes: ExplorerChanges) => {
+    if (!changes.moves.length && !changes.paths.length) return;
+    const operationProjectId = useProjectStore.getState().id;
+    const isCurrent = () => useUIStore.getState().projectDirectoryHandle === directory && useProjectStore.getState().id === operationProjectId;
+    if (!isCurrent()) return;
+    ++explorerReadRevision.current;
+    const paths = new Set(changes.paths);
+    for (const move of changes.moves) {
+      if (!findExplorerTreeNode(explorerTreeRef.current, move.from)) paths.add(move.to);
+      for (const path of [move.from, move.to]) {
+        const kind = getExplorerFileKind(path);
+        if (kind === 'image' || kind === 'psd') paths.add(path.replace(/\.[^.]+$/, '.txt'));
+      }
+    }
+    const replacements: Array<{ path: string; node?: ExplorerTreeNode }> = [];
+    for (const path of paths) {
+      const name = path.split('/').pop()!;
+      try {
+        let node: ExplorerTreeNode;
+        try {
+          const folder = await getDirectoryAtExplorerPath(directory, path);
+          node = await readExplorerDirectory(folder, name, path);
+        } catch (error) {
+          if (!(error instanceof Error) || !['NotFoundError', 'TypeMismatchError'].includes(error.name)) throw error;
+          const parent = await getExplorerParentDirectory(directory, path);
+          await parent.directory.getFileHandle(name);
+          node = { name, path, kind: 'file' };
+        }
+        replacements.push({ path, node });
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'NotFoundError')) throw error;
+        replacements.push({ path });
+      }
+    }
+    await updateWorkspaceFileAssetCache(directory, changes);
+    if (!isCurrent()) return;
+    setExplorerTree(previous => {
+      let next = moveExplorerTreeNodes(previous ?? buildEmptyExplorerTree(projectName), changes.moves);
+      for (const { path, node } of replacements) next = replaceExplorerTreeNode(next, path, node);
+      return next;
+    });
+    setExpandedExplorerPaths(paths => new Set([...paths].map(path => applyExplorerPathMoves(path, changes.moves))));
+    useUIStore.getState().refreshAssetPreviews();
+  };
+
   const runExplorerMutation = async <T,>(label: string, action: () => Promise<T>): Promise<T> => {
     const operations = useOperationStore.getState();
     const running = operations.entries.find(isOperationRunning);
@@ -2678,16 +2731,24 @@ function App() {
       throw new Error(running ? `Finish or cancel ${running.label} before changing project files.` : 'Wait for the project to finish opening.');
     }
     const id = `explorer:${crypto.randomUUID()}`;
+    const directory = projectDirectoryHandle;
+    const changes = emptyExplorerChanges();
+    explorerMutationChanges.current = changes;
     operations.start({ id, viewId: EXPLORER_VIEW, label });
     try {
       const result = await runProjectFileOperation(action);
       operations.finish(id, 'completed');
       return result;
     } catch (error) {
+      if (error instanceof ExplorerBatchError || error instanceof ExplorerRecoveryError) changes.paths.push(...error.recoveryPaths);
       operations.finish(id, 'failed', error instanceof Error ? error.message : String(error));
       throw error;
     } finally {
-      refreshExplorer();
+      explorerMutationChanges.current = null;
+      if (directory) {
+        try { await refreshChangedExplorer(directory, changes); }
+        catch (error) { addNotification('warning', error instanceof Error ? error.message : 'Could not refresh changed files'); }
+      }
     }
   };
 
@@ -2798,7 +2859,9 @@ function App() {
       if (!Array.isArray(moves) || moves.length === 0) return;
       updateFileTabsForPathMoves(moves);
       updateExplorerClipboardForPathMoves(moves);
-      refreshExplorer();
+      if (explorerMutationChanges.current) explorerMutationChanges.current.moves.push(...moves);
+      else if (projectDirectoryHandle) void refreshChangedExplorer(projectDirectoryHandle, { moves, paths: [] })
+        .catch(error => addNotification('warning', error instanceof Error ? error.message : 'Could not refresh Dataset files'));
     };
     window.addEventListener('dataset-folder-paths-changed', handleDatasetFolderMoves);
     return () => window.removeEventListener('dataset-folder-paths-changed', handleDatasetFolderMoves);
@@ -2820,6 +2883,7 @@ function App() {
       const entryKind = kind === 'folder' ? 'folder' : 'file';
       const nextPath = await renameExplorerEntry(directory, path, entryKind, nextFileName, async change => {
         const moves = [change];
+        explorerMutationChanges.current?.moves.push(change);
         const nextPath = change.to;
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
@@ -2885,6 +2949,7 @@ function App() {
       return await moveExplorerEntries(directory, entries, destinationPath, async move => {
         if (move.from === move.to) return;
         completed.push(move);
+        explorerMutationChanges.current?.moves.push(move);
         updateFileTabsForPathMoves([move]);
         await updateWorkspacePathsForPathMoves([move]);
         updateExplorerClipboardForPathMoves([move]);
@@ -2934,7 +2999,10 @@ function App() {
           isFileBackedTab(activeTab) &&
           deletedFilesystemEntries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
         for (const entry of deletedFilesystemEntries) {
-          await deleteExplorerEntry(directory!, entry.path, true, () => removeWorkspaceReferencesForDeletedEntries([entry]));
+          await deleteExplorerEntry(directory!, entry.path, true, async () => {
+            explorerMutationChanges.current?.paths.push(entry.path);
+            await removeWorkspaceReferencesForDeletedEntries([entry]);
+          });
         }
         setOpenTabs((tabs) =>
           tabs.filter(
@@ -2951,7 +3019,6 @@ function App() {
         clearExplorerClipboardForDeletedPaths(entries);
         setSelectedExplorerPaths(new Set());
         setFocusedExplorerPath(null);
-        refreshExplorer();
       });
       addNotification('success', 'Explorer entry deleted');
     } catch (error) {
@@ -2999,11 +3066,11 @@ function App() {
             if (error instanceof ExplorerBatchError) copied = error.completed;
             throw error;
           } finally {
+            explorerMutationChanges.current?.paths.push(...copied.map(change => change.to));
             if (copied.length > 0) await indexProjectWorkspaceAssets(false, copied.map(change => change.to), false);
           }
         }
         setExpandedExplorerPaths(paths => new Set([...paths,node.path]));
-        refreshExplorer();
       });
       addNotification('success','Explorer entry pasted');
     } catch (error) {
@@ -3027,6 +3094,7 @@ function App() {
           if (error instanceof ExplorerBatchError) duplicated = error.completed;
           throw error;
         } finally {
+          explorerMutationChanges.current?.paths.push(...duplicated.map(change => change.to));
           if (duplicated.length > 0) await indexProjectWorkspaceAssets(false, duplicated.map(change => change.to), false);
         }
       });
@@ -3049,7 +3117,11 @@ function App() {
       }
 
       if (edit.mode === 'create') {
-        const nextPath = await runExplorerMutation('Create folder', () => createExplorerDirectory(directory, edit.parentPath, edit.value));
+        const nextPath = await runExplorerMutation('Create folder', async () => {
+          const path = await createExplorerDirectory(directory, edit.parentPath, edit.value);
+          explorerMutationChanges.current?.paths.push(path);
+          return path;
+        });
         setSelectedExplorerPaths(new Set([nextPath]));
         setSelectionAnchorPath(nextPath);
         setFocusedExplorerPath(nextPath);
@@ -3067,7 +3139,6 @@ function App() {
         }
       }
       setInlineExplorerEdit(null);
-      refreshExplorer();
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to update Explorer entry');
     }
@@ -3948,7 +4019,7 @@ function App() {
     { id: EXPLORER_VIEW, title: activeActivityView === 'versions' ? 'Versions' : 'Explorer', icon: activeActivityView === 'versions' ? GitBranch : PanelLeft,
       content: <div className="flex h-full min-h-0 flex-col">              {activeActivityView === 'explorer' ? (
                 <>
-              <ExplorerPanel panelRef={explorerPanelRef} error={explorerError}
+              <ExplorerPanel key={projectId} panelRef={explorerPanelRef} error={explorerError}
                 selectedPaths={selectedExplorerPaths}
                 onDismissContextMenu={() => setExplorerContextMenu(null)}
                 onSelectionChange={handleExplorerMarqueeSelection}

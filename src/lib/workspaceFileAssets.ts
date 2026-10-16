@@ -1,4 +1,4 @@
-import { getExplorerFileKind, readExplorerFile } from '../services/project/explorerFileService';
+import { getExplorerFileKind, getDirectoryAtExplorerPath, getExplorerParentDirectory, readExplorerFile } from '../services/project/explorerFileService';
 import { appLog } from '../services/logging/applicationLog';
 import {
   getOrCreateProjectPreviewUrl,
@@ -9,6 +9,8 @@ import { requestPhotopeaPsdPreview } from '../services/psd/photopeaPreviewQueue'
 import { createPsdPreview } from '../services/psd/psdPreviewService';
 import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspaceImages';
 import { getAssetManifestPath } from '../services/project/assetManifestService';
+
+import type { ExplorerChanges } from './explorerTreeUpdates';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
 
@@ -134,6 +136,35 @@ const collectAssetPaths = async (
   return paths;
 };
 
+const readWorkspaceAssets = async (root: ProjectDirectoryHandle, assetPaths: string[], issues: string[]): Promise<WorkspaceFileAsset[]> => {
+const assets: WorkspaceFileAsset[] = [];
+
+for (const path of assetPaths) {
+  try {
+    const fileName = getFileName(path);
+    const file = await readExplorerFile(root, path);
+    const kind = getExplorerFileKind(fileName, 'type' in file ? file.type : undefined);
+    if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
+    const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
+    const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
+    let metadata: {tags?:unknown;caption?:unknown;excludedFromDataset?:unknown;createdAt?:unknown} = {};
+    try { metadata = JSON.parse(await (await readExplorerFile(root, getAssetManifestPath(path))).text()); } catch { /* metadata is optional */ }
+    const tags = Array.isArray(metadata.tags)
+      ? metadata.tags.filter((tag): tag is string => typeof tag === 'string')
+      : typeof metadata.caption === 'string' ? metadata.caption.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined;
+    assets.push({ id:createWorkspaceFileAssetId(path), path, fileName, kind:kind as WorkspaceFileAssetKind, file,
+      previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
+      modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
+      tags, excludedFromDataset:metadata.excludedFromDataset === true });
+  } catch (error) {
+    issues.push(`${path}: file could not be read`);
+    appLog.warning(`Assets: unable to read ${path}`);
+    if (import.meta.env.DEV) console.warn(`[workspace-assets] unable to read ${path}`, error);
+  }
+}
+  return assets;
+};
+
 export const collectWorkspaceFileAssets = async (
   root: ProjectDirectoryHandle,
   paths?: string[]
@@ -143,41 +174,70 @@ export const collectWorkspaceFileAssets = async (
     scan = (async () => {
       const issues: string[] = [];
       const assetPaths = await collectAssetPaths(root, 'Project', issues);
-      const assets: WorkspaceFileAsset[] = [];
-
-      for (const path of assetPaths) {
-        try {
-          const fileName = getFileName(path);
-          const file = await readExplorerFile(root, path);
-          const kind = getExplorerFileKind(fileName, 'type' in file ? file.type : undefined);
-          if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
-          const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
-          const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
-          let metadata: {tags?:unknown;caption?:unknown;excludedFromDataset?:unknown;createdAt?:unknown} = {};
-          try { metadata = JSON.parse(await (await readExplorerFile(root, getAssetManifestPath(path))).text()); } catch { /* metadata is optional */ }
-          const tags = Array.isArray(metadata.tags)
-            ? metadata.tags.filter((tag): tag is string => typeof tag === 'string')
-            : typeof metadata.caption === 'string' ? metadata.caption.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined;
-          assets.push({ id:createWorkspaceFileAssetId(path), path, fileName, kind:kind as WorkspaceFileAssetKind, file,
-            previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
-            modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
-            tags, excludedFromDataset:metadata.excludedFromDataset === true });
-        } catch (error) {
-          issues.push(`${path}: file could not be read`);
-          appLog.warning(`Assets: unable to read ${path}`);
-          if (import.meta.env.DEV) console.warn(`[workspace-assets] unable to read ${path}`, error);
-        }
-      }
+      const assets = await readWorkspaceAssets(root, assetPaths, issues);
       workspaceAssetIssuesByRoot.set(root, issues);
       return assets;
     })();
     workspaceAssetScanByRoot.set(root, scan);
-    void scan.catch(() => workspaceAssetScanByRoot.delete(root));
+    void scan.catch(() => { if (workspaceAssetScanByRoot.get(root) === scan) workspaceAssetScanByRoot.delete(root); });
   }
   const scannedAssets = await scan;
   if (!paths) return scannedAssets.map((asset) => ({ ...asset }));
   const requested = new Set(paths.map((path) => path.startsWith('Project/') ? path : `Project/${path}`));
   return scannedAssets.filter((asset) => requested.has(asset.path)).map((asset) => ({ ...asset }));
+};
+
+// Keep snapshots and preview URLs for known moves. Only newly created/changed
+// paths need filesystem reads; a move must not evict every PSD/video preview.
+export const updateWorkspaceFileAssetCache = async (root: ProjectDirectoryHandle, changes: ExplorerChanges): Promise<void> => {
+  const previous = workspaceAssetScanByRoot.get(root);
+  if (!previous) return;
+  let next!: Promise<WorkspaceFileAsset[]>;
+  next = (async () => {
+    let assets = await previous;
+    const changedPaths = new Set(changes.paths);
+    for (const { from, to } of changes.moves) {
+      if (from === to) continue;
+      let found = false;
+      assets = assets.flatMap(asset => {
+        if (asset.path !== from && !asset.path.startsWith(`${from}/`)) return [asset];
+        found = true;
+        const path = to + asset.path.slice(from.length);
+        const fileName = getFileName(path);
+        const kind = getExplorerFileKind(fileName);
+        if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) return [];
+        return [{ ...asset, path, id: createWorkspaceFileAssetId(path), fileName, kind: kind as WorkspaceFileAssetKind }];
+      });
+      if (!found && REVIEW_FILE_KINDS.has(getExplorerFileKind(getFileName(to)) as WorkspaceFileAssetKind)) changedPaths.add(to);
+    }
+    const issues: string[] = [];
+    for (const path of changedPaths) {
+      assets = assets.filter(asset => asset.path !== path && !asset.path.startsWith(`${path}/`));
+      try {
+        const { directory, name } = await getExplorerParentDirectory(root, path);
+        let paths: string[];
+        try {
+          const folder = await getDirectoryAtExplorerPath(root, path);
+          paths = await collectAssetPaths(folder, path, issues);
+        } catch (error) {
+          if (!(error instanceof Error) || !['NotFoundError', 'TypeMismatchError'].includes(error.name)) throw error;
+          await directory.getFileHandle(name);
+          paths = REVIEW_FILE_KINDS.has(getExplorerFileKind(name) as WorkspaceFileAssetKind) ? [path] : [];
+        }
+        assets.push(...await readWorkspaceAssets(root, paths, issues));
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'NotFoundError')) issues.push(`${path}: entry could not be read`);
+      }
+    }
+    if (workspaceAssetScanByRoot.get(root) === next) workspaceAssetIssuesByRoot.set(root, issues);
+    return assets;
+  })();
+  workspaceAssetScanByRoot.set(root, next);
+  try { await next; }
+  catch (error) {
+    if (workspaceAssetScanByRoot.get(root) === next) workspaceAssetScanByRoot.delete(root);
+    throw error;
+  }
 };
 
 export const generateMissingWorkspacePsdPreviews = async (

@@ -27,8 +27,16 @@ class ExplorerMoveCommittedError extends Error {
   }
 }
 
+export class ExplorerRecoveryError extends Error {
+  constructor(public readonly recoveryPaths: string[], message: string) {
+    super(message);
+    this.name = 'ExplorerRecoveryError';
+  }
+}
+
 /** Successful entries remain valid when a later entry in the batch fails. */
 export class ExplorerBatchError extends Error {
+  readonly recoveryPaths: string[];
   constructor(
     operation: string,
     public readonly completed: ExplorerPathChange[],
@@ -38,6 +46,7 @@ export class ExplorerBatchError extends Error {
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(`${operation} stopped at "${failedPath}". ${completed.length} item(s) completed. ${detail}`);
     this.name = 'ExplorerBatchError';
+    this.recoveryPaths = cause instanceof ExplorerRecoveryError ? cause.recoveryPaths : [];
   }
 }
 
@@ -118,7 +127,9 @@ export const getDirectoryAtExplorerPath = async (
       directory = await directory.getDirectoryHandle(part);
     }
   } catch (error) {
-    throw new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to open project directory.'));
+    const wrapped = new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to open project directory.'));
+    if (error instanceof Error) wrapped.name = error.name;
+    throw wrapped;
   }
   return directory;
 };
@@ -139,7 +150,9 @@ export const getExplorerParentDirectory = async (
       directory = await directory.getDirectoryHandle(part);
     }
   } catch (error) {
-    throw new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to open project path.'));
+    const wrapped = new Error(getExplorerOperationErrorMessage(error, path) ?? (error instanceof Error ? error.message : 'Unable to open project path.'));
+    if (error instanceof Error) wrapped.name = error.name;
+    throw wrapped;
   }
 
   return { directory, name };
@@ -563,7 +576,7 @@ const relocateExplorerEntry = async (
         }
         // Recursive removal can fail after deleting children. Never discard
         // the complete destination copy in that case.
-        throw new Error(`Move incomplete. A complete copy is kept at "${change.to}". ` +
+        throw new ExplorerRecoveryError([source.path, change.to], `Move incomplete. A complete copy is kept at "${change.to}". ` +
           `Check and recover "${source.path}" from that copy before retrying. ` +
           `${error instanceof Error ? error.message : String(error)}`);
       }

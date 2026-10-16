@@ -1,0 +1,49 @@
+import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
+import type { ExplorerPathChange } from '../services/project/explorerFileService';
+
+export type ExplorerChanges = { moves: ExplorerPathChange[]; paths: string[] };
+export const emptyExplorerChanges = (): ExplorerChanges => ({ moves: [], paths: [] });
+
+export const findExplorerTreeNode = (tree: ExplorerTreeNode | null, path: string): ExplorerTreeNode | undefined => {
+  if (!tree) return;
+  if (tree.path === path) return tree;
+  for (const child of tree.children ?? []) {
+    if (path === child.path || path.startsWith(`${child.path}/`)) return findExplorerTreeNode(child, path);
+  }
+};
+
+// Replace only ancestors of the changed entry; unrelated branches keep identity.
+export const replaceExplorerTreeNode = (tree: ExplorerTreeNode, path: string, replacement?: ExplorerTreeNode): ExplorerTreeNode => {
+  if (path === tree.path) return replacement ?? tree;
+  if (!path.startsWith(`${tree.path}/`)) return tree;
+  const parent = path.slice(0, path.lastIndexOf('/'));
+  if (tree.path === parent) {
+    const children = (tree.children ?? []).filter(child => child.path !== path);
+    if (replacement) children.push(replacement);
+    children.sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'folder' ? -1 : 1);
+    return { ...tree, children };
+  }
+  const children = tree.children ?? [];
+  const branchPath = `${tree.path}/${path.slice(tree.path.length + 1).split('/')[0]}`;
+  const branch = children.find(child => child.path === branchPath);
+  if (!branch && !replacement) return tree;
+  const updated = replaceExplorerTreeNode(branch ?? {
+    path: branchPath, name: branchPath.split('/').pop()!, kind: 'folder', children: [],
+  }, path, replacement);
+  return { ...tree, children: branch ? children.map(child => child === branch ? updated : child) : [...children, updated] };
+};
+
+export const moveExplorerTreeNodes = (tree: ExplorerTreeNode, moves: ExplorerPathChange[]): ExplorerTreeNode => {
+  let next = tree;
+  for (const { from, to } of moves) {
+    if (from === to) continue;
+    const node = findExplorerTreeNode(next, from);
+    if (!node) continue;
+    const relocate = (entry: ExplorerTreeNode): ExplorerTreeNode => {
+      const path = to + entry.path.slice(from.length);
+      return { ...entry, path, name: path.split('/').pop()!, children: entry.children?.map(relocate) };
+    };
+    next = replaceExplorerTreeNode(replaceExplorerTreeNode(next, from), to, relocate(node));
+  }
+  return next;
+};
