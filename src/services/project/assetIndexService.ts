@@ -37,8 +37,10 @@ export type ProjectAssetIndexResult = {
   createdManifestCount: number;
 };
 
-type IndexProjectAssetsOptions = {
+export type IndexProjectAssetsOptions = {
   logger?: OperationLogger;
+  /** Project-relative files or directories. Undefined indexes the project; an empty array indexes nothing. */
+  paths?: string[];
   existingSourceImages?: Record<string, SourceImage>;
   onAssetIndexed?: (update: ProjectAssetIndexUpdate) => void | Promise<void>;
   onProgress?: (current: number, total: number) => void;
@@ -117,6 +119,42 @@ const collectAssetFiles = async (
   return assets;
 };
 
+const normalizeScopePath = (path: string): string => path
+  .replace(/\\/g, '/')
+  .replace(/^\/+|\/+$/g, '')
+  .replace(/^Project(?:\/|$)/, '');
+
+const normalizeScopePaths = (paths: string[]): string[] => {
+  const normalized = [...new Set(paths.map(normalizeScopePath).filter(Boolean))].sort((a, b) => a.length - b.length);
+  return normalized.filter((path, index) => !normalized.slice(0, index).some(parent => path === parent || path.startsWith(`${parent}/`)));
+};
+
+const collectScopedAssetFiles = async (
+  root: ProjectDirectoryHandle,
+  paths: string[]
+): Promise<Array<{ directory: ProjectDirectoryHandle; handle: ProjectDirectoryFileHandle; assetPath: string }>> => {
+  const assets = new Map<string, { directory: ProjectDirectoryHandle; handle: ProjectDirectoryFileHandle; assetPath: string }>();
+  for (const assetPath of normalizeScopePaths(paths)) {
+    const parts = assetPath.split('/');
+    const name = parts.pop();
+    if (!name) continue;
+    let parent = root;
+    try {
+      for (const part of parts) parent = await parent.getDirectoryHandle(part);
+      try {
+        const handle = await parent.getFileHandle(name);
+        if (isSupportedProjectAsset(name)) assets.set(assetPath, { directory: parent, handle, assetPath });
+      } catch {
+        const directory = await parent.getDirectoryHandle(name);
+        for (const entry of await collectAssetFiles(directory, assetPath)) assets.set(entry.assetPath, entry);
+      }
+    } catch {
+      // A scoped path may disappear between a completed filesystem operation and indexing.
+    }
+  }
+  return [...assets.values()];
+};
+
 export const indexProjectAssets = async (
   root: ProjectDirectoryHandle,
   options: IndexProjectAssetsOptions = {}
@@ -134,16 +172,17 @@ export const indexProjectAssets = async (
   let createdManifestCount = 0;
 
   logger.info('Indexing project...');
-  const assetFiles = await collectAssetFiles(root);
+  const assetFiles = options.paths === undefined
+    ? await collectAssetFiles(root)
+    : await collectScopedAssetFiles(root, options.paths);
   logger.info(`Discovered ${assetFiles.length} supported file${assetFiles.length !== 1 ? 's' : ''}`);
 
   for (let index = 0; index < assetFiles.length; index += 1) {
     const { directory, handle, assetPath } = assetFiles[index];
-    const file = await snapshotFile(await handle.getFile());
     const existingSource = existingByPath.get(assetPath);
-    const manifestName = getAssetManifestName(file.name);
+    const manifestName = getAssetManifestName(handle.name);
     const existingManifest = await readOptionalManifest(directory, manifestName);
-    const kind = resolveProjectAssetKind(file.name, file.type);
+    const kind = resolveProjectAssetKind(handle.name, existingManifest?.mimeType ?? '');
     const isRegisteredEditedAsset =
       typeof existingManifest?.sourceImageId === 'string' &&
       (existingManifest.imageDataPath === assetPath || existingManifest.psdDataPath === assetPath);
@@ -155,8 +194,10 @@ export const indexProjectAssets = async (
       Boolean(manifestIdOwner) &&
       manifestIdOwner?.originalFilePath !== assetPath;
     let sourceImage: SourceImage | undefined;
+    let file: File | undefined;
 
     if (kind === 'image' && !existingSource && !isRegisteredEditedAsset) {
+      file = await snapshotFile(await handle.getFile());
       const { width, height } = await getImageDimensions(file);
       const id = manifestIdentityConflict ? undefined : existingManifest?.id;
       sourceImage = createSourceImage(file, file.name, width, height, URL.createObjectURL(file));
@@ -176,6 +217,7 @@ export const indexProjectAssets = async (
       (existingManifest?.assetPath === assetPath || existingManifest?.originalFilePath === assetPath || isRegisteredEditedAsset) &&
       !manifestIdentityConflict;
     if (!manifestValid) {
+      file ??= await handle.getFile();
       await writeGenericAssetManifest(directory, file, assetPath, sourceImage ?? existingSource);
       createdManifestCount += 1;
     }

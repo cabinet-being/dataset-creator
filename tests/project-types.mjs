@@ -487,6 +487,17 @@ try {
   const privateVideoWriter = await (await privateAssetsDirectory.getFileHandle('private.webm', { create: true })).createWritable();
   await privateVideoWriter.write(new Blob(['video'], { type: 'video/webm' })); await privateVideoWriter.close();
   assert.deepEqual((await collectWorkspaceFileAssets(layoutDirectory)).map((asset) => asset.path).sort(), ['Project/src/assets/private.webm','Project/src/shared/shared.webm']);
+  const scopedDirectory = await layoutDirectory.getDirectoryHandle('scoped', {create:true});
+  const selectedHandle = await scopedDirectory.getFileHandle('selected.webm', {create:true});
+  const unrelatedHandle = await scopedDirectory.getFileHandle('unrelated.webm', {create:true});
+  let selectedReads = 0; let unrelatedReads = 0;
+  const readSelected = selectedHandle.getFile; const readUnrelated = unrelatedHandle.getFile;
+  selectedHandle.getFile = async () => { selectedReads++; return readSelected(); };
+  unrelatedHandle.getFile = async () => { unrelatedReads++; return readUnrelated(); };
+  assert.deepEqual(await indexProjectAssets(layoutDirectory,{paths:[]}),{discoveredCount:0,indexedCount:0,createdManifestCount:0},'An empty scope performs no project scan');
+  assert.equal((await indexProjectAssets(layoutDirectory,{paths:['Project/scoped/selected.webm']})).discoveredCount,1,'A file scope indexes only that file');
+  assert.ok(selectedReads > 0,'The scoped asset is inspected when metadata is missing');
+  assert.equal(unrelatedReads,0,'Scoped indexing never reads unrelated asset bytes');
   const missingDatasetManifestDirectory = directory();
   await createProjectDirectory(missingDatasetManifestDirectory, createProject('No metadata', 'character'));
   await missingDatasetManifestDirectory.removeEntry(DATASET_MANIFEST_FILE);

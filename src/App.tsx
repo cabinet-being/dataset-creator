@@ -125,6 +125,7 @@ import {
   moveExplorerEntries,
   readExplorerFile,
   renameExplorerEntry,
+  ExplorerBatchError,
   type ExplorerClipboardEntry,
 } from './services/project/explorerFileService';
 import { createProject, type ProjectState, type Dataset, type ToolName } from './types';
@@ -1892,26 +1893,27 @@ function App() {
     return [...assetPaths];
   };
 
-  const indexProjectWorkspaceAssets = async (save = true) => {
+  const indexProjectWorkspaceAssets = async (save = true, paths?: string[], updateUi = true) => {
     if (!projectDirectoryHandle) {
       return;
     }
 
     await indexProjectAssets(projectDirectoryHandle, {
       logger: createOperationLogger('Index'),
+      paths,
       existingSourceImages: useProjectStore.getState().sourceImages,
       onAssetIndexed: async ({ sourceImage }) => {
         const previousProject = useProjectStore.getState();
         if (sourceImage && !previousProject.sourceImages[sourceImage.id]) {
           addSourceImage(sourceImage);
         }
-        if (save) await flushProjectSave();
-        refreshExplorer();
       },
     });
     if (save) await flushProjectSave();
-    refreshExplorer();
-    useUIStore.getState().refreshAssetPreviews();
+    if (updateUi) {
+      refreshExplorer();
+      useUIStore.getState().refreshAssetPreviews();
+    }
   };
 
   const importDroppedFilesIntoDataset = async (
@@ -2885,7 +2887,7 @@ function App() {
     return runExplorerMutation('Rename file', async () => {
       const nextFileName = kind === 'dataset' ? getDatasetFileName(trimmedName) : trimmedName;
       const entryKind = kind === 'folder' ? 'folder' : 'file';
-      return renameExplorerEntry(directory, path, entryKind, nextFileName, async change => {
+      const nextPath = await renameExplorerEntry(directory, path, entryKind, nextFileName, async change => {
         const moves = [change];
         const nextPath = change.to;
         setSelectedExplorerPaths(new Set([nextPath]));
@@ -2910,6 +2912,8 @@ function App() {
           refreshOpenDatasetTabs(updatedDataset.id);
         }
       });
+      await indexProjectWorkspaceAssets(false, [nextPath], false);
+      return nextPath;
     });
   };
 
@@ -2982,9 +2986,11 @@ function App() {
 
   // Caller owns the save queue lane; updates are applied after each completed move.
   const moveWorkspaceEntries = async (directory: ProjectDirectoryHandle, entries: ExplorerClipboardEntry[], destinationPath: string) => {
+    const completed: ExplorerPathMove[] = [];
     try {
       return await moveExplorerEntries(directory, entries, destinationPath, async move => {
         if (move.from === move.to) return;
+        completed.push(move);
         updateFileTabsForPathMoves([move]);
         await updateWorkspacePathsForPathMoves([move]);
         updateExplorerClipboardForPathMoves([move]);
@@ -2995,8 +3001,7 @@ function App() {
         }
       });
     } finally {
-      if (entries.length > 0) await indexProjectWorkspaceAssets(false);
-      refreshExplorer();
+      if (completed.length > 0) await indexProjectWorkspaceAssets(false, completed.map(move => move.to), false);
     }
   };
 
@@ -3116,9 +3121,15 @@ function App() {
           setSelectedExplorerPaths(new Set(moves.map(move => move.to)));
           setExplorerClipboard(null);
         } else {
+          let copied: ExplorerPathMove[] = [];
           try {
-            await copyExplorerEntries(directory, clipboard.entries.filter(isFilesystemExplorerEntry), node.path);
-          } finally { await indexProjectWorkspaceAssets(false); }
+            copied = await copyExplorerEntries(directory, clipboard.entries.filter(isFilesystemExplorerEntry), node.path);
+          } catch (error) {
+            if (error instanceof ExplorerBatchError) copied = error.completed;
+            throw error;
+          } finally {
+            if (copied.length > 0) await indexProjectWorkspaceAssets(false, copied.map(change => change.to), false);
+          }
         }
         setExpandedExplorerPaths(paths => new Set([...paths,node.path]));
         refreshExplorer();
@@ -3134,13 +3145,19 @@ function App() {
       await runExplorerMutation('Duplicate files', async () => {
         const entries = getContextEntries(node);
         const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
+        let duplicated: ExplorerPathMove[] = [];
         try {
           if (filesystemEntries.length > 0) {
             const directory = requireProjectDirectory();
             if (!directory) return;
-            await duplicateExplorerEntries(directory, filesystemEntries);
+            duplicated = await duplicateExplorerEntries(directory, filesystemEntries);
           }
-        } finally { if (filesystemEntries.length > 0) await indexProjectWorkspaceAssets(false); }
+        } catch (error) {
+          if (error instanceof ExplorerBatchError) duplicated = error.completed;
+          throw error;
+        } finally {
+          if (duplicated.length > 0) await indexProjectWorkspaceAssets(false, duplicated.map(change => change.to), false);
+        }
       });
       addNotification('success', 'Explorer entry duplicated');
     } catch (error) {
