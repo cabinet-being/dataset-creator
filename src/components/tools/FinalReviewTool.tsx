@@ -159,9 +159,7 @@ type FinalReviewToolProps = {
   mode?: 'review' | 'select';
   active?: boolean;
   onUpdateDataset?: (
-    updates: Partial<
-      Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>
-    >
+    updates: Partial<Pick<Dataset, 'assetOrder'>>
   ) => void | Promise<void>;
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
   onOpenImport?: () => void;

@@ -30,7 +30,6 @@ import type { ChangeEvent, DragEvent, MouseEvent, ReactNode, SetStateAction } fr
 import {
   ArrowLeft,
   BarChart3,
-  Download,
   ExternalLink,
   File,
   FilePlus,
@@ -46,7 +45,6 @@ import {
   Pencil,
   Pin,
   RotateCcw,
-  ScanSearch,
   Scissors,
   Tags,
   Trash2,
@@ -89,16 +87,10 @@ import { createOperationLogger } from './services/logging/applicationLog';
 import { indexProjectAssets } from './services/project/assetIndexService';
 import { isSupportedProjectAsset } from './services/project/assetTypeService';
 import {
-  filterLegacyProjectAssetPaths,
   isLegacyProjectRootPath,
   LEGACY_PROJECT_ROOT_DIRECTORY_NAMES,
 } from './services/project/projectPathFilters';
-import {
-  getDatasetDisplayName,
-  getDatasetFileName,
-  isDatasetFileName,
-  readDatasetFile,
-} from './services/project/datasetFileService';
+import { isLegacyDatasetFileName } from './services/project/legacyDatasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
@@ -604,7 +596,6 @@ type ExplorerItemEntry = {
   path: string;
   name: string;
   kind: ExplorerTreeNode['kind'];
-  datasetId?: string;
   workspaceImageId?: string;
 };
 
@@ -642,7 +633,7 @@ const readExplorerDirectory = async (
       entryName === '.cache' ||
       entryName === '.dataset-creator-data' ||
       entryName === PROJECT_GIT_DIRECTORY ||
-      isDatasetFileName(entryName) ||
+      isLegacyDatasetFileName(entryName) ||
       (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
     ) {
       continue;
@@ -709,9 +700,7 @@ function App() {
   const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
-  const upsertProjectDataset = useProjectStore((state) => state.upsertDataset);
   const updateProjectDataset = useProjectStore((state) => state.updateDataset);
-  const removeProjectDataset = useProjectStore((state) => state.removeDataset);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
   const globalDataset = useProjectStore((state) => state.dataset);
@@ -835,7 +824,7 @@ function App() {
     mode: 'create' | 'rename';
     parentPath: string;
     path?: string;
-    kind: 'folder' | 'file' | 'dataset';
+    kind: 'folder' | 'file';
     value: string;
   } | null>(null);
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
@@ -1012,10 +1001,6 @@ function App() {
       totalCount: assetIds.length,
     };
   }, [activeDatasetPreviewItems.length, globalDataset, dismissedEmptyDatasetSuggestionSignatures, workspaceImages]);
-  const missingDatasetSourceCount = useMemo(
-    () => [...new Set(activeDataset?.assetIds ?? [])].filter(id => !sourceImagesById[id]).length,
-    [activeDataset?.assetIds, sourceImagesById]
-  );
   const activeFileWorkspaceItem = useMemo(() => {
     if (!activeTab || !isFileBackedTab(activeTab)) {
       return null;
@@ -1364,12 +1349,7 @@ function App() {
     }
 
     try {
-      if (activeTab.kind === 'dataset') {
-        const dataset = datasetsById[activeTab.datasetId];
-        if (dataset?.filePath) {
-          await renameExplorerItem(dataset.filePath, 'dataset', nextName);
-        }
-      } else if (isFileBackedTab(activeTab)) {
+      if (isFileBackedTab(activeTab)) {
         if (nextName === activeTab.name) {
           setInspectorRenaming(false);
           return;
@@ -1594,7 +1574,6 @@ function App() {
                 path: node.path,
                 name: node.name,
                 kind: node.kind,
-                datasetId: node.datasetId,
                 workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
               }]
             : []
@@ -1610,7 +1589,6 @@ function App() {
                 path: node.path,
                 name: node.name,
                 kind: node.kind,
-                datasetId: node.datasetId,
                 workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
               }]
             : []
@@ -1621,7 +1599,6 @@ function App() {
     path: node.path,
     name: node.name,
     kind: node.kind,
-    datasetId: node.datasetId,
     workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
   });
 
@@ -1667,7 +1644,7 @@ function App() {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
       return getSelectedExplorerEntries();
     }
-    return [{ path: node.path, name: node.name, kind: node.kind, datasetId: node.datasetId }];
+    return [{ path: node.path, name: node.name, kind: node.kind }];
   };
 
   const setActiveExplorerNode = (node: ExplorerTreeNode) => {
@@ -1700,7 +1677,7 @@ function App() {
   const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
     setActiveExplorerNode(node);
     if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
-      if (node.kind === 'dataset' || node.kind === 'file') {
+      if (node.kind === 'file') {
         void openExplorerFile(node);
       }
     }
@@ -1956,11 +1933,9 @@ function App() {
     return { assetIds: importedAssetIds, assetPaths: importedAssetPaths, psdAssetPaths: importedPsdPaths };
   };
 
-  const getExplorerPathName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path;
-
   const toPhysicalExplorerEntry = (entry: ExplorerItemEntry): ExplorerClipboardEntry => ({
     path: entry.path,
-    name: entry.kind === 'dataset' ? getExplorerPathName(entry.path) : entry.name,
+    name: entry.name,
     kind: entry.kind === 'folder' ? 'folder' : 'file',
   });
 
@@ -1996,23 +1971,9 @@ function App() {
     setActiveTabId(tab.id);
   };
 
-  const refreshOpenDatasetTabs = (datasetId: string) => {
-    setOpenTabs((tabs) =>
-      tabs.map((tab) => {
-        if (tab.kind === 'dataset-tool' && tab.datasetId === datasetId) {
-          return { ...tab, id: createDatasetToolTabId(datasetId, tab.tool) };
-        }
-        return tab;
-      })
-    );
-  };
-
-  const openDatasetToolFromExplorer = async (_node: ExplorerTreeNode, tool: DatasetToolName) =>
-    openDatasetToolTab(globalDataset.id, tool);
-
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>
+    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetOrder'>>
   ) => {
     // Merge only the changed fields into the latest store snapshot. Passing a
     // captured Dataset back here can overwrite membership added by another panel.
@@ -2125,7 +2086,7 @@ function App() {
       );
     }
 
-    const updateDataset = (updates: Partial<Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>) => {
+    const updateDataset = (updates: Partial<Pick<Dataset, 'assetOrder'>>) => {
       const latestDataset = useProjectStore.getState().dataset;
       if (!latestDataset) {
         addNotification('warning', 'Dataset is no longer available');
@@ -2141,11 +2102,6 @@ function App() {
   };
 
   const openExplorerFile = async (node: ExplorerTreeNode) => {
-    if (node.kind === 'dataset') {
-      openProjectDataset();
-      return;
-    }
-
     if (node.kind !== 'file') {
       return;
     }
@@ -2501,7 +2457,7 @@ function App() {
             value: activeTab.kind === 'dataset-tool' ? DATASET_TOOL_LABELS[activeTab.tool] : 'Dataset view',
           },
           { label: 'Target', value: 'Dataset contents' },
-          { label: 'Path', value: activeDataset?.filePath ?? 'Dataset' },
+          { label: 'Path', value: 'Project/dataset' },
         ];
       }
 
@@ -2660,11 +2616,6 @@ function App() {
             onOpenChange={(open) => setInspectorSectionOpen('dataset', open)}
           >
             <div className="space-y-3">
-              {missingDatasetSourceCount > 0 && (
-                <p role="status" className="rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-yellow-700">
-                  {missingDatasetSourceCount} source {missingDatasetSourceCount === 1 ? 'file unavailable' : 'files unavailable'}
-                </p>
-              )}
               <label className="block text-muted-foreground">
                 Trigger word
                 <input
@@ -2834,34 +2785,10 @@ function App() {
       }
     }
 
-    for (const dataset of [useProjectStore.getState().dataset]) {
-      const parentPath = applyExplorerPathMoves(dataset.parentPath || 'Project', moves);
-      const filePath = dataset.filePath ? applyExplorerPathMoves(dataset.filePath, moves) : dataset.filePath;
-      const assetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).map((path) =>
-        applyExplorerPathMoves(path, moves)
-      );
-      const psdAssetPaths = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).map((path) =>
-        applyExplorerPathMoves(path, moves)
-      );
-      const assetOrder = applyFileAssetOrderPathMoves(dataset.assetOrder, moves);
-      const nextDataset = {
-        ...dataset,
-        parentPath,
-        filePath,
-        assetPaths,
-        psdAssetPaths,
-        assetOrder: normalizeDatasetAssetOrder(assetOrder, dataset.assetIds, assetPaths),
-        updatedAt: new Date(),
-      };
-      if (
-        parentPath !== (dataset.parentPath || 'Project') ||
-        filePath !== dataset.filePath ||
-        assetPaths.some((path, index) => path !== (dataset.assetPaths ?? [])[index]) ||
-        psdAssetPaths.some((path, index) => path !== (dataset.psdAssetPaths ?? [])[index]) ||
-        nextDataset.assetOrder.some((key, index) => key !== (dataset.assetOrder ?? [])[index])
-      ) {
-        updateProjectDataset(dataset.id, nextDataset);
-      }
+    const dataset = useProjectStore.getState().dataset;
+    const assetOrder = applyFileAssetOrderPathMoves(dataset.assetOrder, moves);
+    if (assetOrder.some((key, index) => key !== dataset.assetOrder[index])) {
+      updateProjectDataset(dataset.id, { assetOrder });
     }
   };
 
@@ -2889,7 +2816,7 @@ function App() {
     }
 
     return runExplorerMutation('Rename file', async () => {
-      const nextFileName = kind === 'dataset' ? getDatasetFileName(trimmedName) : trimmedName;
+      const nextFileName = trimmedName;
       const entryKind = kind === 'folder' ? 'folder' : 'file';
       const nextPath = await renameExplorerEntry(directory, path, entryKind, nextFileName, async change => {
         const moves = [change];
@@ -2902,19 +2829,6 @@ function App() {
         await updateWorkspacePathsForPathMoves(moves);
         updateExplorerClipboardForPathMoves(moves);
 
-        if (kind === 'dataset') {
-          const currentDataset = useProjectStore.getState().dataset;
-          const dataset = currentDataset.filePath === nextPath ? currentDataset : await readDatasetFile(directory, nextPath);
-          const updatedDataset = {
-            ...dataset,
-            name: getDatasetDisplayName(nextPath.split('/').pop() ?? trimmedName),
-            parentPath: nextPath.split('/').slice(0, -1).join('/') || 'Project',
-            filePath: nextPath,
-            updatedAt: new Date(),
-          };
-          upsertProjectDataset(updatedDataset);
-          refreshOpenDatasetTabs(updatedDataset.id);
-        }
       });
       await indexProjectWorkspaceAssets(false, [nextPath], false);
       return nextPath;
@@ -2924,8 +2838,6 @@ function App() {
   const removeWorkspaceReferencesForDeletedEntries = async (entries: ExplorerClipboardEntry[]) => {
     const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
     const previousEdited = Object.values(useProjectStore.getState().datasetItems);
-    const datasetBeforeSourceRemoval = useProjectStore.getState().dataset;
-    let sourceAffectsDataset = false;
     const removedSourceIds: string[] = [];
     for (const source of Object.values(useProjectStore.getState().sourceImages)) {
       const sourcePath = source.originalFilePath;
@@ -2933,7 +2845,6 @@ function App() {
         sourcePath &&
         deletedPaths.some((deletedPath) => sourcePath === deletedPath || sourcePath.startsWith(`${deletedPath}/`))
       ) {
-        sourceAffectsDataset ||= datasetBeforeSourceRemoval.assetIds.includes(source.id);
         removeSourceImage(source.id);
         removedSourceIds.push(source.id);
       }
@@ -2959,31 +2870,10 @@ function App() {
       const deletedExplorerPaths = entries.map((entry) => entry.path);
       const isDeletedPath = (path: string) =>
         deletedExplorerPaths.some((deletedPath) => path === deletedPath || path.startsWith(`${deletedPath}/`));
-      const assetIds = dataset.assetIds.filter((assetId) => !removedSourceIds.includes(assetId));
-      const assetPaths = filterLegacyProjectAssetPaths(dataset.assetPaths ?? []).filter((path) => !isDeletedPath(path));
-      const psdAssetPaths = filterLegacyProjectAssetPaths(dataset.psdAssetPaths ?? []).filter((path) => !isDeletedPath(path));
-      const assetOrder = normalizeDatasetAssetOrder(
-        (dataset.assetOrder ?? []).filter((key) => !key.startsWith('file:') || !isDeletedPath(key.slice('file:'.length))),
-        assetIds,
-        assetPaths
-      );
+      const assetOrder = dataset.assetOrder.filter((key) => !key.startsWith('file:') || !isDeletedPath(key.slice('file:'.length)));
 
-      if (
-        sourceAffectsDataset ||
-        assetIds.length !== dataset.assetIds.length ||
-        assetPaths.length !== (dataset.assetPaths ?? []).length ||
-        psdAssetPaths.length !== (dataset.psdAssetPaths ?? []).length ||
-        assetOrder.length !== (dataset.assetOrder ?? []).length
-      ) {
-        const nextDataset = {
-          ...dataset,
-          assetIds,
-          assetPaths,
-          psdAssetPaths,
-          assetOrder,
-          updatedAt: new Date(),
-        };
-        updateProjectDataset(dataset.id, nextDataset);
+      if (assetOrder.length !== dataset.assetOrder.length) {
+        updateProjectDataset(dataset.id, { assetOrder });
       }
     }
   };
@@ -2998,11 +2888,6 @@ function App() {
         updateFileTabsForPathMoves([move]);
         await updateWorkspacePathsForPathMoves([move]);
         updateExplorerClipboardForPathMoves([move]);
-        const current = useProjectStore.getState().dataset;
-        if (current.filePath === move.to && isDatasetFileName(move.to)) {
-          updateProjectDataset(current.id,{name:getDatasetDisplayName(move.to.split('/').pop()!),parentPath:destinationPath});
-          refreshOpenDatasetTabs(current.id);
-        }
       });
     } finally {
       if (completed.length > 0) await indexProjectWorkspaceAssets(false, completed.map(move => move.to), false);
@@ -3035,9 +2920,8 @@ function App() {
     try {
       await runExplorerMutation('Delete files', async () => {
         const filesystemEntries = entries.filter(isFilesystemExplorerEntry);
-        const datasetEntries = entries.filter((entry) => entry.kind === 'dataset');
-        const directory = filesystemEntries.length > 0 || datasetEntries.length > 0 ? requireProjectDirectory() : null;
-        if ((filesystemEntries.length > 0 || datasetEntries.length > 0) && !directory) {
+        const directory = filesystemEntries.length > 0 ? requireProjectDirectory() : null;
+        if (filesystemEntries.length > 0 && !directory) {
           return;
         }
         const filesToReturnToShared = filesystemEntries.filter((entry) => datasetFiles.some((datasetFile) => datasetFile.path === entry.path));
@@ -3052,29 +2936,12 @@ function App() {
         for (const entry of deletedFilesystemEntries) {
           await deleteExplorerEntry(directory!, entry.path, true, () => removeWorkspaceReferencesForDeletedEntries([entry]));
         }
-        const deletedDatasetIds: string[] = [];
-        for (const entry of datasetEntries) {
-          const dataset = await readDatasetFile(directory!, entry.path).catch(() => null);
-          await deleteExplorerEntry(directory!, entry.path, false, () => {
-            if (!dataset) return;
-            removeProjectDataset(dataset.id);
-            deletedDatasetIds.push(dataset.id);
-            const keepViews = (tabs: WorkspaceTab[]) => tabs.filter(tab =>
-              (tab.kind !== 'dataset' && tab.kind !== 'dataset-tool') || tab.datasetId !== dataset.id);
-            setOpenTabs(keepViews);
-            setClosedTabs(keepViews);
-            clearExplorerClipboardForDeletedPaths([entry]);
-          });
-        }
         setOpenTabs((tabs) =>
           tabs.filter(
             (tab) =>
               (isFileBackedTab(tab) &&
                 !deletedFilesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
-              (tab.kind === 'dataset' &&
-                !deletedDatasetIds.includes(tab.datasetId)) ||
-              (tab.kind === 'dataset-tool' &&
-                !deletedDatasetIds.includes(tab.datasetId)) ||
+              tab.kind === 'dataset' || tab.kind === 'dataset-tool' ||
               tab.kind === 'tool' || tab.kind === 'window'
           )
         );
@@ -3176,18 +3043,6 @@ function App() {
     }
 
     try {
-      if (edit.kind === 'dataset' && edit.mode === 'rename' && edit.path) {
-        const nextName = edit.value.trim() || 'Dataset';
-        const nextPath = await renameExplorerItem(edit.path, 'dataset', nextName);
-        if (nextPath) {
-          setSelectedExplorerPaths(new Set([nextPath]));
-          setSelectionAnchorPath(nextPath);
-          setFocusedExplorerPath(nextPath);
-        }
-        setInlineExplorerEdit(null);
-        return;
-      }
-
       const directory = requireProjectDirectory();
       if (!directory) {
         return;
@@ -3360,8 +3215,6 @@ function App() {
       addNotification('error', error instanceof Error ? error.message : 'Failed to select files for import');
     }
   };
-
-  const handleDatasetExport = async (_node: ExplorerTreeNode) => { navigateToTool('export'); };
 
   const handleExplorerDrop = (event: DragEvent, destinationPath: string) => {
     if (Array.from(event.dataTransfer.types).includes('Files')) {
@@ -3947,31 +3800,6 @@ function App() {
     ].filter((group) => group.length > 0);
   };
 
-  const getDatasetContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
-    const contextEntries = getContextEntries(node);
-    return [
-      [
-        createExplorerAction({ id: 'open', label: 'Open', icon: Layers3, onSelect: () => openExplorerFile(node) }),
-      ],
-      [
-        createExplorerAction({ id: 'select', label: 'Select', icon: ScanSearch, onSelect: () => openDatasetToolFromExplorer(node, 'select') }),
-        createExplorerAction({ id: 'review', label: 'Review', icon: Layers3, onSelect: () => openDatasetToolFromExplorer(node, 'review') }),
-        createExplorerAction({ id: 'caption', label: 'Caption', icon: Tags, onSelect: () => openDatasetToolFromExplorer(node, 'tagging') }),
-        createExplorerAction({ id: 'analysis', label: 'Analysis', icon: BarChart3, onSelect: () => openDatasetToolFromExplorer(node, 'analysis') }),
-        createExplorerAction({ id: 'export', label: 'Export', icon: Download, onSelect: () => handleDatasetExport(node) }),
-      ],
-      [
-        createExplorerAction({ id: 'cut', label: 'Cut', icon: Scissors, onSelect: () => setExplorerClipboard({ mode: 'cut', entries: contextEntries }) }),
-        createExplorerAction({ id: 'copy', label: 'Copy', icon: Copy, onSelect: () => setExplorerClipboard({ mode: 'copy', entries: contextEntries }) }),
-        createExplorerAction({ id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: () => handleExplorerDuplicate(node) }),
-      ],
-      [
-        createExplorerAction({ id: 'rename', label: 'Rename', icon: Pencil, onSelect: () => handleExplorerRename(node) }),
-        createExplorerAction({ id: 'delete', label: 'Delete', icon: Trash2, variant: 'destructive', onSelect: () => handleExplorerDelete(node) }),
-      ],
-    ];
-  };
-
   const getDirectoryContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => {
     const contextEntries = getContextEntries(node);
     const fileToolActionGroups = getExplorerToolScopeFileNodes(node).length > 0
@@ -4035,9 +3863,6 @@ function App() {
 
   const renderFileContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
     <ContextActionGroups groups={getFileContextActionGroups(node)} />;
-
-  const renderDatasetContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
-    <ContextActionGroups groups={getDatasetContextActionGroups(node)} />;
 
   const renderDirectoryContextMenuItems = (node: ExplorerTreeNode): ReactNode =>
     <ContextActionGroups groups={getDirectoryContextActionGroups(node)} />;
@@ -4193,7 +4018,7 @@ function App() {
                 <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
                 <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 text-muted-foreground">
                   <span>Assets</span><span className="text-right text-foreground">{workspaceImages.length}</span>
-                  <span>Dataset assets</span><span className="text-right text-foreground">{globalDataset.assetIds.length + globalDataset.assetPaths.length}</span>
+                  <span>Dataset assets</span><span className="text-right text-foreground">{activeDatasetPreviewItems.length}</span>
                   <span>Tags</span><span className="text-right text-foreground">{projectTags.length}</span>
                 </div>
               </div>
@@ -4288,9 +4113,7 @@ function App() {
                       ? <ContextActionGroups groups={explorerContextMenu.actionGroups} />
                       : explorerContextMenu.node.kind === 'file'
                       ? renderFileContextMenuItems(explorerContextMenu.node)
-                      : explorerContextMenu.node.kind === 'dataset'
-                        ? renderDatasetContextMenuItems(explorerContextMenu.node)
-                        : renderDirectoryContextMenuItems(explorerContextMenu.node)}
+                      : renderDirectoryContextMenuItems(explorerContextMenu.node)}
                   </MenuSurface>
                 </>
               )}
@@ -4315,14 +4138,14 @@ function App() {
   const explorerSelectionNode = explorerSelection.length ? findExplorerNodeByPath(explorerSelection[0].path) : null;
   const explorerCommandScope = () => explorerPanelRef.current;
   const explorerCommands: Command[] = [
-    {id:'explorer.copy', label:'Explorer: Copy', shortcut:'Mod+C', disabled:!explorerSelection.length || explorerSelection.some(entry => entry.kind === 'dataset'),
+    {id:'explorer.copy', label:'Explorer: Copy', shortcut:'Mod+C', disabled:!explorerSelection.length,
       run:() => setExplorerClipboard({mode:'copy', entries:explorerSelection})},
     {id:'explorer.cut', label:'Explorer: Cut', shortcut:'Mod+X', disabled:!explorerSelection.length,
       run:() => setExplorerClipboard({mode:'cut', entries:explorerSelection})},
     {id:'explorer.paste', label:'Explorer: Paste', shortcut:'Mod+V', disabled:!explorerClipboard || !projectDirectoryHandle,
       reason:!projectDirectoryHandle ? 'Open a project directory first' : !explorerClipboard ? 'Copy or cut files first' : undefined,
       run:() => handleExplorerPaste({name:activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path:activeExplorerDirectoryPath, kind:'folder'})},
-    {id:'explorer.duplicate', label:'Explorer: Duplicate', shortcut:'Mod+B', disabled:!explorerSelectionNode || explorerSelection.some(entry => entry.kind === 'dataset') || !projectDirectoryHandle,
+    {id:'explorer.duplicate', label:'Explorer: Duplicate', shortcut:'Mod+B', disabled:!explorerSelectionNode || !projectDirectoryHandle,
       run:() => {if (explorerSelectionNode) return handleExplorerDuplicate(explorerSelectionNode);}},
     {id:'explorer.rename', label:'Explorer: Rename', shortcut:'F2', disabled:explorerSelection.length !== 1 || !explorerSelectionNode || !projectDirectoryHandle,
       reason:!projectDirectoryHandle ? 'Open a project directory first' : 'Select one file or folder',

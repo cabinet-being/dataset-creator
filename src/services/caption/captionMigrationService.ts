@@ -20,7 +20,7 @@ const distinct = (values: string[][]) => new Set(values.map((tags) => JSON.strin
 
 export function migrateLegacyCaptions(options: {
   legacy: LegacyCaptionDataset;
-  dataset: Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'triggerWord'>;
+  dataset: Pick<Dataset, 'triggerWord'> & { assetIds: string[]; assetPaths: string[]; psdAssetPaths: string[] };
   sourceImages: Record<string, SourceImage>;
   datasetItems: Record<string, EditedAsset>;
   pathAssets?: PathCaptionAsset[];

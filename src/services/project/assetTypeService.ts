@@ -1,5 +1,5 @@
 import { isAssetManifestName, isProjectManifestName } from './assetManifestService';
-import { isDatasetFileName } from './datasetFileService';
+import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 
 export type ProjectAssetKind = 'image' | 'text' | 'json' | 'video' | 'psd' | 'unknown';
 
@@ -59,7 +59,7 @@ export const getProjectAssetMimeType = (name: string, fallback = ''): string => 
 };
 
 export const isInternalProjectFileName = (fileName: string): boolean =>
-  isProjectManifestName(fileName) || isAssetManifestName(fileName) || isDatasetFileName(fileName);
+  isProjectManifestName(fileName) || isAssetManifestName(fileName) || isLegacyDatasetFileName(fileName);
 
 export const resolveProjectAssetKind = (name: string, mimeType = ''): ProjectAssetKind => {
   const extension = getProjectAssetExtension(name);

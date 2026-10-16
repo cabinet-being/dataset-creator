@@ -1,6 +1,5 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
 import type { ProjectState, ProjectType } from '../../types';
-import { isSupportedProjectAsset } from './assetTypeService';
 
 export const PROJECT_MANIFEST_FILE = 'manifest.json';
 export const DATASET_MANIFEST_FILE = 'dataset.json';
@@ -50,27 +49,6 @@ export type DatasetManifest = {
 
 const pathParts = (path: string): string[] => path.split('/').filter(Boolean);
 
-const joinPath = (...parts: string[]): string => parts.flatMap(pathParts).join('/');
-
-const collectDatasetAssetPaths = async (
-  directory: ProjectDirectoryHandle,
-  relativePath = PROJECT_DATASET_DIRECTORY
-): Promise<string[]> => {
-  const assetPaths: string[] = [];
-
-  for await (const [entryName, entry] of directory.entries()) {
-    if ('entries' in entry) {
-      assetPaths.push(...await collectDatasetAssetPaths(entry, joinPath(relativePath, entryName)));
-      continue;
-    }
-    if (isSupportedProjectAsset(entryName)) {
-      assetPaths.push(`Project/${joinPath(relativePath, entryName)}`);
-    }
-  }
-
-  return assetPaths;
-};
-
 const writeTextFile = async (directory: ProjectDirectoryHandle, name: string, value: string) => {
   const handle = await directory.getFileHandle(name, { create: true });
   const writable = await handle.createWritable();
@@ -90,24 +68,6 @@ export const getDirectoryAtPath = async (
   return directory;
 };
 
-export const createDatasetManifest = (project: Pick<ProjectState, 'name' | 'projectType' | 'taggingConfig' | 'dataset'>): DatasetManifest => ({
-  format: 'dataset-creator-dataset',
-  version: 3,
-  name: project.dataset.name || project.name,
-  projectType: project.projectType,
-  description: '',
-  triggerWord: project.dataset.triggerWord || project.taggingConfig.datasetKeyword,
-  imageCount: project.dataset.assetIds.length + project.dataset.assetPaths.length,
-  classCount: 0,
-  classRepeats: {},
-  assetIds: project.dataset.assetIds,
-  assetPaths: project.dataset.assetPaths,
-  psdAssetPaths: project.dataset.psdAssetPaths,
-  assetOrder: project.dataset.assetOrder,
-  createdAt: project.dataset.createdAt.toISOString(),
-  updatedAt: new Date().toISOString(),
-});
-
 export const readDatasetManifest = async (root: ProjectDirectoryHandle): Promise<DatasetManifest | null> => {
   try {
     const file = await (await root.getFileHandle(DATASET_MANIFEST_FILE)).getFile();
@@ -125,33 +85,10 @@ export const writeDatasetManifest = async (
 
 export const ensureProjectLayout = async (
   root: ProjectDirectoryHandle,
-  project: Pick<ProjectState, 'name' | 'projectType' | 'taggingConfig' | 'dataset'>
-): Promise<DatasetManifest> => {
+  _project?: Pick<ProjectState, 'name' | 'projectType' | 'taggingConfig' | 'dataset'>
+): Promise<DatasetManifest | null> => {
   await Promise.all(REQUIRED_PROJECT_DIRECTORIES.map((path) => getDirectoryAtPath(root, path, true)));
-  const existing = await readDatasetManifest(root);
-  const needsAssetIndex = Boolean(existing && existing.version === 2 && existing.assetPaths === undefined && existing.assetIds === undefined);
-  const indexedAssetPaths = needsAssetIndex
-    ? await collectDatasetAssetPaths(await getDirectoryAtPath(root, PROJECT_DATASET_DIRECTORY))
-    : [];
-  const indexedPsdAssetPaths = indexedAssetPaths.filter((path) => path.toLowerCase().endsWith('.psd'));
-  const manifest: DatasetManifest = existing
-    ? {
-        ...existing,
-        name: existing.name || project.name,
-        projectType: existing.projectType || project.projectType,
-        triggerWord: existing.triggerWord ?? project.taggingConfig.datasetKeyword,
-        version: 3,
-        assetIds: existing.assetIds ?? (needsAssetIndex ? [] : project.dataset.assetIds),
-        assetPaths: existing.assetPaths ?? (needsAssetIndex ? indexedAssetPaths : project.dataset.assetPaths),
-        psdAssetPaths: existing.psdAssetPaths ?? (needsAssetIndex ? indexedPsdAssetPaths : project.dataset.psdAssetPaths),
-        assetOrder: existing.assetOrder ?? (needsAssetIndex ? indexedAssetPaths.map((path) => `file:${path}`) : project.dataset.assetOrder),
-        createdAt: existing.createdAt ?? project.dataset.createdAt.toISOString(),
-      }
-    : createDatasetManifest(project);
-  if (!existing || needsAssetIndex || existing.version !== 3) {
-    await writeDatasetManifest(root, manifest);
-  }
-  return manifest;
+  return readDatasetManifest(root);
 };
 
 export const isProjectWorkspacePath = (path: string, workspace: 'dataset' | 'shared' | 'assets'): boolean => {

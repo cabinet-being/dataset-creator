@@ -163,7 +163,7 @@ export const restoreProjectVersion = async (
   }
   const manifestText = await zip.file('manifest.json')?.async('string');
   const manifest = manifestText ? JSON.parse(manifestText) : null;
-  if (manifest?.format !== 'dataset-creator-directory' || manifest.version !== 1 || !manifest.project?.id || !manifest.project?.name) {
+  if (manifest?.format !== 'dataset-creator-directory' || ![1, 2].includes(manifest.version) || !manifest.project?.id || !manifest.project?.name) {
     throw new Error('The version has no valid project manifest.');
   }
   const backup = new JSZip();

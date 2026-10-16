@@ -1,13 +1,12 @@
 import { useEffect, useRef, type ComponentType, type DragEvent } from 'react';
-import { ChevronDown, ChevronRight, File, FileJson, FolderOpen, Layers3, Video } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, FileJson, FolderOpen, Video } from 'lucide-react';
 import { getExplorerFileKind } from '../../services/project/explorerFileService';
 import { selectFileNameStem } from '../../lib/fileNameSelection';
 
 export type ExplorerTreeNode = {
   name: string;
   path: string;
-  kind: 'folder' | 'file' | 'dataset';
-  datasetId?: string;
+  kind: 'folder' | 'file';
   children?: ExplorerTreeNode[];
 };
 
@@ -20,7 +19,7 @@ export type ExplorerTreeProps = {
     mode: 'create' | 'rename';
     parentPath: string;
     path?: string;
-    kind: 'folder' | 'file' | 'dataset';
+    kind: 'folder' | 'file';
     value: string;
   } | null;
   focusedPath: string | null;
@@ -41,9 +40,6 @@ export type ExplorerTreeProps = {
 export const getExplorerIcon = (node: ExplorerTreeNode): ComponentType<{ className?: string }> => {
   if (node.kind === 'folder') {
     return FolderOpen;
-  }
-  if (node.kind === 'dataset') {
-    return Layers3;
   }
   switch (getExplorerFileKind(node.name)) {
     case 'image':
@@ -223,11 +219,7 @@ export const ExplorerTree = ({
       {inlineEdit?.mode === 'create' && inlineEdit.parentPath === node.path && (
         <div style={{ paddingLeft: 4 + (depth + 1) * 12 }} className="flex h-7 items-center gap-1">
           <span className="w-3.5 shrink-0" />
-          {inlineEdit.kind === 'dataset' ? (
-            <Layers3 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          )}
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <input
             aria-label={`New ${inlineEdit.kind} name`}
             value={inlineEdit.value}

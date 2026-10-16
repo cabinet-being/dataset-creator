@@ -33,9 +33,9 @@ const cosine = (left: Float32Array, right: Float32Array) => {
   for (let index = 0; index < Math.min(left.length, right.length); index += 1) result += left[index] * right[index];
   return Math.max(0, Math.min(1, result));
 };
-export const createAssemblyFingerprint = async (dataset: Pick<Dataset, 'assetIds' | 'assetPaths' | 'psdAssetPaths'>, assets: AssemblyInputAsset[], target: string) => {
+export const createAssemblyFingerprint = async (dataset: Pick<Dataset, 'id'>, assets: AssemblyInputAsset[], target: string) => {
   const value = JSON.stringify({
-    membership: [dataset.assetIds, dataset.assetPaths, dataset.psdAssetPaths],
+    datasetId: dataset.id,
     assets: assets.map((asset) => [stableKey(asset), asset.feature.imageHash, asset.caption]),
     target,
   });

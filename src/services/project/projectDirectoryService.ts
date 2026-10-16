@@ -15,16 +15,22 @@ import { getAssetManifestName } from './assetManifestService';
 import { snapshotFileIfNeeded } from './fileSnapshotService';
 import { migrateLegacyCaptions, type PathCaptionAsset } from '../caption/captionMigrationService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
-import { isDatasetFileName, writeDatasetFile } from './datasetFileService';
+import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import {
   DATASET_MANIFEST_FILE,
   PROJECT_DATASET_DIRECTORY,
   PROJECT_SHARED_DIRECTORY,
   ensureProjectLayout,
   isProjectWorkspacePath,
-  readDatasetManifest,
-  writeDatasetManifest,
 } from './projectLayoutService';
+import { applyProjectRelativePathMoves } from '../../lib/datasetAssets';
+import {
+  createLegacyDatasetMigration,
+  getLegacyDatasetPathMoves,
+  migrateLegacyDatasetMembership,
+  removeLegacyDatasetDocuments,
+  type LegacyDatasetMigrationReport,
+} from './legacyDatasetMigrationService';
 
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
@@ -61,7 +67,7 @@ type DirectoryPickerWindow = Window &
 
 type DirectoryProjectManifest = {
   format: typeof PROJECT_DIRECTORY_FORMAT;
-  version: 1;
+  version: 1 | 2;
   project: {
     id: string;
     name: string;
@@ -72,6 +78,15 @@ type DirectoryProjectManifest = {
     sourceImageManifests?: Record<string, string>;
     editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
+    dataset?: {
+      name: string;
+      triggerWord: string;
+      assetOrder: string[];
+      createdAt: string;
+      updatedAt: string;
+    };
+    datasetMigration?: LegacyDatasetMigrationReport;
+    /** @deprecated Read only while converting version-1 projects. */
     datasetFilePath?: string;
     captionMigration?: ProjectState['captionMigration'];
     lastModified: string;
@@ -343,7 +358,7 @@ const getProjectManifest = (
   } = {}
 ): DirectoryProjectManifest => ({
   format: PROJECT_DIRECTORY_FORMAT,
-  version: 1,
+  version: 2,
   project: {
     id: project.id,
     name: project.name,
@@ -359,7 +374,14 @@ const getProjectManifest = (
     workspaceSettings: project.workspaceSettings,
     sourceImageManifests: paths.sourceImageManifests,
     editedAssetManifests: paths.editedAssetManifests,
-    datasetFilePath: project.dataset.filePath,
+    dataset: {
+      name: project.dataset.name,
+      triggerWord: project.dataset.triggerWord,
+      assetOrder: project.dataset.assetOrder,
+      createdAt: toIsoString(project.dataset.createdAt),
+      updatedAt: toIsoString(project.dataset.updatedAt),
+    },
+    datasetMigration: project.datasetMigration,
     captionMigration: project.captionMigration,
     lastModified: toIsoString(project.lastModified),
     createdAt: toIsoString(project.createdAt),
@@ -674,26 +696,6 @@ export const createProjectDirectory = async (
     PROJECT_DIRECTORY_MANIFEST,
     JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
   );
-  const datasetManifest = await readDatasetManifest(directory);
-  if (datasetManifest) {
-    await writeDatasetManifest(directory, {
-      ...datasetManifest,
-      version: 3,
-      name: project.dataset.name,
-      projectType: project.projectType,
-      triggerWord: project.dataset.triggerWord,
-      imageCount: project.dataset.assetIds.length + project.dataset.assetPaths.length,
-      assetIds: project.dataset.assetIds,
-      assetPaths: project.dataset.assetPaths,
-      psdAssetPaths: project.dataset.psdAssetPaths,
-      assetOrder: project.dataset.assetOrder,
-      createdAt: project.dataset.createdAt.toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-  }
-  if (project.dataset.filePath) {
-    await writeDatasetFile(directory, project.dataset);
-  }
 };
 
 export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
@@ -791,28 +793,6 @@ export const writeProjectDirectoryChanges = async (
     PROJECT_DIRECTORY_MANIFEST,
     JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
   );
-  const datasetManifest = await readDatasetManifest(directory);
-  if (datasetManifest) {
-    await writeDatasetManifest(directory, {
-      ...datasetManifest,
-      version: 3,
-      name: project.dataset.name,
-      projectType: project.projectType,
-      triggerWord: project.dataset.triggerWord,
-      imageCount: project.dataset.assetIds.length + project.dataset.assetPaths.length,
-      assetIds: project.dataset.assetIds,
-      assetPaths: project.dataset.assetPaths,
-      psdAssetPaths: project.dataset.psdAssetPaths,
-      assetOrder: project.dataset.assetOrder,
-      createdAt: project.dataset.createdAt.toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-  }
-  // The linked Dataset document is part of the same saved snapshot as the project.
-  // This also persists membership changes made through Undo/Redo and galleries.
-  if (project.dataset.filePath && project.dataset !== previousProject?.dataset) {
-    await writeDatasetFile(directory, project.dataset);
-  }
 };
 
 const readSource = async (
@@ -1011,17 +991,17 @@ export const readProjectDirectory = async (
     manifestName,
     'the project manifest'
   );
-  if (manifest.format !== PROJECT_DIRECTORY_FORMAT || manifest.version !== 1) {
+  if (manifest.format !== PROJECT_DIRECTORY_FORMAT || (manifest.version !== 1 && manifest.version !== 2)) {
     throw new Error('The selected directory is not a supported Dataset Creator project.');
   }
   if (!manifest.project || !manifest.project.id || !manifest.project.name) {
     throw new Error('The project manifest is missing required project fields.');
   }
   const datasetFilePath = manifest.project.datasetFilePath;
-  if (datasetFilePath !== undefined && (
+  if (manifest.version === 1 && datasetFilePath !== undefined && (
     typeof datasetFilePath !== 'string' ||
     !datasetFilePath.startsWith('Project/') ||
-    !isDatasetFileName(datasetFilePath) ||
+    !isLegacyDatasetFileName(datasetFilePath) ||
     datasetFilePath.includes('\\') ||
     datasetFilePath.split('/').some(part => !part || part === '.' || part === '..')
   )) {
@@ -1037,7 +1017,7 @@ export const readProjectDirectory = async (
     await writable.close();
   }
   const defaults = createProject(manifest.project.name, projectType);
-  const datasetManifest = await ensureProjectLayout(directory, {
+  const legacyDatasetManifest = await ensureProjectLayout(directory, {
     ...defaults,
     taggingConfig: {
       ...defaults.taggingConfig,
@@ -1077,14 +1057,44 @@ export const readProjectDirectory = async (
         )
       : readOptionalProjectChildren(directory, 'generated', (entry) => readEditedAsset(entry)),
   ]);
-  const sources = sourceResults
+  let sources = sourceResults
     .filter((source): source is SourceImage => Boolean(source))
     // Explicitly registered sources retain their identity after an Explorer move.
     // Discovery of new sources remains limited to shared in assetIndexService.
     .filter((source) => sourceManifestPaths
       ? !isLegacyProjectRootPath(source.originalFilePath ?? '')
       : isProjectWorkspacePath(source.originalFilePath ?? '', 'shared'));
-  const edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
+  let edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
+
+  const datasetSettings = manifest.project.dataset;
+  let datasetMigration = manifest.project.datasetMigration;
+  if (manifest.version === 1 && legacyDatasetManifest && datasetMigration?.status !== 'complete') {
+    const resolvedAssetPaths = (legacyDatasetManifest.assetIds ?? [])
+      .map((id) => sources.find((source) => source.id === id)?.originalFilePath)
+      .filter((path): path is string => Boolean(path));
+    const pending = datasetMigration ?? createLegacyDatasetMigration({
+      datasetFilePath,
+      assetIds: legacyDatasetManifest.assetIds,
+      assetPaths: legacyDatasetManifest.assetPaths,
+      psdAssetPaths: legacyDatasetManifest.psdAssetPaths,
+    }, resolvedAssetPaths);
+    datasetMigration = await migrateLegacyDatasetMembership(directory, pending, async (report) => {
+      manifest.project.datasetMigration = report;
+      await writeTextFile(directory, manifestName, JSON.stringify(manifest, null, 2));
+    });
+    const moves = getLegacyDatasetPathMoves(datasetMigration);
+    sources = sources.map((source) => ({
+      ...source,
+      originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
+      manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
+    }));
+    edited = edited.map((item) => ({
+      ...item,
+      imageDataPath: applyProjectRelativePathMoves(item.imageDataPath, moves),
+      psdDataPath: applyProjectRelativePathMoves(item.psdDataPath, moves),
+      manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
+    }));
+  }
 
   const sourceIds = new Set(sources.map((source) => source.id));
   const orphanEditedAsset = edited.find((item) => !sourceIds.has(item.sourceImageId));
@@ -1107,42 +1117,53 @@ export const readProjectDirectory = async (
     datasetItems: Object.fromEntries(edited.map((item) => [item.id, item])),
     dataset: {
       ...defaults.dataset,
-      filePath: datasetFilePath,
-      parentPath: datasetFilePath ? getParentPath(datasetFilePath) : defaults.dataset.parentPath,
-      name: datasetManifest.name || defaults.dataset.name,
-      triggerWord: datasetManifest.triggerWord || defaults.dataset.triggerWord,
-      assetIds: datasetManifest.assetIds ?? [],
-      assetPaths: datasetManifest.assetPaths ?? [],
-      psdAssetPaths: datasetManifest.psdAssetPaths ?? [],
-      assetOrder: datasetManifest.assetOrder ?? [],
-      createdAt: datasetManifest.createdAt ? toDate(datasetManifest.createdAt, defaults.dataset.createdAt) : defaults.dataset.createdAt,
-      updatedAt: toDate(datasetManifest.updatedAt, defaults.dataset.updatedAt),
+      name: datasetSettings?.name || legacyDatasetManifest?.name || defaults.dataset.name,
+      triggerWord: datasetSettings?.triggerWord ?? legacyDatasetManifest?.triggerWord ?? defaults.dataset.triggerWord,
+      assetOrder: datasetSettings?.assetOrder ?? legacyDatasetManifest?.assetOrder ?? [],
+      createdAt: datasetSettings?.createdAt ? toDate(datasetSettings.createdAt, defaults.dataset.createdAt) : legacyDatasetManifest?.createdAt ? toDate(legacyDatasetManifest.createdAt, defaults.dataset.createdAt) : defaults.dataset.createdAt,
+      updatedAt: datasetSettings?.updatedAt ? toDate(datasetSettings.updatedAt, defaults.dataset.updatedAt) : legacyDatasetManifest ? toDate(legacyDatasetManifest.updatedAt, defaults.dataset.updatedAt) : defaults.dataset.updatedAt,
     },
     taggingConfig: {
       ...defaults.taggingConfig,
       ...manifest.project.taggingConfig,
-      datasetKeyword: datasetManifest.triggerWord || manifest.project.taggingConfig.datasetKeyword || defaults.taggingConfig.datasetKeyword,
+      datasetKeyword: datasetSettings?.triggerWord ?? legacyDatasetManifest?.triggerWord ?? manifest.project.taggingConfig.datasetKeyword ?? defaults.taggingConfig.datasetKeyword,
     },
     workspaceSettings: {
       ...defaults.workspaceSettings,
       ...manifest.project.workspaceSettings,
     },
     captionMigration: manifest.project.captionMigration,
+    datasetMigration,
     lastModified: toDate(manifest.project.lastModified, new Date()),
     createdAt: toDate(manifest.project.createdAt, new Date()),
   };
+  if (manifest.version === 1 && datasetMigration?.status === 'complete') {
+    await writeTextFile(directory, manifestName, JSON.stringify(getProjectManifest(loadedProject, {
+      sourceImageManifests: Object.fromEntries(sources.flatMap((source) => source.manifestPath ? [[source.id, toProjectRelativePath(source.manifestPath)]] : [])),
+      editedAssetManifests: Object.fromEntries(edited.flatMap((item) => item.manifestPath ? [[item.id, toProjectRelativePath(item.manifestPath)]] : [])),
+    }), null, 2));
+    await removeProjectFileAtPath(directory, DATASET_MANIFEST_FILE);
+    if (datasetFilePath) await removeProjectFileAtPath(directory, datasetFilePath);
+    await removeLegacyDatasetDocuments(directory);
+  }
   const previousMigration = manifest.project.captionMigration;
   const legacyOverrides = previousMigration?.status === 'pending'
     ? Object.fromEntries(Object.entries(previousMigration.legacyOverrides).filter(([key]) => previousMigration.unresolved.includes(key)))
-    : datasetManifest.captionOverrides ?? {};
-  const legacyOverwriteEnabled = previousMigration?.overwriteEnabled ?? datasetManifest.overwriteCaptions === true;
+    : legacyDatasetManifest?.captionOverrides ?? {};
+  const legacyOverwriteEnabled = previousMigration?.overwriteEnabled ?? legacyDatasetManifest?.overwriteCaptions === true;
   const migrationNeeded = manifest.project.captionMigration?.status !== 'complete' && (legacyOverwriteEnabled || Object.keys(legacyOverrides).length > 0);
   if (!migrationNeeded) return loadedProject;
-  const paths = [...loadedProject.dataset.assetPaths, ...loadedProject.dataset.psdAssetPaths];
+  const legacyDatasetForCaption = {
+    ...loadedProject.dataset,
+    assetIds: legacyDatasetManifest?.assetIds ?? [],
+    assetPaths: legacyDatasetManifest?.assetPaths ?? [],
+    psdAssetPaths: legacyDatasetManifest?.psdAssetPaths ?? [],
+  };
+  const paths = [...legacyDatasetForCaption.assetPaths, ...legacyDatasetForCaption.psdAssetPaths];
   const pathState = await readCaptionPathAssets(directory, paths);
   const migration = migrateLegacyCaptions({
     legacy: { overwriteCaptions: legacyOverwriteEnabled, captionOverrides: legacyOverrides, triggerWord: loadedProject.dataset.triggerWord },
-    dataset: loadedProject.dataset,
+    dataset: legacyDatasetForCaption,
     sourceImages: loadedProject.sourceImages,
     datasetItems: loadedProject.datasetItems,
     pathAssets: pathState.assets,

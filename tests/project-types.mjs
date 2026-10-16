@@ -276,7 +276,7 @@ try {
     assert.equal(reopened.sourceImages[source.id].manifestPath,'Archive/original.png.manifest.json');
     assert.equal(await reopened.sourceImages[source.id].originalFile.text(),'source pixels');
     assert.deepEqual(reopened.sourceImages[source.id].tags,['source tag']);
-    assert.deepEqual(reopened.dataset.assetIds,before.dataset.assetIds);
+    assert.equal('assetIds' in reopened.dataset,false);
     assert.deepEqual(reopened.dataset.assetOrder,before.dataset.assetOrder);
     assert.equal(reopened.dataset.captionOverrides,undefined,'Current Dataset files do not recreate legacy caption overrides');
     assert.equal(reopened.datasetItems[edited.id].sourceImageId,source.id);
@@ -293,7 +293,7 @@ try {
     const final = await readProjectDirectory(root);
     assert.equal(final.sourceImages[source.id].originalFilePath,source.originalFilePath);
     assert.equal(await final.datasetItems[edited.id].psdData.text(),'PSD layers');
-    assert.deepEqual(final.dataset.assetIds,[source.id]);
+    assert.equal('assetIds' in final.dataset,false);
   }
   // A rejected snapshot retains its asset index and drains all parallel writes
   // before allowing the save queue to retry.
@@ -382,40 +382,47 @@ try {
     for (const part of path.split('/')) current = await current.getDirectoryHandle(part);
     assert.ok(current);
   }
-  assert.equal((await readDatasetManifest(layoutDirectory)).triggerWord, 'trigger');
-  assert.equal((await readDatasetManifest(layoutDirectory)).version, 3);
+  assert.equal(await readDatasetManifest(layoutDirectory), null);
+  assert.equal((await readManifest(layoutDirectory)).project.dataset.triggerWord, 'trigger');
   const globalDatasetZip = await JSZip.loadAsync(await (await createProjectFileBlob(layoutProject)).arrayBuffer());
   assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.datasets, undefined);
-  const globalDatasetDocument = JSON.parse(await globalDatasetZip.file('dataset.json').async('string'));
-  assert.equal(globalDatasetDocument.version, 3);
-  assert.equal(globalDatasetDocument.triggerWord, 'trigger');
-  assert.equal(globalDatasetDocument.overwriteCaptions, undefined);
-  assert.equal(globalDatasetDocument.captionOverrides, undefined);
+  assert.equal(globalDatasetZip.file('dataset.json'), null);
+  assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.dataset.triggerWord, 'trigger');
   const migrationDirectory = directory();
-  await createProjectDirectory(migrationDirectory, createProject('Dataset migration', 'character'));
+  const legacySource = {...createSourceImage(new Blob(['legacy source'], { type:'image/png' }), 'legacy.png', 32, 24),
+    originalFilePath:'src/shared/legacy.png', manifestPath:'src/shared/legacy.png.manifest.json'};
+  const legacyProject = {...createProject('Dataset migration', 'character'), sourceImages:{[legacySource.id]:legacySource}};
+  await createProjectDirectory(migrationDirectory, legacyProject);
+  const legacyProjectManifest = await readManifest(migrationDirectory);
+  legacyProjectManifest.version = 1;
+  delete legacyProjectManifest.project.dataset;
+  await writeManifest(migrationDirectory, legacyProjectManifest);
   const migrationDatasetDirectory = await migrationDirectory.getDirectoryHandle('dataset');
   const migrationImageWriter = await (await migrationDatasetDirectory.getFileHandle('legacy.png', { create: true })).createWritable();
   await migrationImageWriter.write(new Blob(['png'], { type: 'image/png' })); await migrationImageWriter.close();
   const legacyDatasetWriter = await (await migrationDatasetDirectory.getFileHandle('ignored.dataset.json', { create: true })).createWritable();
   await legacyDatasetWriter.write(JSON.stringify({ name: 'Ignored legacy Dataset' })); await legacyDatasetWriter.close();
-  const rootDatasetWriter = await (await migrationDirectory.getFileHandle(DATASET_MANIFEST_FILE)).createWritable();
+  const rootDatasetWriter = await (await migrationDirectory.getFileHandle(DATASET_MANIFEST_FILE, { create: true })).createWritable();
   await rootDatasetWriter.write(JSON.stringify({
     format: 'dataset-creator-dataset', version: 2, name: 'Legacy Dataset', projectType: 'character',
-    description: '', triggerWord: 'legacy', imageCount: 0, classCount: 0, classRepeats: {}, updatedAt: new Date().toISOString(),
+    description: '', triggerWord: 'legacy', imageCount: 1, classCount: 0, classRepeats: {}, assetIds:[legacySource.id], updatedAt: new Date().toISOString(),
   })); await rootDatasetWriter.close();
   const migratedProject = await readProjectDirectory(migrationDirectory);
-  const migratedDataset = await readDatasetManifest(migrationDirectory);
-  assert.equal(migratedDataset.version, 3);
-  assert.deepEqual(migratedDataset.assetPaths, ['Project/dataset/legacy.png']);
+  const migratedManifest = await readManifest(migrationDirectory);
+  assert.equal(migratedManifest.version, 2);
+  assert.equal(migratedManifest.project.datasetMigration.status, 'complete');
+  assert.equal(migratedManifest.project.datasetMigration.operations.some(entry => entry.status === 'moved'), true);
   assert.equal(migratedProject.dataset.name, 'Legacy Dataset');
-  assert.deepEqual(migratedProject.dataset.assetPaths, ['Project/dataset/legacy.png']);
+  assert.equal('assetPaths' in migratedProject.dataset, false);
+  assert.match(migratedProject.sourceImages[legacySource.id].originalFilePath, /^dataset\/legacy(?: 2)?\.png$/);
+  assert.equal(await readDatasetManifest(migrationDirectory), null);
+  await assert.rejects(migrationDatasetDirectory.getFileHandle('ignored.dataset.json'), { name:'NotFoundError' });
   await layoutDirectory.removeEntry('dataset', { recursive: true });
   await (await layoutDirectory.getDirectoryHandle('src')).removeEntry('assets', { recursive: true });
-  await layoutDirectory.removeEntry(DATASET_MANIFEST_FILE);
   await readProjectDirectory(layoutDirectory);
   assert.ok(await layoutDirectory.getDirectoryHandle('dataset'));
   assert.ok(await (await layoutDirectory.getDirectoryHandle('src')).getDirectoryHandle('assets'));
-  assert.ok(await layoutDirectory.getFileHandle(DATASET_MANIFEST_FILE));
+  await assert.rejects(layoutDirectory.getFileHandle(DATASET_MANIFEST_FILE), { name: 'NotFoundError' });
   const datasetDirectory = await layoutDirectory.getDirectoryHandle('dataset');
   const classDirectory = await datasetDirectory.getDirectoryHandle('3_character', { create: true });
   const imageWritable = await (await classDirectory.getFileHandle('portrait.png', { create: true })).createWritable();

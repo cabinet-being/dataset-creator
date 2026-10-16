@@ -15,10 +15,9 @@ import {
   Dataset,
 } from '../types';
 import { OBJECT_STORES } from '../lib/constants';
-import { createDatasetImageAssetKey, normalizeDatasetAssetOrder } from '../lib/datasetAssets';
 import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
 import { snapshotFileIfNeeded } from '../services/project/fileSnapshotService';
-import { filterLegacyProjectAssetPaths, isLegacyProjectRootPath } from '../services/project/projectPathFilters';
+import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 import { migrateLegacyCaptions } from '../services/caption/captionMigrationService';
 
 const revokePreviewUrl = (previewUrl: string | undefined) => {
@@ -43,23 +42,16 @@ const isLegacyDatasetItem = (item: EditedAsset): boolean =>
     .filter((path): path is string => Boolean(path))
     .some((path) => isLegacyProjectRootPath(path));
 
-const getPsdAssetPaths = (assetPaths: string[]): string[] =>
-  filterLegacyProjectAssetPaths(assetPaths).filter((path) => path.toLowerCase().endsWith('.psd'));
-
-type LegacyDatasetState = Dataset & { overwriteCaptions?: boolean; captionOverrides?: Record<string, string[]> };
+type LegacyDatasetState = Dataset & {
+  parentPath?: string; filePath?: string; assetIds?: string[]; assetPaths?: string[]; psdAssetPaths?: string[];
+  overwriteCaptions?: boolean; captionOverrides?: Record<string, string[]>;
+};
 const normalizeDataset = (dataset: LegacyDatasetState): Dataset => {
-  const { overwriteCaptions: _overwriteCaptions, captionOverrides: _captionOverrides, ...current } = dataset;
-  const assetIds = [...new Set(dataset.assetIds ?? [])];
-  const assetPaths = filterLegacyProjectAssetPaths([...new Set([...(dataset.assetPaths ?? []), ...(dataset.psdAssetPaths ?? [])])]);
-  const psdAssetPaths = filterLegacyProjectAssetPaths([
-    ...new Set([...(dataset.psdAssetPaths ?? []), ...getPsdAssetPaths(assetPaths)]),
-  ]);
+  const { parentPath: _parentPath, filePath: _filePath, assetIds: _assetIds, assetPaths: _assetPaths,
+    psdAssetPaths: _psdAssetPaths, overwriteCaptions: _overwriteCaptions, captionOverrides: _captionOverrides, ...current } = dataset;
   return {
     ...current,
-    assetIds,
-    assetPaths,
-    psdAssetPaths,
-    assetOrder: normalizeDatasetAssetOrder(dataset.assetOrder, assetIds, assetPaths),
+    assetOrder: [...new Set(dataset.assetOrder ?? [])],
   };
 };
 
@@ -79,11 +71,7 @@ interface ProjectStore extends ProjectState {
   getSourceImages: () => SourceImage[];
 
   // Datasets
-  createDataset: (name?: string) => Dataset;
-  upsertDataset: (dataset: Dataset) => void;
-  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'parentPath' | 'filePath' | 'triggerWord' | 'assetIds' | 'assetPaths' | 'psdAssetPaths' | 'assetOrder'>>) => void;
-  removeDataset: (id: string) => void;
-  addAssetsToDataset: (id: string, assetIds: string[]) => void;
+  updateDataset: (id: string, updates: Partial<Pick<Dataset, 'name' | 'triggerWord' | 'assetOrder'>>) => void;
   
   // Edited image variants
   addDatasetItem: (item: EditedAsset) => void;
@@ -149,12 +137,18 @@ export const useProjectStore = create<ProjectStore>()(
             const fallbackDataset = Object.values(legacyDatasets ?? {})[0] ?? createDataset(project.name);
             const legacyDatasetState = (project.dataset ?? fallbackDataset) as LegacyDatasetState;
             const dataset = normalizeDataset(legacyDatasetState);
+            const legacyDatasetForCaption = {
+              ...dataset,
+              assetIds: legacyDatasetState.assetIds ?? [],
+              assetPaths: legacyDatasetState.assetPaths ?? [],
+              psdAssetPaths: legacyDatasetState.psdAssetPaths ?? [],
+            };
             const migrated = project.captionMigration ? null : migrateLegacyCaptions({
               legacy: legacyDatasetState,
-              dataset,
+              dataset: legacyDatasetForCaption,
               sourceImages: project.sourceImages ?? {},
               datasetItems: supportedDatasetItems,
-              pathAssets: [...dataset.assetPaths, ...dataset.psdAssetPaths].map((path) => ({ path, available: false })),
+              pathAssets: [...legacyDatasetForCaption.assetPaths, ...legacyDatasetForCaption.psdAssetPaths].map((path) => ({ path, available: false })),
             });
             return {
               ...defaults,
@@ -261,15 +255,9 @@ export const useProjectStore = create<ProjectStore>()(
             const remainingDatasetItems = Object.fromEntries(
               Object.entries(state.datasetItems).filter(([, item]) => item.sourceImageId !== id)
             );
-            const assetIds = state.dataset.assetIds.filter((assetId) => assetId !== id);
             const dataset = {
               ...state.dataset,
-              assetIds,
-              assetOrder: normalizeDatasetAssetOrder(
-                (state.dataset.assetOrder ?? []).filter((key) => key !== createDatasetImageAssetKey(id)),
-                assetIds,
-                state.dataset.assetPaths
-              ),
+              assetOrder: (state.dataset.assetOrder ?? []).filter((key) => key !== `image:${id}`),
               updatedAt: new Date(),
             };
             void dbDelete(OBJECT_STORES.SOURCE_IMAGES, id);
@@ -322,80 +310,22 @@ export const useProjectStore = create<ProjectStore>()(
         
         getSourceImages: () => Object.values(get().sourceImages),
 
-        createDataset: () => get().dataset,
-
-        upsertDataset: (dataset) =>
-          set((state) => ({
-            ...state,
-            dataset: normalizeDataset({ ...dataset, id: 'global' }),
-            lastModified: new Date(),
-          })),
-
         updateDataset: (_id, updates) =>
           set((state) => {
             const dataset = state.dataset;
-
-            const assetIds = updates.assetIds ? [...new Set(updates.assetIds)] : dataset.assetIds;
-            const assetPaths = updates.assetPaths
-              ? filterLegacyProjectAssetPaths([...new Set(updates.assetPaths)])
-              : filterLegacyProjectAssetPaths(dataset.assetPaths);
-            const psdAssetPaths = updates.psdAssetPaths
-              ? filterLegacyProjectAssetPaths([...new Set(updates.psdAssetPaths)])
-              : updates.assetPaths
-                ? getPsdAssetPaths(updates.assetPaths)
-                : filterLegacyProjectAssetPaths(dataset.psdAssetPaths);
-            const normalizedPsdAssetPaths = filterLegacyProjectAssetPaths([
-              ...new Set([...psdAssetPaths, ...getPsdAssetPaths(assetPaths)]),
-            ]);
-
             return {
               ...state,
               dataset: {
                 ...dataset,
                 ...updates,
                 id: 'global',
-                assetIds,
-                assetPaths,
-                psdAssetPaths: normalizedPsdAssetPaths,
-                assetOrder: normalizeDatasetAssetOrder(updates.assetOrder ?? dataset.assetOrder, assetIds, assetPaths),
+                assetOrder: [...new Set(updates.assetOrder ?? dataset.assetOrder)],
                 updatedAt: new Date(),
               },
               lastModified: new Date(),
             };
           }),
 
-        removeDataset: () => undefined,
-
-        addAssetsToDataset: (_id, assetIds) =>
-          set((state) => {
-            const dataset = state.dataset;
-            const existingAssetIds = new Set(Object.keys(state.sourceImages));
-            const nextAssetIds = [
-              ...new Set([
-                ...dataset.assetIds,
-                ...assetIds.filter((assetId) => existingAssetIds.has(assetId)),
-              ]),
-            ];
-            const nextAssetOrder = normalizeDatasetAssetOrder(
-              [
-                ...(dataset.assetOrder ?? []),
-                ...nextAssetIds.map(createDatasetImageAssetKey),
-              ],
-              nextAssetIds,
-              dataset.assetPaths
-            );
-            return {
-              ...state,
-              dataset: {
-                ...dataset,
-                assetIds: nextAssetIds,
-                assetOrder: nextAssetOrder,
-                updatedAt: new Date(),
-              },
-              lastModified: new Date(),
-            };
-          }),
-        
         addDatasetItem: (item: EditedAsset) =>
           set((state) => {
             void dbPut(OBJECT_STORES.DATASET_ITEMS, stripEditedAssetPreviewUrl(item));

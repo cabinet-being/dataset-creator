@@ -168,7 +168,7 @@ type AnalysisToolProps = {
   onOpenAssetContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
   onAutoAssemble?: () => void;
   onUpdateDataset?: (
-    updates: Partial<Pick<Dataset, 'assetIds' | 'assetOrder'>>
+    updates: Partial<Pick<Dataset, 'assetOrder'>>
   ) => void | Promise<void>;
 };
 

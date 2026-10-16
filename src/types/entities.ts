@@ -124,12 +124,7 @@ export interface TaggingConfig {
 export interface Dataset {
   id: string;
   name: string;
-  parentPath: string;
-  filePath?: string;
   triggerWord: string;
-  assetIds: string[];
-  assetPaths: string[];
-  psdAssetPaths: string[];
   assetOrder: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -179,6 +174,7 @@ export interface ProjectState {
   taggingConfig: TaggingConfig;
   workspaceSettings: WorkspaceSettings;
   captionMigration?: import('../services/caption/captionMigrationService').CaptionMigrationReport;
+  datasetMigration?: import('../services/project/legacyDatasetMigrationService').LegacyDatasetMigrationReport;
   lastModified: Date;
   createdAt: Date;
 }
@@ -274,11 +270,7 @@ export const createCleanupOverlay = (imageId: string): CleanupOverlay => ({
 export const createDataset = (name = 'New Dataset'): Dataset => ({
   id: 'global',
   name,
-  parentPath: 'Project',
   triggerWord: '',
-  assetIds: [],
-  assetPaths: [],
-  psdAssetPaths: [],
   assetOrder: [],
   createdAt: new Date(),
   updatedAt: new Date(),

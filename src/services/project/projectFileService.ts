@@ -14,8 +14,9 @@ import type {
 } from '../../types';
 import { getAssetManifestName, PROJECT_MANIFEST_NAME } from './assetManifestService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
-import { createDatasetManifest, type DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
+import type { DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
 import { migrateLegacyCaptions } from '../caption/captionMigrationService';
+import type { LegacyDatasetMigrationReport } from './legacyDatasetMigrationService';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -95,7 +96,7 @@ type DatasetManifest = {
 
 type ProjectFileManifest = {
   format: 'dataset-creator-project';
-  version: 1 | 2 | 3 | 4 | 5;
+  version: 1 | 2 | 3 | 4 | 5 | 6;
   project: {
     id: string;
     name: string;
@@ -109,6 +110,14 @@ type ProjectFileManifest = {
     sourceImageManifests?: Record<string, string>;
     editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
+    dataset?: {
+      name: string;
+      triggerWord: string;
+      assetOrder: string[];
+      createdAt: string;
+      updatedAt: string;
+    };
+    datasetMigration?: LegacyDatasetMigrationReport;
     cleanupOverlays?: {};
     toolState?: Record<string, unknown>;
     captionMigration?: ProjectState['captionMigration'];
@@ -323,7 +332,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
 
   const manifest: ProjectFileManifest = {
     format: 'dataset-creator-project',
-    version: 5,
+    version: 6,
     project: {
       id: project.id,
       name: project.name,
@@ -333,6 +342,14 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       editedAssetManifests,
       taggingConfig: serializeTaggingConfig(project.taggingConfig),
       workspaceSettings: project.workspaceSettings,
+      dataset: {
+        name: project.dataset.name,
+        triggerWord: project.dataset.triggerWord,
+        assetOrder: project.dataset.assetOrder,
+        createdAt: toIsoString(project.dataset.createdAt, exportedAt),
+        updatedAt: toIsoString(project.dataset.updatedAt, exportedAt),
+      },
+      datasetMigration: project.datasetMigration,
       captionMigration: project.captionMigration,
       lastModified: toIsoString(project.lastModified, exportedAt),
       createdAt: toIsoString(project.createdAt, exportedAt),
@@ -340,7 +357,6 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   };
 
   zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-  zip.file('dataset.json', JSON.stringify(createDatasetManifest(project), null, 2));
   return zip.generateAsync({ type: 'blob', mimeType: PROJECT_FILE_MIME_TYPE });
 };
 
@@ -417,7 +433,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
   }
 
   const manifest = JSON.parse(await manifestFile.async('string')) as ProjectFileManifest;
-  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3, 4, 5].includes(manifest.version)) {
+  if (manifest.format !== 'dataset-creator-project' || ![1, 2, 3, 4, 5, 6].includes(manifest.version)) {
     throw new Error('Unsupported project file');
   }
 
@@ -562,6 +578,8 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     currentTool,
     taggingConfig,
     workspaceSettings,
+    dataset: datasetSettings,
+    datasetMigration,
     ...projectMetadata
   } = manifest.project;
   const projectRecord = manifest.project as Record<string, unknown>;
@@ -581,26 +599,29 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
   );
   const dataset = {
     ...defaultDataset,
-    name: restoredDataset?.name ?? defaultDataset.name,
-    triggerWord: restoredDataset?.triggerWord ?? defaultDataset.triggerWord,
-    assetIds: restoredDataset?.assetIds ?? defaultDataset.assetIds,
-    assetPaths: restoredDataset?.assetPaths ?? defaultDataset.assetPaths,
-    psdAssetPaths: globalDatasetManifest?.psdAssetPaths ?? defaultDataset.psdAssetPaths,
-    assetOrder: restoredDataset?.assetOrder ?? defaultDataset.assetOrder,
-    createdAt: globalDatasetManifest?.createdAt ? new Date(globalDatasetManifest.createdAt) : defaultDataset.createdAt,
-    updatedAt: globalDatasetManifest?.updatedAt ? new Date(globalDatasetManifest.updatedAt) : defaultDataset.updatedAt,
+    name: datasetSettings?.name ?? restoredDataset?.name ?? defaultDataset.name,
+    triggerWord: datasetSettings?.triggerWord ?? restoredDataset?.triggerWord ?? defaultDataset.triggerWord,
+    assetOrder: datasetSettings?.assetOrder ?? restoredDataset?.assetOrder ?? defaultDataset.assetOrder,
+    createdAt: datasetSettings?.createdAt ? new Date(datasetSettings.createdAt) : globalDatasetManifest?.createdAt ? new Date(globalDatasetManifest.createdAt) : defaultDataset.createdAt,
+    updatedAt: datasetSettings?.updatedAt ? new Date(datasetSettings.updatedAt) : globalDatasetManifest?.updatedAt ? new Date(globalDatasetManifest.updatedAt) : defaultDataset.updatedAt,
   };
   const storedCaptionMigration = manifest.project.captionMigration;
+  const legacyDatasetForCaption = {
+    ...dataset,
+    assetIds: restoredDataset?.assetIds ?? [],
+    assetPaths: restoredDataset?.assetPaths ?? [],
+    psdAssetPaths: globalDatasetManifest?.psdAssetPaths ?? [],
+  };
   const migration = storedCaptionMigration ? { sourceImages, datasetItems, report: storedCaptionMigration } : migrateLegacyCaptions({
     legacy: {
       overwriteCaptions: globalDatasetManifest?.overwriteCaptions,
       captionOverrides: globalDatasetManifest?.captionOverrides,
       triggerWord: dataset.triggerWord,
     },
-    dataset,
+    dataset: legacyDatasetForCaption,
     sourceImages,
     datasetItems,
-    pathAssets: [...dataset.assetPaths, ...dataset.psdAssetPaths].map((path) => ({ path, available: false })),
+    pathAssets: [...legacyDatasetForCaption.assetPaths, ...legacyDatasetForCaption.psdAssetPaths].map((path) => ({ path, available: false })),
   });
 
   return {
@@ -609,6 +630,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     sourceImages: migration.sourceImages,
     datasetItems: migration.datasetItems,
     dataset,
+    datasetMigration,
     captionMigration: migration.report,
     cleanupOverlays: {},
     currentTool: restoredCurrentTool,
