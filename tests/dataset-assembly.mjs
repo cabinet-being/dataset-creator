@@ -72,10 +72,23 @@ try {
   const metrics = coverage.measureCoverage([assembly.coverageAsset?.(baseline) ?? { key: 'front', feature: baseline.feature }], [{ key: 'front', feature: baseline.feature }, { key: 'back', feature: back.feature }]);
   assert.ok(metrics.total > 0 && metrics.total < 1);
   const datasetForAssembly = { ...dataset, id: 'global' };
-  const plan = await assembly.assembleDataset({ projectId: 'project', projectType: 'character', dataset: datasetForAssembly, baseline: [baseline], candidates: [similarFront, backDuplicate, back], mode: { kind: 'limit', limit: 2 } });
+  const plan = await assembly.assembleDataset({ projectId: 'project', projectType: 'character', dataset: datasetForAssembly, baseline: [baseline], candidates: [similarFront, backDuplicate, back], mode: { kind: 'max-new', maxNew: 2 } });
   assert.equal(plan.selected[0].path, 'Project/src/shared/back.png', 'a missing view should beat a near-duplicate portrait');
-  assert.deepEqual(plan.rejectedDuplicates, ['src/shared/z-back-copy.png']);
+  assert.deepEqual(plan.rejectedDuplicates.sort(), ['src/shared/front-2.png','src/shared/z-back-copy.png']);
+  assert.equal(plan.duplicatePairs.find(pair => pair.rejected === 'src/shared/front-2.png')?.kind, 'near');
+  assert.ok(plan.funnel.evaluated >= plan.funnel.eligible, 'all eligible candidates are evaluated before a selection');
   assert.ok(plan.after.total > plan.before.total);
+  assert.ok(plan.selected.every((step,index) => index === 0 || step.coverage.total >= plan.selected[index-1].coverage.total), 'coverage must be monotonic');
+  const totalPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[back],mode:{kind:'total',target:2}});
+  assert.equal(totalPlan.selected.length,1); assert.equal(totalPlan.stoppedBecause,'target-reached'); assert.equal(totalPlan.shortfall,0);
+  const shortPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[back],mode:{kind:'range',min:4,max:6}});
+  assert.equal(shortPlan.shortfall,2); assert.equal(shortPlan.stoppedBecause,'insufficient-pool');
+  const textBait = assemblyItem('Project/src/shared/text-bait.png', feature('bait',[0.999,0.001],'perfect requested caption',['front']));
+  const textPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[textBait,back],mode:{kind:'max-new',maxNew:2},target:'perfect requested caption'});
+  assert.equal(textPlan.selected.some(step => step.path.endsWith('text-bait.png')),false,'caption relevance cannot bypass visual near-duplicate rejection');
+  const fingerprintA = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{target:'one',mode:{kind:'auto'},pinnedKeys:new Set()});
+  const fingerprintB = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{target:'one',mode:{kind:'auto'},pinnedKeys:new Set(['src/shared/back.png'])});
+  assert.notEqual(fingerprintA,fingerprintB,'pins invalidate an assembly preview');
   const sourceRecord = { outside: { id:'outside', originalFilePath:'private/outside.png', tags:['original'] }, group: { id:'group', originalFilePath:'src/shared/group.png', tags:['source'] } };
   const editedRecord = { crop: { id:'crop', sourceImageId:'group', imageDataPath:'src/shared/crop.png', tags:['crop'], deleted:false } };
   const migratedCaptions = migration.migrateLegacyCaptions({
