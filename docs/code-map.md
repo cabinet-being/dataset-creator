@@ -4,6 +4,7 @@
 
 | Потрібна поведінка | Де вже реалізована | Що перевикористати |
 | --- | --- | --- |
+| Перевірка документації | `scripts/check-docs.mjs`, `tests/docs-checker.mjs` | `checkDocs`, локальні посилання, шляхи та npm-команди |
 | Назви, іконки, scopes інструментів | `src/lib/toolDefinitions.ts`, `src/lib/constants.ts` | `TOOL_DEFINITIONS`, похідні labels/slugs |
 | Типи проєктів і початкові значення | `src/lib/projectProfiles.ts`, `src/types/entities.ts` | Профілі та фабрики сутностей |
 | Єдиний список ресурсів | `src/lib/workspaceImages.ts` | `toWorkspaceImages`, `toWorkspaceReviewAssets`, нормалізація шляхів |

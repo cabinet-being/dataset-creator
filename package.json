@@ -17,7 +17,8 @@
     "test:service-boundaries": "node tests/service-boundaries.mjs",
     "test:state-recovery": "node tests/state-recovery.mjs",
     "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery",
-    "test:ci": "npm test && npm run build && npm run test:browser-fixtures"
+    "test:ci": "npm run test:docs && npm test && npm run build && npm run test:browser-fixtures",
+    "test:docs": "node tests/docs-checker.mjs && node scripts/check-docs.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.1",

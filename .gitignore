@@ -30,3 +30,23 @@ dist-ssr
 
 # Build outputs
 *.tsbuildinfo
+
+# Local planning and scratch files (keep shared AGENTS.md and docs tracked)
+/plan.md
+/tmp/
+*.tmp
+*.bak
+*~
+
+# Test reports and tool caches
+/coverage/
+/.nyc_output/
+/playwright-report/
+/test-results/
+/.cache/
+/.vite/
+
+# Local environment variants; safe templates may be committed
+.env.*
+!.env.example
+!.env.*.example

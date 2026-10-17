@@ -6,14 +6,16 @@ DatasetCreator збирається як статичний сайт. Для о�
 
 [Workflow](.github/workflows/deploy-pages.yml) запускається на push до `main` або вручну через `workflow_dispatch`:
 
-1. Checkout і встановлення Node 20.
-2. `npm ci` та `npm run build`.
+1. Виклик спільного Tests workflow: перевірка документації, регресійні тести, TypeScript і збірки.
+2. Після успіху Tests — окремий checkout, `npm ci` та чистий `npm run build`.
 3. Завантаження `dist/` як Pages artifact.
 4. Deploy через `actions/deploy-pages`.
 
+Обидва workflow читають версію Node з `.nvmrc` (22.22.1). Build має `needs: tests`, а deploy — `needs: build`: помилка перевірки блокує публікацію цього запуску, включно з ручним запуском.
+
 У налаштуваннях репозиторію Pages джерелом має бути **GitHub Actions**. Конфігурація розрахована на адресу `https://timcixo.github.io/DatasetCreator/`; це опис цілі, а не перевірка доступності опублікованого сайту.
 
-Тестовий [workflow](.github/workflows/tests.yml) використовує Node 22.22.1 і запускає `npm run test:ci`. Він працює окремо: Pages не чекає його успіху через `needs`. Якщо потрібне обов’язкове блокування публікації тестами, це слід окремо реалізувати у workflow або правилах репозиторію.
+Тестовий [workflow](.github/workflows/tests.yml) підтримує `workflow_call` і запускає `npm run test:ci` для тієї самої ревізії, що збирається для Pages. Він також запускається самостійно на push і pull request. Це може створювати два тестові запуски на push до `main`, але gate публікації завжди належить конкретному Pages-запуску.
 
 ## Base path і локальна перевірка
 
@@ -26,7 +28,7 @@ npm run build
 npm run preview
 ```
 
-Повторний build тут потрібен, щоб отримати чистий deployment-каталог після `test:ci`: компіляція тестових стендів додає `dist/browser-fixtures/`. У Pages цього немає, бо він виконує лише production build.
+Повторний build тут потрібен, щоб отримати чистий deployment-каталог після `test:ci`: компіляція тестових стендів додає `dist/browser-fixtures/`. У Pages фінальна збірка виконується в окремому job після перевірок, тому тестові стенди не потрапляють до опублікованого artifact.
 
 Перевірте відкриття сторінки під base path, завантаження ресурсів і доступ до локальної папки. Для браузерних API використовуйте localhost або HTTPS. `public/.nojekyll` вимикає обробку Pages через Jekyll; `dist/` ігнорується Git.
 

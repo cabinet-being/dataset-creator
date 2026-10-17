@@ -57,7 +57,7 @@ npm test
 npm run build
 ```
 
-`npm run test:ci` запускає сім наборів тестів, перевірку TypeScript, production-збірку та компіляцію браузерних стендів. Це не автоматичний запуск UI-сценаріїв у браузері. Команда `lint` оголошена, але ESLint і його конфігурація не налаштовані.
+`npm run test:ci` перевіряє документацію, запускає сім наборів регресійних тестів, перевірку TypeScript, production-збірку та компіляцію браузерних стендів. Це не автоматичний запуск UI-сценаріїв у браузері. Команда `lint` оголошена, але ESLint і його конфігурація не налаштовані.
 
 Стек: React 18, TypeScript, Vite, Zustand, Tailwind CSS, Radix UI, JSZip, Mediabunny та ONNX Runtime Web. Точні версії залежностей — у `package-lock.json`.
 
