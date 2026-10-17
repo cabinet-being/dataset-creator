@@ -179,8 +179,9 @@ export const FinalReviewTool = ({
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const dataset = useProjectStore((state) => state.dataset);
   const projectId = useProjectStore((state) => state.id);
-  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
-  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
+  const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const cleanupToolState = useProjectStore(
     (state) =>

@@ -928,8 +928,9 @@ export const AnalysisTool = ({
 }: AnalysisToolProps = {}) => {
   const controlId = useId();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
-  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
+  const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
   const cleanupToolState = useProjectStore(
     (state) =>

@@ -10,6 +10,7 @@ import { useUIStore } from '../src/stores/useUIStore';
 import '../src/index.css';
 import { checkExplorerMarquee } from './explorer-marquee-checks';
 import { checkDatasetFolder } from './dataset-folder-checks';
+import { checkToolRendering } from './tool-render-checks';
 
 // Mount the actual App against disposable OPFS files. No directory picker or
 // user-selected folder is involved; normal App selection/rename/save code runs.
@@ -50,6 +51,11 @@ function Harness() {
         try { setChecks(await checkDatasetFolder()); } catch (cause) { setError(String(cause)); }
         finally { setBusy(false); }
       }}>Run Dataset folder regressions</button>
+      <button disabled={busy} onClick={async () => {
+        setBusy(true);
+        try { setChecks(await checkToolRendering()); } catch (cause) { setError(String(cause)); }
+        finally { setBusy(false); }
+      }}>Run tool render regressions</button>
       {checks && <p role="status">{checks}</p>}
       {error && <p role="alert">{error}</p>}
     </main>;

@@ -21,8 +21,9 @@ import { isProjectPathIncluded } from '../../lib/projectCategories';
 export const SimilarityReviewTool = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
-  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
-  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
+  const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const softDeleteDatasetItem = useProjectStore((state) => state.softDeleteDatasetItem);
   const { addNotification } = useUIStore();

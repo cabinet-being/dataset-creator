@@ -91,8 +91,9 @@ export const CleanupTool = ({
   const rootRef = useRef<HTMLDivElement>(null);
   const writeOperation = useOperation('Save edited image', rootRef, 'tool:clean');
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
-  const excludedProjectCategories = useProjectStore((state) => state.workspaceSettings.excludedProjectCategories ?? []);
-  const includedProjectCategories = useProjectStore((state) => state.workspaceSettings.includedProjectCategories ?? []);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
+  const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const editedAssetsById = useProjectStore((state) => state.datasetItems);
   const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
@@ -140,7 +141,7 @@ export const CleanupTool = ({
   );
   useEffect(() => {
     let disposed = false;
-    if (!projectDirectoryHandle || singleFileMode) { setProjectPsdPaths([]); return; }
+    if (!projectDirectoryHandle || singleFileMode) { setProjectPsdPaths(paths => paths.length ? [] : paths); return; }
     void collectWorkspaceFileAssets(projectDirectoryHandle).then((assets) => {
       const registeredPsdPaths = new Set(Object.values(editedAssetsById).map((item) => item.psdDataPath).filter((path): path is string => Boolean(path)).map((path) => path.startsWith('Project/') ? path : `Project/${path}`));
       if (!disposed) setProjectPsdPaths(assets.filter((asset) => asset.kind === 'psd' && !registeredPsdPaths.has(asset.path) && isProjectPathIncluded(asset.path, excludedProjectCategories, includedProjectCategories)).map((asset) => asset.path));

@@ -15,8 +15,9 @@ export function ExportTool({ active = true }: { active?: boolean }) {
   const edits = useProjectStore(state => state.datasetItems);
   const dataset = useProjectStore(state => state.dataset);
   const blacklist = useProjectStore(state => state.taggingConfig.blacklist);
-  const excludedProjectCategories = useProjectStore(state => state.workspaceSettings.excludedProjectCategories ?? []);
-  const includedProjectCategories = useProjectStore(state => state.workspaceSettings.includedProjectCategories ?? []);
+  const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
+  const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const directory = useUIStore(state => state.projectDirectoryHandle);
   const refresh = useUIStore(state => state.assetPreviewRefreshKey);
   const notify = useUIStore(state => state.addNotification);
