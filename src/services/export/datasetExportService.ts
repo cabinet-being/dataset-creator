@@ -8,7 +8,6 @@ import type { OperationLogger } from '../logging/applicationLog';
 type DatasetAssetMetadata = {
   tags?: string[];
   caption?: string;
-  excludedFromDataset?: boolean;
 };
 
 export type DatasetExportAsset = {
@@ -16,7 +15,6 @@ export type DatasetExportAsset = {
   sourcePath: string;
   targetDirectory: string;
   tags: string[];
-  excludedFromDataset?: boolean;
 };
 
 const getPathParts = (path: string) => path.split('/').filter(Boolean);
@@ -64,7 +62,6 @@ const collectDatasetAssets = async (
       sourcePath: joinPath(relativeDirectory, name),
       targetDirectory: getExportDirectory(relativeDirectory),
       tags,
-      excludedFromDataset: metadata.excludedFromDataset,
     });
   }
   return assets;

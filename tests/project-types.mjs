@@ -22,7 +22,7 @@ try {
   const { createProjectFileBlob, readProjectFile } = await import(pathToFileURL(join(temp, 'projectFileService.mjs')));
   const { useProjectStore } = await import(pathToFileURL(join(temp, 'useProjectStore.mjs')));
   const { useUIStore } = await import(pathToFileURL(join(temp, 'useUIStore.mjs')));
-  const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
+  const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
   const { DATASET_MANIFEST_FILE, REQUIRED_PROJECT_DIRECTORIES, readDatasetManifest } = await import(pathToFileURL(join(temp, 'projectLayoutService.mjs')));
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
@@ -497,6 +497,62 @@ try {
     const removed = await removeItemsFromDatasetFolder(root,[{...item,assetPath:'Project/dataset/physical.psd'}]);
     assert.equal(removed.completed.length,1);
     assert.equal(await (await (await shared.getFileHandle('physical.psd')).getFile()).text(),'pixels');
+  }
+  // Migrate old flags into physical moves, preserving identity/captions even
+  // if the project-manifest checkpoint fails after the file has moved.
+  for (const interrupt of [false,true]) {
+    const root=directory();
+    const source={...createSourceImage(new Blob(['legacy pixels'],{type:'image/png'}),'legacy.png',32,24),
+      originalFilePath:'dataset/legacy.png',manifestPath:'dataset/legacy.png.manifest.json',tags:['legacy caption']};
+    const project={...createProject('Legacy exclusions','character'),sourceImages:{[source.id]:source}};
+    await createProjectDirectory(root,project);
+    const archive=await JSZip.loadAsync(await (await createProjectFileBlob({...project,sourceImages:{[source.id]:{...source,originalFile:await source.originalFile.arrayBuffer()}}})).arrayBuffer());
+    const archiveMetadata=JSON.parse(await archive.file(source.manifestPath).async('string'));
+    archive.file(source.manifestPath,JSON.stringify({...archiveMetadata,excludedFromDataset:true}));
+    archive.file('src/shared/legacy.png','unrelated archive file');
+    const restoredArchive=await readProjectFile(await archive.generateAsync({type:'nodebuffer'}));
+    assert.equal(restoredArchive.sourceImages[source.id].originalFilePath,'src/shared/legacy 2.png','Old ZIP exclusions are materialized as shared paths too');
+    assert.equal(await restoredArchive.sourceImages[source.id].originalFile.text(),'legacy pixels');
+    const newArchive=await JSZip.loadAsync(await (await createProjectFileBlob({...restoredArchive,sourceImages:{[source.id]:{...restoredArchive.sourceImages[source.id],originalFile:await restoredArchive.sourceImages[source.id].originalFile.arrayBuffer()}}})).arrayBuffer());
+    assert.equal(newArchive.file('dataset/legacy.png'),null);
+    assert.equal(await newArchive.file('src/shared/legacy 2.png').async('string'),'legacy pixels');
+    const data=await root.getDirectoryHandle('dataset');
+    const shared=await (await root.getDirectoryHandle('src')).getDirectoryHandle('shared');
+    await shared.getFileHandle('legacy.png',{create:true}); // Existing file must survive the collision.
+    const meta=await data.getFileHandle('legacy.png.manifest.json');
+    const parsed=JSON.parse(await (await meta.getFile()).text());
+    const writer=await meta.createWritable(); await writer.write(JSON.stringify({...parsed,excludedFromDataset:true})); await writer.close();
+    const captionWriter=await (await data.getFileHandle('legacy.txt',{create:true})).createWritable(); await captionWriter.write('legacy caption'); await captionWriter.close();
+    const projectManifest=await root.getFileHandle('manifest.json');
+    const writable=projectManifest.createWritable;
+    if (interrupt) {
+      projectManifest.createWritable=async()=>{throw new Error('checkpoint denied');};
+      await assert.rejects(readProjectDirectory(root),/checkpoint denied/);
+      projectManifest.createWritable=writable;
+    }
+    const migrated=await readProjectDirectory(root);
+    const moved=migrated.sourceImages[source.id];
+    assert.equal(moved.originalFilePath,'src/shared/legacy 2.png');
+    assert.equal(await moved.originalFile.text(),'legacy pixels');
+    assert.deepEqual(moved.tags,['legacy caption']);
+    assert.equal(await (await (await shared.getFileHandle('legacy 2.txt')).getFile()).text(),'legacy caption');
+    assert.equal('excludedFromDataset' in moved,false);
+    await assert.rejects(data.getFileHandle('legacy.png'),{name:'NotFoundError'});
+    assert.equal((await readProjectDirectory(root)).sourceImages[source.id].originalFilePath,moved.originalFilePath,'Migration is idempotent');
+    useProjectStore.getState().loadProject(migrated);
+    // Node filesystem tests isolate IndexedDB; browser checks exercise the real store.
+    const updateSource=useProjectStore.getState().updateSourceImage;
+    useProjectStore.setState({updateSourceImage:(id,updates)=>useProjectStore.setState(state=>({sourceImages:{...state.sourceImages,[id]:{...state.sourceImages[id],...updates}}}))});
+    useUIStore.getState().setProjectDirectory({handle:root,name:project.name});
+    const item={id:`source:${source.id}`,sourceImageId:source.id,kind:'image',fileName:'legacy 2.png',assetPath:'Project/src/shared/legacy 2.png',imageData:moved.originalFile,width:32,height:24,tags:moved.tags,aspectRatio:'1:1'};
+    await data.getFileHandle('legacy 2.png',{create:true});
+    const added=await addItemsToDatasetFolder(root,[item]);
+    assert.equal(added.completed.length,1); assert.notEqual(added.completed[0].to,'Project/dataset/legacy 2.png');
+    const reversed=await reverseDatasetFolderChanges(root,added.completed);
+    assert.equal(reversed[0].to,item.assetPath,'Undo restores the original filename after a collision');
+    const redone=await reverseDatasetFolderChanges(root,reversed);
+    assert.equal(redone[0].to,added.completed[0].to,'Redo restores the actual Dataset destination');
+    useProjectStore.setState({updateSourceImage:updateSource});
   }
   const versionOne = await createProjectVersion(layoutDirectory, 'v1');
   const addedWritable = await (await datasetDirectory.getFileHandle('later.txt', { create: true })).createWritable();

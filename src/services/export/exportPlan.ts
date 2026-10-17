@@ -37,17 +37,13 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
   if (scope === 'directory' || scope === 'dataset') {
     if (!directory) throw new Error('Open a project folder first.');
     for (const asset of await getProjectDatasetAssets(directory)) {
-      if (asset.excludedFromDataset) plan.skipped.push(`${asset.sourcePath} · excluded`);
-      else {
-        const psd = /\.psd$/i.test(asset.sourcePath);
-        add(asset.file, asset.sourcePath, resolveAssetCaption({ id:`asset:${asset.sourcePath}`, sourceImageId:'', assetPath:asset.sourcePath, tags:asset.tags }, dataset.triggerWord).tags,
-          asset.sourcePath, asset.targetDirectory, psd ? 'psd' : undefined);
-      }
+      const psd = /\.psd$/i.test(asset.sourcePath);
+      add(asset.file, asset.sourcePath, resolveAssetCaption({ id:`asset:${asset.sourcePath}`, sourceImageId:'', assetPath:asset.sourcePath, tags:asset.tags }, dataset.triggerWord).tags,
+        asset.sourcePath, asset.targetDirectory, psd ? 'psd' : undefined);
     }
   } else {
     const selected = items;
     for (const item of selected) {
-      if (item.excludedFromDataset) { plan.skipped.push(`${item.fileName} · excluded`); continue; }
       if (item.kind === 'video') { plan.skipped.push(`${item.fileName} · video; save frames before exporting`); continue; }
       add(item.kind === 'psd' ? item.psdData ?? item.imageData : item.imageData, item.fileName, item.tags ?? [], item.id, '', item.kind === 'psd' ? 'psd' : undefined);
     }

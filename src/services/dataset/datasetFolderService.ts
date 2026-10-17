@@ -13,6 +13,7 @@ import {
 } from '../project/explorerFileService';
 import { PROJECT_DATASET_DIRECTORY, PROJECT_SHARED_DIRECTORY } from '../project/projectLayoutService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
+import { clearLegacyExclusionAtPath } from '../project/legacyDatasetExclusionService';
 
 export const DATASET_EXPLORER_PATH = `Project/${PROJECT_DATASET_DIRECTORY}`;
 
@@ -90,7 +91,6 @@ const indexChanges = async (root: ProjectDirectoryHandle, changes: ExplorerPathC
     existingSourceImages: store.sourceImages,
     onAssetIndexed: ({ sourceImage }) => { if (sourceImage && !useProjectStore.getState().sourceImages[sourceImage.id]) useProjectStore.getState().addSourceImage(sourceImage); },
   });
-  useUIStore.getState().refreshAssetPreviews();
 };
 
 const moveItems = async (
@@ -100,28 +100,33 @@ const moveItems = async (
 ): Promise<DatasetFolderOperationResult> => {
   const result: DatasetFolderOperationResult = { operationId: crypto.randomUUID(), completed: [], unchanged: [], failed: [] };
   const projectId = useProjectStore.getState().id;
+  const recordMove = async (change: ExplorerPathChange) => {
+    if (useProjectStore.getState().id !== projectId || useUIStore.getState().projectDirectoryHandle !== root) throw new Error('The active project changed during the Dataset operation.');
+    result.completed.push(change);
+    updateRegisteredPaths([change]);
+    await clearLegacyExclusionAtPath(root,change.to);
+  };
   for (const item of items) {
     const sourcePath = item.assetPath ? normalizeWorkspaceAssetPath(item.assetPath) : undefined;
     if (sourcePath && (sourcePath === destinationPath || sourcePath.startsWith(`${destinationPath}/`))) {
       result.unchanged.push(sourcePath); continue;
     }
     try {
-      let change: ExplorerPathChange;
       if (sourcePath && await pathExists(root, sourcePath)) {
-        [change] = await moveExplorerEntries(root, [{ path: sourcePath, name: sourcePath.split('/').pop()!, kind: 'file' }], destinationPath);
+        await moveExplorerEntries(root, [{ path: sourcePath, name: sourcePath.split('/').pop()!, kind: 'file' }], destinationPath, recordMove);
       } else {
-        change = await writeUnsavedItem(root, item, destinationPath);
+        await recordMove(await writeUnsavedItem(root, item, destinationPath));
       }
-      if (useProjectStore.getState().id !== projectId || useUIStore.getState().projectDirectoryHandle !== root) throw new Error('The active project changed during the Dataset operation.');
-      result.completed.push(change);
-      updateRegisteredPaths([change]);
     } catch (error) {
       result.failed.push({ path: sourcePath ?? item.id, message: error instanceof Error ? error.message : String(error) });
       break;
     }
   }
-  await indexChanges(root, result.completed);
-  notifyPathMoves(result.completed);
+  if (useProjectStore.getState().id === projectId && useUIStore.getState().projectDirectoryHandle === root) {
+    try { await indexChanges(root, result.completed); }
+    catch (error) { result.failed.push({path:destinationPath,message:error instanceof Error ? error.message : String(error)}); }
+    finally { notifyPathMoves(result.completed); }
+  }
   return result;
 };
 
@@ -136,7 +141,7 @@ export const reverseDatasetFolderChanges = async (root: ProjectDirectoryHandle, 
   for (const change of [...changes].reverse()) {
     const sourcePath = change.to;
     const destination = change.from.split('/').slice(0, -1).join('/') || 'Project';
-    const [reversed] = await moveExplorerEntries(root, [{ path:sourcePath, name:sourcePath.split('/').pop()!, kind:'file' }], destination);
+    const [reversed] = await moveExplorerEntries(root, [{ path:sourcePath, name:change.from.split('/').pop()!, kind:'file' }], destination);
     completed.push(reversed);
     updateRegisteredPaths([reversed]);
   }

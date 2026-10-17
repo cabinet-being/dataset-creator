@@ -5,7 +5,7 @@ import { useUIStore } from '../stores/useUIStore';
 import { useHistoryStore } from '../stores/useHistoryStore';
 import { runProjectFileOperation } from '../hooks/useProjectSave';
 import { readExplorerFile, getExplorerFileKind } from '../services/project/explorerFileService';
-import { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, type DatasetFolderOperationResult } from '../services/dataset/datasetFolderService';
+import { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath, type DatasetFolderOperationResult } from '../services/dataset/datasetFolderService';
 
 const requireDirectory = () => {
   const directory = useUIStore.getState().projectDirectoryHandle;
@@ -62,15 +62,10 @@ export async function addDatasetReferences(references: { assetIds?: string[]; as
   return addItemsToDataset([...items, ...await resolvePathItems(references.assetPaths ?? [])]);
 }
 
-export function setAssetsExcluded(items: WorkspaceImage[], excluded: boolean) {
-  const store = useProjectStore.getState();
-  const targets = items.filter(item => item.kind === 'image' || item.kind === 'edited');
-  const apply = (restore: boolean) => { for (const item of targets) {
-    const value = restore ? item.excludedFromDataset ?? false : excluded;
-    if (item.kind === 'edited' && item.editedAssetId) store.updateDatasetItem(item.editedAssetId, { excludedFromDataset: value });
-    else store.updateSourceImage(item.sourceImageId, { excludedFromDataset: value });
-  } };
-  apply(false); if (targets.length) useHistoryStore.getState().push({ label: excluded ? 'Exclude from export' : 'Include in export', undo: () => apply(true), redo: () => apply(false) });
+export async function setAssetsDatasetMembership(items: WorkspaceImage[], included: boolean): Promise<void> {
+  const targets = items.filter(item => item.kind !== 'video' && isProjectDatasetPath(item.assetPath) !== included);
+  if (!targets.length) return;
+  await runProjectFileOperation(() => included ? addAssetsToDataset(targets) : removeAssetsFromDataset(targets));
 }
 
 export async function removeAssetsFromDataset(items: WorkspaceImage[]): Promise<void> {

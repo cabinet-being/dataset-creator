@@ -73,8 +73,8 @@ const getDatasetQuickActionLabel = (
 };
 
 const STATUS_LABELS: Record<ExportStatus, string> = {
-  active: 'Active',
-  inactive: 'Inactive',
+  active: 'In Dataset',
+  inactive: 'Outside Dataset',
 };
 
 const SORT_LABELS: Record<SortMode, string> = {
@@ -127,7 +127,6 @@ const ReviewCard = memo(
       item={item}
       previewUrl={previewUrl}
       className="gallery-masonry-item"
-      imageClassName={item.excludedFromDataset ? 'grayscale' : ''}
       onOpenContextMenu={onOpenContextMenu}
     >
       {quickActionLabel && onQuickAction ? (
@@ -142,11 +141,6 @@ const ReviewCard = memo(
         </button>
       ) : null}
 
-      {item.excludedFromDataset && !quickActionLabel && (
-        <div className="absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-medium text-white">
-          Inactive
-        </div>
-      )}
     </WorkspacePreviewCard>
   );
   }
@@ -455,13 +449,13 @@ export const FinalReviewTool = ({
   );
 
   const inactiveCount = useMemo(
-    () => items.filter((item) => item.excludedFromDataset).length,
+    () => items.filter((item) => !isProjectDatasetPath(item.assetPath)).length,
     [items]
   );
   const statusCounts = useMemo(
     () => ({
-      active: items.filter((item) => !item.excludedFromDataset).length,
-      inactive: items.filter((item) => item.excludedFromDataset).length,
+      active: items.filter((item) => isProjectDatasetPath(item.assetPath)).length,
+      inactive: items.filter((item) => !isProjectDatasetPath(item.assetPath)).length,
     }),
     [items]
   );
@@ -494,7 +488,7 @@ export const FinalReviewTool = ({
           selectedAspectRatios.has(item.aspectRatio) &&
           isReviewKind(item.kind) &&
           selectedKinds.has(item.kind) &&
-          selectedStatuses.has(item.excludedFromDataset ? 'inactive' : 'active');
+          selectedStatuses.has(!isProjectDatasetPath(item.assetPath) ? 'inactive' : 'active');
         }
       ),
     [captionFilter, datasetFilter, folderFilter, formatFilter, items, maximumBytes, maximumPixels, minimumBytes, minimumPixels, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses]
@@ -841,7 +835,7 @@ export const FinalReviewTool = ({
           ) : null}
           {inactiveCount > 0 && (
             <span className="ml-3 text-muted-foreground">
-              Inactive <span className="font-mono text-foreground">{inactiveCount}</span>
+              Outside Dataset <span className="font-mono text-foreground">{inactiveCount}</span>
             </span>
           )}
         </div>

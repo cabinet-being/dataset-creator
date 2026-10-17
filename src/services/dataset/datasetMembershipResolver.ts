@@ -13,7 +13,7 @@ export type DatasetMembershipResolution = {
 };
 
 export const isEffectiveDatasetImage = (item: WorkspaceImage): boolean =>
-  !item.deleted && !item.hidden && !item.excludedFromDataset && item.kind !== 'video' && Boolean(item.imageData);
+  item.kind !== 'video' && Boolean(item.imageData);
 
 export const resolveDatasetMembership = (
   _dataset: Dataset,

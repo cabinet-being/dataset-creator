@@ -38,7 +38,7 @@ try {
   assert.deepEqual(result.missingAssetIds, []);
   assert.deepEqual(result.missingAssetPaths, []);
   assert.equal(result.members.length, 5);
-  assert.equal(result.effective.length, 4);
+  assert.equal(result.effective.length, 5, 'Every physical Dataset image contributes to the baseline despite stale exclusion flags');
   assert.equal(caption.resolveLegacyDatasetCaption(dataset, outside).source, 'override');
   assert.equal(caption.resolveLegacyDatasetCaption(dataset, outside).text, '');
   assert.equal(caption.normalizeCaptionForAnalysis('Hero,  Back view\nCAPTION: ignored', 'hero'), 'back view');

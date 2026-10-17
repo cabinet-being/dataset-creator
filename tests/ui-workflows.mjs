@@ -396,15 +396,15 @@ try {
   const args = { scope: 'dataset', items: [a, b, excluded], dataset, directory:exportProject, blacklist: [' blocked '] };
   assert.equal(renderExportCaption(['Tag', 'tag', 'blocked', ''], 'Trigger', ['blocked']), 'Trigger, Tag');
   const plan = await buildExportPlan(args);
-  assert.deepEqual(plan.entries.map(entry => entry.imageName), ['same.jpg', 'same-2.png']);
-  assert.deepEqual(plan.entries.map(entry => entry.caption), ['Trigger, blue', 'Trigger, replacement']);
+  assert.deepEqual(plan.entries.map(entry => entry.imageName), ['excluded.png', 'same.jpg', 'same-2.png']);
+  assert.deepEqual(plan.entries.map(entry => entry.caption), ['Trigger, replacement', 'Trigger, blue', 'Trigger, replacement']);
   // Mutating source captions after preview cannot silently change the output.
   a.tags = ['changed after preview'];
   const zip = await JSZip.loadAsync(await (await exportPlanAsZip(plan)).arrayBuffer());
   const target = directory(); const progress = [];
   await exportPlanToDirectory(plan, target, undefined, (done, total) => progress.push([done, total]));
-  assert.deepEqual(progress, [[1, 2], [2, 2]]);
-  assert.deepEqual(Object.keys(zip.files).sort(), ['same-2.png', 'same-2.txt', 'same.jpg', 'same.txt']);
+  assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]]);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['excluded.png', 'excluded.txt', 'same-2.png', 'same-2.txt', 'same.jpg', 'same.txt']);
   for (const entry of plan.entries) {
     assert.deepEqual(await zip.file(entry.imageName).async('uint8array'), new Uint8Array(await entry.blob.arrayBuffer()));
     assert.equal(await zip.file(entry.textName).async('string'), `${entry.caption}\n`);
@@ -412,8 +412,8 @@ try {
   }
   const workspace = await buildExportPlan({ ...args, scope: 'workspace' });
   assert.equal(workspace.entries[0].caption, 'Trigger, changed after preview', 'Dataset and workspace export read the same asset-owned caption');
-  assert.equal(workspace.skipped.length, 1);
-  assert.equal((await buildExportPlan({ ...args, dataset: { ...dataset, assetIds: ['missing'] } })).entries.length,2,'Legacy membership cannot add or remove physical Dataset files');
+  assert.equal(workspace.skipped.length, 0, 'Explicit exports do not use legacy flags');
+  assert.equal((await buildExportPlan({ ...args, dataset: { ...dataset, assetIds: ['missing'] } })).entries.length,3,'Legacy membership cannot add or remove physical Dataset files');
   const collision = directory(); await write(collision, 'same.jpg', 'Keep me');
   await assert.rejects(exportPlanToDirectory(plan, collision), /already exists/);
   assert.equal(collision.files.size, 1, 'Preflight must not write earlier files before discovering a collision');
@@ -442,7 +442,7 @@ try {
   assert.equal(physical.entries.find(entry => entry.source === 'linked.jpg').caption, 'Trigger, disk tags');
   await write(data, 'linked.jpg.manifest.json', JSON.stringify({ excludedFromDataset: true }));
   const filtered = await buildExportPlan({ ...args, scope: 'directory', directory: root });
-  assert.equal(filtered.entries.length, 1); assert.equal(filtered.skipped.length, 1);
+  assert.equal(filtered.entries.length, 2, 'Physical folder membership overrides stale exclusion metadata'); assert.equal(filtered.skipped.length, 0);
   await write(data, 'linked.jpg.manifest.json', 'broken JSON');
   await assert.rejects(buildExportPlan({ ...args, scope: 'directory', directory: root }), SyntaxError);
   await assert.rejects(buildExportPlan({ ...args, scope: 'directory', directory: { getDirectoryHandle: async () => { throw new DOMException('Read denied', 'NotAllowedError'); } } }), /Read denied/);

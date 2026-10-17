@@ -68,6 +68,7 @@ import {
 } from './lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, invalidateWorkspaceFileAssetCache, updateWorkspaceFileAssetCache } from './lib/workspaceFileAssets';
 import { emptyExplorerChanges, findExplorerTreeNode, moveExplorerTreeNodes, replaceExplorerTreeNode, type ExplorerChanges } from './lib/explorerTreeUpdates';
+import { clearLegacyExclusionAtPath } from './services/project/legacyDatasetExclusionService';
 import {
   createProjectDirectory,
   clearProjectDirectory,
@@ -977,7 +978,6 @@ function App() {
           item.kind === 'image' &&
           Boolean(item.sourceImageId) &&
           !item.hidden &&
-          !item.excludedFromDataset &&
           tagCount > 0
         );
       })
@@ -1874,6 +1874,9 @@ function App() {
   const indexProjectWorkspaceAssets = async (save = true, paths?: string[], updateUi = true) => {
     if (!projectDirectoryHandle) {
       return;
+    }
+    for (const path of paths ?? []) {
+      if (isProjectDatasetPath(path)) await clearLegacyExclusionAtPath(projectDirectoryHandle,path);
     }
 
     await indexProjectAssets(projectDirectoryHandle, {

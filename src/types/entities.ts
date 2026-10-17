@@ -39,7 +39,6 @@ export interface SourceImage {
   hash?: string;
   tags?: string[];
   hidden?: boolean;
-  excludedFromDataset?: boolean;
   createdAt: Date;
 }
 
@@ -103,7 +102,6 @@ export interface EditedAsset {
   aspectRatio: AspectRatio;
   deleted: boolean;
   deletedAt?: Date;
-  excludedFromDataset?: boolean;
   createdAt: Date;
   exportOrder?: number;
 }

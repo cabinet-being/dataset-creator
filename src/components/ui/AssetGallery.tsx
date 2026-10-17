@@ -2,7 +2,9 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getWorkspaceDisplayName, type WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
-import { addAssetsToDataset, removeAssetsFromDataset, setAssetsExcluded } from '../../lib/assetActions';
+import { addAssetsToDataset, removeAssetsFromDataset, setAssetsDatasetMembership } from '../../lib/assetActions';
+import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
+import { useUIStore } from '../../stores/useUIStore';
 import { isTextEntry } from '../../lib/keyboard';
 import { useCommands } from '../workspace/Commands';
 import { WorkspaceAssetFrame } from './WorkspaceAssetFrame';
@@ -48,11 +50,15 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
   const previews = useWorkspacePreviewUrls(previewItems);
   const scopeActive = active && Boolean(root.current?.closest<HTMLElement>('[data-dock-view]')?.style.display !== 'none');
   const changeMembership = () => membership === 'remove' ? removeAssetsFromDataset(selectedItems) : onAdd(selectedItems);
-  const exclude = selectedItems.some(item => !item.excludedFromDataset);
+  const removeFromDataset = selectedItems.some(item => isProjectDatasetPath(item.assetPath));
+  const toggleDataset = async () => {
+    try { await setAssetsDatasetMembership(selectedItems, !removeFromDataset); }
+    catch (error) { useUIStore.getState().addNotification('error', error instanceof Error ? error.message : 'Could not update Dataset files'); }
+  };
   useCommands([
     { id: 'gallery.search', label: 'Search files', shortcut: '/', active: scopeActive && !externalFiltering, run: () => search.current?.focus() },
     { id: membership === 'remove' ? 'gallery.remove' : 'gallery.add', label: membership === 'remove' ? 'Remove selected from Dataset' : 'Add selected to Dataset', shortcut: membership === 'remove' ? undefined : 'D', active: scopeActive, disabled: !selectedItems.length, run: changeMembership },
-    { id: 'gallery.exclude', label: exclude ? 'Exclude selected from export' : 'Include selected in export', shortcut: 'E', active: scopeActive, disabled: !selectedItems.some(item => item.kind === 'image' || item.kind === 'edited'), run: () => setAssetsExcluded(selectedItems, exclude) },
+    { id: 'gallery.membership', label: removeFromDataset ? 'Move selected out of Dataset' : 'Move selected to Dataset', shortcut: 'E', active: scopeActive, disabled: !selectedItems.some(item => item.kind !== 'video'), run: toggleDataset },
   ], () => root.current?.closest<HTMLElement>('[data-dock-view]') ?? root.current);
   const focus = (id: string) => { setFocusId(id); requestAnimationFrame(() => {
     const element = Array.from(root.current?.querySelectorAll<HTMLElement>('[data-asset-cell]') ?? []).find(node => node.dataset.assetCell === id); element?.focus(); element?.scrollIntoView({ block: 'nearest' });
@@ -81,7 +87,7 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
     </div>
     {!!selectedItems.length && <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm" role="status">
       <span>{selectedItems.length} selected</span><button className="ml-auto rounded px-2 py-1" onClick={() => void changeMembership()}>{membership === 'remove' ? 'Remove from Dataset' : 'Add to Dataset'}</button>
-      {selectedItems.some(item => item.kind === 'image' || item.kind === 'edited') && <button className="rounded px-2 py-1" onClick={() => setAssetsExcluded(selectedItems, exclude)}>{exclude ? 'Exclude' : 'Include'}</button>}
+      {selectedItems.some(item => item.kind !== 'video') && <button className="rounded px-2 py-1" onClick={() => void toggleDataset()}>{removeFromDataset ? 'Move to shared' : 'Move to Dataset'}</button>}
       <button aria-label="Clear selection" className="rounded px-2 py-1" onClick={() => setSelected(new Set())}>Clear</button>
     </div>}
     <div className="asset-grid grid gap-3" role={directInteraction ? 'listbox' : 'group'} aria-multiselectable={directInteraction || undefined} aria-label="Files" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(min(100%,${size}px),1fr))` }} onKeyDown={event => {

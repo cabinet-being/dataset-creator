@@ -10,7 +10,7 @@ export type SharedCandidateScan = {
   sharedAvailable: boolean;
 };
 
-type SharedManifest = { id?: string; sourceImageId?: string; width?: number; height?: number; tags?: string[]; caption?: string; hidden?: boolean; deleted?: boolean; excludedFromDataset?: boolean };
+type SharedManifest = { id?: string; sourceImageId?: string; width?: number; height?: number; tags?: string[]; caption?: string; hidden?: boolean; deleted?: boolean };
 
 const isNotFound = (error: unknown) => error instanceof Error && error.name === 'NotFoundError';
 const readOptionalFile = async (directory: ProjectDirectoryHandle, name: string): Promise<File | null> => {
@@ -59,7 +59,7 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
     if (!isProjectPathIncluded(path, options.excludedCategories ?? [], options.includedCategories ?? [])) { skipped.push({ path, reason: 'category excluded' }); continue; }
     const file = await entry.handle.getFile();
     const manifest = await readManifest(entry.directory, file.name);
-    if (manifest?.hidden || manifest?.deleted || manifest?.excludedFromDataset) { skipped.push({ path, reason: 'excluded' }); continue; }
+    if (manifest?.hidden || manifest?.deleted) { skipped.push({ path, reason: 'excluded' }); continue; }
     const size = await dimensions(file, manifest);
     const stem = file.name.replace(/\.[^.]+$/, '');
     const textCaption = manifest?.caption === undefined && manifest?.tags === undefined ? await readOptionalFile(entry.directory, `${stem}.txt`) : null;

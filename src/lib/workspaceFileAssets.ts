@@ -147,7 +147,7 @@ for (const path of assetPaths) {
     if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
     const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
     const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
-    let metadata: {tags?:unknown;caption?:unknown;excludedFromDataset?:unknown;createdAt?:unknown} = {};
+    let metadata: {tags?:unknown;caption?:unknown;createdAt?:unknown} = {};
     try { metadata = JSON.parse(await (await readExplorerFile(root, getAssetManifestPath(path))).text()); } catch { /* metadata is optional */ }
     const tags = Array.isArray(metadata.tags)
       ? metadata.tags.filter((tag): tag is string => typeof tag === 'string')
@@ -155,7 +155,7 @@ for (const path of assetPaths) {
     assets.push({ id:createWorkspaceFileAssetId(path), path, fileName, kind:kind as WorkspaceFileAssetKind, file,
       previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
       modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
-      tags, excludedFromDataset:metadata.excludedFromDataset === true });
+      tags });
   } catch (error) {
     issues.push(`${path}: file could not be read`);
     appLog.warning(`Assets: unable to read ${path}`);

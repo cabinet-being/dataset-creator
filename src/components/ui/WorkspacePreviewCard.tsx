@@ -105,7 +105,7 @@ export const WorkspacePreviewCard = ({
   return (
     <div
       className={`group relative overflow-visible rounded-lg ${
-        item.excludedFromDataset ? 'border border-muted opacity-75' : getWorkspaceKindFrameClass(item.kind)
+        getWorkspaceKindFrameClass(item.kind)
       } ${className}`}
       style={getWorkspaceKindFrameStyle(item.kind)}
       onContextMenu={handleContextMenu}

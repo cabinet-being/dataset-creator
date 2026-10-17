@@ -57,7 +57,6 @@ export type WorkspaceImage = {
   aspectRatio: AspectRatio;
   editedAssetType?: EditedAsset['type'];
   exportOrder?: number;
-  excludedFromDataset?: boolean;
   deleted?: boolean;
   hidden?: boolean;
   byteSize?: number;
@@ -82,7 +81,6 @@ export type WorkspaceFileAsset = {
   tags?: string[];
   byteSize?: number;
   modifiedAt?: number;
-  excludedFromDataset?: boolean;
 };
 
 export const WORKSPACE_KIND_STYLES: Record<
@@ -193,7 +191,6 @@ export const toWorkspaceImages = (
       height: workingEdit?.height ?? image.height,
       tags: image.tags,
       hidden: image.hidden,
-      excludedFromDataset: image.excludedFromDataset,
       byteSize: image.originalFile.size,
       modifiedAt: image.createdAt.getTime(),
       dimensionsKnown: true,
@@ -229,7 +226,6 @@ export const toWorkspaceImages = (
         aspectRatio: image.aspectRatio,
         editedAssetType: image.type,
         exportOrder: image.exportOrder,
-        excludedFromDataset: image.excludedFromDataset,
         deleted: image.deleted,
         byteSize: image.imageData.size,
         modifiedAt: image.createdAt.getTime(),
@@ -270,7 +266,6 @@ export const toWorkspaceReviewAssets = (
     byteSize: asset.byteSize ?? asset.file.size,
     modifiedAt: asset.modifiedAt,
     dimensionsKnown: asset.width !== undefined && asset.height !== undefined,
-    excludedFromDataset: asset.excludedFromDataset,
     aspectRatio: inferWorkspaceAspectRatio(asset.width ?? 1, asset.height ?? 1),
   }));
 

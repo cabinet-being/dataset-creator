@@ -16,6 +16,7 @@ import { snapshotFileIfNeeded } from './fileSnapshotService';
 import { migrateLegacyCaptions, type PathCaptionAsset } from '../caption/captionMigrationService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
+import { migrateLegacyDatasetExclusions } from './legacyDatasetExclusionService';
 import {
   DATASET_MANIFEST_FILE,
   PROJECT_DATASET_DIRECTORY,
@@ -318,7 +319,6 @@ const serializeSourceManifest = (
   originalFileNameOnDisk,
   tags: source.tags,
   hidden: source.hidden,
-  excludedFromDataset: source.excludedFromDataset,
   createdAt: toIsoString(source.createdAt),
 });
 
@@ -345,7 +345,6 @@ const serializeEditedAssetManifest = (
   aspectRatio: item.aspectRatio,
   deleted: item.deleted,
   deletedAt: item.deletedAt ? toIsoString(item.deletedAt) : undefined,
-  excludedFromDataset: item.excludedFromDataset,
   createdAt: toIsoString(item.createdAt),
   exportOrder: item.exportOrder,
 });
@@ -840,7 +839,6 @@ const readSource = async (
     manifestPath: paths?.manifestPath,
     tags: manifest.tags,
     hidden: manifest.hidden,
-    excludedFromDataset: manifest.excludedFromDataset,
     createdAt: toDate(manifest.createdAt, new Date()),
   };
 };
@@ -904,7 +902,6 @@ const readEditedAsset = async (
     aspectRatio: manifest.aspectRatio,
     deleted: manifest.deleted,
     deletedAt: manifest.deletedAt ? toDate(manifest.deletedAt, new Date()) : undefined,
-    excludedFromDataset: manifest.excludedFromDataset,
     createdAt: toDate(manifest.createdAt, new Date()),
     exportOrder: manifest.exportOrder,
   };
@@ -1024,6 +1021,14 @@ export const readProjectDirectory = async (
       ...manifest.project.taggingConfig,
     },
   });
+  const checkpointExclusionPaths = async (moves: Array<{from:string;to:string}>) => {
+    for (const key of ['sourceImageManifests','editedAssetManifests','datasetItemManifests'] as const) {
+      const paths = manifest.project[key];
+      if (paths) manifest.project[key] = Object.fromEntries(Object.entries(paths).map(([id,path]) => [id,applyProjectRelativePathMoves(path,moves,true)!]));
+    }
+    await writeTextFile(directory,manifestName,JSON.stringify(manifest,null,2));
+  };
+  await migrateLegacyDatasetExclusions(directory, checkpointExclusionPaths, true);
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
     `syn${'thetic'}ImageManifests`
@@ -1095,6 +1100,19 @@ export const readProjectDirectory = async (
       manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
     }));
   }
+
+  await migrateLegacyDatasetExclusions(directory, async moves => {
+    sources = sources.map(source => ({ ...source,
+      originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
+      manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
+    }));
+    edited = edited.map(item => ({ ...item,
+      imageDataPath: applyProjectRelativePathMoves(item.imageDataPath, moves),
+      psdDataPath: applyProjectRelativePathMoves(item.psdDataPath, moves),
+      manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
+    }));
+    await checkpointExclusionPaths(moves);
+  });
 
   const sourceIds = new Set(sources.map((source) => source.id));
   const orphanEditedAsset = edited.find((item) => !sourceIds.has(item.sourceImageId));

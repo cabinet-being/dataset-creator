@@ -295,7 +295,6 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       originalFilePath,
       tags: source.tags,
       removedFromWorkspace: source.hidden,
-      excludedFromDataset: source.excludedFromDataset,
       createdAt: toIsoString(source.createdAt, exportedAt),
     };
     sourceImageManifests[source.id] = manifestPath;
@@ -323,7 +322,6 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       height: item.height,
       tags: item.tags,
       aspectRatio: item.aspectRatio,
-      excludedFromDataset: item.excludedFromDataset,
       createdAt: toIsoString(item.createdAt, exportedAt),
     };
     editedAssetManifests[item.id] = manifestPath;
@@ -483,6 +481,22 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     : Object.values(manifest.project.datasetItems ?? {}).map((item) => ({ manifest: item }));
 
   const sourceImages: Record<string, SourceImage> = {};
+  const occupiedPaths = new Set(Object.keys(zip.files).map(path => path.toLowerCase()));
+  const restoreExcludedPath = (path: string | undefined, excluded: boolean): string | undefined => {
+    if (!path || !excluded || !path.replace(/^Project\//,'').startsWith('dataset/')) return path;
+    const name = path.split('/').pop()!;
+    const dot = name.lastIndexOf('.');
+    const stem = dot < 0 ? name : name.slice(0,dot);
+    const extension = dot < 0 ? '' : name.slice(dot);
+    let candidate = `src/shared/${name}`;
+    let index = 2;
+    while (occupiedPaths.has(candidate.toLowerCase()) || occupiedPaths.has(`${candidate}.manifest.json`.toLowerCase()) || occupiedPaths.has(candidate.replace(/\.[^.]+$/,'.txt').toLowerCase())) {
+      candidate = `src/shared/${stem} ${index++}${extension}`;
+    }
+    occupiedPaths.add(candidate.toLowerCase());
+    occupiedPaths.add(candidate.replace(/\.[^.]+$/,'.txt').toLowerCase());
+    return candidate;
+  };
   for (const { manifestPath, manifest: source } of sourceManifestEntries) {
     const originalFileBuffer = await zip.file(source.originalFilePath)?.async('arraybuffer');
     if (!originalFileBuffer) {
@@ -502,6 +516,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
       ? await zip.file(thumbnailPath)?.async('arraybuffer')
       : undefined;
     const thumbnail = thumbnailBuffer ? new Blob([thumbnailBuffer], { type: 'image/jpeg' }) : undefined;
+    const originalFilePath = restoreExcludedPath(source.originalFilePath, 'excludedFromDataset' in source && source.excludedFromDataset === true)!;
 
     sourceImages[source.id] = {
       id: source.id,
@@ -510,11 +525,10 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
       width: source.width,
       height: source.height,
       mimeType: source.mimeType,
-      originalFilePath: source.originalFilePath,
-      manifestPath,
+      originalFilePath,
+      manifestPath: originalFilePath === source.originalFilePath ? manifestPath : `${originalFilePath}.manifest.json`,
       tags: source.tags,
       hidden: sourceHidden,
-      excludedFromDataset: source.excludedFromDataset,
       originalFile,
       thumbnail,
       embedding: sourceEmbedding ? new Float32Array(sourceEmbedding) : undefined,
@@ -540,6 +554,9 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
       ? new Blob([psdDataBuffer], { type: 'image/vnd.adobe.photoshop' })
       : undefined;
     const deletedAt = 'deletedAt' in item ? item.deletedAt : undefined;
+    const excluded = 'excludedFromDataset' in item && item.excludedFromDataset === true;
+    const imageDataPath = restoreExcludedPath(item.imageDataPath, excluded)!;
+    const psdDataPath = restoreExcludedPath(item.psdDataPath, excluded);
 
     datasetItems[item.id] = {
       id: item.id,
@@ -553,13 +570,12 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
       tags: item.tags,
       aspectRatio: item.aspectRatio,
       deleted: false,
-      excludedFromDataset: item.excludedFromDataset,
       exportOrder: 'exportOrder' in item ? item.exportOrder : undefined,
       imageData,
       psdData,
-      imageDataPath: item.imageDataPath,
-      psdDataPath: item.psdDataPath,
-      manifestPath,
+      imageDataPath,
+      psdDataPath,
+      manifestPath: imageDataPath === item.imageDataPath ? manifestPath : `${imageDataPath}.manifest.json`,
       createdAt: new Date(item.createdAt),
       deletedAt: deletedAt ? new Date(deletedAt) : undefined,
     };
