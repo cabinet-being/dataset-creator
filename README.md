@@ -264,6 +264,26 @@ npm run test:workspace-layout
 npm run test:video-frames
 ```
 
+### Automated tests
+
+Use Node.js 22.22 or newer within Node 22, then run `npm ci` and `npm test`.
+`npm test` runs all seven offline regression suites and stops at the first failure.
+`npm run test:ci` additionally checks TypeScript, builds the application, and compiles the browser fixtures. GitHub Actions runs this command on pushes and pull requests.
+
+| Command | Coverage |
+| --- | --- |
+| `test:project-types` | Project files, migrations, asset indexing, file operations, Dataset membership, exports and version restoration |
+| `test:workspace-layout` | Docking, resizing, tabs, floating panels and persisted layouts |
+| `test:video-frames` | Frame selection, cancellation, indexing, fingerprints and safe writes |
+| `test:ui-workflows` | Keyboard shortcuts, save serialization, captions, import/export and workspace state |
+| `test:dataset-assembly` | Caption resolution, candidate scanning, semantic coverage and assembly rules |
+| `test:service-boundaries` | PSD preview queue and timeout, URL lifecycle, file snapshots, permissions and asset classification |
+| `test:state-recovery` | Failed saves, stopped sessions, operation retention, undo/redo failures and concurrent project changes |
+
+Run an individual suite with `npm run <command>`. The new service and state suites use Node's test runner with named assertions, controlled promises and simulated timers; no additional testing dependencies are required. Temporary bundles are removed after each suite.
+
+These checks exercise application logic with in-memory files and simulated browser boundaries. Compiling browser fixtures does not execute their UI assertions. Native file pickers, live Photopea integration, real ONNX inference and visual/accessibility checks remain separate browser checks; see [UI validation](tests/ui-validation.md).
+
 `package.json` also defines `npm run lint`, but the repository currently has no ESLint configuration, so linting is not an active validation gate yet.
 
 ## Roadmap
