@@ -1,78 +1,37 @@
-# Deployment Guide
+# Розгортання
 
-DatasetCreator is a static client-side Vite app. The default deployment target is GitHub Pages at:
-
-```text
-https://timcixo.github.io/DatasetCreator/
-```
+DatasetCreator збирається як статичний сайт. Для основного застосунку не потрібні бекенд, серверна база даних чи змінні середовища. Моделі тегера користувач вибирає локально; вони не входять у deployment.
 
 ## GitHub Pages
 
-The repository includes a GitHub Actions workflow:
+[Workflow](.github/workflows/deploy-pages.yml) запускається на push до `main` або вручну через `workflow_dispatch`:
 
-```text
-.github/workflows/deploy-pages.yml
-```
+1. Checkout і встановлення Node 20.
+2. `npm ci` та `npm run build`.
+3. Завантаження `dist/` як Pages artifact.
+4. Deploy через `actions/deploy-pages`.
 
-It runs on every push to `main` and does the following:
+У налаштуваннях репозиторію Pages джерелом має бути **GitHub Actions**. Конфігурація розрахована на адресу `https://timcixo.github.io/DatasetCreator/`; це опис цілі, а не перевірка доступності опублікованого сайту.
 
-1. Installs dependencies with `npm ci`.
-2. Builds the app with `npm run build`.
-3. Uploads the generated `dist/` folder as a Pages artifact.
-4. Deploys it with the official GitHub Pages action.
+Тестовий [workflow](.github/workflows/tests.yml) використовує Node 22.22.1 і запускає `npm run test:ci`. Він працює окремо: Pages не чекає його успіху через `needs`. Якщо потрібне обов’язкове блокування публікації тестами, це слід окремо реалізувати у workflow або правилах репозиторію.
 
-## Required Repository Setting
+## Base path і локальна перевірка
 
-In GitHub, open:
-
-```text
-Settings -> Pages -> Build and deployment
-```
-
-Set **Source** to:
-
-```text
-GitHub Actions
-```
-
-After that, every push to `main` will publish the latest build.
-
-## Vite Base Path
-
-GitHub Pages serves this repository from `/DatasetCreator/`, so Vite is configured with:
-
-```ts
-base: '/DatasetCreator/'
-```
-
-Do not change this unless the repository name or deployment path changes.
-
-## Local Production Check
-
-Before pushing deployment changes:
+[`vite.config.ts`](vite.config.ts) задає `base: '/DatasetCreator/'`. Під цим префіксом мають завантажуватися сторінка й ресурси.
 
 ```bash
+npm ci
+npm run test:ci
 npm run build
 npm run preview
 ```
 
-The production preview should load correctly with the `/DatasetCreator/` base path.
+Повторний build тут потрібен, щоб отримати чистий deployment-каталог після `test:ci`: компіляція тестових стендів додає `dist/browser-fixtures/`. У Pages цього немає, бо він виконує лише production build.
 
-## Notes
+Перевірте відкриття сторінки під base path, завантаження ресурсів і доступ до локальної папки. Для браузерних API використовуйте localhost або HTTPS. `public/.nojekyll` вимикає обробку Pages через Jekyll; `dist/` ігнорується Git.
 
-* `public/.nojekyll` is included so GitHub Pages serves generated assets without Jekyll processing.
-* No backend or environment variables are required for the default workflow.
-* Local model files for Caption tool are selected by the user in the browser and are not deployed with the app.
-* The generated `dist/` folder stays ignored by git and is uploaded only by GitHub Actions.
+## Інший статичний хост
 
-## Manual Static Hosting
+Для публікації під коренем домену змініть `base` на `/`; для підпапки — на фактичний префікс. Виконайте `npm run build` і опублікуйте `dist/`. Не публікуйте робочу папку користувацького проєкту, локальні моделі чи весь репозиторій замість статичної збірки.
 
-For Vercel, Netlify, or another static host:
-
-```bash
-npm run build
-```
-
-Deploy the generated `dist/` folder.
-
-If hosting from a root domain instead of `/DatasetCreator/`, update `vite.config.ts` accordingly.
+Photopea потребує завантаження зовнішнього iframe, а DINOv2 — доступу до джерела моделі під час завантаження. Політики хостингу, які блокують ці ресурси, можуть залишити основний UI працездатним, але обмежити редагування або аналіз.
