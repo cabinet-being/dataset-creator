@@ -1,18 +1,16 @@
-import { MenuSurface } from '../ui/MenuSurface';
+import { ReviewHeader, type ReviewFilterChip } from './ReviewHeader';
 import { addAssetsToDataset } from '../../lib/assetActions';
 import { flushProjectSave } from '../../hooks/useProjectSave';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import {
   AlertCircle,
-  ArrowUpDown,
   Check,
   ChevronDown,
   ChevronRight,
   Folder,
   Minus,
   Plus,
-  RefreshCw,
   X,
 } from 'lucide-react';
 import { ASPECT_RATIOS, ASPECT_RATIO_LABELS } from '../../lib/constants';
@@ -36,7 +34,6 @@ import type { ReviewScope } from '../../lib/workspaceToolScope';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 
-type FilterMenu = 'aspect' | 'kind' | 'status' | 'sort' | 'more' | null;
 type SortMode = 'dataset-order' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc' | 'kind-asc' | 'kind-desc' | 'format-asc' | 'format-desc' | 'dimensions-desc' | 'dimensions-asc' | 'bytes-desc' | 'bytes-asc' | 'date-desc' | 'date-asc';
 type ExportStatus = 'active' | 'inactive';
 
@@ -203,7 +200,7 @@ export const FinalReviewTool = ({
   const [selectedStatuses, setSelectedStatuses] = useState<Set<ExportStatus>>(
     new Set(['active', 'inactive'])
   );
-  const [openMenu, setOpenMenu] = useState<FilterMenu>(null);
+  const [thumbnailSize, setThumbnailSize] = useState(210);
   const [sortMode, setSortMode] = useState<SortMode>(datasetId ? 'dataset-order' : 'name-asc');
   const [searchQuery, setSearchQuery] = useState('');
   const [captionFilter, setCaptionFilter] = useState<'all' | 'present' | 'missing'>('all');
@@ -232,6 +229,7 @@ export const FinalReviewTool = ({
       const saved = JSON.parse(window.localStorage.getItem(preferencesKey) ?? 'null') as Record<string, unknown> | null;
       if (saved) {
         if (typeof saved.searchQuery === 'string') setSearchQuery(saved.searchQuery);
+        if ([150, 210, 300].includes(Number(saved.thumbnailSize))) setThumbnailSize(Number(saved.thumbnailSize));
         if (['all','present','missing'].includes(String(saved.captionFilter))) setCaptionFilter(saved.captionFilter as typeof captionFilter);
         if (['all','ready','missing','failed'].includes(String(saved.previewFilter))) setPreviewFilter(saved.previewFilter as typeof previewFilter);
         if (typeof saved.folderFilter === 'string') setFolderFilter(saved.folderFilter);
@@ -257,10 +255,10 @@ export const FinalReviewTool = ({
   useEffect(() => {
     if (!preferencesReady || preferencesLoadedKeyRef.current !== preferencesKey) return;
     window.localStorage.setItem(preferencesKey, JSON.stringify({ searchQuery, captionFilter, previewFilter, folderFilter,
-      formatFilter, datasetFilter, minimumPixels, maximumPixels, minimumBytes, maximumBytes, sortMode,
+      formatFilter, datasetFilter, minimumPixels, maximumPixels, minimumBytes, maximumBytes, sortMode, thumbnailSize,
       aspectRatios:[...selectedAspectRatios], kinds:[...selectedKinds], statuses:[...selectedStatuses],
       collapsedCategories:[...collapsedCategories] }));
-  }, [captionFilter, collapsedCategories, datasetFilter, folderFilter, formatFilter, maximumBytes, maximumPixels, minimumBytes, minimumPixels, preferencesKey, preferencesReady, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses, sortMode]);
+  }, [captionFilter, collapsedCategories, datasetFilter, folderFilter, formatFilter, maximumBytes, maximumPixels, minimumBytes, minimumPixels, preferencesKey, preferencesReady, previewFilter, searchQuery, selectedAspectRatios, selectedKinds, selectedStatuses, sortMode, thumbnailSize]);
 
   const matchesReviewScope = useCallback((path: string | undefined) => {
     if (!scope) return true;
@@ -415,21 +413,6 @@ export const FinalReviewTool = ({
     };
   }, [addNotification, assetPreviewRefreshKey, datasetId, matchesReviewScope, mode, projectDirectoryHandle]);
 
-  useEffect(() => {
-    if (!openMenu) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpenMenu(null);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [openMenu]);
-
   const aspectRatioCounts = useMemo(
     () =>
       Object.fromEntries(
@@ -449,10 +432,6 @@ export const FinalReviewTool = ({
     [items]
   );
 
-  const inactiveCount = useMemo(
-    () => items.filter((item) => !isProjectDatasetPath(item.assetPath)).length,
-    [items]
-  );
   const statusCounts = useMemo(
     () => ({
       active: items.filter((item) => isProjectDatasetPath(item.assetPath)).length,
@@ -620,245 +599,114 @@ export const FinalReviewTool = ({
   );
 
   const showSelectActions = Boolean(dataset && onUpdateDataset && mode === 'select');
-  const reviewControls = (
-    <div className="relative z-50 rounded-md border border-border bg-card px-3 py-2">
-      {openMenu && (
-        <button
-          type="button"
-          aria-label="Close review menu"
-          className="fixed inset-0 z-[900] cursor-default"
-          onClick={() => setOpenMenu(null)}
-        />
-      )}
-
-      <div className="relative z-[1000] flex flex-wrap items-center gap-2">
-        <div className="mr-1 rounded-md bg-secondary px-3 py-2 text-sm font-medium">{scope?.label ?? (datasetId ? `${dataset?.name ?? 'Dataset'} / Review` : 'Project / Review')}</div>
-        <input type="search" aria-label="Search review files" placeholder="Search name, path, caption…" value={searchQuery}
-          onChange={(event) => setSearchQuery(event.target.value)} className="min-w-48 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" />
-        <select aria-label="Caption filter" value={captionFilter} onChange={(event) => setCaptionFilter(event.target.value as typeof captionFilter)}
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm">
-          <option value="all">All captions</option><option value="present">Has caption</option><option value="missing">Missing caption</option>
-        </select>
-        <select aria-label="Preview filter" value={previewFilter} onChange={(event) => setPreviewFilter(event.target.value as typeof previewFilter)}
-          className="rounded-md border border-border bg-background px-3 py-2 text-sm">
-          <option value="all">All previews</option><option value="ready">Preview ready</option><option value="missing">Preview missing</option><option value="failed">Preview failed</option>
-        </select>
-        <div className="relative">
-          <button type="button" aria-haspopup="menu" aria-expanded={openMenu === 'more'} onClick={() => setOpenMenu((menu) => menu === 'more' ? null : 'more')}
-            className={`rounded-md border border-border px-3 py-2 text-sm ${openMenu === 'more' ? 'bg-secondary' : ''}`}>More filters</button>
-          {openMenu === 'more' ? <MenuSurface role="dialog" aria-label="More review filters" closeOnTab={false} onDismiss={() => setOpenMenu(null)} className="absolute right-0 top-full z-20 mt-1 grid w-72 gap-2 rounded-md border border-border bg-popover p-3 shadow-xl">
-            <label className="grid gap-1 text-xs text-muted-foreground">Folder
-              <select value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)} className="rounded border border-border bg-background p-2 text-sm text-foreground">
-                <option value="all">All folders</option>{categoryRows.map((row) => <option key={row.path} value={row.path}>{row.path}</option>)}
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs text-muted-foreground">Format
-              <select value={formatFilter} onChange={(event) => setFormatFilter(event.target.value)} className="rounded border border-border bg-background p-2 text-sm text-foreground">
-                <option value="all">All formats</option>{formatOptions.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs text-muted-foreground">Dataset membership
-              <select value={datasetFilter} onChange={(event) => setDatasetFilter(event.target.value as typeof datasetFilter)} className="rounded border border-border bg-background p-2 text-sm text-foreground">
-                <option value="all">All files</option><option value="member">In Dataset</option><option value="outside">Outside Dataset</option>
-              </select>
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="grid gap-1 text-xs text-muted-foreground">Min pixels<input type="number" min="0" value={minimumPixels} onChange={(event) => setMinimumPixels(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
-              <label className="grid gap-1 text-xs text-muted-foreground">Max pixels<input type="number" min="0" value={maximumPixels} onChange={(event) => setMaximumPixels(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
-              <label className="grid gap-1 text-xs text-muted-foreground">Min bytes<input type="number" min="0" value={minimumBytes} onChange={(event) => setMinimumBytes(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
-              <label className="grid gap-1 text-xs text-muted-foreground">Max bytes<input type="number" min="0" value={maximumBytes} onChange={(event) => setMaximumBytes(event.target.value)} className="min-w-0 rounded border border-border bg-background p-2 text-foreground" /></label>
-            </div>
-          </MenuSurface> : null}
-        </div>
-        <div className="relative">
-          <button
-            type="button"
-            aria-haspopup="menu" aria-expanded={openMenu === 'aspect'}
-            onClick={() => setOpenMenu((menu) => (menu === 'aspect' ? null : 'aspect'))}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              openMenu === 'aspect' ? 'bg-secondary' : 'hover:bg-secondary'
-            }`}
-          >
-            Aspect
-            <span className="font-mono text-xs text-muted-foreground">{selectedAspectRatios.size}/3</span>
-            <ChevronDown className="h-4 w-4" />
-          </button>
-          {openMenu === 'aspect' && (
-            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-              {ASPECT_RATIOS.map((ratio) => (
-                <button
-                  key={ratio}
-                  type="button"
-                  role="menuitemcheckbox" aria-checked={selectedAspectRatios.has(ratio)}
-                  onClick={() => toggleAspectRatio(ratio)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                >
-                  <span className="flex h-4 w-4 items-center justify-center">
-                    {selectedAspectRatios.has(ratio) && <Check className="h-4 w-4" />}
-                  </span>
-                  <span className="flex-1">{ASPECT_RATIO_LABELS[ratio]}</span>
-                  <span className="font-mono text-xs text-muted-foreground">{aspectRatioCounts[ratio] ?? 0}</span>
-                </button>
-              ))}
-            </MenuSurface>
-          )}
-        </div>
-
-        <div className="relative">
-          <button
-            type="button"
-            aria-haspopup="menu" aria-expanded={openMenu === 'kind'}
-            onClick={() => setOpenMenu((menu) => (menu === 'kind' ? null : 'kind'))}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              openMenu === 'kind' ? 'bg-secondary' : 'hover:bg-secondary'
-            }`}
-          >
-            Type
-            <span className="font-mono text-xs text-muted-foreground">{selectedKinds.size}/{REVIEW_KINDS.length}</span>
-            <ChevronDown className="h-4 w-4" />
-          </button>
-          {openMenu === 'kind' && (
-            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-              {REVIEW_KINDS.map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  role="menuitemcheckbox" aria-checked={selectedKinds.has(kind)}
-                  onClick={() => toggleKind(kind)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                >
-                  <span className="flex h-4 w-4 items-center justify-center">
-                    {selectedKinds.has(kind) && <Check className="h-4 w-4" />}
-                  </span>
-                  <span className="flex-1">{KIND_LABELS[kind]}</span>
-                  <span className="font-mono text-xs text-muted-foreground">{kindCounts[kind]}</span>
-                </button>
-              ))}
-            </MenuSurface>
-          )}
-        </div>
-
-        <div className="relative">
-          <button
-            type="button"
-            aria-haspopup="menu" aria-expanded={openMenu === 'status'}
-            onClick={() => setOpenMenu((menu) => (menu === 'status' ? null : 'status'))}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              openMenu === 'status' ? 'bg-secondary' : 'hover:bg-secondary'
-            }`}
-          >
-            Status
-            <span className="font-mono text-xs text-muted-foreground">{selectedStatuses.size}/2</span>
-            <ChevronDown className="h-4 w-4" />
-          </button>
-          {openMenu === 'status' && (
-            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-xl">
-              {(['active', 'inactive'] as const).map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  role="menuitemcheckbox" aria-checked={selectedStatuses.has(status)}
-                  onClick={() => toggleStatus(status)}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                >
-                  <span className="flex h-4 w-4 items-center justify-center">
-                    {selectedStatuses.has(status) && <Check className="h-4 w-4" />}
-                  </span>
-                  <span className="flex-1">{STATUS_LABELS[status]}</span>
-                  <span className="font-mono text-xs text-muted-foreground">{statusCounts[status]}</span>
-                </button>
-              ))}
-            </MenuSurface>
-          )}
-        </div>
-
-        <div className="relative">
-          <button
-            type="button"
-            aria-haspopup="menu" aria-expanded={openMenu === 'sort'}
-            onClick={() => setOpenMenu((menu) => (menu === 'sort' ? null : 'sort'))}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              openMenu === 'sort' ? 'bg-secondary' : 'hover:bg-secondary'
-            }`}
-          >
-            <ArrowUpDown className="h-4 w-4" />
-            Sort
-            <span className="max-w-36 truncate text-muted-foreground">{SORT_LABELS[sortMode]}</span>
-            <ChevronDown className="h-4 w-4" />
-          </button>
-          {openMenu === 'sort' && (
-            <MenuSurface onDismiss={() => setOpenMenu(null)} className="absolute left-0 top-full z-[1000] mt-1 w-64 rounded-md border border-border bg-popover p-1 shadow-xl">
-              {SORT_OPTIONS.filter((option) => option !== 'dataset-order' || Boolean(datasetId)).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  role="menuitemcheckbox" aria-checked={sortMode === option}
-                  onClick={() => {
-                    setSortMode(option);
-                    setOpenMenu(null);
-                  }}
-                  className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-secondary"
-                >
-                  <span className="flex h-4 w-4 items-center justify-center">
-                    {sortMode === option && <Check className="h-4 w-4" />}
-                  </span>
-                  <span className="flex-1">{SORT_LABELS[option]}</span>
-                </button>
-              ))}
-            </MenuSurface>
-          )}
-        </div>
-
-        {showSelectActions && sortedItems.length > 0 ? (
-          <button
-            type="button"
-            onClick={() => addItemsToDataset(sortedItems)}
-            className="ml-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Add Visible</span>
-          </button>
-        ) : null}
-
-        <div className={`${showSelectActions && sortedItems.length > 0 ? '' : 'ml-auto'} rounded-md border border-border bg-background px-3 py-2 text-sm`}>
-          <span className="text-muted-foreground">Visible</span>
-          <span className="ml-2 font-mono font-medium">{sortedItems.length}</span>
-          {psdDiagnostics.total > 0 ? (
-            <span className="ml-3 text-muted-foreground">
-              PSD <span className="font-mono text-foreground">{psdDiagnostics.ready}/{psdDiagnostics.total}</span>
-              {psdDiagnostics.generating > 0 ? (
-                <span className="ml-2">Generating <span className="font-mono text-foreground">{psdDiagnostics.generating}</span></span>
-              ) : null}
-              {psdDiagnostics.failed > 0 ? (
-                <span className="ml-2">Failed <span className="font-mono text-foreground">{psdDiagnostics.failed}</span></span>
-              ) : null}
-            </span>
-          ) : null}
-          {inactiveCount > 0 && (
-            <span className="ml-3 text-muted-foreground">
-              Outside Dataset <span className="font-mono text-foreground">{inactiveCount}</span>
-            </span>
-          )}
-        </div>
-        {projectDirectoryHandle ? <button type="button" className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm" onClick={() => {
-          invalidateWorkspaceFileAssetCache(projectDirectoryHandle); refreshAssetPreviews(); void onRefresh?.();
-        }}><RefreshCw className="h-4 w-4" />Refresh</button> : null}
-        {(searchQuery || captionFilter !== 'all' || previewFilter !== 'all' || folderFilter !== 'all' || formatFilter !== 'all' || datasetFilter !== 'all' || minimumPixels || maximumPixels || minimumBytes || maximumBytes || selectedAspectRatios.size !== ASPECT_RATIOS.length || selectedKinds.size !== REVIEW_KINDS.length || selectedStatuses.size !== 2) ? (
-          <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={() => {
-            setSearchQuery(''); setCaptionFilter('all'); setPreviewFilter('all'); setFolderFilter('all'); setFormatFilter('all'); setDatasetFilter('all');
-            setMinimumPixels(''); setMaximumPixels(''); setMinimumBytes(''); setMaximumBytes('');
-            setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive']));
-          }}>Reset</button>
-        ) : null}
+  const resetFilters = () => {
+    setCaptionFilter('all'); setPreviewFilter('all'); setFolderFilter('all'); setFormatFilter('all'); setDatasetFilter('all');
+    setMinimumPixels(''); setMaximumPixels(''); setMinimumBytes(''); setMaximumBytes('');
+    setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive']));
+  };
+  const resetSearchAndFilters = () => { setSearchQuery(''); resetFilters(); };
+  const activeFilters: ReviewFilterChip[] = [];
+  if (selectedKinds.size !== REVIEW_KINDS.length) activeFilters.push({ label: `Type: ${[...selectedKinds].map((kind) => KIND_LABELS[kind]).join(', ') || 'None'}`, clear: () => setSelectedKinds(new Set(REVIEW_KINDS)) });
+  if (selectedAspectRatios.size !== ASPECT_RATIOS.length) activeFilters.push({ label: `Aspect: ${[...selectedAspectRatios].join(', ') || 'None'}`, clear: () => setSelectedAspectRatios(new Set(ASPECT_RATIOS)) });
+  if (selectedStatuses.size !== 2) activeFilters.push({ label: `Export: ${[...selectedStatuses].map((status) => STATUS_LABELS[status]).join(', ') || 'None'}`, clear: () => setSelectedStatuses(new Set(['active', 'inactive'])) });
+  if (captionFilter !== 'all') activeFilters.push({ label: captionFilter === 'present' ? 'Has caption' : 'Missing caption', clear: () => setCaptionFilter('all') });
+  if (previewFilter !== 'all') activeFilters.push({ label: `Preview: ${previewFilter}`, clear: () => setPreviewFilter('all') });
+  if (folderFilter !== 'all') activeFilters.push({ label: `Folder: ${folderFilter}`, clear: () => setFolderFilter('all') });
+  if (formatFilter !== 'all') activeFilters.push({ label: `Format: ${formatFilter.toUpperCase()}`, clear: () => setFormatFilter('all') });
+  if (datasetFilter !== 'all') activeFilters.push({ label: datasetFilter === 'member' ? 'In Dataset' : 'Outside Dataset', clear: () => setDatasetFilter('all') });
+  if (minimumPixels || maximumPixels) activeFilters.push({ label: `Image area: ${minimumPixels || '0'}–${maximumPixels || '∞'} px`, clear: () => { setMinimumPixels(''); setMaximumPixels(''); } });
+  if (minimumBytes || maximumBytes) activeFilters.push({ label: `File size: ${minimumBytes || '0'}–${maximumBytes || '∞'} bytes`, clear: () => { setMinimumBytes(''); setMaximumBytes(''); } });
+  const filterSelectClass = 'h-9 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground';
+  const reviewControls = <ReviewHeader
+    context={scope?.label ?? (datasetId ? dataset?.name ?? 'Dataset' : 'Project')}
+    count={sortedItems.length} total={items.length}
+    query={searchQuery} onQueryChange={setSearchQuery}
+    sort={sortMode} onSortChange={(value) => setSortMode(value as SortMode)}
+    sortOptions={SORT_OPTIONS.filter((option) => option !== 'dataset-order' || Boolean(datasetId)).map((value) => ({ value, label: SORT_LABELS[value] }))}
+    thumbnailSize={thumbnailSize} onThumbnailSizeChange={setThumbnailSize}
+    activeFilters={activeFilters} onResetFilters={resetFilters}
+    onAddVisible={showSelectActions && sortedItems.length > 0 ? () => addItemsToDataset(sortedItems) : undefined}
+    onRefresh={projectDirectoryHandle ? async () => {
+      try {
+        invalidateWorkspaceFileAssetCache(projectDirectoryHandle);
+        await onRefresh?.();
+        refreshAssetPreviews();
+      } catch (error) { addNotification('error', error instanceof Error ? error.message : 'Unable to refresh files'); }
+    } : undefined}
+    previewStatus={psdDiagnostics.generating || psdDiagnostics.queued || psdDiagnostics.failed ? <p role="status" className="text-xs text-muted-foreground">
+      {psdDiagnostics.generating || psdDiagnostics.queued ? `Preparing previews · ${psdDiagnostics.ready} of ${psdDiagnostics.total} ready` : null}
+      {psdDiagnostics.failed ? <span className="ml-2 text-amber-600 dark:text-amber-400">{psdDiagnostics.failed} preview{psdDiagnostics.failed === 1 ? '' : 's'} unavailable</span> : null}
+    </p> : undefined}
+    filters={<div className="space-y-4">
+      <div className="review-filter-choices grid gap-4">
+        <fieldset className="min-w-0"><legend className="mb-2 text-xs font-medium text-muted-foreground">File type</legend>
+          <div className="flex flex-wrap gap-1.5">{REVIEW_KINDS.map((kind) => <label key={kind} className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs has-[:checked]:border-primary/30 has-[:checked]:bg-primary/5">
+            <input type="checkbox" checked={selectedKinds.has(kind)} onChange={() => toggleKind(kind)} />{KIND_LABELS[kind]}<span className="tabular-nums text-muted-foreground">{kindCounts[kind]}</span>
+          </label>)}</div>
+        </fieldset>
+        <fieldset className="min-w-0"><legend className="mb-2 text-xs font-medium text-muted-foreground">Aspect ratio</legend>
+          <div className="flex flex-wrap gap-1.5">{ASPECT_RATIOS.map((ratio) => <label key={ratio} className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs has-[:checked]:border-primary/30 has-[:checked]:bg-primary/5">
+            <input type="checkbox" checked={selectedAspectRatios.has(ratio)} onChange={() => toggleAspectRatio(ratio)} />{ASPECT_RATIO_LABELS[ratio]}<span className="tabular-nums text-muted-foreground">{aspectRatioCounts[ratio]}</span>
+          </label>)}</div>
+        </fieldset>
+        <fieldset className="min-w-0"><legend className="mb-2 text-xs font-medium text-muted-foreground">Export</legend>
+          <div className="flex flex-wrap gap-1.5">{(['active', 'inactive'] as const).map((status) => <label key={status} className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs has-[:checked]:border-primary/30 has-[:checked]:bg-primary/5">
+            <input type="checkbox" checked={selectedStatuses.has(status)} onChange={() => toggleStatus(status)} />{STATUS_LABELS[status]}<span className="tabular-nums text-muted-foreground">{statusCounts[status]}</span>
+          </label>)}</div>
+        </fieldset>
       </div>
-    </div>
-  );
-  const reviewInspectorPortal = null;
+      <div className="review-filter-fields grid gap-3">
+        <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">Caption
+          <select aria-label="Caption filter" value={captionFilter} onChange={(event) => setCaptionFilter(event.target.value as typeof captionFilter)} className={filterSelectClass}>
+            <option value="all">All captions</option><option value="present">Has caption</option><option value="missing">Missing caption</option>
+          </select>
+        </label>
+        <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">Preview
+          <select aria-label="Preview filter" value={previewFilter} onChange={(event) => setPreviewFilter(event.target.value as typeof previewFilter)} className={filterSelectClass}>
+            <option value="all">All previews</option><option value="ready">Ready</option><option value="missing">Missing</option><option value="failed">Failed</option>
+          </select>
+        </label>
+        <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">Dataset
+          <select aria-label="Dataset membership" value={datasetFilter} onChange={(event) => setDatasetFilter(event.target.value as typeof datasetFilter)} className={filterSelectClass}>
+            <option value="all">All files</option><option value="member">In Dataset</option><option value="outside">Outside Dataset</option>
+          </select>
+        </label>
+      </div>
+      <details className="group/advanced border-t border-border pt-3">
+        <summary className="flex cursor-pointer items-center gap-2 rounded text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden"><ChevronRight className="h-3.5 w-3.5 group-open/advanced:rotate-90" />Folder, format & size</summary>
+        <div className="review-filter-fields mt-4 grid gap-3">
+          <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">Folder
+            <select value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)} className={filterSelectClass}>
+              <option value="all">All folders</option>{categoryRows.map((row) => <option key={row.path} value={row.path}>{row.path}</option>)}
+            </select>
+          </label>
+          <label className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">Format
+            <select value={formatFilter} onChange={(event) => setFormatFilter(event.target.value)} className={filterSelectClass}>
+              <option value="all">All formats</option>{formatOptions.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="review-filter-ranges mt-3 grid gap-3">
+          <fieldset className="min-w-0"><legend className="mb-1.5 text-xs text-muted-foreground">Image area (pixels)</legend><div className="grid grid-cols-2 gap-2">
+            <input aria-label="Minimum image area in pixels" placeholder="Min" type="number" min="0" value={minimumPixels} onChange={(event) => setMinimumPixels(event.target.value)} className={filterSelectClass} />
+            <input aria-label="Maximum image area in pixels" placeholder="Max" type="number" min="0" value={maximumPixels} onChange={(event) => setMaximumPixels(event.target.value)} className={filterSelectClass} />
+          </div></fieldset>
+          <fieldset className="min-w-0"><legend className="mb-1.5 text-xs text-muted-foreground">File size (bytes)</legend><div className="grid grid-cols-2 gap-2">
+            <input aria-label="Minimum file size in bytes" placeholder="Min" type="number" min="0" value={minimumBytes} onChange={(event) => setMinimumBytes(event.target.value)} className={filterSelectClass} />
+            <input aria-label="Maximum file size in bytes" placeholder="Max" type="number" min="0" value={maximumBytes} onChange={(event) => setMaximumBytes(event.target.value)} className={filterSelectClass} />
+          </div></fieldset>
+        </div>
+      </details>
+    </div>}
+  />;
   const accessWarning = scope && !projectDirectoryHandle ? <div role="alert" className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700">Reconnect the project folder to refresh and restore access to this Review scope.</div> : null;
   const issueWarning = assetIssues.length > 0 ? <div role="alert" className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700"><p className="font-medium">Some project folders or files could not be read.</p>{assetIssues.slice(0, 5).map((issue) => <p key={issue} className="mt-1 font-mono text-xs">{issue}</p>)}</div> : null;
   const categoryControls = !datasetId && !scope && categoryRows.length > 0 ? (
-    <section className="rounded-md border border-border bg-card p-2" aria-label="Project categories">
-      <div className="mb-1 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Project categories</div>
+    <details className="group/folders border-b border-border pb-3" aria-label="Project categories">
+      <summary className="flex cursor-pointer items-center gap-2 rounded py-1 text-xs text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3.5 w-3.5 group-open/folders:rotate-90" /><Folder className="h-3.5 w-3.5" />Folders
+        {excludedProjectCategories.length > 0 && <span className="ml-auto">Some folders excluded</span>}
+      </summary>
       <div className="max-h-56 overflow-auto">
         {categoryRows.filter((row) => !categoryIsHidden(row.path)).map((row) => {
           const hasChildren = categoryRows.some((candidate) => candidate.path.startsWith(`${row.path}/`));
@@ -882,14 +730,13 @@ export const FinalReviewTool = ({
           </div>;
         })}
       </div>
-    </section>
+    </details>
   ) : null;
 
   if (items.length === 0) {
     return (
-      <div className="space-y-6">
-        {reviewInspectorPortal}
-        {reviewInspectorPortal ? null : reviewControls}
+      <div className="min-w-0 space-y-4">
+        {reviewControls}
         {accessWarning}
         {issueWarning}
         {categoryControls}
@@ -912,9 +759,8 @@ export const FinalReviewTool = ({
   }
 
   return (
-    <div className="space-y-6">
-      {reviewInspectorPortal}
-      {reviewInspectorPortal ? null : reviewControls}
+    <div className="min-w-0 space-y-4">
+      {reviewControls}
       {accessWarning}
       {issueWarning}
       {categoryControls}
@@ -924,6 +770,8 @@ export const FinalReviewTool = ({
           active={active}
           directInteraction
           externalFiltering
+          hideToolbar
+          thumbnailSize={thumbnailSize}
           getGroup={datasetId ? undefined : getReviewDirectory}
           collapsedGroups={collapsedCategories}
           renderGroupHeader={datasetId ? undefined : (group, count) => {
@@ -964,7 +812,7 @@ export const FinalReviewTool = ({
         <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
           <div>
             <p className="text-sm font-medium text-muted-foreground">No items match the selected filters</p>
-            <button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={() => { setSearchQuery(''); setCaptionFilter('all'); setPreviewFilter('all'); setFolderFilter('all'); setFormatFilter('all'); setDatasetFilter('all'); setMinimumPixels(''); setMaximumPixels(''); setMinimumBytes(''); setMaximumBytes(''); setSelectedAspectRatios(new Set(ASPECT_RATIOS)); setSelectedKinds(new Set(REVIEW_KINDS)); setSelectedStatuses(new Set(['active', 'inactive'])); }}>Reset filters</button>
+            <button className="mt-3 rounded border border-border px-3 py-2 text-sm" onClick={resetSearchAndFilters}>Reset filters</button>
           </div>
         </div>
       )}

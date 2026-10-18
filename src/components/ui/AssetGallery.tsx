@@ -10,12 +10,12 @@ import { useCommands } from '../workspace/Commands';
 import { WorkspaceAssetFrame } from './WorkspaceAssetFrame';
 
 type Props = { membership?: 'add' | 'remove'; showOrder?: boolean; items: WorkspaceImage[]; renderItem: (item: WorkspaceImage) => ReactNode; active?: boolean;
-  className?: string;
+  className?: string; hideToolbar?: boolean; thumbnailSize?: number;
   toolbarControls?: ReactNode; onScopeChange?: (items: WorkspaceImage[]) => void; onAdd?: (items: WorkspaceImage[]) => void | Promise<void>;
   directInteraction?: boolean; externalFiltering?: boolean; getGroup?: (item: WorkspaceImage) => string;
   renderGroupHeader?: (group: string, count: number) => ReactNode; collapsedGroups?: ReadonlySet<string> };
 const PAGE_SIZE = 100;
-export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false, getGroup, renderGroupHeader, collapsedGroups }: Props) {
+export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', hideToolbar = false, thumbnailSize, toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false, getGroup, renderGroupHeader, collapsedGroups }: Props) {
   const root = useRef<HTMLDivElement>(null); const search = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState(''); const [caption, setCaption] = useState('all');
   const [sort, setSort] = useState('original'); const [size, setSize] = useState(210);
@@ -77,20 +77,20 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
   });
   const reset = () => { setSelected(new Set()); setPage(0); };
   return <div ref={root} className={`asset-gallery ${className}`}>
-    <div className="gallery-toolbar flex flex-wrap items-center gap-2 pb-3">
+    {!hideToolbar && <div className="gallery-toolbar flex flex-wrap items-center gap-2 pb-3">
       {!externalFiltering && <input ref={search} type="search" aria-label="Search files" placeholder="Search files…" value={query} onChange={e => { setQuery(e.target.value); reset(); }} className="min-w-32 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" />}
       {!externalFiltering && <select aria-label="Caption filter" value={caption} onChange={e => { setCaption(e.target.value); reset(); }} className="rounded-md border border-border bg-background p-2 text-sm"><option value="all">All captions</option><option value="captioned">Captioned</option><option value="missing">Missing captions</option></select>}
       {!externalFiltering && showOrder && <select aria-label="Gallery order" value={sort} onChange={e => { setSort(e.target.value); setPage(0); }} className="rounded-md border border-border bg-background p-2 text-sm"><option value="original">Original order</option><option value="name">Name</option></select>}
       <select aria-label="Thumbnail size" value={size} onChange={e => setSize(Number(e.target.value))} className="rounded-md border border-border bg-background p-2 text-sm"><option value={150}>Small</option><option value={210}>Medium</option><option value={300}>Large</option></select>
       {toolbarControls}
       <span className="text-xs text-muted-foreground">{filtered.length}/{items.length}</span>
-    </div>
+    </div>}
     {!!selectedItems.length && <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm" role="status">
       <span>{selectedItems.length} selected</span><button className="ml-auto rounded px-2 py-1" onClick={() => void changeMembership()}>{membership === 'remove' ? 'Remove from Dataset' : 'Add to Dataset'}</button>
       {selectedItems.some(item => item.kind !== 'video') && <button className="rounded px-2 py-1" onClick={() => void toggleDataset()}>{removeFromDataset ? 'Move to shared' : 'Move to Dataset'}</button>}
       <button aria-label="Clear selection" className="rounded px-2 py-1" onClick={() => setSelected(new Set())}>Clear</button>
     </div>}
-    <div className="asset-grid grid gap-3" role={directInteraction ? 'listbox' : 'group'} aria-multiselectable={directInteraction || undefined} aria-label="Files" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(min(100%,${size}px),1fr))` }} onKeyDown={event => {
+    <div className="asset-grid grid gap-3" role={directInteraction ? 'listbox' : 'group'} aria-multiselectable={directInteraction || undefined} aria-label="Files" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(min(100%,${thumbnailSize ?? size}px),1fr))` }} onKeyDown={event => {
       if (isTextEntry(event.target) || event.nativeEvent.isComposing || event.defaultPrevented) return;
       if ((event.ctrlKey || event.metaKey) && event.code === 'KeyA') { event.preventDefault(); event.stopPropagation(); setSelected(new Set(filtered.map(item => item.id))); return; }
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSelected(new Set()); return; }
