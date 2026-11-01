@@ -50,3 +50,25 @@ dist-ssr
 .env.*
 !.env.example
 !.env.*.example
+
+# Local assistant settings, role definitions, sessions and memories
+.codex/
+.agents/
+.claude/
+.cursor/
+AGENTS.local.md
+CLAUDE.local.md
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v*/
+
+# Local checkouts, dependency caches and helper runtimes
+/.worktrees/
+/worktrees/
+/.npm/
+/.pnpm-store/
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+.eslintcache
