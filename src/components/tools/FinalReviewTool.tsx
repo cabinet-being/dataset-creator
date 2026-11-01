@@ -767,6 +767,7 @@ export const FinalReviewTool = ({
 
       {sortedItems.length > 0 ? (
         <AssetGallery
+          inspectorOwnerId={viewId}
           active={active}
           directInteraction
           externalFiltering

@@ -14,6 +14,7 @@ import {
 import { PROJECT_DATASET_DIRECTORY, PROJECT_SHARED_DIRECTORY } from '../project/projectLayoutService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { clearLegacyExclusionAtPath } from '../project/legacyDatasetExclusionService';
+import { applyBuildSessionPathMoves } from '../build/buildSessionService';
 
 export const DATASET_EXPLORER_PATH = `Project/${PROJECT_DATASET_DIRECTORY}`;
 
@@ -56,6 +57,7 @@ const updateRegisteredPaths = (moves: ExplorerPathChange[]) => {
       store.updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath });
     }
   }
+  store.updateBuildSession((session) => applyBuildSessionPathMoves(session, moves));
 };
 
 const notifyPathMoves = (moves: ExplorerPathChange[]) => {

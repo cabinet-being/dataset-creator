@@ -38,6 +38,8 @@ const getProjectDataFileExtension = (fileName: string, mimeType: string): string
 
 export type WorkspaceImage = {
   id: string;
+  /** Stable manifest identity for path-backed assets. The UI id may still follow a moved path. */
+  stableId?: string;
   sourceImageId: string;
   editedAssetId?: string;
   kind: WorkspaceImageKind;
@@ -70,6 +72,7 @@ export const getWorkspaceDisplayName = (item: Pick<WorkspaceImage, 'originalFile
 
 export type WorkspaceFileAsset = {
   id: string;
+  stableId?: string;
   path: string;
   fileName: string;
   kind: Extract<ExplorerFileKind, 'video' | 'psd'>;
@@ -250,6 +253,7 @@ export const toWorkspaceReviewAssets = (
   );
   const fileItems: WorkspaceImage[] = fileAssets.map((asset, index) => ({
     id: asset.id,
+    stableId: asset.stableId,
     sourceImageId: '',
     kind: asset.kind,
     label: WORKSPACE_KIND_STYLES[asset.kind].label,

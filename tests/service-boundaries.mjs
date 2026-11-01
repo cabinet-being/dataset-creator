@@ -13,6 +13,7 @@ await build({
     'src/services/psd/photopeaPreviewQueue.ts',
     'src/services/project/fileSnapshotService.ts',
     'src/services/tagging/localTaggerFileSettings.ts',
+    'src/services/tagging/wdTagger.ts',
     'src/services/project/assetTypeService.ts',
     'src/services/project/projectPathFilters.ts',
     'src/lib/previewUrlCache.ts',
@@ -52,6 +53,30 @@ test('tagger requests read permission only when needed and propagates permission
     }
   }
   await assert.rejects(ensure({ queryPermission: async () => { throw new Error('Disconnected'); }, requestPermission() {} }), /Disconnected/);
+});
+
+test('WD tag CSV preserves score order, identifies categories and rejects malformed rows', async () => {
+  const { parseSelectedTagCsv, parseSelectedTagRows, packImageChannels, filterTagPredictions } = await load('wdTagger');
+  const parsed = parseSelectedTagCsv('tag_id,name,category\n0,questionable,9\n1,blue_hair,0\n2,"original character",4\n');
+  assert.equal(parsed.hasCategories, true);
+  assert.deepEqual(parsed.rows, [
+    { name: 'questionable', category: 'rating' },
+    { name: 'blue_hair', category: 'general' },
+    { name: 'original_character', category: 'character' },
+  ]);
+  assert.deepEqual(parseSelectedTagRows('name\nfirst\nsecond\n').map(({ name }) => name), ['first', 'second']);
+  assert.throws(() => parseSelectedTagCsv('name,category\nok,0\nmissing-category\n'), /row 3 has 1 fields/);
+  assert.throws(() => parseSelectedTagCsv('name\n"unfinished\n'), /unterminated quoted field/);
+  assert.throws(() => parseSelectedTagCsv('name,category\nok,wat\n'), /invalid category/);
+
+  const rgba = new Uint8Array([12, 34, 56, 255, 90, 80, 70, 255]);
+  assert.deepEqual([...packImageChannels(rgba, 2, 'nhwc', 'bgr')], [56, 34, 12, 70, 80, 90]);
+  assert.deepEqual([...packImageChannels(rgba, 2, 'nchw', 'bgr')], [56, 70, 34, 80, 12, 90]);
+  const predictions = [
+    { tag: 'rating', score: 0.99 }, { tag: 'general', score: 0.4 }, { tag: 'character', score: 0.8 },
+  ];
+  assert.deepEqual(filterTagPredictions(predictions, ['rating', 'general', 'character'], 0.35, 5), [predictions[1]]);
+  assert.deepEqual(filterTagPredictions(predictions, ['rating', 'general', 'character'], 0.35, 5, { includeRatings: true, characterThreshold: 0.75 }).map(({ tag }) => tag), ['rating', 'character', 'general']);
 });
 
 test('asset classification handles uppercase extensions, MIME-only files and internal metadata', async () => {

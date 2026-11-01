@@ -3,14 +3,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { toWorkspaceImages } from '../../lib/workspaceImages';
-import { buildExportPlan, exportPlanAsZip, exportPlanToDirectory, type ExportPlan, type ExportScope } from '../../services/export/exportPlan';
+import { buildExportPlan, exportPlanAsZip, exportPlanToDirectory, type ExportPlan, type ExportRecoveryJournal, type ExportScope } from '../../services/export/exportPlan';
 import { downloadZipFile } from '../../services/export/exportService';
 import { flushProjectSave } from '../../hooks/useProjectSave';
 import { useCommands } from '../workspace/Commands';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 
-export function ExportTool({ active = true }: { active?: boolean }) {
+export function ExportTool({ active = true, onExportComplete }: { active?: boolean; onExportComplete?: (plan: ExportPlan) => void }) {
   const sources = useProjectStore(state => state.sourceImages);
   const edits = useProjectStore(state => state.datasetItems);
   const dataset = useProjectStore(state => state.dataset);
@@ -30,6 +30,8 @@ export function ExportTool({ active = true }: { active?: boolean }) {
   const operation = useOperation('Export', root, 'tool:export');
   const [error, setError] = useState(''); const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false); const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [folderRecovery, setFolderRecovery] = useState<{ fingerprint: string; completed: string[]; target: ProjectDirectoryHandle }>();
+  const recoveryJournal = useRef<ExportRecoveryJournal>();
   const [revision, setRevision] = useState(0); const controller = useRef<AbortController>();
   const allItems = useMemo(() => toWorkspaceImages(Object.values(sources), Object.values(edits).filter(item => !item.deleted)), [sources, edits]);
   const items = useMemo(() => scope === 'workspace'
@@ -60,18 +62,30 @@ export function ExportTool({ active = true }: { active?: boolean }) {
       if (method === 'directory') {
         const picker = (window as unknown as { showDirectoryPicker?: () => Promise<ProjectDirectoryHandle> }).showDirectoryPicker;
         if (!picker) throw new Error('Folder export is unavailable in this browser. Choose ZIP.');
-        const target = await picker();
-        await exportPlanToDirectory(snapshot, target, next.signal, report);
+        let journal = recoveryJournal.current;
+        const target = journal?.fingerprint === snapshot.fingerprint ? journal.root! : await picker();
+        if (!journal || journal.fingerprint !== snapshot.fingerprint) {
+          journal = { completedEntryNames: new Set(), startedEntryNames: new Set(), pendingOutputNames: new Set(), root: target, fingerprint: snapshot.fingerprint };
+          recoveryJournal.current = journal;
+        }
+        const publishRecovery = () => setFolderRecovery({ fingerprint: snapshot.fingerprint, completed: [...journal!.completedEntryNames], target });
+        journal.onEntryStart = publishRecovery;
+        journal.onEntryComplete = publishRecovery;
+        publishRecovery();
+        await exportPlanToDirectory(snapshot, target, next.signal, report, journal);
+        recoveryJournal.current = undefined;
+        setFolderRecovery(undefined);
       } else {
         const blob = await exportPlanAsZip(snapshot, next.signal, report);
         downloadZipFile(blob, `${dataset.name || 'dataset'}.zip`);
       }
       operation.finish('completed', `${snapshot.entries.length} images and captions exported`);
+      onExportComplete?.(snapshot);
       notify('success', `Exported ${snapshot.entries.length} images and captions`);
     } catch (reason) {
       const cancelled = next.signal.aborted || (reason instanceof Error && reason.name === 'AbortError');
       operation.finish(cancelled ? 'cancelled' : 'failed', cancelled ? 'Completed files remain in the destination.' : reason instanceof Error ? reason.message : 'Export failed');
-      if (next.signal.aborted || (reason instanceof Error && reason.name === 'AbortError')) setError(method === 'directory' ? 'Export cancelled. Files already written remain in the destination.' : 'Export cancelled.');
+      if (next.signal.aborted || (reason instanceof Error && reason.name === 'AbortError')) setError(method === 'directory' ? 'Export cancelled. Files already written remain in the destination; retry to resume.' : 'Export cancelled.');
       else setError(reason instanceof Error ? reason.message : 'Export failed');
     } finally { setBusy(false); requestAnimationFrame(() => runButton.current?.focus()); }
   };
@@ -84,6 +98,7 @@ export function ExportTool({ active = true }: { active?: boolean }) {
       <div className="ml-auto self-end text-xs text-muted-foreground">{plan?.entries.length ?? 0} images · {plan?.entries.filter(entry => entry.caption).length ?? 0} captions · original image formats{plan?.entries.some(entry => entry.conversion === 'psd') ? ' · PSD → PNG via Photopea' : ''}</div>
     </div>
     {(error || loadError) && <div role="alert" className="flex items-center gap-3 rounded-lg border border-destructive/40 p-3 text-sm"><span className="flex-1">{error || loadError}</span><button onClick={() => { setError(''); setRevision(value => value + 1); }} disabled={busy}>Refresh</button></div>}
+    {folderRecovery && method === 'directory' ? <div className="flex items-center gap-3 text-xs text-muted-foreground"><p className="flex-1">Recovery journal: {folderRecovery.completed.length} completed entr{folderRecovery.completed.length === 1 ? 'y' : 'ies'} will be verified when you retry this export.</p><button disabled={busy} onClick={() => { recoveryJournal.current = undefined; setFolderRecovery(undefined); setError(''); }}>Choose another folder / start new export</button></div> : null}
     {loading && <p role="status" className="py-8 text-center text-sm text-muted-foreground">Preparing preview…</p>}
     {plan && !plan.entries.length && <div className="py-12 text-center text-sm text-muted-foreground">No images in this source.</div>}
     {!!plan?.skipped.length && <details className="text-sm text-muted-foreground"><summary>{plan.skipped.length} skipped</summary><ul className="mt-2 space-y-1">{plan.skipped.map((entry, i) => <li key={i}>{entry}</li>)}</ul></details>}

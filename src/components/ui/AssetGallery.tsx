@@ -1,3 +1,4 @@
+import { usePublishInspectorSelection } from '../../stores/useInspectorSelectionStore';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getWorkspaceDisplayName, type WorkspaceImage } from '../../lib/workspaceImages';
@@ -10,12 +11,12 @@ import { useCommands } from '../workspace/Commands';
 import { WorkspaceAssetFrame } from './WorkspaceAssetFrame';
 
 type Props = { membership?: 'add' | 'remove'; showOrder?: boolean; items: WorkspaceImage[]; renderItem: (item: WorkspaceImage) => ReactNode; active?: boolean;
-  className?: string; hideToolbar?: boolean; thumbnailSize?: number;
+  inspectorOwnerId?: string; className?: string; hideToolbar?: boolean; thumbnailSize?: number;
   toolbarControls?: ReactNode; onScopeChange?: (items: WorkspaceImage[]) => void; onAdd?: (items: WorkspaceImage[]) => void | Promise<void>;
   directInteraction?: boolean; externalFiltering?: boolean; getGroup?: (item: WorkspaceImage) => string;
   renderGroupHeader?: (group: string, count: number) => ReactNode; collapsedGroups?: ReadonlySet<string> };
 const PAGE_SIZE = 100;
-export function AssetGallery({ items, renderItem, membership = 'add', showOrder = true, active = true, className = '', hideToolbar = false, thumbnailSize, toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false, getGroup, renderGroupHeader, collapsedGroups }: Props) {
+export function AssetGallery({ inspectorOwnerId, items, renderItem, membership = 'add', showOrder = true, active = true, className = '', hideToolbar = false, thumbnailSize, toolbarControls, onScopeChange, onAdd = addAssetsToDataset, directInteraction = false, externalFiltering = false, getGroup, renderGroupHeader, collapsedGroups }: Props) {
   const root = useRef<HTMLDivElement>(null); const search = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState(''); const [caption, setCaption] = useState('all');
   const [sort, setSort] = useState('original'); const [size, setSize] = useState(210);
@@ -40,6 +41,20 @@ export function AssetGallery({ items, renderItem, membership = 'add', showOrder 
   const firstNavigableVisibleId = visible.find((item) => !getGroup || !isGroupCollapsed(getGroup(item)))?.id;
   const selectedItems = filtered.filter(item => selected.has(item.id));
   const scope = selectedItems.length ? selectedItems : filtered;
+  const inspectedItems = useMemo(() => {
+    const preview = filtered.find(item => item.id === previewId);
+    if (preview) return [preview];
+    const selection = filtered.filter(item => selected.has(item.id));
+    if (selection.length) return selection;
+    const focused = filtered.find(item => item.id === focusId);
+    return focused ? [focused] : [];
+  }, [filtered, selected, focusId, previewId]);
+  const inspectorSelection = useMemo(() => inspectedItems.length ? {
+    title: inspectedItems.length === 1 ? getWorkspaceDisplayName(inspectedItems[0]) : `${inspectedItems.length} selected`,
+    items: inspectedItems,
+  } : null, [inspectedItems]);
+  usePublishInspectorSelection(active && Boolean(inspectorOwnerId), inspectorOwnerId ?? '', inspectorSelection);
+
   const onScopeRef = useRef(onScopeChange); onScopeRef.current = onScopeChange;
   const scopeRef = useRef<WorkspaceImage[]>([]);
   useEffect(() => {

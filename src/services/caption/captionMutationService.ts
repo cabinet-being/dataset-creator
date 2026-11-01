@@ -1,11 +1,12 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { useHistoryStore } from '../../stores/useHistoryStore';
+import { useHistoryStore, captureHistoryEpoch, isHistoryEpochCurrent } from '../../stores/useHistoryStore';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { getExplorerParentDirectory } from '../project/explorerFileService';
 import { getAssetManifestName } from '../project/assetManifestService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { invalidateWorkspaceFileAssetCache } from '../../lib/workspaceFileAssets';
 import { useUIStore } from '../../stores/useUIStore';
+import type { HistoryTransactionWriter } from '../../stores/useHistoryStore';
 
 type CaptionTarget = {
   item: WorkspaceImage;
@@ -37,7 +38,10 @@ export async function persistCaptionTagsForItems(options: {
   resolveTags: (item: WorkspaceImage) => string[];
   directory?: ProjectDirectoryHandle | null;
   flush?: () => Promise<void>;
+  historyWriter?: HistoryTransactionWriter;
 }): Promise<number> {
+  const epoch = captureHistoryEpoch();
+  const ensureProject = () => { if (!isHistoryEpochCurrent(epoch)) throw new Error('The project changed while saving captions.'); };
   const unique = [...new Map(options.items.map((item) => [item.id, item])).values()];
   const targets: CaptionTarget[] = unique
     .map((item) => ({ item, before: item.tags, after: [...options.resolveTags(item)] }))
@@ -47,11 +51,14 @@ export async function persistCaptionTagsForItems(options: {
     if (!target.item.sourceImageId && target.item.assetPath) {
       if (!options.directory) throw new Error(`Reconnect the project folder to save the caption for ${target.item.fileName}.`);
       target.manifestBefore = await readManifest(options.directory, target.item.assetPath);
+      ensureProject();
     }
   }
   const apply = async (restore: boolean) => {
     const store = useProjectStore.getState();
+    ensureProject();
     for (const target of targets) {
+      ensureProject();
       const tags = restore ? target.before : target.after;
       const item = target.item;
       if (item.kind === 'edited' && item.editedAssetId) store.updateDatasetItem(item.editedAssetId, { tags });
@@ -62,6 +69,7 @@ export async function persistCaptionTagsForItems(options: {
         if (tags === undefined) delete manifest.tags;
         else manifest.tags = tags;
         await writeManifest(options.directory, item.assetPath, manifest);
+        ensureProject();
       }
     }
     if (options.directory && targets.some((target) => !target.item.sourceImageId && target.item.assetPath)) {
@@ -69,9 +77,10 @@ export async function persistCaptionTagsForItems(options: {
       useUIStore.getState().refreshAssetPreviews();
     }
     await options.flush?.();
+    ensureProject();
   };
   await apply(false);
-  useHistoryStore.getState().push({
+  (options.historyWriter?.push ?? useHistoryStore.getState().push)({
     label: `Edit ${targets.length} caption${targets.length === 1 ? '' : 's'}`,
     undo: () => apply(true),
     redo: () => apply(false),

@@ -1,4 +1,5 @@
 import type { InferenceSession, Tensor } from 'onnxruntime-web';
+import { filterTagPredictions, packImageChannels, parseSelectedTagCsv, type TagCategory } from './wdTagger';
 
 export type LocalTaggerRuntime = 'webgpu' | 'wasm';
 
@@ -13,6 +14,8 @@ export type LocalTaggerBundle = {
   inputName: string;
   outputName: string;
   tags: string[];
+  tagCategories: TagCategory[];
+  inputChannelOrder: 'rgb' | 'bgr';
   inputWidth: number;
   inputHeight: number;
   layout: 'nhwc' | 'nchw';
@@ -52,70 +55,7 @@ const ORT_WASM_URL = new URL(
   import.meta.url
 ).href;
 
-const parseCsvLine = (line: string): string[] => {
-  const values: string[] = [];
-  let current = '';
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const next = line[index + 1];
-
-    if (char === '"' && quoted && next === '"') {
-      current += '"';
-      index += 1;
-      continue;
-    }
-
-    if (char === '"') {
-      quoted = !quoted;
-      continue;
-    }
-
-    if (char === ',' && !quoted) {
-      values.push(current);
-      current = '';
-      continue;
-    }
-
-    current += char;
-  }
-
-  values.push(current);
-  return values.map((value) => value.trim());
-};
-
-const normalizeTagName = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, '_');
-
-export const parseSelectedTagsCsv = (csv: string): string[] => {
-  const lines = csv
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) {
-    throw new Error('selected_tags.csv must contain a header row and at least one tag row.');
-  }
-
-  const header = parseCsvLine(lines[0]).map((value) => value.toLowerCase());
-  const nameIndex = header.indexOf('name');
-
-  if (nameIndex === -1) {
-    throw new Error('selected_tags.csv is missing the required "name" column.');
-  }
-
-  const tags = lines
-    .slice(1)
-    .map((line) => normalizeTagName(parseCsvLine(line)[nameIndex] ?? ''))
-    .filter(Boolean);
-
-  if (tags.length === 0) {
-    throw new Error('selected_tags.csv did not contain any parseable tag names.');
-  }
-
-  return tags;
-};
+export const parseSelectedTagsCsv = (csv: string): string[] => parseSelectedTagCsv(csv).rows.map((tag) => tag.name);
 
 const getFileFromDirectory = async (
   handle: FileSystemDirectoryHandle,
@@ -241,7 +181,9 @@ export const connectLocalTaggerBundle = async (
   const { modelFile, tagsFile } = await readBundleFiles(source);
 
   onProgress?.('Reading selected_tags.csv...');
-  const tags = parseSelectedTagsCsv(await tagsFile.text());
+  const parsedTags = parseSelectedTagCsv(await tagsFile.text());
+  const tagRows = parsedTags.rows;
+  const tags = tagRows.map((tag) => tag.name);
 
   onProgress?.('Loading browser ONNX runtime...');
   const ort = await import('onnxruntime-web/all');
@@ -260,6 +202,8 @@ export const connectLocalTaggerBundle = async (
       name: source.name || 'Local model',
       session,
       tags,
+      tagCategories: tagRows.map((tag) => tag.category),
+      inputChannelOrder: parsedTags.hasCategories ? 'bgr' : 'rgb',
       runtime,
       ...inputSpec,
     };
@@ -303,6 +247,8 @@ const preprocessImage = async (image: Blob, bundle: LocalTaggerBundle): Promise<
 
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
 
   const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
   const targetWidth = Math.max(1, Math.round(bitmap.width * scale));
@@ -315,28 +261,7 @@ const preprocessImage = async (image: Blob, bundle: LocalTaggerBundle): Promise<
 
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
   const channelSize = canvas.width * canvas.height;
-  const data =
-    bundle.layout === 'nhwc'
-      ? new Float32Array(channelSize * 3)
-      : new Float32Array(channelSize * 3);
-
-  for (let pixelIndex = 0; pixelIndex < channelSize; pixelIndex += 1) {
-    const sourceIndex = pixelIndex * 4;
-    const red = pixels[sourceIndex];
-    const green = pixels[sourceIndex + 1];
-    const blue = pixels[sourceIndex + 2];
-
-    if (bundle.layout === 'nhwc') {
-      const targetIndex = pixelIndex * 3;
-      data[targetIndex] = red;
-      data[targetIndex + 1] = green;
-      data[targetIndex + 2] = blue;
-    } else {
-      data[pixelIndex] = red;
-      data[channelSize + pixelIndex] = green;
-      data[channelSize * 2 + pixelIndex] = blue;
-    }
-  }
+  const data = packImageChannels(pixels, channelSize, bundle.layout, bundle.inputChannelOrder ?? 'rgb');
 
   const dims =
     bundle.layout === 'nhwc'
@@ -350,7 +275,8 @@ export const predictLocalTags = async (
   bundle: LocalTaggerBundle,
   image: Blob,
   threshold: number,
-  maxTags: number
+  maxTags: number,
+  options: { characterThreshold?: number; includeRatings?: boolean } = {}
 ): Promise<LocalTaggerPrediction[]> => {
   const inputTensor = await preprocessImage(image, bundle);
   const results = await bundle.session.run({ [bundle.inputName]: inputTensor });
@@ -361,9 +287,9 @@ export const predictLocalTags = async (
   }
 
   const scores = Array.from(output.data as Float32Array | number[]);
-  return scores
-    .map((score, index) => ({ tag: bundle.tags[index], score }))
-    .filter((prediction) => prediction.tag && prediction.score >= threshold)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, maxTags);
+  if (scores.length !== bundle.tags.length) {
+    throw new Error(`The ONNX model returned ${scores.length} scores for ${bundle.tags.length} selected tags.`);
+  }
+  const predictions = scores.map((score, index) => ({ tag: bundle.tags[index], score }));
+  return filterTagPredictions(predictions, bundle.tagCategories ?? [], threshold, maxTags, options);
 };

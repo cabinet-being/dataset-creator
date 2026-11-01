@@ -1,9 +1,9 @@
+import { usePublishInspectorSelection } from '../../stores/useInspectorSelectionStore';
 import { useOperation } from '../../hooks/useOperation';
 import { flushProjectSave } from '../../hooks/useProjectSave';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useId, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent } from 'react';
-import { createPortal } from 'react-dom';
+import type { KeyboardEvent, MouseEvent } from 'react';
 import { AlertCircle, Plus, Plug, Sparkles, Upload, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
@@ -34,8 +34,8 @@ import { resolveCurrentScope } from '../../lib/workspaceToolScope';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import { persistCaptionTagsForItems as persistAssetCaptionTags } from '../../services/caption/captionMutationService';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
+import { CaptionEditor } from '../caption/CaptionEditor';
 
-type SuggestionDropdownPosition = { top: number; left: number; width: number };
 type InsertMode = 'prepend' | 'append' | 'overwrite';
 
 const canAutoTagItem = (item: WorkspaceImage): boolean =>
@@ -114,27 +114,14 @@ const parseSuggestionCsv = (value: string): string[] =>
     )
   ).sort((left, right) => left.localeCompare(right));
 
-const getCurrentTagFragment = (value: string): string => {
-  const fragments = value.split(',');
-  return fragments[fragments.length - 1]?.trim().toLowerCase() ?? '';
-};
-
-const replaceCurrentTagFragment = (value: string, suggestion: string): string => {
-  const fragments = value.split(',');
-  fragments[fragments.length - 1] = suggestion;
-  return fragments.map((fragment) => fragment.trim()).filter(Boolean).join(', ');
-};
-
 const INSERT_MODE_LABELS: Record<InsertMode, string> = {
   prepend: 'Prepend',
   append: 'Append',
   overwrite: 'Overwrite',
 };
 
-const getCaptionTagClassName = (highlightUnknown: boolean): string =>
-  highlightUnknown
-    ? 'inline-flex items-center gap-1 rounded border border-amber-500/70 bg-amber-500/20 px-2 py-1 text-xs text-amber-950 dark:text-amber-100'
-    : 'inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground';
+const getCaptionTagClassName = (): string =>
+  'inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground';
 
 type TaggingCardProps = {
   item: WorkspaceImage;
@@ -143,7 +130,6 @@ type TaggingCardProps = {
   onSubmit: (itemId: string, value: string) => Promise<boolean>;
   onRemoveTag: (itemId: string, tag: string) => void;
   suggestions: string[];
-  knownTags: Set<string>;
   onOpenContextMenu?: (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 };
 
@@ -155,142 +141,28 @@ const TaggingCard = memo(
     onSubmit,
     onRemoveTag,
     suggestions,
-    knownTags,
     onOpenContextMenu,
   }: TaggingCardProps) => {
-    const suggestionsId = useId();
-    const inputRef = useRef<HTMLInputElement | null>(null);
-    const dropdownRef = useRef<HTMLDivElement | null>(null);
-    const suggestionButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
-    const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
-    const [dropdownPosition, setDropdownPosition] = useState<SuggestionDropdownPosition | null>(null);
-    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [inputValue, setInputValue] = useState('');
     const [saving, setSaving] = useState(false);
-    const fragment = getCurrentTagFragment(inputValue);
     const displayTags = useMemo(() => normalizeUniqueTags(item.tags ?? []), [item.tags]);
-    const displayTagSet = useMemo(() => new Set(displayTags), [displayTags]);
-    const filteredSuggestions = useMemo(() => {
-      if (!fragment) {
-        return [];
-      }
-
-      const nextSuggestions: string[] = [];
-      const seen = new Set<string>();
-
-      for (const tag of suggestions) {
-        if (seen.has(tag) || !tag.includes(fragment) || displayTagSet.has(tag)) {
-          continue;
-        }
-
-        seen.add(tag);
-        nextSuggestions.push(tag);
-
-        if (nextSuggestions.length >= 24) {
-          break;
-        }
-      }
-
-      return nextSuggestions;
-    }, [displayTagSet, fragment, suggestions]);
-    const hasSuggestions = filteredSuggestions.length > 0;
-    const shouldShowDropdown = hasSuggestions && isDropdownOpen;
-
-    useEffect(() => {
-      setActiveSuggestionIndex(0);
-    }, [inputValue, filteredSuggestions.length]);
-
-    useEffect(() => {
-      suggestionButtonRefs.current = suggestionButtonRefs.current.slice(0, filteredSuggestions.length);
-    }, [filteredSuggestions.length]);
-
-    useEffect(() => {
-      if (!hasSuggestions) {
-        setIsDropdownOpen(false);
-      }
-    }, [hasSuggestions]);
-
-    const updateDropdownPosition = useCallback(() => {
-      const rect = inputRef.current?.getBoundingClientRect();
-      if (!rect) {
-        setDropdownPosition(null);
-        return;
-      }
-
-      setDropdownPosition({
-        top: rect.bottom + 4,
-        left: rect.left,
-        width: rect.width,
-      });
-    }, []);
-
-    useEffect(() => {
-      if (!shouldShowDropdown) {
-        setDropdownPosition(null);
-        return;
-      }
-
-      updateDropdownPosition();
-      window.addEventListener('resize', updateDropdownPosition);
-      window.addEventListener('scroll', updateDropdownPosition, true);
-
-      return () => {
-        window.removeEventListener('resize', updateDropdownPosition);
-        window.removeEventListener('scroll', updateDropdownPosition, true);
-      };
-    }, [shouldShowDropdown, updateDropdownPosition]);
-
-    useEffect(() => {
-      if (!shouldShowDropdown) {
-        return;
-      }
-
-      const isInsideTagInput = (target: EventTarget | null) =>
-        target instanceof Node &&
-        (inputRef.current?.contains(target) || dropdownRef.current?.contains(target));
-
-      const handlePointerDown = (event: PointerEvent) => {
-        if (!isInsideTagInput(event.target)) {
-          setIsDropdownOpen(false);
-        }
-      };
-
-      const handleFocusIn = (event: FocusEvent) => {
-        if (!isInsideTagInput(event.target)) {
-          setIsDropdownOpen(false);
-        }
-      };
-
-      document.addEventListener('pointerdown', handlePointerDown);
-      document.addEventListener('focusin', handleFocusIn);
-
-      return () => {
-        document.removeEventListener('pointerdown', handlePointerDown);
-        document.removeEventListener('focusin', handleFocusIn);
-      };
-    }, [shouldShowDropdown]);
-
-    const addSuggestion = (tag: string) => {
-      const nextValue = replaceCurrentTagFragment(inputValue, tag);
-      setInputValue(nextValue);
-      setIsDropdownOpen(false);
-      window.requestAnimationFrame(async () => {
-        if (await onSubmit(item.id, nextValue)) {
+    const handleKeyDown = async (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.defaultPrevented || event.nativeEvent.isComposing || event.repeat || event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (saving) return;
+      const advance = event.ctrlKey || event.metaKey;
+      const fieldScope = event.currentTarget.closest('[data-dock-view]');
+      setSaving(true);
+      try {
+        if (await onSubmit(item.id, inputValue)) {
           setInputValue('');
+          if (advance) {
+            const fields = Array.from(fieldScope?.querySelectorAll<HTMLTextAreaElement>('[id^="caption-input-"]') ?? []);
+            fields[fields.findIndex((field) => field.id === `caption-input-${item.id}`) + 1]?.focus();
+          }
         }
-        inputRef.current?.focus();
-      });
-    };
-
-    const focusSuggestion = (index: number) => {
-      if (!hasSuggestions) {
-        return;
-      }
-
-      setIsDropdownOpen(true);
-      const nextIndex = (index + filteredSuggestions.length) % filteredSuggestions.length;
-      setActiveSuggestionIndex(nextIndex);
-      window.requestAnimationFrame(() => suggestionButtonRefs.current[nextIndex]?.focus());
+      } finally { setSaving(false); }
     };
 
     return (
@@ -320,7 +192,7 @@ const TaggingCard = memo(
                 displayTags.map((tag) => (
                   <span
                     key={tag}
-                    className={getCaptionTagClassName(knownTags.size > 0 && !knownTags.has(tag))}
+                    className={getCaptionTagClassName()}
                   >
                     {tag}
                     <button
@@ -339,133 +211,16 @@ const TaggingCard = memo(
             </div>
           </div>
 
-          <div className="relative">
-            <input
-              ref={inputRef}
-              role="combobox"
-              type="text"
+          <div onKeyDown={handleKeyDown}>
+            <CaptionEditor
               value={inputValue}
-              onChange={(event) => {
-                setInputValue(event.target.value);
-                setIsDropdownOpen(true);
-                window.requestAnimationFrame(updateDropdownPosition);
-              }}
-              onFocus={() => {
-                setIsDropdownOpen(true);
-                updateDropdownPosition();
-              }}
-              data-caption-input={item.id}
-              aria-label={`Tags for ${getWorkspaceDisplayName(item)}`}
-              onKeyDown={async (event) => {
-                if (event.nativeEvent.isComposing || event.repeat) return;
-                if (event.key === 'Enter') {
-                  event.preventDefault(); event.stopPropagation();
-                  if (saving) return;
-                  const next = event.ctrlKey || event.metaKey;
-                  setSaving(true);
-                  try {
-                    if (await onSubmit(item.id, inputValue)) {
-                      setInputValue(''); setIsDropdownOpen(false);
-                      if (next) {
-                        const fields = Array.from(inputRef.current?.closest('[data-dock-view]')?.querySelectorAll<HTMLInputElement>('[data-caption-input]') ?? []);
-                        fields[fields.findIndex(field => field === inputRef.current) + 1]?.focus();
-                      }
-                    }
-                  } finally { setSaving(false); }
-                }
-
-                if (event.key === 'Escape') {
-                  event.preventDefault();
-                  setIsDropdownOpen(false);
-                  event.stopPropagation();
-                }
-
-                if (event.key === 'Tab') setIsDropdownOpen(false);
-
-                if (event.key === 'ArrowDown' && hasSuggestions) {
-                  event.preventDefault();
-                  focusSuggestion(0);
-                }
-
-                if (event.key === 'ArrowUp' && hasSuggestions) {
-                  event.preventDefault();
-                  focusSuggestion(filteredSuggestions.length - 1);
-                }
-              }}
-              placeholder="Tags"
+              onChange={setInputValue}
+              suggestions={suggestions}
               disabled={saving}
-              aria-autocomplete="list"
-              aria-expanded={shouldShowDropdown}
-              aria-controls={shouldShowDropdown ? suggestionsId : undefined}
-              aria-activedescendant={
-                shouldShowDropdown ? `${suggestionsId}-${activeSuggestionIndex}` : undefined
-              }
-              className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              placeholder="Tags"
+              ariaLabel={`Tags for ${getWorkspaceDisplayName(item)}`}
+              id={`caption-input-${item.id}`}
             />
-            {shouldShowDropdown && dropdownPosition
-              ? createPortal(
-              <div
-                ref={dropdownRef}
-                id={suggestionsId}
-                role="listbox"
-                className="fixed z-[1000] max-h-[9.25rem] overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-lg"
-                style={{
-                  top: dropdownPosition.top,
-                  left: dropdownPosition.left,
-                  width: dropdownPosition.width,
-                }}
-              >
-                {filteredSuggestions.map((tag, index) => (
-                  <button
-                    key={`${tag}-${index}`}
-                    ref={(node) => {
-                      suggestionButtonRefs.current[index] = node;
-                    }}
-                    id={`${suggestionsId}-${index}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeSuggestionIndex}
-                    onFocus={() => setActiveSuggestionIndex(index)}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => addSuggestion(tag)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        addSuggestion(tag);
-                      }
-
-                      if (event.key === 'Escape') {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        inputRef.current?.focus();
-                        setIsDropdownOpen(false);
-                      }
-
-                      if (event.key === 'ArrowDown') {
-                        event.preventDefault();
-                        focusSuggestion(index + 1);
-                      }
-
-                      if (event.key === 'ArrowUp') {
-                        event.preventDefault();
-                        focusSuggestion(index - 1);
-                      }
-
-
-                    }}
-                    className={`block w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                      index === activeSuggestionIndex
-                        ? 'bg-primary text-primary-foreground'
-                        : 'hover:bg-secondary'
-                    }`}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>,
-                  document.body
-                )
-              : null}
           </div>
         </div>
       </div>
@@ -485,7 +240,6 @@ type CaptionScopeControlsProps = {
   tags: CaptionScopeTag[];
   tagInput: string;
   suggestions: string[];
-  knownTags: Set<string>;
   insertMode: InsertMode;
   autoCaptionDisabled: boolean;
   autoCaptionBusy: boolean;
@@ -502,7 +256,6 @@ const CaptionScopeControls = ({
   tags,
   tagInput,
   suggestions,
-  knownTags,
   insertMode,
   autoCaptionDisabled,
   autoCaptionBusy,
@@ -513,7 +266,6 @@ const CaptionScopeControls = ({
   onInsertModeChange,
   onRemoveTag,
 }: CaptionScopeControlsProps) => {
-  const suggestionsId = useId();
   return (
   <div className="flex flex-wrap items-start gap-3">
     <div className="min-w-0 flex-1">
@@ -524,14 +276,11 @@ const CaptionScopeControls = ({
         }}
         className="flex gap-2"
       >
-        <input
-          type="text"
-          value={tagInput}
-          onChange={(event) => onTagInputChange(event.target.value)}
-          aria-label="Batch tags" placeholder="Tags"
-          list={suggestionsId}
-          className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
-        />
+        <div className="min-w-0 flex-1" onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.defaultPrevented && !event.nativeEvent.isComposing && !event.shiftKey) {
+            event.preventDefault(); event.stopPropagation(); onSubmitTags();
+          }
+        }}><CaptionEditor value={tagInput} onChange={onTagInputChange} suggestions={suggestions} ariaLabel="Batch tags" placeholder="Tags" rows={2} /></div>
         <button
           type="submit"
           disabled={!tagInput.trim() || scopeItems.length === 0}
@@ -553,11 +302,7 @@ const CaptionScopeControls = ({
           <Sparkles size={16} />
         </button>
       </form>
-      <datalist id={suggestionsId}>
-        {suggestions.slice(0, 200).map((tag) => (
-          <option key={tag} value={tag} />
-        ))}
-      </datalist>
+
     </div>
 
     <div>
@@ -583,7 +328,7 @@ const CaptionScopeControls = ({
           tags.map((tag) => (
             <span
               key={tag.tag}
-              className={getCaptionTagClassName(knownTags.size > 0 && !knownTags.has(tag.tag))}
+              className={getCaptionTagClassName()}
             >
               {tag.tag}
               {scopeItems.length > 1 ? (
@@ -609,6 +354,7 @@ const CaptionScopeControls = ({
 }
 
 type TaggingToolProps = {
+  viewId?: string;
   selectedItemId?: string | null;
   scopedItemIds?: string[];
   singleFileMode?: boolean;
@@ -619,6 +365,7 @@ type TaggingToolProps = {
 };
 
 export const TaggingTool = ({
+  viewId = 'tool:tagging',
   selectedItemId: selectedItemIdProp,
   scopedItemIds,
   singleFileMode = false,
@@ -719,6 +466,11 @@ export const TaggingTool = ({
     () => items.find((item) => item.id === selectedItemId) ?? null,
     [items, selectedItemId]
   );
+  const inspectorSelection = useMemo(() => selectedItem ? {
+    title: getWorkspaceDisplayName(selectedItem), items: [selectedItem],
+    detail: 'Edit the caption in this workspace. Changes use the same caption as export.',
+  } : null, [selectedItem]);
+  usePublishInspectorSelection(active, viewId, inspectorSelection);
   const canUseCaptionScopeItem = useCallback(
     (item: WorkspaceImage) =>
       dataset
@@ -833,9 +585,10 @@ export const TaggingTool = ({
     const blacklist = new Set(taggingConfig.blacklist);
     const normalizedKeyword = datasetTriggerWord.trim().toLowerCase();
 
-    return normalizeUniqueTags(suggestionTags).filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
-  }, [suggestionTags, taggingConfig.blacklist, datasetTriggerWord]);
-  const knownSuggestionTags = useMemo(() => new Set(normalizeUniqueTags(suggestionTags)), [suggestionTags]);
+    const projectTags = items.flatMap((item) => item.tags ?? []);
+    return normalizeUniqueTags([...(localTagger?.tags ?? []), ...suggestionTags, ...projectTags])
+      .filter((tag) => tag !== normalizedKeyword && !blacklist.has(tag));
+  }, [items, localTagger?.tags, suggestionTags, taggingConfig.blacklist, datasetTriggerWord]);
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -1396,7 +1149,6 @@ export const TaggingTool = ({
       tags={scopeTags}
       tagInput={selectedTagInput}
       suggestions={manualTagSuggestions}
-      knownTags={knownSuggestionTags}
       insertMode={taggingConfig.insertMode}
       autoCaptionDisabled={scopeAutoCaptionDisabled}
       autoCaptionBusy={localTaggerStatus === 'running'}
@@ -1801,7 +1553,6 @@ export const TaggingTool = ({
                 onSubmit={applyTagsToItem}
                 onRemoveTag={handleRemoveTag}
                 suggestions={manualTagSuggestions}
-                knownTags={knownSuggestionTags}
                 onOpenContextMenu={onOpenAssetContextMenu}
               />
             )}

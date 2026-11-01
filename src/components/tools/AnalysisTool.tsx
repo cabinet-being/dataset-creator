@@ -1,5 +1,4 @@
 import { useId, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   BarChart3,
@@ -12,7 +11,6 @@ import {
   Tags,
 } from 'lucide-react';
 import { ASPECT_RATIO_LABELS, ASPECT_RATIOS } from '../../lib/constants';
-import { useInspectorPortalRoot } from '../../hooks/useInspectorPortalRoot';
 import {
   createWorkspaceFileAssetId,
   inferWorkspaceAspectRatio,
@@ -35,6 +33,7 @@ import type { AspectRatio, Dataset, SimilarityCluster, SimilarityResult } from '
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import { persistCaptionTagsForItems } from '../../services/caption/captionMutationService';
 import { flushProjectSave } from '../../hooks/useProjectSave';
+import { usePublishInspectorSelection } from '../../stores/useInspectorSelectionStore';
 
 type AnalysisTargetMode = 'project' | 'dataset' | 'file';
 type AnalysisView = 'overview' | 'duplicates' | 'similar' | 'coverage' | 'tags' | 'outliers';
@@ -160,6 +159,7 @@ type Outlier = {
 };
 
 type AnalysisToolProps = {
+  viewId?: string;
   datasetId?: string;
   active?: boolean;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
@@ -917,6 +917,7 @@ const sortSimilarGroups = (groups: SimilarGroup[], sort: SimilarGroupSort): Simi
   });
 
 export const AnalysisTool = ({
+  viewId = 'tool:analysis',
   active = true,
   datasetId,
   projectDirectoryHandle,
@@ -940,7 +941,6 @@ export const AnalysisTool = ({
   );
   const { addNotification } = useUIStore();
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
-  const analysisInspectorRoot = useInspectorPortalRoot('analysis-inspector-root', active);
   const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
   const traitCacheRef = useRef<Record<string, TraitCacheEntry>>({});
 
@@ -1416,6 +1416,16 @@ export const AnalysisTool = ({
     [dataset, similarityData.pairMap, tagAnalysis, visualItems, visualTraitsById]
   );
   const selectedItem = selectedItemId ? itemById.get(selectedItemId) ?? null : null;
+  const inspectorSelection = useMemo(() => ({
+    title: selectedItem ? getItemTitle(selectedItem) : targetMode === 'file' ? 'File analysis' : 'Analysis',
+    items: selectedItem ? [selectedItem] : [],
+    status: selectedItem ? `${getOrientation(selectedItem)} · ${getCaptionTags(selectedItem, dataset).length} tags` : undefined,
+    detail: selectedItem && visualTraitsById[selectedItem.id]
+      ? `Dominant colors: ${visualTraitsById[selectedItem.id].dominantColors.join(', ')}`
+      : undefined,
+    sourcePath: selectedItem?.assetPath,
+  }), [dataset, selectedItem, targetMode, visualTraitsById]);
+  usePublishInspectorSelection(active, viewId, inspectorSelection);
   const previewItems = useMemo(() => {
     const byId = new Map(items.map((item) => [item.id, item]));
     for (const recommendation of [
@@ -1544,33 +1554,24 @@ export const AnalysisTool = ({
     { id: 'outliers' as const, label: 'Outliers', Icon: SearchX, count: outliers.length },
   ];
 
-  if (items.length === 0) {
-    return <section className="flex min-h-80 items-center justify-center p-8 text-center" aria-label={targetTitle}>
-      <div>
-        <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
-        <h3 className="text-sm font-medium">{targetMode === 'file' ? 'No selected files to analyze' : 'No visual assets to analyze'}</h3>
-      </div>
-    </section>;
-  }
-
   const analysisControls = (
-    <div className="space-y-3 text-xs">
-
-      <div>
+    <section className="rounded-lg border border-border bg-card p-3 text-xs" aria-label="Analysis controls">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
+      <div className="min-w-0">
         <p className="mb-2 text-muted-foreground">View</p>
-        <div className="grid gap-1.5">
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 2xl:grid-cols-6">
           {viewDefinitions.map(({ id, label, Icon, count }) => (
             <button
               key={id}
               type="button"
               onClick={() => id === 'coverage' && onAutoAssemble ? onAutoAssemble() : setActiveView(id)}
-              className={`flex items-center justify-between rounded-md border px-2 py-2 text-left transition-colors ${
+              className={`flex min-w-0 items-center justify-between gap-2 rounded-md border px-2 py-2 text-left transition-colors ${
                 activeView === id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-secondary'
               }`}
             >
               <span className="flex items-center gap-2">
                 <Icon className="h-3.5 w-3.5" />
-                {label}
+                <span className="truncate">{label}</span>
               </span>
               <span className="font-mono">{count}</span>
             </button>
@@ -1578,7 +1579,8 @@ export const AnalysisTool = ({
         </div>
       </div>
 
-      <div className="rounded-md border border-border bg-background p-3">
+      <div className="flex flex-wrap items-start gap-3 rounded-md border border-border bg-background p-3 lg:items-center">
+        <div className="min-w-[12rem] flex-1">
         <div className="mb-2 flex items-center justify-between gap-3">
           <label htmlFor={`${controlId}-similarity`} className="flex items-center gap-1.5 text-muted-foreground">
             <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -1598,11 +1600,29 @@ export const AnalysisTool = ({
           className="w-full"
         />
         <details className="mt-1 text-xs text-muted-foreground"><summary className="cursor-pointer">About similarity</summary><p className="mt-1">Controls Similar Groups only. Duplicates use visual hash.</p></details>
+        </div>
+
+        {selectedItem ? (
+          <div className="min-w-0 flex-1 border-t border-border pt-2 lg:border-l lg:border-t-0 lg:pl-3 lg:pt-0">
+            <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Selected asset</p>
+            <p className="mt-1 truncate text-sm font-semibold" title={getItemTitle(selectedItem)}>{getItemTitle(selectedItem)}</p>
+            <p className="mt-1 text-muted-foreground">
+              {getOrientation(selectedItem)} · {getCaptionTags(selectedItem, dataset).length} tags
+            </p>
+            {visualTraitsById[selectedItem.id] ? (
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Colors</span>
+                <TraitSwatches colors={visualTraitsById[selectedItem.id].dominantColors} />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       </div>
 
       {activeView === 'similar' ? (
-        <div className="rounded-md border border-border bg-background p-3">
-          <label htmlFor={`${controlId}-sort`} className="mb-2 block text-muted-foreground">Sort</label>
+        <div className="grid gap-3 rounded-md border border-border bg-background p-3 sm:grid-cols-2">
+          <label htmlFor={`${controlId}-sort`} className="block text-muted-foreground">Sort
           <select
             id={`${controlId}-sort`}
             value={similarSort}
@@ -1613,8 +1633,8 @@ export const AnalysisTool = ({
             <option value="similarity">Similarity</option>
             <option value="coverage">Coverage value</option>
             <option value="size">Size</option>
-          </select>
-          <label htmlFor={`${controlId}-filter`} className="mb-2 mt-3 block text-muted-foreground">Filter</label>
+          </select></label>
+          <label htmlFor={`${controlId}-filter`} className="block text-muted-foreground">Filter
           <select
             id={`${controlId}-filter`}
             value={similarFilter}
@@ -1627,12 +1647,12 @@ export const AnalysisTool = ({
             <option value="same-color">Same color</option>
             <option value="tag-mismatch">Tag mismatch</option>
             <option value="redundant">Redundant</option>
-          </select>
+          </select></label>
         </div>
       ) : null}
 
       {activeView === 'tags' ? (
-        <div className="rounded-md border border-border bg-background p-3">
+        <div className="max-w-md rounded-md border border-border bg-background p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <label htmlFor={`${controlId}-overused`} className="text-muted-foreground">Overused threshold</label>
             <span className="font-mono">{overusedThreshold}%</span>
@@ -1650,31 +1670,24 @@ export const AnalysisTool = ({
           />
         </div>
       ) : null}
-
-
-      {selectedItem ? (
-        <div className="rounded-md border border-border bg-background p-3">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">Selected asset</p>
-          <p className="mt-1 truncate text-sm font-semibold">{getItemTitle(selectedItem)}</p>
-          <p className="mt-1 text-muted-foreground">
-            {getOrientation(selectedItem)} · {getCaptionTags(selectedItem, dataset).length} tags
-          </p>
-          {visualTraitsById[selectedItem.id] ? (
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-muted-foreground">Colors</span>
-              <TraitSwatches colors={visualTraitsById[selectedItem.id].dominantColors} />
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+    </section>
   );
-  const analysisInspectorPortal = analysisInspectorRoot ? createPortal(analysisControls, analysisInspectorRoot) : null;
+
+  if (items.length === 0) {
+    return <div className="space-y-5">
+      {analysisControls}
+      <section className="flex min-h-80 items-center justify-center p-8 text-center" aria-label={targetTitle}>
+        <div>
+          <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <h3 className="text-sm font-medium">{targetMode === 'file' ? 'No selected files to analyze' : 'No visual assets to analyze'}</h3>
+        </div>
+      </section>
+    </div>;
+  }
 
   return (
     <div className="space-y-5">
-      {analysisInspectorPortal}
-      {analysisInspectorPortal ? null : analysisControls}
+      {analysisControls}
 
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>

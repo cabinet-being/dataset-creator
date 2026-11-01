@@ -8,7 +8,22 @@ import { resolveAssetCaption } from '../caption/captionResolver';
 
 export type ExportScope = 'dataset' | 'workspace' | 'directory';
 export type ExportEntry = { imageName: string; textName: string; caption: string; blob: Blob; source: string; conversion?: 'psd' };
-export type ExportPlan = { scope: ExportScope; entries: ExportEntry[]; skipped: string[] };
+export type ExportPlan = { scope: ExportScope; entries: ExportEntry[]; skipped: string[]; fingerprint: string };
+export type ExportRecoveryJournal = { completedEntryNames: Set<string>; startedEntryNames?: Set<string>; pendingOutputNames?: Set<string>; root?: ProjectDirectoryHandle; fingerprint?: string; onEntryStart?: (imageName: string) => void; onEntryComplete?: (imageName: string) => void };
+export const createExportPlanFingerprint = async (scope: ExportScope, entries: ExportEntry[]): Promise<string> => {
+  const hex = (digest: ArrayBuffer) => Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  const compact: unknown[] = [scope];
+  for (const entry of entries) {
+    const chunkDigests: string[] = [];
+    for (let offset = 0; offset < entry.blob.size; offset += 1024 * 1024) {
+      const chunk = await entry.blob.slice(offset, offset + 1024 * 1024).arrayBuffer();
+      chunkDigests.push(hex(await crypto.subtle.digest('SHA-256', chunk)));
+    }
+    const metadata = [entry.imageName, entry.textName, entry.caption, entry.source, entry.blob.type, entry.blob.size, entry.conversion ?? ''];
+    compact.push([metadata, hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(chunkDigests))))]);
+  }
+  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(compact))));
+};
 export const renderExportCaption = (tags: string[], trigger: string, blacklist: string[]) => {
   const blocked = new Set(blacklist.map(tag => tag.trim().toLowerCase()));
   const seen = new Set<string>();
@@ -23,7 +38,7 @@ const extension = (blob: Blob, name: string) => ({ 'image/png': 'png', 'image/jp
 export async function buildExportPlan({ scope, items, dataset, directory, blacklist }: {
   scope: ExportScope; items: WorkspaceImage[]; dataset: Dataset; directory?: ProjectDirectoryHandle; blacklist: string[];
 }): Promise<ExportPlan> {
-  const plan: ExportPlan = { scope, entries: [], skipped: [] };
+  const plan: ExportPlan = { scope, entries: [], skipped: [], fingerprint: '' };
   const used = new Set<string>();
   const ordered: { entry: ExportEntry; key: string }[] = [];
   const add = (blob: Blob, source: string, tags: string[], key: string, targetFolder = '', conversion?: 'psd') => {
@@ -49,6 +64,7 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
     }
   }
   plan.entries = ordered.map(({ entry }) => entry);
+  plan.fingerprint = await createExportPlanFingerprint(scope, plan.entries);
   return plan;
 }
 
@@ -57,6 +73,20 @@ async function exportImage(entry: ExportEntry, signal?: AbortSignal) {
   const blob = entry.conversion === 'psd' ? await convertPsdToPng({ file: entry.blob, fileName: entry.source }, undefined, signal) : entry.blob;
   signal?.throwIfAborted();
   return blob;
+}
+
+async function blobsEqual(left: Blob, right: Blob, signal?: AbortSignal) {
+  if (left.size !== right.size) return false;
+  for (let offset = 0; offset < left.size; offset += 64 * 1024) {
+    signal?.throwIfAborted();
+    const [a, b] = await Promise.all([
+      left.slice(offset, offset + 64 * 1024).arrayBuffer(),
+      right.slice(offset, offset + 64 * 1024).arrayBuffer(),
+    ]);
+    const first = new Uint8Array(a), second = new Uint8Array(b);
+    if (first.some((byte, index) => byte !== second[index])) return false;
+  }
+  return true;
 }
 
 export async function exportPlanAsZip(plan: ExportPlan, signal?: AbortSignal, progress?: (done: number, total: number) => void) {
@@ -70,30 +100,83 @@ export async function exportPlanAsZip(plan: ExportPlan, signal?: AbortSignal, pr
   signal?.throwIfAborted(); return blob;
 }
 
-export async function exportPlanToDirectory(plan: ExportPlan, root: ProjectDirectoryHandle, signal?: AbortSignal, progress?: (done: number, total: number) => void) {
+export async function exportPlanToDirectory(
+  plan: ExportPlan,
+  root: ProjectDirectoryHandle,
+  signal?: AbortSignal,
+  progress?: (done: number, total: number) => void,
+  recovery?: ExportRecoveryJournal
+) {
+  if (recovery) {
+    if (recovery.fingerprint && recovery.fingerprint !== plan.fingerprint) throw new Error('Recovery journal belongs to a different export plan.');
+    if (recovery.root && recovery.root !== root) {
+      const sameEntry = await recovery.root.isSameEntry?.(root);
+      if (!sameEntry) throw new Error('Recovery journal belongs to a different destination folder.');
+    }
+    recovery.root = root; recovery.fingerprint = plan.fingerprint;
+  }
   // Check every filename before creating output files or converting PSDs.
   const destination = async (path: string, create: boolean) => {
     const parts = path.split('/'); const name = parts.pop()!; let directory = root;
     for (const part of parts) directory = await directory.getDirectoryHandle(part, { create });
     return { directory, name };
   };
-  for (const entry of plan.entries) for (const path of [entry.imageName, entry.textName]) {
+  const existing = async (path: string) => {
+    try { const { directory, name } = await destination(path, false); return await (await directory.getFileHandle(name)).getFile(); }
+    catch (error) { if (error instanceof Error && error.name === 'NotFoundError') return undefined; throw error; }
+  };
+  const writeOutput = async (path: string, data: Blob | string) => {
+    signal?.throwIfAborted();
+    const { directory, name } = await destination(path, true);
+    recovery?.pendingOutputNames?.add(path);
+    const writer = await (await directory.getFileHandle(name, { create: true })).createWritable();
+    try { await writer.write(data); signal?.throwIfAborted(); await writer.close(); recovery?.pendingOutputNames?.delete(path); }
+    catch (error) { try { await (writer as typeof writer & { abort?: () => Promise<void> }).abort?.(); } catch { /* preserve the write or cancellation error */ } throw error; }
+  };
+  for (const entry of plan.entries) {
+    signal?.throwIfAborted();
+    const recovering = recovery?.completedEntryNames.has(entry.imageName) || recovery?.startedEntryNames?.has(entry.imageName);
+    if (recovering) {
+      const expectedImage = await exportImage(entry, signal);
+      const actualImage = await existing(entry.imageName);
+      if (actualImage && !(recovery?.pendingOutputNames?.has(entry.imageName) && actualImage.size === 0) && !(await blobsEqual(actualImage, expectedImage, signal))) throw new Error(`Recovery output does not match this plan: ${entry.imageName}.`);
+      const actualText = await existing(entry.textName);
+      if (actualText && !(recovery?.pendingOutputNames?.has(entry.textName) && actualText.size === 0) && await actualText.text() !== `${entry.caption}\n`) throw new Error(`Recovery output does not match this plan: ${entry.textName}.`);
+      continue;
+    }
+    for (const path of [entry.imageName, entry.textName]) {
     signal?.throwIfAborted();
     try {
       const { directory, name } = await destination(path, false);
       await directory.getFileHandle(name);
       throw new Error(`Output already exists: ${path}. Choose an empty folder.`);
     } catch (error) { if (!(error instanceof Error && error.name === 'NotFoundError')) throw error; }
+    }
   }
   for (const [index, entry] of plan.entries.entries()) {
-    const image = await exportImage(entry, signal);
-    for (const [path, data] of [[entry.imageName, image], [entry.textName, `${entry.caption}\n`]] as const) {
+    const recovering = recovery?.completedEntryNames.has(entry.imageName) || recovery?.startedEntryNames?.has(entry.imageName);
+    if (recovering) {
       signal?.throwIfAborted();
-      const { directory, name } = await destination(path, true);
-      const writer = await (await directory.getFileHandle(name, { create: true })).createWritable();
-      try { await writer.write(data); await writer.close(); }
-      catch (error) { await (writer as typeof writer & { abort?: () => Promise<void> }).abort?.(); throw error; }
+      const expectedImage = await exportImage(entry, signal);
+      const currentImage = await existing(entry.imageName);
+      if (!currentImage || (recovery?.pendingOutputNames?.has(entry.imageName) && currentImage.size === 0)) await writeOutput(entry.imageName, expectedImage);
+      const currentText = await existing(entry.textName);
+      if (!currentText || (recovery?.pendingOutputNames?.has(entry.textName) && currentText.size === 0)) await writeOutput(entry.textName, `${entry.caption}\n`);
+      recovery?.startedEntryNames?.delete(entry.imageName);
+      recovery?.completedEntryNames.add(entry.imageName);
+      recovery?.onEntryComplete?.(entry.imageName);
+      progress?.(index + 1, plan.entries.length); continue;
     }
+    signal?.throwIfAborted();
+    recovery?.startedEntryNames?.add(entry.imageName);
+    recovery?.onEntryStart?.(entry.imageName);
+    const image = await exportImage(entry, signal);
+    await writeOutput(entry.imageName, image);
+    await writeOutput(entry.textName, `${entry.caption}\n`);
+    signal?.throwIfAborted();
+    recovery?.startedEntryNames?.delete(entry.imageName);
+    recovery?.completedEntryNames.add(entry.imageName);
+    recovery?.onEntryComplete?.(entry.imageName);
     progress?.(index + 1, plan.entries.length);
   }
 }

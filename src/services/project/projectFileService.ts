@@ -17,6 +17,7 @@ import { isLegacyProjectRootPath } from './projectPathFilters';
 import type { DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
 import { migrateLegacyCaptions } from '../caption/captionMigrationService';
 import type { LegacyDatasetMigrationReport } from './legacyDatasetMigrationService';
+import { normalizeBuildSession } from '../build/buildSessionService';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -104,6 +105,7 @@ type ProjectFileManifest = {
     currentTool?: string;
     taggingConfig: ProjectFileTaggingConfig;
     workspaceSettings?: ProjectFileWorkspaceSettings;
+    buildSession?: ProjectState['buildSession'];
     datasets?: Record<string, DatasetManifest>;
     sourceImages?: Record<string, LegacySourceImageManifest>;
     datasetItems?: Record<string, LegacyEditedAssetManifest>;
@@ -200,6 +202,7 @@ const toIsoString = (value: Date | string | number | undefined, fallback = new D
 };
 
 const createEmptyToolState = (): ProjectState['toolState'] => ({
+  build: {},
   import: {},
   video: {},
   select: {},
@@ -340,6 +343,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       editedAssetManifests,
       taggingConfig: serializeTaggingConfig(project.taggingConfig),
       workspaceSettings: project.workspaceSettings,
+      buildSession: project.buildSession,
       dataset: {
         name: project.dataset.name,
         triggerWord: project.dataset.triggerWord,
@@ -594,6 +598,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     currentTool,
     taggingConfig,
     workspaceSettings,
+    buildSession,
     dataset: datasetSettings,
     datasetMigration,
     ...projectMetadata
@@ -652,6 +657,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     currentTool: restoredCurrentTool,
     toolState: {
       ...createEmptyToolState(),
+      build: loadedToolState?.build ?? {},
       import: loadedToolState?.import ?? {},
       select: loadedToolState?.select ?? {},
       clean: loadedToolState?.clean ?? {},
@@ -662,6 +668,7 @@ export const readProjectFile = async (file: File, options?: { selectProjectType?
     },
     taggingConfig: deserializeTaggingConfig(taggingConfig),
     workspaceSettings: deserializeWorkspaceSettings(workspaceSettings),
+    buildSession: normalizeBuildSession(buildSession),
     lastModified: new Date(lastModified),
     createdAt: new Date(createdAt),
   };

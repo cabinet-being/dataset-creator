@@ -34,7 +34,7 @@
 
 ## Межі автоматизації
 
-Збірка браузерних стендів не виконує UI-assertions. Поточна конфігурація компілює explorer, export, persistence, caption і project-switch. Інші HTML-стенди в `tests/` відкриваються через dev server; наприклад `/DatasetCreator/tests/video-browser.html`.
+Збірка браузерних стендів не виконує UI-assertions. Поточна конфігурація компілює explorer, export, persistence, caption, caption-editor, build, inspector і project-switch. Інші HTML-стенди в `tests/` відкриваються через dev server; наприклад `/DatasetCreator/tests/video-browser.html`.
 
 Окремо перевіряйте native file picker, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
 

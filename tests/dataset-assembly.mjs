@@ -16,6 +16,8 @@ try {
       'src/services/dataset/datasetAssemblyService.ts',
       'src/services/analysis/semanticFeatureService.ts',
       'src/services/caption/captionMigrationService.ts',
+      'src/services/build/buildSessionService.ts',
+      'src/services/build/buildTransformService.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -26,9 +28,66 @@ try {
   const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
   const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
   const migration = await import(pathToFileURL(join(temp, 'captionMigrationService.mjs')));
+  const buildSession = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
+  const buildTransform = await import(pathToFileURL(join(temp, 'buildTransformService.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/src/shared/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
+  {
+    const first = item('source:first','first','Project/src/shared/first.png',{byteSize:10,modifiedAt:1});
+    const second = item('source:second','second','Project/src/shared/second.png',{byteSize:20,modifiedAt:2,tags:undefined});
+    let session = buildSession.reconcileBuildSession(buildSession.createBuildSession(),[first,second],'2026-10-21T00:00:00.000Z');
+    assert.deepEqual(session.order,['source:first','source:second']);
+    session = buildSession.updateBuildDecision(session,'source:first','accepted',{application:'applied',validation:'valid',acceptedRevision:session.records['source:first'].revision});
+    const arriving = item('source:arriving','arriving','Project/src/shared/arriving.png',{byteSize:30,modifiedAt:3});
+    session = buildSession.reconcileBuildSession({...session,cursor:1},[arriving,second,first]);
+    assert.deepEqual(session.order,['source:first','source:second','source:arriving'],'Background arrivals append without reordering reviewed work');
+    assert.equal(session.cursor,1);
+    const edited = {...first,tags:['changed']};
+    session = buildSession.reconcileBuildSession(session,[edited,second,arriving]);
+    assert.equal(session.records['source:first'].validation,'stale','A changed accepted revision returns to review');
+    const transformAccepted = buildSession.updateBuildDecision(buildSession.reconcileBuildSession(buildSession.createBuildSession(),[first]),'source:first','accepted',{application:'applied',validation:'valid'});
+    const changedProfile = {...transformAccepted,profile:{...transformAccepted.profile,transform:{mode:'crop',width:512,height:512,allowUpscale:false}}};
+    assert.equal(buildSession.reconcileBuildSession(changedProfile,[first]).records['source:first'].validation,'stale','Changing the output recipe invalidates an accepted revision');
+    const moved = buildSession.applyBuildSessionPathMoves(session,[{from:'Project/src/shared',to:'Project/renamed'}]);
+    assert.equal(moved.records['source:first'].locator,'Project/renamed/first.png');
+    const restored = buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(moved)));
+    assert.equal(restored.records['source:first'].decision,'accepted');
+    assert.deepEqual(buildSession.selectBuildQueue({...restored,filter:'unresolved'},[edited,second,arriving]).map(buildSession.getBuildAssetId),['source:first','source:second','source:arriving']);
+  }
+  {
+    const source = item('source:frame','frame','Project/src/shared/frame.png',{byteSize:100,modifiedAt:1,tags:['original']});
+    const recipe = {mode:'crop',width:512,height:512,allowUpscale:false,crop:{x:0.25,y:0,width:0.5,height:1}};
+    const captionEdit = {...source,tags:['revised']};
+    assert.equal(await buildTransform.getBuildImageDigest(source.imageData),await buildTransform.getBuildImageDigest(captionEdit.imageData));
+    assert.notEqual(await buildTransform.getBuildImageDigest(new Blob(['a'])),await buildTransform.getBuildImageDigest(new Blob(['b'])),'Equal-sized content replacements receive a different output identity');
+    assert.throws(() => buildSession.assertBuildSourceCurrent(source,source,recipe,false),/project changed/,'A→B→A session changes are rejected even when the project id matches');
+    assert.throws(() => buildSession.assertBuildSourceCurrent(source,{...source,imageData:new Blob(['x'])},recipe,true),/source changed/,'Equal-sized Blob replacement is rejected before mutation');
+    const outputId = buildTransform.createBuildOutputAssetId(source.id,buildSession.getBuildContentRevision(source,recipe),recipe);
+    assert.equal(outputId,buildTransform.createBuildOutputAssetId(source.id,buildSession.getBuildContentRevision(captionEdit,recipe),recipe),'Caption edits reuse the bitmap');
+    assert.notEqual(outputId,buildTransform.createBuildOutputAssetId(source.id,buildSession.getBuildContentRevision({...source,byteSize:101},recipe),recipe),'Content changes replace the bitmap');
+    assert.deepEqual(buildTransform.getBuildTransformGeometry(1200,800,recipe),{sourceX:300,sourceY:100,sourceWidth:600,sourceHeight:600,outputWidth:512,outputHeight:512});
+    assert.deepEqual(buildTransform.getBuildTransformGeometry(300,200,{...recipe,crop:{x:0,y:0,width:1,height:1}}),{sourceX:50,sourceY:0,sourceWidth:200,sourceHeight:200,outputWidth:200,outputHeight:200},'No-upscale crop uses source-sized output');
+    const output = item(`edited:${outputId}`,'frame',`Project/dataset/${outputId}.png`,{kind:'edited',editedAssetId:outputId,byteSize:500,modifiedAt:2,tags:['original']});
+    const startingSession = buildSession.createBuildSession();
+    let session = buildSession.reconcileBuildSession({...startingSession,profile:{...startingSession.profile,transform:recipe}},[source]);
+    const outputRevision = buildSession.getBuildAssetRevision(output,output.tags,recipe);
+    session = buildSession.updateBuildDecision(session,source.id,'accepted',{application:'applied',validation:'valid',acceptedRevision:session.records[source.id].revision,outputAssetId:`edited:${outputId}`,outputRevision,transform:recipe});
+    session = buildSession.reconcileBuildSession(session,[source],undefined,[source,output]);
+    assert.equal(buildSession.getBuildCounts(session,[source,output]).ready,1);
+    const erased = {...output,tags:[]};
+    assert.equal(buildSession.getBuildCounts(session,[source,erased]).ready,0,'An erased output caption cannot remain ready');
+    const stale = buildSession.reconcileBuildSession(session,[source],undefined,[source,erased]);
+    assert.equal(stale.records[source.id].validation,'stale');
+    assert.deepEqual(buildSession.selectBuildQueue({...stale,filter:'unresolved'},[source]).map(buildSession.getBuildAssetId),[source.id]);
+    const changedBytes = {...output,byteSize:501};
+    assert.equal(buildSession.getBuildCounts(session,[source,changedBytes]).ready,0,'Changed output bytes invalidate readiness');
+    const second = item('source:next','next','Project/src/shared/next.png');
+    const third = item('source:last','last','Project/src/shared/last.png');
+    assert.equal(buildSession.nextBuildCursor([source,second,third],[second,third],0,source.id),0,'The next item stays selected after filtered removal');
+    assert.equal(buildSession.nextBuildCursor([source,second,third],[source,second],2,third.id),1,'The last item falls back to the remaining tail');
+    assert.equal(buildSession.nextBuildCursor([source],[],0,source.id),0);
+  }
   const outside = item('source:outside', 'outside', 'Project/dataset/outside.png');
   const groupSource = item('source:group', 'group', 'Project/dataset/group.png');
   const groupCrop = item('edited:crop', 'group', 'Project/dataset/crop.png', { kind: 'edited' });

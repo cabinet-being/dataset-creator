@@ -1,6 +1,7 @@
 import { TOOL_DEFINITIONS, type ToolDefinition } from './toolDefinitions';
 // Tools in recommended image preparation order.
 export const WORKFLOW_TOOLS = [
+  'build',
   'import',
   'video',
   'select',
@@ -22,6 +23,8 @@ export const TOOLS = [...WORKFLOW_TOOLS] as const;
 export const TOOL_URL_SLUGS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.slug])) as Record<(typeof TOOLS)[number], string>;
 
 export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
+  'build-dataset': 'build',
+  build: 'build',
   import: 'import',
   'video-frames': 'video',
   video: 'video',

@@ -3,6 +3,7 @@ import { normalizeWorkspaceAssetPath, toWorkspaceImages } from './workspaceImage
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
 import { useHistoryStore } from '../stores/useHistoryStore';
+import type { HistoryTransactionWriter } from '../stores/useHistoryStore';
 import { runProjectFileOperation } from '../hooks/useProjectSave';
 import { readExplorerFile, getExplorerFileKind } from '../services/project/explorerFileService';
 import { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath, type DatasetFolderOperationResult } from '../services/dataset/datasetFolderService';
@@ -13,19 +14,19 @@ const requireDirectory = () => {
   return directory;
 };
 
-const pushMoveHistory = (label: string, result: DatasetFolderOperationResult) => {
+const pushMoveHistory = (label: string, result: DatasetFolderOperationResult, historyWriter?: HistoryTransactionWriter) => {
   if (!result.completed.length) return;
   const directory = requireDirectory();
   let current = result.completed;
-  useHistoryStore.getState().push({ label,
+  (historyWriter?.push ?? useHistoryStore.getState().push)({ label,
     undo: async () => { current = await runProjectFileOperation(() => reverseDatasetFolderChanges(directory, current)); },
     redo: async () => { current = await runProjectFileOperation(() => reverseDatasetFolderChanges(directory, current)); },
   });
 };
 
-const addItemsToDataset = async (items: WorkspaceImage[]): Promise<number> => {
+const addItemsToDataset = async (items: WorkspaceImage[], historyWriter?: HistoryTransactionWriter): Promise<number> => {
   const result = await addItemsToDatasetFolder(requireDirectory(), items);
-  pushMoveHistory('Add to Dataset', result);
+  pushMoveHistory('Add to Dataset', result, historyWriter);
   if (result.failed.length) throw new Error(result.failed[0].message);
   return result.completed.length;
 };
@@ -62,11 +63,20 @@ export async function addDatasetReferences(references: { assetIds?: string[]; as
   return addItemsToDataset([...items, ...await resolvePathItems(references.assetPaths ?? [])]);
 }
 
-export async function setAssetsDatasetMembership(items: WorkspaceImage[], included: boolean): Promise<void> {
+export async function setAssetsDatasetMembership(items: WorkspaceImage[], included: boolean, historyWriter?: HistoryTransactionWriter): Promise<void> {
   const targets = items.filter(item => item.kind !== 'video' && isProjectDatasetPath(item.assetPath) !== included);
   if (!targets.length) return;
-  await runProjectFileOperation(() => included ? addAssetsToDataset(targets) : removeAssetsFromDataset(targets));
+  await runProjectFileOperation(async () => {
+    if (included) await addItemsToDataset(targets, historyWriter);
+    else await removeItemsFromDatasetWithHistory(targets, historyWriter);
+  });
 }
+
+const removeItemsFromDatasetWithHistory = async (items: WorkspaceImage[], historyWriter?: HistoryTransactionWriter) => {
+  const result = await removeItemsFromDatasetFolder(requireDirectory(), items);
+  pushMoveHistory('Remove from Dataset', result, historyWriter);
+  if (result.failed.length) throw new Error(result.failed[0].message);
+};
 
 export async function removeAssetsFromDataset(items: WorkspaceImage[]): Promise<void> {
   const result = await removeItemsFromDatasetFolder(requireDirectory(), items);

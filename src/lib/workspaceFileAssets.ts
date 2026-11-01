@@ -147,12 +147,16 @@ for (const path of assetPaths) {
     if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
     const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
     const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
-    let metadata: {tags?:unknown;caption?:unknown;createdAt?:unknown} = {};
-    try { metadata = JSON.parse(await (await readExplorerFile(root, getAssetManifestPath(path))).text()); } catch { /* metadata is optional */ }
+    let metadata: {id?:unknown;tags?:unknown;caption?:unknown;createdAt?:unknown} = {};
+    try {
+      const manifestPath = getAssetManifestPath(path);
+      const parent = await getExplorerParentDirectory(root, manifestPath);
+      metadata = JSON.parse(await (await parent.directory.getFileHandle(parent.name)).getFile().then((manifest) => manifest.text()));
+    } catch { /* metadata is optional */ }
     const tags = Array.isArray(metadata.tags)
       ? metadata.tags.filter((tag): tag is string => typeof tag === 'string')
       : typeof metadata.caption === 'string' ? metadata.caption.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined;
-    assets.push({ id:createWorkspaceFileAssetId(path), path, fileName, kind:kind as WorkspaceFileAssetKind, file,
+    assets.push({ id:createWorkspaceFileAssetId(path), stableId:typeof metadata.id === 'string' ? metadata.id : undefined, path, fileName, kind:kind as WorkspaceFileAssetKind, file,
       previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
       modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
       tags });

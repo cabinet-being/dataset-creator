@@ -25,6 +25,7 @@ import {
   isProjectWorkspacePath,
 } from './projectLayoutService';
 import { applyProjectRelativePathMoves } from '../../lib/datasetAssets';
+import { normalizeBuildSession } from '../build/buildSessionService';
 import {
   createLegacyDatasetMigration,
   getLegacyDatasetPathMoves,
@@ -55,6 +56,7 @@ export type ProjectDirectoryFileHandle = {
 
 export type ProjectDirectoryHandle = {
   name: string;
+  isSameEntry?: (other: ProjectDirectoryHandle) => Promise<boolean>;
   getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<ProjectDirectoryHandle>;
   getFileHandle: (name: string, options?: { create?: boolean }) => Promise<ProjectDirectoryFileHandle>;
   removeEntry: (name: string, options?: { recursive?: boolean }) => Promise<void>;
@@ -76,6 +78,7 @@ type DirectoryProjectManifest = {
     currentTool: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
+    buildSession?: ProjectState['buildSession'];
     sourceImageManifests?: Record<string, string>;
     editedAssetManifests?: Record<string, string>;
     datasetItemManifests?: Record<string, string>;
@@ -371,6 +374,7 @@ const getProjectManifest = (
       blacklist: project.taggingConfig.blacklist,
     },
     workspaceSettings: project.workspaceSettings,
+    buildSession: project.buildSession,
     sourceImageManifests: paths.sourceImageManifests,
     editedAssetManifests: paths.editedAssetManifests,
     dataset: {
@@ -1150,6 +1154,7 @@ export const readProjectDirectory = async (
       ...defaults.workspaceSettings,
       ...manifest.project.workspaceSettings,
     },
+    buildSession: normalizeBuildSession(manifest.project.buildSession),
     captionMigration: manifest.project.captionMigration,
     datasetMigration,
     lastModified: toDate(manifest.project.lastModified, new Date()),

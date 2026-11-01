@@ -9,14 +9,14 @@ import { build } from 'rolldown';
 const temp = await mkdtemp(join(tmpdir(), 'state-recovery-'));
 after(() => rm(temp, { recursive: true, force: true }));
 await build({
-  input: ['src/services/project/saveQueue.ts', 'src/services/project/saveSession.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'],
+  input: ['src/services/project/saveQueue.ts', 'src/services/project/saveSession.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/stores/useInspectorSelectionStore.ts'],
   platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' },
 });
 const load = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
 const { createSaveQueue } = await load('saveQueue');
 const { createSaveSession } = await load('saveSession');
 const { useOperationStore } = await load('useOperationStore');
-const { useHistoryStore } = await load('useHistoryStore');
+const { useHistoryStore, runHistoryTransaction } = await load('useHistoryStore');
 const { useProjectStore } = await load('useProjectStore');
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const observable = initial => {
@@ -126,4 +126,92 @@ test('history caps retained edits and a new edit invalidates redo', async () => 
   assert.equal(useHistoryStore.getState().future.length, 0);
   await useHistoryStore.getState().redo();
   assert.equal(useHistoryStore.getState().past.at(-1).label, 'Branch');
+});
+
+test('compound history uses its scoped writer, preserves order and retains partial success', async () => {
+  resetHistory(); const values = [];
+  await runHistoryTransaction('Batch edit', async writer => {
+    values.push('caption');
+    writer.push({ label:'Caption', undo:()=>{values.splice(values.indexOf('caption'),1);}, redo:()=>{values.push('caption');} });
+    values.push('move');
+    writer.push({ label:'Move', undo:()=>{values.splice(values.indexOf('move'),1);}, redo:()=>{values.push('move');} });
+  });
+  assert.equal(useHistoryStore.getState().past.length,1);
+  assert.equal(useHistoryStore.getState().past[0].label,'Batch edit');
+  await useHistoryStore.getState().undo(); assert.deepEqual(values,[],'Undo runs completed steps in reverse order');
+  await useHistoryStore.getState().redo(); assert.deepEqual(values,['caption','move']);
+  await assert.rejects(runHistoryTransaction('Partial batch',async writer=>{
+    values.push('done');
+    writer.push({label:'Done',undo:()=>{values.splice(values.indexOf('done'),1);},redo:()=>{values.push('done');}});
+    throw new Error('third item failed');
+  }),/third item failed/);
+  assert.equal(useHistoryStore.getState().past.at(-1).label,'Partial batch');
+  await useHistoryStore.getState().undo(); assert.deepEqual(values,['caption','move']);
+});
+
+test('history transaction drops its entries after a project round trip', async () => {
+  resetHistory();
+  const project = useProjectStore.getState();
+  const original = project.id;
+  const gate = deferred();
+  const running = runHistoryTransaction('Accept in A', async writer => {
+    writer.push({ label:'A callback', undo() {}, redo() {} });
+    await gate.promise;
+  });
+  useProjectStore.setState({ id:'project-B' });
+  useHistoryStore.getState().push({ label:'B callback', undo() {}, redo() {} });
+  useProjectStore.setState({ id:original });
+  gate.resolve(); await running;
+  assert.deepEqual(useHistoryStore.getState().past, [], 'A-to-B-to-A invalidates the pending A transaction and project-switch history');
+});
+
+test('unrelated same-project pushes stay separate from a deferred transaction', async () => {
+  resetHistory(); const gate = deferred();
+  const running = runHistoryTransaction('Scoped', async writer => { await gate.promise; writer.push({ label:'owned', undo() {}, redo() {} }); });
+  useHistoryStore.getState().push({ label:'unrelated', undo() {}, redo() {} });
+  gate.resolve(); await running;
+  assert.deepEqual(useHistoryStore.getState().past.map(entry => entry.label), ['unrelated', 'Scoped']);
+});
+
+test('concurrent same-project transactions keep their own entries', async () => {
+  resetHistory(); const first = deferred(); const second = deferred();
+  const a = runHistoryTransaction('First', async writer => { await first.promise; writer.push({ label:'first part', undo() {}, redo() {} }); });
+  const b = runHistoryTransaction('Second', async writer => { await second.promise; writer.push({ label:'second part', undo() {}, redo() {} }); });
+  second.resolve(); await b; first.resolve(); await a;
+  assert.deepEqual(useHistoryStore.getState().past.map(entry => entry.label), ['Second', 'First']);
+});
+
+test('compound undo stops remaining steps after a project switch during an awaited step', async () => {
+  resetHistory(); const gate = deferred(); const called = [];
+  await runHistoryTransaction('Slow compound', async writer => {
+    writer.push({ label:'second', undo:async () => { called.push('second'); await gate.promise; }, redo() {} });
+    writer.push({ label:'first', undo:() => called.push('first'), redo() {} });
+  });
+  const undo = useHistoryStore.getState().undo();
+  useProjectStore.setState({ id:'other-project' });
+  gate.resolve(); await undo;
+  assert.deepEqual(called, ['first'], 'the next step is skipped once the project epoch changes between awaits');
+});
+
+
+test('inspector selection follows its owner without late cleanup clearing the next view', async () => {
+  const { useInspectorSelectionStore } = await load('useInspectorSelectionStore');
+  const store = useInspectorSelectionStore;
+  store.getState().resetForProject('inspector-test-a');
+  const first = { title: 'First', items: [] };
+  const second = { title: 'Second', items: [] };
+  store.getState().setSelection('view-a', first);
+  store.getState().setSelection('view-b', second);
+  store.getState().clearSelection('view-a');
+  assert.equal(store.getState().activeOwnerId, 'view-b');
+  assert.equal(store.getState().selections['view-b'], second);
+  assert.equal(store.getState().selections['view-a'], undefined);
+  store.getState().resetForProject('inspector-test-b');
+  assert.equal(store.getState().activeOwnerId, null);
+  assert.deepEqual(store.getState().selections, {});
+  store.getState().setSelection('view-b', second);
+  store.getState().resetForProject('inspector-test-b');
+  assert.equal(store.getState().selections['view-b'], second);
+  store.getState().clearSelection('view-b');
+  assert.equal(store.getState().activeOwnerId, null);
 });

@@ -12,6 +12,7 @@ export type WorkspaceImageKind = 'image' | 'edited' | 'video' | 'psd';
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
 export type ToolName =
+  | 'build'
   | 'import'
   | 'video'
   | 'select'
@@ -140,6 +141,56 @@ export interface WorkspaceSettings {
   includedProjectCategories?: string[];
 }
 
+// ============ BUILD WORKFLOW ============
+
+export type BuildReviewDecision = 'unreviewed' | 'accepted' | 'skipped' | 'deferred';
+export type BuildApplicationStatus = 'idle' | 'pending' | 'failed' | 'applied';
+export type BuildValidationStatus = 'pending' | 'valid' | 'stale' | 'error';
+export type BuildReviewMode = 'every-item' | 'uncertain-only';
+
+export type BuildTransformRecipe = {
+  mode: 'fit' | 'crop';
+  width: number;
+  height: number;
+  allowUpscale: boolean;
+  crop?: { x: number; y: number; width: number; height: number };
+};
+
+export interface BuildReviewRecord {
+  assetId: string;
+  locator?: string;
+  decision: BuildReviewDecision;
+  application: BuildApplicationStatus;
+  validation: BuildValidationStatus;
+  revision?: string;
+  acceptedRevision?: string;
+  provenance?: 'manual' | 'auto';
+  error?: string;
+  transform?: BuildTransformRecipe;
+  outputAssetId?: string;
+  outputRevision?: string;
+  proposal?: { tags: string[]; revision: string };
+  draft?: string;
+  updatedAt: string;
+}
+
+export interface BuildPreparationProfile {
+  target: number;
+  reviewMode: BuildReviewMode;
+  captionRequired: boolean;
+  transform?: BuildTransformRecipe;
+}
+
+export interface BuildSession {
+  version: 1;
+  profile: BuildPreparationProfile;
+  cursor: number;
+  filter: 'all' | 'unresolved' | 'errors';
+  order: string[];
+  records: Record<string, BuildReviewRecord>;
+  lastExport?: { fingerprint: string; completedAt: string; entries: number };
+}
+
 // ============ SIMILARITY ============
 
 export interface SimilarityResult {
@@ -171,6 +222,7 @@ export interface ProjectState {
   toolState: Record<ToolName, unknown>;
   taggingConfig: TaggingConfig;
   workspaceSettings: WorkspaceSettings;
+  buildSession: BuildSession;
   captionMigration?: import('../services/caption/captionMigrationService').CaptionMigrationReport;
   datasetMigration?: import('../services/project/legacyDatasetMigrationService').LegacyDatasetMigrationReport;
   lastModified: Date;
@@ -285,8 +337,9 @@ export const createProject = (name: string, projectType: ProjectType): ProjectSt
     triggerWord: PROJECT_TYPE_PROFILES[projectType].defaults.triggerWord,
   },
   cleanupOverlays: {},
-  currentTool: 'import',
+  currentTool: 'build',
   toolState: {
+    build: {},
     import: {},
     video: {},
     select: {},
@@ -307,6 +360,18 @@ export const createProject = (name: string, projectType: ProjectType): ProjectSt
     brickColumnCount: 'auto',
     localTaggerModelPath: undefined,
     localTaggerTagsPath: undefined,
+  },
+  buildSession: {
+    version: 1,
+    profile: {
+      target: 60,
+      reviewMode: 'every-item',
+      captionRequired: true,
+    },
+    cursor: 0,
+    filter: 'all',
+    order: [],
+    records: {},
   },
   lastModified: new Date(),
   createdAt: new Date(),

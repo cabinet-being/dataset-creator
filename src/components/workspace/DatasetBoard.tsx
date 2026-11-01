@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent, type MouseEvent } from 'react';
-import { Download, Layers3, Plus, Sparkles, Tags } from 'lucide-react';
+import { Download, Layers3, Pencil, Plus, Sparkles, Tags } from 'lucide-react';
 import type { Dataset, ProjectType, ToolName } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
@@ -13,9 +13,10 @@ import { DatasetAssemblyDialog } from './DatasetAssemblyDialog';
 
 export type EmptyDatasetSuggestion = { signature: string; items: WorkspaceImage[]; assetIds: string[]; totalCount: number };
 type Props = {
-  dataset: Dataset; items: WorkspaceImage[]; active: boolean; suggestion: EmptyDatasetSuggestion | null;
+  viewId?: string; dataset: Dataset; items: WorkspaceImage[]; active: boolean; suggestion: EmptyDatasetSuggestion | null;
   onTool: (tool: Extract<ToolName, 'select' | 'review' | 'tagging' | 'analysis'>) => void;
   onExport: () => void;
+  onRename?: (name: string) => void;
   onUpdate: (updates: Partial<Pick<Dataset, 'triggerWord'>>) => void;
   canDrop: (event: DragEvent<HTMLDivElement>) => boolean;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
@@ -32,9 +33,19 @@ type Props = {
   onAssemblyRequestHandled?: () => void;
 };
 const EMPTY_ITEMS: WorkspaceImage[] = [];
-export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExport, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion,
+export function DatasetBoard({ viewId, dataset, items, active, suggestion, onTool, onExport, onRename, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion,
   projectDirectoryHandle, projectId, projectType, excludedCategories, includedCategories, onApplyAssembly, assemblyRequestToken, onAssemblyRequestHandled }: Props) {
   const [sort, setSort] = useState<DatasetBoardSortMode>('name');
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(dataset.name);
+  useEffect(() => { setNameDraft(dataset.name); setRenaming(false); }, [dataset.id, dataset.name]);
+  const commitName = () => {
+    if (!renaming) return;
+    setRenaming(false);
+    const name = nameDraft.trim();
+    if (name && name !== dataset.name) onRename?.(name);
+    else setNameDraft(dataset.name);
+  };
   const [dropActive, setDropActive] = useState(false);
   const [assemblyOpen, setAssemblyOpen] = useState(false);
   useEffect(() => { if (assemblyRequestToken) { setAssemblyOpen(true); onAssemblyRequestHandled?.(); } }, [assemblyRequestToken, onAssemblyRequestHandled]);
@@ -50,7 +61,17 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
     onDrop={event => { setDropActive(false); onDrop(event); }}>
     <div className="mx-auto flex max-w-5xl flex-col gap-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0"><h2 className="truncate text-xl font-semibold">{dataset.name}</h2>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            {renaming ? <input aria-label="Dataset name" autoFocus value={nameDraft}
+              onChange={event => setNameDraft(event.target.value)} onBlur={commitName}
+              onKeyDown={event => {
+                if (event.key === 'Enter') { event.preventDefault(); commitName(); }
+                if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); setNameDraft(dataset.name); }
+              }} className="min-w-0 rounded border border-border bg-background px-2 py-1 text-xl font-semibold" />
+              : <h2 className="truncate text-xl font-semibold">{dataset.name}</h2>}
+            {onRename && !renaming && <button type="button" aria-label="Rename Dataset" onClick={() => setRenaming(true)} className="rounded p-1 text-muted-foreground hover:bg-secondary"><Pencil size={15} /></button>}
+          </div>
           <p className="text-sm text-muted-foreground">{linked} assets · {captioned}/{boardItems.length} captions</p>
         </div>
         <ContextActionGroups mode="toolbar" groups={[[
@@ -73,6 +94,7 @@ export function DatasetBoard({ dataset, items, active, suggestion, onTool, onExp
       {dropActive && <p role="status" className="text-sm text-primary">Release to add files</p>}
       {items.length > 0 ? (
               <AssetGallery
+                inspectorOwnerId={viewId}
                 active={active}
                 directInteraction
                 membership="remove" showOrder={false}

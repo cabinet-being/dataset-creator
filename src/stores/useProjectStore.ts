@@ -9,6 +9,7 @@ import {
   ToolName,
   TaggingConfig,
   WorkspaceSettings,
+  BuildSession,
   createProject,
   createDataset,
   CleanupOverlay,
@@ -95,6 +96,7 @@ interface ProjectStore extends ProjectState {
 
   // Workspace settings
   updateWorkspaceSettings: (updates: Partial<WorkspaceSettings>) => void;
+  updateBuildSession: (session: BuildSession | ((current: BuildSession) => BuildSession)) => void;
 }
 
 export const useProjectStore = create<ProjectStore>()(
@@ -161,6 +163,7 @@ export const useProjectStore = create<ProjectStore>()(
                 ...defaults.workspaceSettings,
                 ...project.workspaceSettings,
               },
+              buildSession: project.buildSession ?? defaults.buildSession,
               lastModified: new Date(),
             };
           }),
@@ -467,6 +470,13 @@ export const useProjectStore = create<ProjectStore>()(
           set((state) => ({
             ...state,
             workspaceSettings: { ...state.workspaceSettings, ...updates },
+            lastModified: new Date(),
+          })),
+
+        updateBuildSession: (session) =>
+          set((state) => ({
+            ...state,
+            buildSession: typeof session === 'function' ? session(state.buildSession) : session,
             lastModified: new Date(),
           })),
       })

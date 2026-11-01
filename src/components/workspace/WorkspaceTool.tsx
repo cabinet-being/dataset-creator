@@ -15,6 +15,7 @@ const SimilarityReviewTool = lazy(() => import('../tools/SimilarityReviewTool').
 const AnalysisTool = lazy(() => import('../tools/AnalysisTool').then(module => ({default:module.AnalysisTool})));
 const ExportTool = lazy(() => import('../tools/ExportTool').then(module => ({default:module.ExportTool})));
 const VideoFramesTool = lazy(() => import('../tools/VideoFramesTool').then(module => ({default:module.VideoFramesTool})));
+const BuildWorkspace = lazy(() => import('../build/BuildWorkspace').then(module => ({default:module.BuildWorkspace})));
 
 export type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
 export type DatasetToolName = Extract<ToolName, 'select' | 'review' | 'analysis' | 'tagging'>;
@@ -38,6 +39,7 @@ type Props = {
   onRefresh?: () => void | Promise<void>;
   onOpenImport?: () => void;
   onImportFiles?: (files: ImportInputFile[], execution?: Pick<ImportImagesOptions, 'signal' | 'onProgress'>) => Promise<ImportImagesResult>;
+  items?: WorkspaceImage[];
 } & (
   | ToolViewContext
   | { tool: DatasetToolName; context: DatasetContext }
@@ -48,7 +50,7 @@ type Props = {
 
 // One renderer owns tool wiring. The context union keeps Dataset callbacks and
 // file targets together instead of allowing unrelated optional scope props.
-export function WorkspaceTool({ tool, context, active, viewId, directory, onAssetContextMenu, onOpenItem, onOpenProjectFile, onRefresh, onOpenImport, onImportFiles }: Props) {
+export function WorkspaceTool({ tool, context, active, viewId, directory, items = [], onAssetContextMenu, onOpenItem, onOpenProjectFile, onRefresh, onOpenImport, onImportFiles }: Props) {
   if (tool === 'video') {
     return <VideoFramesTool active={active} tabId={context.viewId} projectDirectoryHandle={directory}
       file={context.kind === 'file' ? context.file.file : undefined}
@@ -63,16 +65,17 @@ export function WorkspaceTool({ tool, context, active, viewId, directory, onAsse
   const selection = context.kind === 'selection' ? context : undefined;
   const review = context.kind === 'review' ? context.scope : undefined;
   switch (tool) {
+    case 'build': return <BuildWorkspace active={active} viewId={viewId ?? 'tool:build'} directory={directory} items={items} onImportFiles={onImportFiles} onRefresh={onRefresh} />;
     case 'import': return <ImportTool active={active} onImportFiles={onImportFiles} />;
     case 'select': return dataset
       ? <FinalReviewTool active={active} datasetId={dataset.datasetId} mode="select" viewId={viewId} onRefresh={onRefresh} onUpdateDataset={dataset.onUpdate} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />
       : <SimilarityReviewTool />;
     case 'clean': return <CleanupTool active={active} selectedImageId={project?.selectedItemId ?? null} onSelectImage={onOpenItem} onOpenProjectFile={onOpenProjectFile} projectDirectoryHandle={directory} />;
-    case 'analysis': return <AnalysisTool active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate} projectDirectoryHandle={directory}
+    case 'analysis': return <AnalysisTool viewId={viewId} active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate} projectDirectoryHandle={directory}
       fileTarget={file} fileTargets={selection && 'files' in selection ? selection.files : undefined} onOpenAssetContextMenu={onAssetContextMenu} onAutoAssemble={dataset?.onAutoAssemble} />;
     case 'review': return <FinalReviewTool active={active} datasetId={dataset?.datasetId} mode="review" onUpdateDataset={dataset?.onUpdate}
       scope={review} viewId={viewId} onRefresh={onRefresh} onAddFiles={dataset?.onAddFiles} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />;
-    case 'tagging': return <TaggingTool active={active} datasetId={dataset?.datasetId}
+    case 'tagging': return <TaggingTool viewId={viewId} active={active} datasetId={dataset?.datasetId}
       selectedItemId={file ? file.workspaceImageId : selection && 'itemIds' in selection ? selection.selectedItemId ?? null : project?.selectedItemId ?? null} singleFileMode={Boolean(file)}
       scopedItemIds={selection && 'itemIds' in selection ? selection.itemIds : undefined} onOpenItem={onOpenItem} onOpenAssetContextMenu={onAssetContextMenu} />;
     case 'export': return <ExportTool active={active} />;

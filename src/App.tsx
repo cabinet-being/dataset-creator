@@ -4,11 +4,9 @@ import { getToolViewContext, setToolViewScope, moveToolViewScope, pruneToolViewS
 import { readWorkspacePersistence, writeWorkspacePersistence } from './lib/workspacePersistence';
 import { ExplorerPanel } from './components/workspace/ExplorerPanel';
 import { ExplorerTree, getExplorerIcon, type ExplorerTreeNode } from './components/workspace/ExplorerTree';
-import { selectFileNameStem } from './lib/fileNameSelection';
 import { checkDirtyDocuments, useDocumentStateStore } from './stores/useDocumentStateStore';
 import { DatasetBoard, type EmptyDatasetSuggestion } from './components/workspace/DatasetBoard';
 import { findFileTab, isFileBackedTab, moveFileTab, type FileWorkspaceTab } from './lib/workspaceFileTabs';
-import { DocumentActions } from './components/workspace/DocumentActions';
 import { TOOL_ICONS as toolIcons } from './lib/toolDefinitions';
 import { WorkspaceSettingsDialog } from './components/workspace/WorkspaceSettingsDialog';
 import { addDatasetReferences, addWorkspacePathsToDataset, removeAssetsFromDataset } from './lib/assetActions';
@@ -30,7 +28,6 @@ import type { ChangeEvent, DragEvent, MouseEvent, ReactNode, SetStateAction } fr
 import {
   ArrowLeft,
   BarChart3,
-  ExternalLink,
   File,
   FilePlus,
   FolderOpen,
@@ -52,6 +49,7 @@ import {
   Video,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
+import { useInspectorSelectionStore } from './stores/useInspectorSelectionStore';
 import { useUIStore } from './stores/useUIStore';
 import {
   TOOLS,
@@ -86,6 +84,7 @@ import {
   type LocalTaggerFileKey,
 } from './services/tagging/localTaggerFileSettings';
 import { createOperationLogger } from './services/logging/applicationLog';
+import { applyBuildSessionPathMoves } from './services/build/buildSessionService';
 import { indexProjectAssets } from './services/project/assetIndexService';
 import { isSupportedProjectAsset } from './services/project/assetTypeService';
 import {
@@ -96,6 +95,7 @@ import { isLegacyDatasetFileName } from './services/project/legacyDatasetFileSer
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
+import { InspectorSelectionDetails } from './components/workspace/InspectorSelectionDetails';
 import {
   applyExplorerPathMoves,
   applyProjectRelativePathMoves,
@@ -700,6 +700,7 @@ function App() {
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
+  const updateBuildSession = useProjectStore((state) => state.updateBuildSession);
   const addSourceImage = useProjectStore((state) => state.addSourceImage);
   const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
@@ -804,8 +805,6 @@ function App() {
     y: number;
     actionGroups?: ContextActionGroup[];
   } | null>(null);
-  const [inspectorRenameValue, setInspectorRenameValue] = useState('');
-  const [inspectorRenaming, setInspectorRenaming] = useState(false);
   const [inspectorSectionsOpen, setInspectorSectionsOpen] = useState<Record<InspectorSectionId, boolean>>({
     object: false,
     actions: true,
@@ -817,7 +816,7 @@ function App() {
     caption: true,
   });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
-  const [datasetWorkspaceFileAssets, setDatasetWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const [workspaceFileAssets, setWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const [dismissedEmptyDatasetSuggestionSignatures, setDismissedEmptyDatasetSuggestionSignatures] = useState<Set<string>>(
     () => new Set()
   );
@@ -935,6 +934,11 @@ function App() {
   }, [explorerContextMenu]);
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeInspectorSelection = useInspectorSelectionStore((state) =>
+    state.projectId === projectId && state.activeOwnerId === activeTabId && activeTabId
+      ? state.selections[activeTabId] ?? null
+      : null
+  );
   const activeTool = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.tool : null;
   const activeDataset =
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
@@ -946,14 +950,18 @@ function App() {
     () => Object.values(sourceImagesById).filter((asset) => isProjectDatasetPath(asset.originalFilePath)),
     [sourceImagesById]
   );
+  const workspaceReviewItems = useMemo(
+    () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, {}, datasetItems),
+    [datasetItems, sourceImages, workspaceFileAssets]
+  );
   const activeDatasetPreviewItems = useMemo(
     () => orderDatasetBoardItems(
-      toWorkspaceReviewAssets(activeDatasetSourceImages, datasetWorkspaceFileAssets, {}, datasetItems)
+      toWorkspaceReviewAssets(activeDatasetSourceImages, workspaceFileAssets.filter(asset => isProjectDatasetPath(asset.path)), {}, datasetItems)
         .filter(item => isProjectDatasetPath(item.assetPath)),
       globalDataset.assetOrder,
       activeDatasetSourceImages.map(item => item.id)
     ),
-    [globalDataset.assetOrder, activeDatasetSourceImages, datasetItems, datasetWorkspaceFileAssets]
+    [globalDataset.assetOrder, activeDatasetSourceImages, datasetItems, workspaceFileAssets]
   );
   const globalDatasetTags = useMemo(
     () => [...new Set(activeDatasetPreviewItems.flatMap((item) => item.tags ?? []))]
@@ -1087,13 +1095,7 @@ function App() {
   };
   const activeInspectorContext = getInspectorContext(activeTab, activeTool);
   const showFileInspector = Boolean(activeTab && isFileBackedTab(activeTab));
-  const showDatasetInspector = Boolean(activeDataset);
   const showAnalysisInspector = activeInspectorContext === 'analysis';
-  const showPhotopeaInspector =
-    activeInspectorContext === 'photopea' &&
-    activeTab &&
-    isFileBackedTab(activeTab) &&
-    (activeTab.kind === 'file-edit' || activeTab.fileKind === 'psd');
 
   const setToolTabNestedView = async (tabId: string, nested: ToolNestedView | undefined) => {
     const current = openTabs.find(tab => tab.id === tabId);
@@ -1113,29 +1115,16 @@ function App() {
   };
 
   useEffect(() => {
-    setInspectorRenaming(false);
-    if (activeTab?.kind === 'dataset') {
-      setInspectorRenameValue(activeDataset?.name ?? 'Dataset');
-      return;
-    }
-    if (activeTab && isFileBackedTab(activeTab)) {
-      setInspectorRenameValue(activeTab.name);
-      return;
-    }
-    setInspectorRenameValue(activeTool ? TOOL_LABELS[activeTool] : '');
-  }, [activeDataset?.name, activeTool, activeTab]);
-
-  useEffect(() => {
     let canceled = false;
 
     if (!projectDirectoryHandle) {
-      setDatasetWorkspaceFileAssets([]);
+      setWorkspaceFileAssets([]);
       return;
     }
 
     const loadDatasetWorkspaceFileAssets = async () => {
       try {
-        const assets = (await collectWorkspaceFileAssets(projectDirectoryHandle)).filter(asset => isProjectDatasetPath(asset.path));
+        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle);
         const pendingAssets = assets.map((asset) =>
           asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
         );
@@ -1144,12 +1133,12 @@ function App() {
           return;
         }
 
-        setDatasetWorkspaceFileAssets(pendingAssets);
+        setWorkspaceFileAssets(pendingAssets);
         void generateMissingWorkspacePsdPreviews(
           projectDirectoryHandle,
           pendingAssets,
           (path, update) => {
-            setDatasetWorkspaceFileAssets((currentAssets) =>
+            setWorkspaceFileAssets((currentAssets) =>
               currentAssets.map((asset) => (asset.path === path ? { ...asset, ...update } : asset))
             );
           },
@@ -1157,7 +1146,7 @@ function App() {
         );
       } catch (error) {
         if (!canceled) {
-          setDatasetWorkspaceFileAssets([]);
+          setWorkspaceFileAssets([]);
           addNotification('warning', error instanceof Error ? error.message : 'Unable to read Dataset file assets');
         }
       }
@@ -1343,31 +1332,6 @@ function App() {
     return window.confirm(
       `Close ${dirtyCount === 1 ? '1 tab' : `${dirtyCount} tabs`} with unsaved changes?`
     );
-  };
-
-  const commitInspectorRename = async () => {
-    if (!activeTab || !inspectorRenaming) {
-      return;
-    }
-    const nextName = inspectorRenameValue.trim();
-    if (!nextName) {
-      setInspectorRenaming(false);
-      return;
-    }
-
-    try {
-      if (isFileBackedTab(activeTab)) {
-        if (nextName === activeTab.name) {
-          setInspectorRenaming(false);
-          return;
-        }
-        await renameExplorerItem(activeTab.path, 'file', nextName);
-      }
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to rename item');
-    } finally {
-      setInspectorRenaming(false);
-    }
   };
 
   useEffect(() => {
@@ -1984,7 +1948,7 @@ function App() {
 
   const updateDatasetFileBackedState = async (
     dataset: Dataset,
-    updates: Partial<Pick<Dataset, 'triggerWord' | 'assetOrder'>>
+    updates: Partial<Pick<Dataset, 'name' | 'triggerWord' | 'assetOrder'>>
   ) => {
     // Merge only the changed fields into the latest store snapshot. Passing a
     // captured Dataset back here can overwrite membership added by another panel.
@@ -2324,13 +2288,14 @@ function App() {
   };
 
   const renderDatasetWorkspace = (dataset: Dataset) => (
-    <DatasetBoard dataset={dataset} items={activeDatasetPreviewItems} active={activeTab?.id === DATASET_VIEW} suggestion={activeEmptyDatasetSuggestion}
+    <DatasetBoard viewId={DATASET_VIEW} dataset={dataset} items={activeDatasetPreviewItems} active={activeTab?.id === DATASET_VIEW} suggestion={activeEmptyDatasetSuggestion}
       projectDirectoryHandle={projectDirectoryHandle} projectId={projectId} projectType={projectType}
       assemblyRequestToken={datasetAssemblyRequestToken}
       onAssemblyRequestHandled={() => setDatasetAssemblyRequestToken(0)}
       excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []}
       onTool={tool => openDatasetToolTab(dataset.id, tool)} onExport={() => navigateToTool('export')}
       onUpdate={updates => { void updateDatasetFileBackedState(dataset, updates).catch(error => addNotification('error', `Could not save Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
+      onRename={name => { void updateDatasetFileBackedState(dataset, { name }).catch(error => addNotification('error', `Could not rename Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
       onContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
       onApplySuggestion={suggestion => { void applyEmptyDatasetSuggestion(dataset, suggestion).catch(error => addNotification('error', `Could not add suggested files: ${error instanceof Error ? error.message : String(error)}`)); }}
       onDismissSuggestion={dismissEmptyDatasetSuggestion}
@@ -2417,139 +2382,37 @@ function App() {
           : activeTool
             ? TOOL_LABELS[activeTool]
             : 'Workspace';
-    const canRename = activeTab?.kind === 'dataset' || (activeTab && isFileBackedTab(activeTab));
-    const selectedCount = activeTab?.kind === 'tool'
-      ? activeTab.scope?.analysisFiles?.length ?? activeTab.scope?.taggingItemIds?.length
-      : undefined;
-    const objectDetails = (() => {
-      if (!activeTab) {
-        return [
-          { label: 'Object', value: 'Workspace' },
-          { label: 'Target', value: 'Workspace' },
-          { label: 'State', value: 'No active editor' },
-        ];
-      }
-
-      if (isFileBackedTab(activeTab)) {
-        const fileType =
-          activeTab.fileKind === 'psd'
-            ? 'PSD file'
-            : activeTab.fileKind === 'video'
-              ? 'Video file'
-              : activeTab.fileKind === 'json'
-                ? 'JSON file'
-                : activeTab.fileKind === 'image'
-                  ? 'Image file'
-                  : 'File';
-        const mode =
-          activeTab.kind === 'file-edit'
-            ? 'Photopea'
-            : activeTab.kind === 'file-caption'
-              ? 'Caption'
-              : activeTab.kind === 'file-analysis'
-                ? 'Analysis'
-              : activeTab.kind === 'file-video'
-                ? 'Video Frames'
-              : 'Open file';
-
-        return [
-          { label: 'Object', value: fileType },
-          { label: 'Mode', value: mode },
-          { label: 'Target', value: 'File' },
-          { label: 'Path', value: activeTab.path },
-        ];
-      }
-
-      if (activeTab.kind === 'dataset' || activeTab.kind === 'dataset-tool') {
-        return [
-          { label: 'Object', value: 'Dataset' },
-          {
-            label: 'Mode',
-            value: activeTab.kind === 'dataset-tool' ? DATASET_TOOL_LABELS[activeTab.tool] : 'Dataset view',
-          },
-          { label: 'Target', value: 'Dataset contents' },
-          { label: 'Path', value: 'Project/dataset' },
-        ];
-      }
-
-      if (activeTab.kind === 'window') {
-        return [
-          {
-            label: 'Object',
-            value: activeTab.window === 'project' ? 'Project' : activeTab.window === 'dataset' ? 'Dataset' : 'Inspector',
-          },
-          { label: 'Mode', value: 'Docked window' },
-          { label: 'Target', value: activeTab.window === 'dataset' ? 'Global Dataset' : 'Workspace' },
-        ];
-      }
-
-      return [
-        { label: 'Object', value: TOOL_LABELS[activeTab.tool] },
-        { label: 'Mode', value: activeTab.nested ? 'Nested item' : 'Project tool' },
-        { label: 'Target', value: selectedCount === undefined ? 'Project' : `Selection (${selectedCount})` },
-      ];
-    })();
+    const selectedItems = activeInspectorSelection?.items ?? [];
 
     return (
       <div className="text-xs">
         <div className="mb-3 flex items-start gap-2">
           <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 flex-1">
-            {inspectorRenaming && canRename ? (
-              <input
-                aria-label={`Rename ${title}`}
-                value={inspectorRenameValue}
-                autoFocus
-                onFocus={(event) => selectFileNameStem(event.currentTarget)}
-                onChange={(event) => setInspectorRenameValue(event.target.value)}
-                onBlur={() => void commitInspectorRename()}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void commitInspectorRename();
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault();
-                    setInspectorRenaming(false);
-                  }
-                }}
-                className="w-full rounded border border-primary bg-background px-2 py-1 text-sm font-semibold"
-              />
-            ) : (
-              <button
-                type="button"
-                disabled={!canRename}
-                onClick={() => canRename && setInspectorRenaming(true)}
-                className="block w-full truncate text-left text-sm font-semibold disabled:cursor-default"
-                title={canRename ? 'Rename' : undefined}
-              >
-                {title}
-              </button>
-            )}
+            <div className="truncate text-sm font-semibold">{activeInspectorSelection?.title ?? title}</div>
             {activeTab && isFileBackedTab(activeTab) && <p className="mt-1 truncate text-muted-foreground">{activeTab.path}</p>}
-            {selectedCount !== undefined && <p className="mt-1 text-muted-foreground">{selectedCount} selected</p>}
+            {activeInspectorSelection && <p className="mt-1 text-muted-foreground">{selectedItems.length} selected</p>}
           </div>
           {activeTabId && <button className="shrink-0 rounded p-1 text-muted-foreground hover:bg-secondary" aria-label="Return to active editor" title="Return to editor" onClick={() => focusView(activeTabId)}><ArrowLeft size={16} /></button>}
         </div>
 
-        <InspectorSection
-          title="Details"
-          open={inspectorSectionsOpen.object}
-          onOpenChange={(open) => setInspectorSectionOpen('object', open)}
-        >
-          <div className="space-y-2">
-            {objectDetails.map((detail) => (
-              <div key={detail.label} className="flex justify-between gap-3">
-                <span className="shrink-0 text-muted-foreground">{detail.label}</span>
-                <span className="min-w-0 truncate text-right font-medium" title={detail.value}>
-                  {detail.value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </InspectorSection>
+        {activeInspectorSelection ? (
+          <InspectorSelectionDetails
+            selection={activeInspectorSelection}
+            open={inspectorSectionsOpen.object}
+            onOpenChange={(open) => setInspectorSectionOpen('object', open)}
+          />
+        ) : (
+          <InspectorSection title="Details" open={inspectorSectionsOpen.object} onOpenChange={(open) => setInspectorSectionOpen('object', open)}>
+            <div className="space-y-2 text-muted-foreground">
+              {activeTab && isFileBackedTab(activeTab) ? <p>{activeTab.fileKind.toUpperCase()} file</p> : <p>{activeTab ? title : 'No active selection'}</p>}
+              {activeTab && isFileBackedTab(activeTab) && <p className="break-all font-mono text-[10px]">{activeTab.path}</p>}
+              {activeTool && <p>{TOOL_LABELS[activeTool]} workspace</p>}
+            </div>
+          </InspectorSection>
+        )}
 
-        {showFileInspector && fileInspectorMetadata && activeTab && isFileBackedTab(activeTab) ? (
+        {!activeInspectorSelection && showFileInspector && fileInspectorMetadata && activeTab && isFileBackedTab(activeTab) ? (
           <InspectorSection
             title="File"
             open={inspectorSectionsOpen.file}
@@ -2616,41 +2479,6 @@ function App() {
                   </div>
                 </div>
               ) : null}
-            </div>
-          </InspectorSection>
-        ) : null}
-
-        {showDatasetInspector && activeDataset && activeTab?.id !== DATASET_VIEW ? (
-          <InspectorSection
-            title="Dataset"
-            open={inspectorSectionsOpen.dataset}
-            onOpenChange={(open) => setInspectorSectionOpen('dataset', open)}
-          >
-            <div className="space-y-3">
-              <label className="block text-muted-foreground">
-                Trigger word
-                <input
-                  value={activeDataset.triggerWord}
-                  onChange={(event) => void updateDatasetFileBackedState(activeDataset, { triggerWord: event.target.value })}
-                  className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-sm text-foreground"
-                />
-              </label>
-            </div>
-          </InspectorSection>
-        ) : null}
-
-        {showPhotopeaInspector ? (
-          <InspectorSection
-            title="Photopea"
-            open={inspectorSectionsOpen.photopea}
-            onOpenChange={(open) => setInspectorSectionOpen('photopea', open)}
-          >
-            <div className="grid gap-2">
-              <a href="https://www.photopea.com" target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded border border-border px-2 py-2 text-left hover:bg-secondary">
-                <ExternalLink className="h-3.5 w-3.5" />
-                Photopea
-              </a>
-              <DocumentActions />
             </div>
           </InspectorSection>
         ) : null}
@@ -2854,6 +2682,7 @@ function App() {
     if (assetOrder.some((key, index) => key !== dataset.assetOrder[index])) {
       updateProjectDataset(dataset.id, { assetOrder });
     }
+    updateBuildSession((session) => applyBuildSessionPathMoves(session, moves));
   };
 
   useEffect(() => {
@@ -4007,6 +3836,7 @@ function App() {
       {tab.nested && <button type="button" title="Back to tool" className="absolute left-2 top-2 z-30 rounded border border-border bg-card p-2"
         onClick={() => setToolTabNestedView(tab.id, undefined)}><ArrowLeft className="h-4 w-4" /></button>}
       <WorkspaceTool {...getToolViewContext(tab.tool, tab.scope, tab.nested?.itemId)} viewId={tab.id} active={focused} directory={projectDirectoryHandle}
+        items={workspaceReviewItems}
         onRefresh={() => indexProjectWorkspaceAssets()}
         onAssetContextMenu={openAssetExplorerContextMenu}
         onOpenItem={itemId => setToolTabNestedView(tab.id, {kind:'file', itemId})}

@@ -73,6 +73,8 @@ try {
     const to=await root.getDirectoryHandle('to',{create:true});
     const unrelated=await root.getDirectoryHandle('unrelated',{create:true});
     await from.getFileHandle('clip.webm',{create:true});
+    const clipManifest=await (await from.getFileHandle('clip.webm.manifest.json',{create:true})).createWritable();
+    await clipManifest.write(JSON.stringify({id:'stable-video-id'})); await clipManifest.close();
     const other=await unrelated.getFileHandle('large.webm',{create:true});
     let unrelatedReads=0; let unrelatedListings=0;
     const read=other.getFile; other.getFile=async()=>{unrelatedReads++;return read();};
@@ -83,6 +85,8 @@ try {
     await updateWorkspaceFileAssetCache(root,{moves:[{from:'Project/from/clip.webm',to:'Project/to/clip.webm'}],paths:[]});
     const after=await collectWorkspaceFileAssets(root);
     assert.equal(after.find(asset=>asset.path==='Project/to/clip.webm').file,before.find(asset=>asset.path==='Project/from/clip.webm').file,'Moves preserve cached file snapshots');
+    assert.equal(before.find(asset=>asset.path==='Project/from/clip.webm').stableId,'stable-video-id');
+    assert.equal(after.find(asset=>asset.path==='Project/to/clip.webm').stableId,'stable-video-id','File-only manifest identity survives path moves');
     await to.getFileHandle('new.webm',{create:true});
     await updateWorkspaceFileAssetCache(root,{moves:[],paths:['Project/to/new.webm']});
     assert.equal((await collectWorkspaceFileAssets(root)).length,3);
@@ -403,17 +407,29 @@ try {
     useProjectStore.getState().loadProject(project);
     assert.equal(useProjectStore.getState().projectType, type);
     assert.equal(project.taggingConfig.datasetKeyword, PROJECT_TYPE_PROFILES[type].defaults.datasetKeyword);
-    assert.equal(PROJECT_TYPE_PROFILES[type].enabledTools.length, 8);
+    assert.equal(PROJECT_TYPE_PROFILES[type].enabledTools.length, 9);
+    assert.ok(PROJECT_TYPE_PROFILES[type].enabledTools.includes('build'));
     assert.ok(PROJECT_TYPE_PROFILES[type].enabledTools.includes('video'));
+    project.buildSession = {
+      ...project.buildSession,
+      profile:{...project.buildSession.profile,target:42,reviewMode:'uncertain-only'},
+      order:['source:stable'],
+      records:{'source:stable':{assetId:'source:stable',locator:'Project/src/shared/stable.png',decision:'accepted',application:'applied',validation:'valid',revision:'r1',acceptedRevision:'r1',provenance:'manual',updatedAt:'2026-10-21T00:00:00.000Z'}},
+    };
     const dir = directory();
     await createProjectDirectory(dir, project);
     assert.equal((await readManifest(dir)).project.projectType, type);
-    assert.equal((await readProjectDirectory(dir)).projectType, type);
+    const reopenedDirectoryProject = await readProjectDirectory(dir);
+    assert.equal(reopenedDirectoryProject.projectType, type);
+    assert.equal(reopenedDirectoryProject.buildSession.profile.target,42);
+    assert.equal(reopenedDirectoryProject.buildSession.records['source:stable'].acceptedRevision,'r1');
     const blob = await createProjectFileBlob(project);
     const bytes = await blob.arrayBuffer(); // JSZip's Node adapter accepts buffers, browser adapter accepts Files.
     const zip = await JSZip.loadAsync(bytes);
     assert.equal(JSON.parse(await zip.file('manifest.json').async('string')).project.projectType, type);
-    assert.equal((await readProjectFile(bytes)).projectType, type);
+    const reopenedArchiveProject = await readProjectFile(bytes);
+    assert.equal(reopenedArchiveProject.projectType, type);
+    assert.equal(reopenedArchiveProject.buildSession.profile.reviewMode,'uncertain-only');
   }
   const layoutProject = createProject('Structured project', 'character');
   layoutProject.taggingConfig.datasetKeyword = 'trigger';
