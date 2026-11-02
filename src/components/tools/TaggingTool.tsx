@@ -9,15 +9,12 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import {
-  connectLocalTaggerBundle,
-  LocalTaggerBundleSource,
+  type LocalTaggerBundleSource,
   parseSelectedTagsCsv,
   predictLocalTags,
 } from '../../services/tagging/localTaggerService';
-import {
-  ensureLocalTaggerFileReadPermission,
-  getLocalTaggerFileHandle,
-} from '../../services/tagging/localTaggerFileSettings';
+import { readLocalTaggerSavedFile } from '../../services/tagging/localTaggerFileSettings';
+import { connectLocalTaggerSource, disconnectLocalTaggerConnection, restoreSavedLocalTagger } from '../../services/tagging/localTaggerConnectionService';
 import {
   getWorkspaceDisplayName,
   getWorkspaceKindBadgeClass,
@@ -406,12 +403,10 @@ export const TaggingTool = ({
   const localTaggerMessage = useLocalTaggerStore((state) => state.message);
   const localTaggerProgress = useLocalTaggerStore((state) => state.progress);
   const autoTaggingProgress = useLocalTaggerStore((state) => state.autoTaggingProgress);
-  const setLocalTagger = useLocalTaggerStore((state) => state.setBundle);
   const setLocalTaggerStatus = useLocalTaggerStore((state) => state.setStatus);
   const setLocalTaggerMessage = useLocalTaggerStore((state) => state.setMessage);
-  const setLocalTaggerProgress = useLocalTaggerStore((state) => state.setProgress);
   const setAutoTaggingProgress = useLocalTaggerStore((state) => state.setAutoTaggingProgress);
-  const disconnectLocalTagger = useLocalTaggerStore((state) => state.disconnect);
+  const savedFileNames = useLocalTaggerStore((state) => state.savedFileNames);
 
   const [newBlacklistTag, setNewBlacklistTag] = useState('');
   const [suggestionTags, setSuggestionTags] = useState<string[]>([]);
@@ -424,8 +419,6 @@ export const TaggingTool = ({
   const [fileAssets, setFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const fallbackDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const suggestionCsvInputRef = useRef<HTMLInputElement | null>(null);
-  const autoConnectSettingsKeyRef = useRef<string | null>(null);
-  const savedSuggestionLoadKeyRef = useRef<string | null>(null);
   const autoTaggingRunTokenRef = useRef(0);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const scopedItemIdSet = useMemo(
@@ -702,144 +695,38 @@ export const TaggingTool = ({
     [buildNextTags]
   );
 
-  const connectBundleSource = useCallback(
-    async (source: LocalTaggerBundleSource) => {
-      setLocalTaggerStatus('loading');
-      setLocalTagger(null);
-      setLocalTaggerProgress('Starting model connection...');
-          setLocalTaggerMessage('Validating local caption model...');
-
-      try {
-        const connectedBundle = await connectLocalTaggerBundle(source, setLocalTaggerProgress);
-        setLocalTagger(connectedBundle);
-        setLocalTaggerStatus('ready');
-        setLocalTaggerProgress('');
-        setLocalTaggerMessage(
-          `Ready. Loaded ${connectedBundle.tags.length.toLocaleString()} tags from ${connectedBundle.name}.`
-        );
-        addNotification('success', `Local caption model ready: ${connectedBundle.name}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Model validation failed.';
-        setLocalTagger(null);
-        setLocalTaggerStatus('not-ready');
-        setLocalTaggerProgress('');
-        setLocalTaggerMessage(message);
-        addNotification('error', message);
-      }
-    },
-    [addNotification]
-  );
-
-  const connectSavedTaggerFiles = useCallback(
-    async (silent = false) => {
-      if (!workspaceSettings.localTaggerModelPath || !workspaceSettings.localTaggerTagsPath) {
-        if (!silent) {
-          setLocalTaggerMessage('Select model.onnx and selected_tags.csv in Settings first.');
-        }
-        return false;
-      }
-
-      const [modelHandle, tagsHandle] = await Promise.all([
-        getLocalTaggerFileHandle('model'),
-        getLocalTaggerFileHandle('tags'),
-      ]);
-
-      if (!modelHandle || !tagsHandle) {
-        if (!silent) {
-          setLocalTaggerMessage('Saved caption model file names exist, but file access handles are unavailable.');
-        }
-        return false;
-      }
-
-      const [canReadModel, canReadTags] = await Promise.all([
-        ensureLocalTaggerFileReadPermission(modelHandle),
-        ensureLocalTaggerFileReadPermission(tagsHandle),
-      ]);
-
-      if (!canReadModel || !canReadTags) {
-        setLocalTaggerStatus('not-ready');
-        setLocalTaggerMessage('Browser permission is required to read saved local caption model files.');
-        return false;
-      }
-
-      await connectBundleSource({
-        kind: 'explicit-files',
-        name: workspaceSettings.localTaggerModelPath,
-        modelFile: await modelHandle.getFile(),
-        tagsFile: await tagsHandle.getFile(),
-      });
-      return true;
-    },
-    [
-      connectBundleSource,
-      setLocalTaggerMessage,
-      setLocalTaggerStatus,
-      workspaceSettings.localTaggerModelPath,
-      workspaceSettings.localTaggerTagsPath,
-    ]
-  );
+  const connectBundleSource = useCallback(async (source: LocalTaggerBundleSource) => {
+    const connected = await connectLocalTaggerSource(source);
+    if (connected) addNotification('success', `Local caption model ready: ${source.name}`);
+    else addNotification('error', useLocalTaggerStore.getState().message);
+  }, [addNotification]);
 
   useEffect(() => {
-    const settingsKey = `${workspaceSettings.localTaggerModelPath ?? ''}|${workspaceSettings.localTaggerTagsPath ?? ''}`;
-    if (
-      !workspaceSettings.localTaggerModelPath ||
-      !workspaceSettings.localTaggerTagsPath ||
-      localTagger ||
-      localTaggerStatus === 'loading' ||
-      localTaggerStatus === 'running' ||
-      autoConnectSettingsKeyRef.current === settingsKey
-    ) {
-      return;
-    }
-
-    autoConnectSettingsKeyRef.current = settingsKey;
-    void connectSavedTaggerFiles(true);
-  }, [
-    connectSavedTaggerFiles,
-    localTagger,
-    localTaggerStatus,
-    workspaceSettings.localTaggerModelPath,
-    workspaceSettings.localTaggerTagsPath,
-  ]);
-
-  useEffect(() => {
-    const tagsPath = workspaceSettings.localTaggerTagsPath;
-    if (!tagsPath || savedSuggestionLoadKeyRef.current === tagsPath) {
-      return;
-    }
-
-    savedSuggestionLoadKeyRef.current = tagsPath;
+    if (!savedFileNames.tags) return;
+    let cancelled = false;
     void (async () => {
       try {
-        const tagsHandle = await getLocalTaggerFileHandle('tags');
-        if (!tagsHandle) {
-          return;
+        const tagsFile = await readLocalTaggerSavedFile('tags', false);
+        if (!tagsFile) return;
+        const csv = await tagsFile.text();
+        const tags = (() => {
+          try { return parseSelectedTagsCsv(csv); }
+          catch { return parseSuggestionCsv(csv); }
+        })();
+        if (!cancelled) {
+          setSuggestionTags(tags);
+          setSuggestionFileName(tagsFile.name);
         }
-
-        const canReadTags = await ensureLocalTaggerFileReadPermission(tagsHandle);
-        if (!canReadTags) {
-          return;
-        }
-
-        const csv = await (await tagsHandle.getFile()).text();
-        let tags: string[];
-
-        try {
-          tags = parseSelectedTagsCsv(csv);
-        } catch {
-          tags = parseSuggestionCsv(csv);
-        }
-
-        setSuggestionTags(tags);
-        setSuggestionFileName(tagsHandle.name);
       } catch (error) {
-        console.warn('Failed to load saved tags CSV from Settings', error);
+        if (!cancelled) console.warn('Failed to load saved tags CSV from Settings', error);
       }
     })();
-  }, [workspaceSettings.localTaggerTagsPath]);
+    return () => { cancelled = true; };
+  }, [savedFileNames]);
 
   const handleConnectModel = useCallback(async () => {
-    if (await connectSavedTaggerFiles()) {
+    if (savedFileNames.model && savedFileNames.tags) {
+      await restoreSavedLocalTagger(true);
       return;
     }
 
@@ -872,7 +759,7 @@ export const TaggingTool = ({
     }
 
     fallbackDirectoryInputRef.current?.click();
-  }, [canUseDirectoryPicker, connectBundleSource, connectSavedTaggerFiles]);
+  }, [canUseDirectoryPicker, connectBundleSource, savedFileNames.model, savedFileNames.tags]);
 
   const handleFallbackFolderSelected = useCallback(
     async (files: FileList | null) => {
@@ -894,8 +781,8 @@ export const TaggingTool = ({
   );
 
   const handleDisconnectModel = useCallback(() => {
-    disconnectLocalTagger();
-  }, [disconnectLocalTagger]);
+    disconnectLocalTaggerConnection();
+  }, []);
 
   const handleSuggestionCsvSelected = useCallback(
     async (files: FileList | null) => {
@@ -1373,13 +1260,13 @@ export const TaggingTool = ({
                   <div className="rounded-md border border-border bg-background p-3">
                     <p className="text-xs text-muted-foreground">Settings model</p>
                     <p className="mt-1 truncate text-sm font-medium">
-                      {workspaceSettings.localTaggerModelPath ?? 'No model.onnx selected'}
+                      {savedFileNames.model ?? 'No model.onnx selected'}
                     </p>
                   </div>
                   <div className="rounded-md border border-border bg-background p-3">
                     <p className="text-xs text-muted-foreground">Settings tags</p>
                     <p className="mt-1 truncate text-sm font-medium">
-                      {workspaceSettings.localTaggerTagsPath ?? 'No selected_tags.csv selected'}
+                      {savedFileNames.tags ?? 'No selected_tags.csv selected'}
                     </p>
                   </div>
                 </div>

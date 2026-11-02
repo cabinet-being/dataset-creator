@@ -10,11 +10,13 @@ type AutoTaggingProgress = {
 
 interface LocalTaggerState {
   bundle: LocalTaggerBundle | null;
+  savedFileNames: { model?: string; tags?: string };
   status: LocalTaggerStatus;
   message: string;
   progress: string;
   autoTaggingProgress: AutoTaggingProgress;
   setBundle: (bundle: LocalTaggerBundle | null) => void;
+  setSavedFileNames: (names: { model?: string; tags?: string }) => void;
   setStatus: (status: LocalTaggerStatus) => void;
   setMessage: (message: string) => void;
   setProgress: (progress: string) => void;
@@ -26,6 +28,7 @@ const defaultMessage = 'Connect a folder containing model.onnx and selected_tags
 
 export const useLocalTaggerStore = create<LocalTaggerState>((set, get) => ({
   bundle: null,
+  savedFileNames: {},
   status: 'not-connected',
   message: defaultMessage,
   progress: '',
@@ -37,6 +40,7 @@ export const useLocalTaggerStore = create<LocalTaggerState>((set, get) => ({
     }
     set({ bundle });
   },
+  setSavedFileNames: (savedFileNames) => set({ savedFileNames }),
   setStatus: (status) => set({ status }),
   setMessage: (message) => set({ message }),
   setProgress: (progress) => set({ progress }),

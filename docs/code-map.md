@@ -31,7 +31,7 @@
 | Відео | `src/services/video/videoClient.ts`, `video.worker.ts`, `videoAnalysis.ts` | Життєвий цикл задач, worker, bounded analysis |
 | Кадри, модель і кеш | `src/services/video/frameSelection.ts`, `frameExport.ts`, `videoModel.ts`, `videoCache.ts` | Selection, safe writes, перевірена модель та cache keys |
 | Редактор підписів | `src/components/caption/CaptionEditor.tsx`, `src/lib/captionEditor.ts` | Автодоповнення під курсором, клавіатура та діагностика повторів; запис делегується caption mutation service |
-| Локальний тегер | `src/services/tagging/localTaggerService.ts`, `localTaggerFileSettings.ts`, `wdTagger.ts` у тій самій папці | ONNX/CSV, категорії WD, BGR preprocessing, handles і дозволи |
+| Локальний тегер | `src/services/tagging/localTaggerConnectionService.ts`, `localTaggerFileSettings.ts`, `localTaggerService.ts`, `wdTagger.ts` у тій самій папці | Спільне підключення/відновлення Caption, Build і Settings; IndexedDB handles або копії File, дозволи; ONNX/CSV і правила WD |
 | Версії проєкту | `src/services/project/projectVersionService.ts` | ZIP-знімки й restore; не shell Git |
 | Docking і responsive geometry | `src/lib/workspaceLayout.ts`, `responsiveWorkspace.ts`, `viewportGeometry.ts` | Чисті layout/geometry helpers |
 | Workspace persistence й навігація | `src/lib/workspacePersistence.ts`, `workspaceNavigation.ts` | Спільний snapshot та browser history |

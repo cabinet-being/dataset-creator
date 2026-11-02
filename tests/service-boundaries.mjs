@@ -13,6 +13,8 @@ await build({
     'src/services/psd/photopeaPreviewQueue.ts',
     'src/services/project/fileSnapshotService.ts',
     'src/services/tagging/localTaggerFileSettings.ts',
+    'src/services/tagging/localTaggerConnectionService.ts',
+    'src/stores/useLocalTaggerStore.ts',
     'src/services/tagging/wdTagger.ts',
     'src/services/project/assetTypeService.ts',
     'src/services/project/projectPathFilters.ts',
@@ -20,9 +22,28 @@ await build({
     'src/lib/fileNameSelection.ts',
   ],
   platform: 'node', transform: { define: { 'import.meta.env.DEV': 'false' } },
+  plugins: [{
+    name: 'fake-local-tagger-session',
+    resolveId(source, importer) {
+      if (source === './localTaggerService' && importer?.endsWith('/localTaggerConnectionService.ts')) {
+        return '\0fake-local-tagger-session';
+      }
+    },
+    load(id) {
+      if (id === '\0fake-local-tagger-session') {
+        return 'export const connectLocalTaggerBundle = (...args) => globalThis.__testConnectLocalTaggerBundle(...args);';
+      }
+    },
+  }],
   output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' },
 });
 const load = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
+const loadFresh = (name, caseName) => import(`${pathToFileURL(join(temp, `${name}.mjs`))}?${caseName}`);
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+};
 
 test('file snapshots preserve binary data and metadata independently of the source', async () => {
   const { snapshotFile, snapshotFileIfNeeded } = await load('fileSnapshotService');
@@ -53,6 +74,187 @@ test('tagger requests read permission only when needed and propagates permission
     }
   }
   await assert.rejects(ensure({ queryPermission: async () => { throw new Error('Disconnected'); }, requestPermission() {} }), /Disconnected/);
+});
+
+test('saved tagger files retain legacy handles and File fallback bytes across reads', async t => {
+  const records = new Map();
+  let abortNextWrite = false;
+  const previousIndexedDB = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  t.after(() => {
+    if (previousIndexedDB) Object.defineProperty(globalThis, 'indexedDB', previousIndexedDB);
+    else delete globalThis.indexedDB;
+  });
+  const requestFor = action => {
+    const request = {};
+    queueMicrotask(() => {
+      try { request.result = action(); request.onsuccess?.(); }
+      catch (error) { request.error = error; request.onerror?.(); }
+    });
+    return request;
+  };
+  const database = {
+    transaction: (store, mode) => {
+      assert.equal(store, 'taggerFileHandles');
+      const transaction = { objectStore: () => ({
+        get: key => requestFor(() => records.get(key)),
+        put: entry => {
+          assert.equal(mode, 'readwrite');
+          const request = requestFor(() => entry.id);
+          queueMicrotask(() => queueMicrotask(() => {
+            if (abortNextWrite) {
+              abortNextWrite = false;
+              transaction.error = new Error('Transaction aborted');
+              transaction.onabort?.();
+            } else {
+              records.set(entry.id, entry);
+              transaction.oncomplete?.();
+            }
+          }));
+          return request;
+        },
+        delete: key => requestFor(() => records.delete(key)),
+      }) };
+      return transaction;
+    },
+  };
+  Object.defineProperty(globalThis, 'indexedDB', {
+    configurable: true,
+    value: { open: () => requestFor(() => database) },
+  });
+
+  const settings = await load('localTaggerFileSettings');
+  const legacyModel = new File([new Uint8Array([0, 255, 7])], 'model.onnx');
+  let permission = 'granted';
+  const permissionCalls = [];
+  const legacyHandle = {
+    name: 'model.onnx',
+    queryPermission: async descriptor => { permissionCalls.push(['query', descriptor]); return permission; },
+    requestPermission: async descriptor => { permissionCalls.push(['request', descriptor]); permission = 'granted'; return permission; },
+    getFile: async () => legacyModel,
+  };
+  records.set('model', { id: 'model', handle: legacyHandle });
+  assert.deepEqual(await settings.getLocalTaggerSavedFileNames(), { model: 'model.onnx', tags: undefined });
+  assert.equal(await settings.getLocalTaggerFileHandle('model'), legacyHandle);
+  assert.equal(await settings.readLocalTaggerSavedFile('model', false), legacyModel);
+  assert.deepEqual(permissionCalls, [['query', { mode: 'read' }]]);
+
+  const tags = new File(['name\nblue_hair\n'], 'selected_tags.csv', { type: 'text/csv', lastModified: 123 });
+  abortNextWrite = true;
+  await assert.rejects(settings.saveLocalTaggerFile('tags', tags), /Transaction aborted/);
+  assert.equal(records.has('tags'), false, 'aborted transaction must not persist the file');
+  await settings.saveLocalTaggerFile('tags', tags);
+  const saved = records.get('tags');
+  assert.equal(saved.id, 'tags');
+  assert.equal(saved.name, tags.name);
+  assert.equal(saved.handle, undefined);
+  assert.equal(await saved.file.text(), 'name\nblue_hair\n');
+  assert.deepEqual(await settings.getLocalTaggerSavedFileNames(), { model: 'model.onnx', tags: 'selected_tags.csv' });
+  const restored = await settings.readLocalTaggerSavedFile('tags', false);
+  assert.equal(restored.name, 'selected_tags.csv');
+  assert.equal(restored.lastModified, 123);
+  assert.equal(await restored.text(), 'name\nblue_hair\n');
+  assert.equal(permissionCalls.length, 1, 'cached File requires no permission prompt');
+
+  permission = 'prompt';
+  await assert.rejects(settings.readLocalTaggerSavedFile('model', false), /permission.*Reconnect/i);
+  assert.deepEqual(permissionCalls.slice(1), [['query', { mode: 'read' }]], 'silent restore must not request permission');
+  assert.equal(await settings.readLocalTaggerSavedFile('model', true), legacyModel);
+  assert.deepEqual(permissionCalls.slice(2), [['query', { mode: 'read' }], ['request', { mode: 'read' }]]);
+  assert.equal(await settings.getLocalTaggerFileHandle('model'), legacyHandle, 'manual restore keeps the saved handle');
+  assert.equal(await settings.readLocalTaggerSavedFile('missing', false), undefined);
+
+  const { useLocalTaggerStore } = await load('useLocalTaggerStore');
+  const firstLoad = deferred();
+  const seenSources = [];
+  const released = [];
+  const bundleFor = (source, marker) => ({
+    name: source.name, tags: [marker], session: { release: async () => { released.push(marker); } },
+  });
+  globalThis.__testConnectLocalTaggerBundle = async source => {
+    seenSources.push(source);
+    await firstLoad.promise;
+    return bundleFor(source, 'first');
+  };
+  t.after(() => { delete globalThis.__testConnectLocalTaggerBundle; });
+  const connection = await loadFresh('localTaggerConnectionService', 'singleflight');
+  const firstRestore = connection.restoreSavedLocalTagger(false);
+  const concurrentRestore = connection.restoreSavedLocalTagger(false);
+  assert.equal(concurrentRestore, firstRestore, 'concurrent startup restores share one flight');
+  firstLoad.resolve();
+  assert.equal(await firstRestore, true);
+  assert.equal(seenSources.length, 1);
+  assert.equal(useLocalTaggerStore.getState().status, 'ready');
+  assert.deepEqual(useLocalTaggerStore.getState().savedFileNames, {
+    model: 'model.onnx', tags: 'selected_tags.csv',
+  }, 'saved file labels come from file records, independent of a project name');
+
+  const oldLoad = deferred();
+  let oldStarted = deferred();
+  globalThis.__testConnectLocalTaggerBundle = async source => {
+    seenSources.push(source);
+    if (source.modelFile === legacyModel) {
+      oldStarted.resolve();
+      await oldLoad.promise;
+      return bundleFor(source, 'stale');
+    }
+    return bundleFor(source, 'new');
+  };
+  const selection = await loadFresh('localTaggerConnectionService', 'replacement');
+  const pendingRestore = selection.restoreSavedLocalTagger(false);
+  await oldStarted.promise;
+  const replacement = new File([new Uint8Array([8, 9, 10])], 'model.onnx');
+  const selected = selection.saveAndConnectLocalTaggerFile('model', replacement);
+  assert.equal(await selected, true, 'same filename selection starts a new connection');
+  assert.equal(useLocalTaggerStore.getState().bundle.tags[0], 'new');
+  oldLoad.resolve();
+  assert.equal(await pendingRestore, false);
+  assert.equal(useLocalTaggerStore.getState().bundle.tags[0], 'new', 'late restore cannot overwrite the chosen file');
+  assert.deepEqual(released.filter(marker => marker === 'stale'), ['stale']);
+  assert.equal(await useLocalTaggerStore.getState().bundle.session.release(), undefined);
+
+  const disconnectLoad = deferred();
+  globalThis.__testConnectLocalTaggerBundle = async source => {
+    await disconnectLoad.promise;
+    return bundleFor(source, 'after-disconnect');
+  };
+  const pendingConnection = selection.connectLocalTaggerSource({
+    kind: 'explicit-files', name: 'model.onnx', modelFile: replacement, tagsFile: tags,
+  });
+  selection.disconnectLocalTaggerConnection();
+  disconnectLoad.resolve();
+  assert.equal(await pendingConnection, false);
+  assert.equal(useLocalTaggerStore.getState().status, 'not-connected');
+  assert.equal(useLocalTaggerStore.getState().bundle, null);
+  assert.deepEqual(released.filter(marker => marker === 'after-disconnect'), ['after-disconnect']);
+
+  const deletedHandle = {
+    name: 'model.onnx',
+    queryPermission: async () => 'granted',
+    getFile: async () => { throw new DOMException('Saved file was removed', 'NotFoundError'); },
+  };
+  await settings.saveLocalTaggerFile('model', deletedHandle);
+  const deleted = await loadFresh('localTaggerConnectionService', 'deleted');
+  assert.equal(await deleted.restoreSavedLocalTagger(true), false);
+  assert.equal(useLocalTaggerStore.getState().status, 'not-ready');
+  assert.match(useLocalTaggerStore.getState().message, /choose.*again|reselect|retry/i,
+    'deleted saved files need clear recovery guidance');
+  await settings.saveLocalTaggerFile('model', replacement);
+  globalThis.__testConnectLocalTaggerBundle = async source => bundleFor(source, 'retry');
+  assert.equal(await deleted.restoreSavedLocalTagger(true), true, 'a corrected file can be retried');
+  assert.equal(useLocalTaggerStore.getState().bundle.tags[0], 'retry');
+
+  const deniedHandle = {
+    name: 'model.onnx',
+    queryPermission: async () => 'denied',
+    requestPermission: async () => 'denied',
+    getFile: async () => { throw new Error('must not be read'); },
+  };
+  await settings.saveLocalTaggerFile('model', deniedHandle);
+  const denied = await loadFresh('localTaggerConnectionService', 'denied');
+  assert.equal(await denied.restoreSavedLocalTagger(true), false);
+  assert.equal(useLocalTaggerStore.getState().bundle, null, 'failed access clears the previous session');
+  assert.equal(useLocalTaggerStore.getState().status, 'not-ready');
+  assert.match(useLocalTaggerStore.getState().message, /permission.*Reconnect/i);
 });
 
 test('WD tag CSV preserves score order, identifies categories and rejects malformed rows', async () => {

@@ -11,11 +11,13 @@ type Props = {
   density: string; onDensityChange: (density: string) => void;
   settings: WorkspaceSettings; onSettingsChange: (settings: Partial<WorkspaceSettings>) => void;
   onPickTaggerFile: (kind: 'model' | 'tags') => void;
+  onRestoreTaggerAccess: () => void;
   onShortcuts: () => void; onOpenTool: (tool: 'tagging' | 'video') => void;
 };
-export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChange, density, onDensityChange, settings, onSettingsChange, onPickTaggerFile, onShortcuts, onOpenTool }: Props) {
+export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChange, density, onDensityChange, settings, onSettingsChange, onPickTaggerFile, onRestoreTaggerAccess, onShortcuts, onOpenTool }: Props) {
   const taggerStatus = useLocalTaggerStore(state => state.status);
   const taggerMessage = useLocalTaggerStore(state => state.message);
+  const savedFileNames = useLocalTaggerStore(state => state.savedFileNames);
   const [videoStatus, setVideoStatus] = useState('Checking cache…');
   useEffect(() => {
     if (!open) return;
@@ -23,7 +25,7 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
     void hasVideoModel().then(cached => { if (!cancelled) setVideoStatus(cached ? 'Model cached' : 'Not downloaded'); }).catch(error => { if (!cancelled) setVideoStatus(error instanceof Error ? error.message : 'Cache unavailable'); });
     return () => { cancelled = true; };
   }, [open]);
-  const captionState = taggerStatus === 'running' ? 'Running' : taggerStatus === 'ready' ? 'Ready' : taggerStatus === 'loading' ? 'Connecting…' : taggerStatus === 'not-ready' ? 'Needs attention' : settings.localTaggerModelPath && settings.localTaggerTagsPath ? 'Reconnect in Caption' : 'Not configured';
+  const captionState = taggerStatus === 'running' ? 'Running' : taggerStatus === 'ready' ? 'Ready' : taggerStatus === 'loading' ? 'Connecting…' : taggerStatus === 'not-ready' ? 'Needs attention' : savedFileNames.model && savedFileNames.tags ? 'Saved files available' : 'Not configured';
   const closeThen = (action: () => void) => { onOpenChange(false); action(); };
   const control = 'rounded-md border border-border bg-background px-3 py-2 text-sm';
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal>
@@ -40,8 +42,8 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
       <section className="mt-5 border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Caption model</h2><span role="status" className="text-xs text-muted-foreground">{captionState}</span></div>
         {taggerStatus === 'not-ready' && <p className="mt-2 text-sm text-destructive">{taggerMessage}</p>}
-        <div className="mt-3 space-y-3">{(['model', 'tags'] as const).map(kind => <div key={kind} className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-sm">{kind === 'model' ? 'model.onnx' : 'selected_tags.csv'}</p><p className="truncate text-xs text-muted-foreground">{(kind === 'model' ? settings.localTaggerModelPath : settings.localTaggerTagsPath) ?? 'No file selected'}</p></div><button className={control} disabled={taggerStatus === 'running'} onClick={() => onPickTaggerFile(kind)}>Choose {kind}</button></div>)}</div>
-        <button className={`${control} mt-3`} onClick={() => closeThen(() => onOpenTool('tagging'))}>Open Caption</button>
+        <div className="mt-3 space-y-3">{(['model', 'tags'] as const).map(kind => <div key={kind} className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-sm">{kind === 'model' ? 'model.onnx' : 'selected_tags.csv'}</p><p className="truncate text-xs text-muted-foreground">{savedFileNames[kind] ?? 'No file selected'}</p></div><button className={control} disabled={taggerStatus === 'running'} onClick={() => onPickTaggerFile(kind)}>Choose {kind}</button></div>)}</div>
+        <div className="mt-3 flex gap-2"><button className={control} disabled={!savedFileNames.model || !savedFileNames.tags || taggerStatus === 'loading' || taggerStatus === 'running'} onClick={onRestoreTaggerAccess}>Reconnect</button><button className={control} onClick={() => closeThen(() => onOpenTool('tagging'))}>Open Caption</button></div>
       </section>
       <section className="mt-5 border-t border-border pt-4"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Video model · DINOv2</h2><span role="status" className="text-xs text-muted-foreground">{videoStatus}</span></div><button className={`${control} mt-3`} onClick={() => closeThen(() => onOpenTool('video'))}>Open Video Frames</button></section>
     </Dialog.Content>

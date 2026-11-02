@@ -34,7 +34,7 @@ flowchart TD
 | `useDocumentStateStore` | Стан відкритих документів, незбережені зміни, запис і перевірка перед закриттям |
 | `useOperationStore` | Прогрес, скасування й завершення тривалих операцій |
 | `useHistoryStore` | Асинхронні Undo/Redo, до 20 записів, ізоляція за ID проєкту |
-| `useLocalTaggerStore` | Сесія та стан локального тегера |
+| `useLocalTaggerStore` | Сесія, стан і назви збережених файлів локального тегера |
 
 Versioned `BuildSession` є частиною `ProjectState`, а не окремим глобальним store. Pure transitions, стабільна черга, revision stamps і readiness належать `services/build/buildSessionService.ts`; React-компонент лише оркеструє наявні caption, Dataset, transform, video та export owners.
 
@@ -82,5 +82,7 @@ Dataset — фізична папка `dataset/`, а не список акти�
 ## Написання підписів і локальне тегування
 
 Build і Caption використовують спільний `src/components/caption/CaptionEditor.tsx`: керований текст, автодоповнення поточного фрагмента, клавіатурний вибір і попередження про повтори. Словник може поєднувати теги проєкту, підключеної моделі та імпортований користувачем список. Редактор не записує файли самостійно; чинні власники екранів викликають caption mutation service.
+
+`src/services/tagging/localTaggerFileSettings.ts` зберігає вибрані ONNX і CSV у браузерному IndexedDB: native file handles, а для звичайного file input — копії `File`. Їхні назви й доступ належать браузеру, а не поточному проєкту чи його налаштуванням підписів. `localTaggerConnectionService.ts` спільно керує підключенням із Caption, Build і Settings та відкидає результат застарілого підключення. Під час запуску застосунок одноразово пробує відновити пару файлів без запиту дозволу; якщо браузер відкликав доступ до handle, користувач може повторити спробу з дозволом через Reconnect/Restore saved model. Копії `File` читаються без запиту дозволу.
 
 `src/services/tagging/wdTagger.ts` зберігає індекси та категорії рядків selected_tags.csv. Для WD bundle з колонкою category застосовується BGR float32 у діапазоні 0–255; старий формат CSV лише з name зберігає попередню RGB-поведінку. Рейтинги за замовчуванням виключені з підписів, поріг персонажів — не нижчий за 0.85 і загальний поріг. Наявність ONNX-файла не гарантує сумісність довільної моделі. Browser Canvas resize не гарантує піксельної тотожності Pillow bicubic з еталонної реалізації.

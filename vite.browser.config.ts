@@ -19,6 +19,7 @@ export default defineConfig({
         projectSwitch: fixture('project-switch'),
         build: fixture('build'),
         inspector: fixture('inspector'),
+        taggerRestore: fixture('tagger-restore'),
       },
     },
   },

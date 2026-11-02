@@ -25,7 +25,7 @@
 | Вибір кадрів, індекс, скасування, fingerprints, запис PNG | `npm run test:video-frames` |
 | Команди, підписи, імпорт/експорт, save queue, навігація | `npm run test:ui-workflows` |
 | Кандидати, coverage, формування Dataset, міграція підписів | `npm run test:dataset-assembly` |
-| Прев’ю, blob URL, snapshots, дозволи й класифікація файлів | `npm run test:service-boundaries` |
+| Прев’ю, blob URL, snapshots, дозволи, збереження й відновлення локального тегера, класифікація файлів | `npm run test:service-boundaries` |
 | Відновлення після помилок, concurrent saves, історія та операції | `npm run test:state-recovery` |
 
 Тематичні регресійні скрипти в `tests/*.mjs` збирають потрібні TypeScript-модулі через Rolldown у тимчасову папку, виконують перевірки й прибирають bundle. Вони використовують справжню логіку застосунку з in-memory filesystem або симуляціями браузерних API. Нові тести для сервісів і стану використовують `node:test`; запускати їх можна через відповідні npm-команди.
@@ -34,9 +34,9 @@
 
 ## Межі автоматизації
 
-Збірка браузерних стендів не виконує UI-assertions. Поточна конфігурація компілює explorer, export, persistence, caption, caption-editor, build, inspector і project-switch. Інші HTML-стенди в `tests/` відкриваються через dev server; наприклад `/DatasetCreator/tests/video-browser.html`.
+Збірка браузерних стендів не виконує UI-assertions. Поточна конфігурація компілює explorer, export, persistence, caption, caption-editor, build, inspector, project-switch і tagger-restore. Стенд `/DatasetCreator/tests/tagger-restore-browser.html` перевіряє в реальному браузері, чи зберігаються назви й байти копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Інші HTML-стенди в `tests/` відкриваються через dev server; наприклад `/DatasetCreator/tests/video-browser.html`.
 
-Окремо перевіряйте native file picker, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
+Окремо перевіряйте native file picker, відновлення збережених ONNX/CSV після перезавантаження та повторний дозвіл браузера, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
 
 ## Робота зі зміною
 

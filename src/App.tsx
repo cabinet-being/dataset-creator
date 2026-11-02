@@ -49,6 +49,7 @@ import {
   Video,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
+import { useLocalTaggerStore } from './stores/useLocalTaggerStore';
 import { useInspectorSelectionStore } from './stores/useInspectorSelectionStore';
 import { useUIStore } from './stores/useUIStore';
 import {
@@ -78,11 +79,8 @@ import {
 } from './services/project/projectDirectoryService';
 import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
 import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from './services/import/importService';
-import {
-  deleteLocalTaggerFileHandle,
-  saveLocalTaggerFileHandle,
-  type LocalTaggerFileKey,
-} from './services/tagging/localTaggerFileSettings';
+import { type LocalTaggerFileKey } from './services/tagging/localTaggerFileSettings';
+import { restoreSavedLocalTagger, saveAndConnectLocalTaggerFile } from './services/tagging/localTaggerConnectionService';
 import { createOperationLogger } from './services/logging/applicationLog';
 import { applyBuildSessionPathMoves } from './services/build/buildSessionService';
 import { indexProjectAssets } from './services/project/assetIndexService';
@@ -699,6 +697,7 @@ function App() {
   const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  useEffect(() => { void restoreSavedLocalTagger(); }, []);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
   const updateBuildSession = useProjectStore((state) => state.updateBuildSession);
   const addSourceImage = useProjectStore((state) => state.addSourceImage);
@@ -3235,38 +3234,18 @@ function App() {
     return () => window.removeEventListener('keydown', handleExplorerShortcut);
   }, [activeExplorerDirectoryPath, explorerClipboard, explorerContextMenu, focusedExplorerPath, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
 
-  const updateLocalTaggerFileSetting = async (
-    key: LocalTaggerFileKey,
-    handle: FileSystemFileHandle
-  ) => {
-    const fileName = handle.name.toLowerCase();
+  const updateLocalTaggerFileSetting = async (key: LocalTaggerFileKey, resource: FileSystemFileHandle | File) => {
+    const fileName = resource.name.toLowerCase();
     const isValidFile = key === 'model' ? fileName.endsWith('.onnx') : fileName.endsWith('.csv');
     if (!isValidFile) {
       addNotification('error', `Select ${key === 'model' ? 'an ONNX model file' : 'a CSV tags file'}.`);
       return;
     }
-
-    updateWorkspaceSettings(
-      key === 'model'
-        ? { localTaggerModelPath: handle.name }
-        : { localTaggerTagsPath: handle.name }
-    );
-
-    try {
-      await saveLocalTaggerFileHandle(key, handle);
-    } catch (error) {
-      console.warn('Failed to persist local tagger file handle', error);
-      addNotification(
-        'warning',
-        `${handle.name} is saved by name, but browser file access could not be persisted.`
-      );
+    const saved = await saveAndConnectLocalTaggerFile(key, resource);
+    if (!saved) {
+      addNotification('error', useLocalTaggerStore.getState().message);
       return;
     }
-
-    addNotification(
-      'success',
-      `${key === 'model' ? 'Model file' : 'Tags CSV'} saved in Settings`
-    );
   };
 
   const handlePickLocalTaggerFile = async (key: LocalTaggerFileKey) => {
@@ -3330,22 +3309,7 @@ function App() {
       return;
     }
 
-    updateWorkspaceSettings(
-      key === 'model'
-        ? { localTaggerModelPath: file.name }
-        : { localTaggerTagsPath: file.name }
-    );
-
-    try {
-      await deleteLocalTaggerFileHandle(key);
-    } catch (error) {
-      console.warn('Failed to clear local tagger file handle', error);
-    }
-
-    addNotification(
-      'info',
-      `${file.name} selected. Persistent auto-load requires a browser with file handle support.`
-    );
+    await updateLocalTaggerFileSetting(key, file);
   };
 
   const handleProjectFileError = (error: unknown, message: string) => {
@@ -4137,6 +4101,7 @@ function App() {
           theme={theme} onThemeChange={setTheme} density={density} onDensityChange={setDensity}
           settings={workspaceSettings} onSettingsChange={updateWorkspaceSettings}
           onPickTaggerFile={kind => void handlePickLocalTaggerFile(kind)}
+          onRestoreTaggerAccess={() => void restoreSavedLocalTagger(true)}
           onShortcuts={() => openCommands(true)} onOpenTool={tool => navigateToTool(tool)} />
         <input
           ref={taggerModelInputRef}
