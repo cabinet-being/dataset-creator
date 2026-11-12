@@ -14,6 +14,8 @@ try {
       coverage: 'src/services/dataset/coverageService.ts',
       vectorMath: 'src/services/quality/metrics/vectorMath.ts',
       component: 'src/components/quality/QualityReport.tsx',
+      adapter: 'src/services/quality/datasetQualityInput.ts',
+      similarityLevels: 'src/services/similarity/similarityLevels.ts',
     },
     platform: 'node',
     external: [/^react/, /^lucide-react/, /^clsx/, /^tailwind-merge/],
@@ -24,6 +26,9 @@ try {
   const coverage = await import(pathToFileURL(resolve(temp, 'coverage.mjs')));
   const { symmetricEigenvalues } = await import(pathToFileURL(resolve(temp, 'vectorMath.mjs')));
   const { QualityReport } = await import(pathToFileURL(resolve(temp, 'component.mjs')));
+
+  const adapter = await import(pathToFileURL(resolve(temp, 'adapter.mjs')));
+  const { getSimilarityThreshold } = await import(pathToFileURL(resolve(temp, 'similarityLevels.mjs')));
 
   const close = (actual, expected, epsilon, message) => assert.ok(Math.abs(actual - expected) <= epsilon, `${message}: ${actual} ≠ ${expected}`);
   const basis = (dimension, index, scale = 1) => { const vector = new Float32Array(dimension); vector[index] = scale; return vector; };
@@ -222,6 +227,45 @@ try {
     assert.match(html, /file:item-0/, 'Action ids are rendered through labelFor');
     assert.match(html, /Ще 12/, 'Long action lists are collapsed');
     assert.match(html, /Застосувати/);
+  }
+
+  // Build adapter: workspace data -> QualityReportInput.
+  {
+    const { buildDatasetQualityInput, toTechnicalVerdict } = adapter;
+    const image = (id, tags = ['tag']) => ({ id, sourceImageId: '', kind: 'image', tags, width: 1200, height: 1200 });
+    const vec = (index) => basis(4, index);
+    const embeddings = { a: vec(0), b: vec(1), c: vec(2) };
+    const items = [image('a'), image('b')];
+    const candidates = [image('a'), image('b'), image('c')];
+
+    const histogram = buildDatasetQualityInput({ items, candidates, features: { basis: 'histogram', embeddings } });
+    assert.ok(histogram.items.every((item) => item.embedding === undefined), 'histogram vectors are not embeddings');
+    assert.equal(histogram.candidates, undefined);
+
+    const dino = buildDatasetQualityInput({ items, candidates, features: { basis: 'dinov2', embeddings } });
+    assert.ok(dino.items.every((item) => item.embedding instanceof Float32Array), 'dinov2 vectors are embeddings');
+    assert.deepEqual(dino.candidates.map((item) => item.id), ['a', 'b', 'c']);
+
+    const good = { version: 1, width: 1200, height: 1200, shortSide: 1200, sharpness: 1000, brightness: 0.5, darkShare: 0, brightShare: 0, minShortSide: 1024 };
+    assert.equal(toTechnicalVerdict('x', good).verdict, 'ok');
+    assert.equal(toTechnicalVerdict('x', { ...good, sharpness: 0 }).verdict, 'bad', 'blurry is bad');
+    assert.equal(toTechnicalVerdict('x', { ...good, dark: true, brightness: 0, darkShare: 1 }).verdict, 'bad', 'dark is bad');
+    const small = toTechnicalVerdict('x', { ...good, width: 100, height: 100, shortSide: 100 });
+    assert.equal(small.verdict, 'ok', 'resolution does not affect the technical verdict');
+    assert.deepEqual(small.reasons, []);
+
+    const withSummaries = buildDatasetQualityInput({ items, qualitySummaries: new Map([['a', { ...good, sharpness: 0 }]]) });
+    assert.deepEqual(withSummaries.technical.map((entry) => [entry.id, entry.verdict]), [['a', 'bad']]);
+    assert.equal(buildDatasetQualityInput({ items }).technical, undefined, 'no summaries -> technical undefined');
+    assert.equal(buildDatasetQualityInput({ items, qualitySummaries: new Map() }).technical, undefined);
+
+    assert.equal(buildDatasetQualityInput({ items }).minShortSide, 1024, 'default min short side');
+    assert.equal(buildDatasetQualityInput({ items, profile: { minShortSide: 512 } }).minShortSide, 512);
+    assert.deepEqual(buildDatasetQualityInput({ items, target: 50 }).target, { min: 50, max: 200 });
+    assert.deepEqual(buildDatasetQualityInput({ items, target: 500 }).target, { min: 500, max: 500 });
+    assert.equal(buildDatasetQualityInput({ items }).target, undefined);
+
+    assert.equal(metrics.QUALITY_THRESHOLDS.nearDuplicates.similarity, getSimilarityThreshold('near-copy', 'dinov2'));
   }
 
   console.log('quality metrics: ok');
