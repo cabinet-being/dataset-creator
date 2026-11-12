@@ -32,6 +32,7 @@
 | Прев’ю, blob URL, snapshots, дозволи, збереження й відновлення локального тегера, класифікація файлів | `npm run test:service-boundaries` |
 | Відновлення після помилок, concurrent saves, історія та операції | `npm run test:state-recovery` |
 | Рівні схожості DINOv2, Strictness, пороги | `npm run test:similarity` |
+| Перевірене завантаження моделей (розмір, SHA-256, DINOv2, WD-тегер) | `npm run test:model-download` |
 | Метрики звіту якості Dataset (пороги, Vendi, покриття, готовність) | `npm run test:quality-metrics` |
 
 Тематичні регресійні скрипти в `tests/*.mjs` збирають потрібні TypeScript-модулі через Rolldown у тимчасову папку, виконують перевірки й прибирають bundle. Вони використовують справжню логіку застосунку з in-memory filesystem або симуляціями браузерних API. Нові тести для сервісів і стану використовують `node:test`; запускати їх можна через відповідні npm-команди.
@@ -42,7 +43,7 @@
 
 Браузерні сценарії запускає Playwright (Chromium) над `vite preview`; конфігурація — `playwright.config.ts`, специфікації — `tests/e2e/`. Стенди збираються з `vite.browser.config.ts` (explorer, export, persistence, caption, caption-editor, build, inspector, project-switch, tagger-restore, scope, ui, video) із `react-dom/profiling`, щоб `<Profiler>` рахував рендери. Спільна guard-fixture (`tests/e2e/fixtures.ts`) провалює тест на `pageerror`, `console.error` і зовнішні запити; виняток — корінь iframe Photopea, який монтує App.
 
-Поза типовим прогоном лишаються сценарії з тегами `@network` (живий експорт Photopea, справжня DINOv2 з Hugging Face; потребують мережі) і `@slow` (one-hour video; тривалі). Стенди document (iframe Photopea) і workspace (потрібен dev server застосунку) пропущені з поясненням у `tests/e2e/skipped.spec.ts`. Стенд tagger-restore перевіряє збереження назв і байтів копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Export і caption стенди працюють із фізичним членством у `dataset/`.
+Поза типовим прогоном лишаються сценарії з тегами `@network` (живий експорт Photopea, справжня DINOv2 з Hugging Face; можливе звіряння маніфесту WD-тегера з Hugging Face; потребують мережі) і `@slow` (one-hour video; тривалі). Стенди document (iframe Photopea) і workspace (потрібен dev server застосунку) пропущені з поясненням у `tests/e2e/skipped.spec.ts`. Сценарій `tests/e2e/tagger-download.spec.ts` перевіряє завантаження WD-тегера на mock-відповіді, без мережі. Стенд tagger-restore перевіряє збереження назв і байтів копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Export і caption стенди працюють із фізичним членством у `dataset/`.
 
 Окремо перевіряйте native file picker, відновлення збережених ONNX/CSV після перезавантаження та повторний дозвіл браузера, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Сценарії `@network` залежать від мережі, частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
 
