@@ -7,7 +7,7 @@ import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { resolveAssetCaption } from '../../services/caption/captionResolver';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
-import { assembleDataset, createAssemblyFingerprint, type AssemblyInputAsset, type AssemblyMode, type DatasetAssemblyPlan } from '../../services/dataset/datasetAssemblyService';
+import { assembleDataset, createAssemblyFingerprint, encodeAssemblyInputs, type AssemblyInputAsset, type AssemblyMode, type DatasetAssemblyPlan } from '../../services/dataset/datasetAssemblyService';
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
 import { scanSharedCandidates } from '../../services/dataset/sharedCandidateService';
 import { useUIStore } from '../../stores/useUIStore';
@@ -23,13 +23,15 @@ type Props = {
   excludedCategories: string[];
   includedCategories: string[];
   onApply: (paths: string[]) => Promise<void>;
+  defaultMode?: AssemblyMode['kind'];
+  defaultTotal?: number;
 };
 type Result = { plan: DatasetAssemblyPlan; candidates: AssemblyInputAsset[]; fingerprintAssets: AssemblyInputAsset[]; skipped: number };
 const percent = (value: number | null) => value === null ? 'Insufficient data' : `${Math.round(value * 100)}%`;
 
-export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, directory, projectId, projectType, excludedCategories, includedCategories, onApply }: Props) {
-  const [mode, setMode] = useState<AssemblyMode['kind']>('auto');
-  const [totalTarget, setTotalTarget] = useState(100);
+export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, directory, projectId, projectType, excludedCategories, includedCategories, onApply, defaultMode, defaultTotal }: Props) {
+  const [mode, setMode] = useState<AssemblyMode['kind']>(defaultMode ?? 'auto');
+  const [totalTarget, setTotalTarget] = useState(defaultTotal ?? 100);
   const [rangeMin, setRangeMin] = useState(80);
   const [rangeMax, setRangeMax] = useState(120);
   const [maxNew, setMaxNew] = useState(20);
@@ -81,15 +83,11 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
       const encoder = await createSemanticFeatureEncoder(controller.signal, setPhase);
       try {
         const all = [...membership.effective, ...candidates];
-        const features: AssemblyInputAsset[] = [];
-        for (let index = 0; index < all.length; index += 1) {
-          controller.signal.throwIfAborted();
-          const item = all[index];
-          setPhase('Understanding images and captions'); setProgress({ completed: index, total: all.length });
-          const caption = resolveAssetCaption(item, dataset.triggerWord).normalized;
-          features.push({ item, caption, feature: await encoder.encode(item, caption), quality: item.dimensionsKnown === false ? 0 : Math.min(1, Math.sqrt(item.width * item.height) / 1024) });
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-        }
+        setPhase('Understanding images and captions');
+        const features = await encodeAssemblyInputs(all, {
+          triggerWord: dataset.triggerWord, encoder, signal: controller.signal,
+          onProgress: (completed, total) => { setPhase('Understanding images and captions'); setProgress({ completed, total }); },
+        });
         const baseline = features.slice(0, membership.effective.length);
         const encodedCandidates = features.slice(membership.effective.length);
         setPhase('Maximizing coverage'); setProgress({ completed: all.length, total: all.length });
