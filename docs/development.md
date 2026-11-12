@@ -9,7 +9,7 @@
 | `npm run dev` | Vite dev server |
 | `npm run build` | TypeScript і production-збірка в `dist/` |
 | `npm run preview` | Перегляд зібраного застосунку |
-| `npm test` | Усі сім офлайн-наборів, зупинка після першої помилки |
+| `npm test` | Усі дев’ять офлайн-наборів, зупинка після першої помилки |
 | `npm run lint` | ESLint 9 (flat config `eslint.config.js`), без попереджень |
 | `npm run test:ci` | По черзі: lint, перевірка документації, усі тести, build, браузерні сценарії |
 | `npm run test:docs` | Тест валідатора та перевірка посилань, шляхів і npm-команд у документації |
@@ -31,6 +31,8 @@
 | Кандидати, coverage, формування Dataset, міграція підписів | `npm run test:dataset-assembly` |
 | Прев’ю, blob URL, snapshots, дозволи, збереження й відновлення локального тегера, класифікація файлів | `npm run test:service-boundaries` |
 | Відновлення після помилок, concurrent saves, історія та операції | `npm run test:state-recovery` |
+| Рівні схожості DINOv2, Strictness, пороги | `npm run test:similarity` |
+| Метрики звіту якості Dataset (пороги, Vendi, покриття, готовність) | `npm run test:quality-metrics` |
 
 Тематичні регресійні скрипти в `tests/*.mjs` збирають потрібні TypeScript-модулі через Rolldown у тимчасову папку, виконують перевірки й прибирають bundle. Вони використовують справжню логіку застосунку з in-memory filesystem або симуляціями браузерних API. Нові тести для сервісів і стану використовують `node:test`; запускати їх можна через відповідні npm-команди.
 

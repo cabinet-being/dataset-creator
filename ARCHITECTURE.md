@@ -18,7 +18,7 @@ flowchart TD
 
 - [`src/App.tsx`](src/App.tsx) координує відкриття проєкту, стан і мутації Explorer, збирання екранів і підключення панелей; модель вкладок (`src/lib/workspaceTabs.ts`, `src/hooks/useWorkspaceTabs.ts`), команди (`src/hooks/useWorkspaceCommands.ts`) та інспектор винесені в окремих власників. Це великий інтеграційний модуль; нову незалежну логіку краще розміщувати в наявних сервісах.
 - `src/components/workspace/` містить оболонку, докування, Explorer, Dataset, меню, статус операцій і командну палітру.
-- `src/components/build/` містить єдиний Build Dataset workspace, а `src/components/tools/` — окремі Import, Video Frames, Remove Duplicates, Photopea, Analysis, Review, Caption та Export. Список і назви визначає [`toolDefinitions.ts`](src/lib/toolDefinitions.ts).
+- `src/components/build/` містить єдиний Build Dataset workspace, а `src/components/tools/` — окремі Import, Video Frames, Remove Duplicates, Photopea, Analysis, Review, Caption та Export. Список, назви й рівень (`primary` — Build, `advanced` — решта в групі «Advanced») визначає [`toolDefinitions.ts`](src/lib/toolDefinitions.ts); окремий ToolHub видалено, відкритий проєкт за замовчуванням потрапляє у Build.
 - `src/lib/` містить проєкції ресурсів, правила вкладок і шляхів, геометрію, команди та спільні дії.
 - `src/services/` відповідає за імпорт, файли проєкту, Dataset, підписи, експорт, зображення, відео й моделі.
 - `src/hooks/` з’єднує життєвий цикл React зі збереженням, навігацією, операціями та документами Photopea.
@@ -64,6 +64,9 @@ Dataset — фізична папка `dataset/`, а не список акти�
 
 - `image/embeddingService.ts` обчислює гістограмні ознаки для наявного аналізу схожості.
 - `video/videoModel.ts` завантажує й виконує DINOv2 через ONNX Runtime Web.
+- `similarity/similarityLevels.ts` — єдина таблиця рівнів схожості DINOv2 (duplicate / near-copy / similar / related) і стопів Strictness; гістограмні пороги лише запасні. Поріг near-copy спільний для автодобору, тріажу Build і звіту якості.
+- `quality/imageQuality.ts` вимірює технічну якість кожного зображення (роздільність, різкість, експозиція) для тріажу Build (`build/buildTriageService.ts`, `components/build/useBuildAutoPipeline.ts`: тріаж → автодобір → фонове тегування; ручне рішення переважає).
+- `quality/metrics/` будує звіт якості Dataset: обов’язкові перевірки визначають готовність як найгірший статус, пояснювальні метрики (Vendi, покриття, насичення, теги, довжина підписів, узгодженість) не дають загального балу. Пороги зібрано в `thresholds.ts`; для DINOv2 вони евристичні й не відкалібровані, а звіт описує файли, а не якість навченої моделі.
 - `analysis/semanticFeatureService.ts` використовує DINOv2 для зображень і локальне хешування Unicode-токенів та біграм для тексту. Це не мовна модель.
 - `dataset/coverageService.ts` і `datasetAssemblyService.ts` оцінюють покриття заданої множини та пропонують доповнення; ці оцінки не доводять якість навчання моделі.
 

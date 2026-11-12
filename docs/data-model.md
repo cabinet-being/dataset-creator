@@ -15,6 +15,8 @@
 
 Тип проєкту — `character`, `style` або `concept`. Профілі в `projectProfiles.ts` задають тексти та початкові налаштування; зараз усі три типи дозволяють повний набір інструментів. Для старого проєкту без типу потрібен явний вибір, невідомий тип відхиляється.
 
+Build session зберігає й пропозиції автотріажу: `BuildReviewRecord.triage` (група accepted / rejected / needs-decision, причини, етап `quality` або `assembly`, ревізія вмісту, `duplicateOf`, `similarity`, числові виміри `ImageQualitySummary`, у яких `dark` відсутнє в зведеннях, збережених раніше), `BuildPreparationProfile.minShortSide` (типово 1024) і `autoPipeline` (відсутнє означає ввімкнено), `BuildSession.auto` (ключ і стан останнього автодобору), а `filter` розширено значеннями `needs-decision`, `accepted`, `rejected`. Це лише пропозиції: поки `decision` не `unreviewed`, ефективну групу визначає ручне рішення. Усі поля необов’язкові, тому старі сесії читаються без міграції.
+
 `BuildSession` не дублює членство Dataset. Кожен review record має незалежні осі рішення користувача, застосування файлової зміни та перевірки ревізії. `acceptedRevision` стосується конкретного вмісту й підпису; готовим ресурс стає лише після успішного застосування, актуальної перевірки та фізичної присутності output у `dataset/`. Для source/edited використовуються сталі entity ID, для file-only ресурсів — ID із sidecar manifest; шлях лишається змінним locator і оновлюється на rename/move.
 
 ## Папка проєкту
@@ -58,7 +60,7 @@ Explorer використовує логічний префікс `Project/`, н
 | IndexedDB | Дані ресурсів, кеші, handles тегера; окрема БД відео | Може бути очищена браузером; не замінює копію проєкту |
 | localStorage | Workspace, вкладки, докування, UI-параметри | Не є резервною копією зображень |
 
-Основна IndexedDB — `DatasetCreator`, схема 3; перелік stores міститься в `constants.ts`. Відеокеш — `dataset-creator-video-frames-v1` зі stores `frames`, `thumbnails`, `meta`. Workspace snapshot має ключ `dataset-creator-workspace-v2`; старі ключі читаються для міграції.
+Основна IndexedDB — `DatasetCreator`, схема 3; перелік stores міститься в `constants.ts`. Відеокеш — `dataset-creator-video-frames-v1` зі stores `frames`, `thumbnails`, `meta`. Workspace snapshot має ключ `dataset-creator-workspace-v2`; старі ключі читаються для міграції. Dataset-вкладка «Add files» тепер має id `add-files`; збережені вкладки й докування зі старим id `select` (`dataset:<id>:select`) перейменовуються під час читання, а `select` залишається id інструмента Remove Duplicates.
 
 Blob URL живе лише в поточній сесії. Він не є шляхом до файлу і має звільнятися після заміни або завершення використання. Для довготривалого збереження потрібні bytes і метадані, а не URL.
 
