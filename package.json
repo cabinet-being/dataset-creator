@@ -20,7 +20,8 @@
     "test:state-recovery": "node tests/state-recovery.mjs",
     "test:similarity": "node tests/similarity-levels.mjs",
     "test:quality-metrics": "node tests/quality-metrics.mjs",
-    "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery && npm run test:similarity && npm run test:quality-metrics",
+    "test:model-download": "node tests/model-download.mjs",
+    "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery && npm run test:similarity && npm run test:quality-metrics && npm run test:model-download",
     "test:ci": "npm run lint && npm run test:docs && npm test && npm run build && npm run test:browser",
     "test:docs": "node tests/docs-checker.mjs && node scripts/check-docs.mjs"
   },
