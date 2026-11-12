@@ -57,3 +57,44 @@ export const measureCoverage = (selected: CoverageAsset[], input: CoverageAsset[
   const total = weighted.reduce((sum, [value, next]) => sum + (value ?? 0) * next, 0) / Math.max(weight, 0.01);
   return { visual, text, context, total };
 };
+
+// Radius coverage over raw embeddings. Used by quality metrics; Dataset assembly
+// keeps the weighted measureCoverage above.
+export type EmbeddedAsset = { id: string; vector: Float32Array };
+export type RadiusCoverage = {
+  covered: number;
+  total: number;
+  fraction: number;
+  uncovered: { id: string; distance: number }[];
+};
+
+export const nearestSimilarity = (target: Float32Array, selected: readonly Float32Array[]): number =>
+  selected.reduce((best, vector) => Math.max(best, cosineSimilarity(target, vector)), 0);
+
+/** A candidate is covered when its nearest selected vector is within cosine distance `radius`. */
+export const measureRadiusCoverage = (candidates: readonly EmbeddedAsset[], selected: readonly Float32Array[], radius: number): RadiusCoverage => {
+  const uncovered: RadiusCoverage['uncovered'] = [];
+  let covered = 0;
+  for (const candidate of candidates) {
+    const distance = 1 - nearestSimilarity(candidate.vector, selected);
+    if (distance <= radius + 1e-9) covered += 1;
+    else uncovered.push({ id: candidate.id, distance });
+  }
+  uncovered.sort((left, right) => right.distance - left.distance || left.id.localeCompare(right.id));
+  return { covered, total: candidates.length, fraction: candidates.length ? covered / candidates.length : 0, uncovered };
+};
+
+/** Covered fraction after each prefix of `orderedSelected`; index i means i + 1 items selected. */
+export const measureCoverageCurve = (candidates: readonly EmbeddedAsset[], orderedSelected: readonly Float32Array[], radius: number): number[] => {
+  const best = candidates.map(() => 0);
+  const curve: number[] = [];
+  for (const vector of orderedSelected) {
+    let covered = 0;
+    candidates.forEach((candidate, index) => {
+      best[index] = Math.max(best[index], cosineSimilarity(candidate.vector, vector));
+      if (1 - best[index] <= radius + 1e-9) covered += 1;
+    });
+    curve.push(candidates.length ? covered / candidates.length : 0);
+  }
+  return curve;
+};
