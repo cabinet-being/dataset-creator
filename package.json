@@ -15,7 +15,7 @@
     "test:dataset-assembly": "node tests/dataset-assembly.mjs",
     "test:browser-fixtures": "vite build --config vite.browser.config.ts",
     "test:browser": "npm run test:browser-fixtures && playwright test",
-    "test:browser:network": "npm run test:browser-fixtures && playwright test --grep @network",
+    "test:browser:network": "npm run test:browser-fixtures && playwright test --grep @network --workers=1",
     "test:service-boundaries": "node tests/service-boundaries.mjs",
     "test:state-recovery": "node tests/state-recovery.mjs",
     "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery",
