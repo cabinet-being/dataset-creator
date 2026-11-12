@@ -156,6 +156,36 @@ export type BuildTransformRecipe = {
   crop?: { x: number; y: number; width: number; height: number };
 };
 
+export type BuildTriageGroup = 'accepted' | 'rejected' | 'needs-decision';
+export type BuildTriageReasonCode =
+  | 'exact-duplicate' | 'near-duplicate' | 'too-small' | 'below-target-resolution'
+  | 'blurry' | 'soft' | 'dark' | 'underexposed' | 'overexposed'
+  | 'not-selected' | 'video' | 'unmeasured' | 'quality-ok' | 'selected';
+export interface BuildTriageReason { code: BuildTriageReasonCode; message: string }
+/** Numbers-only image quality measurements persisted with a triage proposal. */
+export interface ImageQualitySummary {
+  version: number;
+  width: number;
+  height: number;
+  shortSide: number;
+  sharpness: number;
+  brightness: number;
+  darkShare: number;
+  brightShare: number;
+  minShortSide: number;
+}
+export interface BuildTriageProposal {
+  group: BuildTriageGroup;
+  reasons: BuildTriageReason[];
+  stage: 'quality' | 'assembly';
+  revision: string;
+  duplicateOf?: string;
+  similarity?: number;
+  quality?: ImageQualitySummary;
+  digest?: string;
+  createdAt: string;
+}
+
 export interface BuildReviewRecord {
   assetId: string;
   locator?: string;
@@ -171,6 +201,7 @@ export interface BuildReviewRecord {
   outputRevision?: string;
   proposal?: { tags: string[]; revision: string };
   draft?: string;
+  triage?: BuildTriageProposal;
   updatedAt: string;
 }
 
@@ -179,16 +210,19 @@ export interface BuildPreparationProfile {
   reviewMode: BuildReviewMode;
   captionRequired: boolean;
   transform?: BuildTransformRecipe;
+  minShortSide?: number;
+  autoPipeline?: boolean;
 }
 
 export interface BuildSession {
   version: 1;
   profile: BuildPreparationProfile;
   cursor: number;
-  filter: 'all' | 'unresolved' | 'errors';
+  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected';
   order: string[];
   records: Record<string, BuildReviewRecord>;
   lastExport?: { fingerprint: string; completedAt: string; entries: number };
+  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string };
 }
 
 // ============ SIMILARITY ============

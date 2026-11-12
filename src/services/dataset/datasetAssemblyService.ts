@@ -3,6 +3,7 @@ import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { SemanticFeature } from '../analysis/semanticFeatureService';
 import { encodeCaptionText, SEMANTIC_FEATURE_MODEL_KEY } from '../analysis/semanticFeatureService';
 import { cosineSimilarity, createCoverageUniverse, getStableSceneGroup, measureCoverage, type CoverageAsset, type CoverageMetrics } from './coverageService';
+import { resolveAssetCaption } from '../caption/captionResolver';
 import { normalizeDatasetPath } from './datasetMembershipResolver';
 import { getSimilarityThreshold } from '../similarity/similarityLevels';
 
@@ -29,6 +30,25 @@ export type DatasetAssemblyPlan = {
   stoppedBecause: 'target-reached' | 'range-max' | 'max-new' | 'saturated' | 'exhausted' | 'insufficient-pool';
   shortfall: number;
 };
+
+/** Encodes images and captions for assembly; yields to the event loop between items. */
+export async function encodeAssemblyInputs(items: WorkspaceImage[], options: {
+  triggerWord: string;
+  encoder: { encode(item: WorkspaceImage, caption: string): Promise<SemanticFeature> };
+  signal?: AbortSignal;
+  onProgress?: (completed: number, total: number) => void;
+}): Promise<AssemblyInputAsset[]> {
+  const features: AssemblyInputAsset[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    options.signal?.throwIfAborted();
+    const item = items[index];
+    options.onProgress?.(index, items.length);
+    const caption = resolveAssetCaption(item, options.triggerWord).normalized;
+    features.push({ item, caption, feature: await options.encoder.encode(item, caption), quality: item.dimensionsKnown === false ? 0 : Math.min(1, Math.sqrt(item.width * item.height) / 1024) });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return features;
+}
 
 const stableKey = (asset: AssemblyInputAsset) => normalizeDatasetPath(asset.item.assetPath ?? asset.item.id);
 export const coverageAsset = (asset: AssemblyInputAsset): CoverageAsset => ({ key: stableKey(asset), feature: asset.feature });

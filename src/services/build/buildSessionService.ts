@@ -2,6 +2,8 @@ import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { isProjectDatasetPath } from '../dataset/datasetFolderService';
 import type {
   BuildReviewDecision,
+  BuildTriageGroup,
+  BuildTriageProposal,
   BuildReviewRecord,
   BuildSession,
   BuildTransformRecipe,
@@ -31,6 +33,32 @@ export const createBuildSession = (): BuildSession => ({
   records: {},
 });
 
+const TRIAGE_GROUPS = ['accepted', 'rejected', 'needs-decision'];
+const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected'] as const;
+
+/** Triage is derived data: drop it unless it has a recognisable shape. */
+const normalizeTriage = (value: unknown): BuildTriageProposal | undefined => {
+  const triage = value as Partial<BuildTriageProposal> | null | undefined;
+  return triage && typeof triage === 'object' && TRIAGE_GROUPS.includes(triage.group as string) && Array.isArray(triage.reasons) && typeof triage.revision === 'string'
+    ? triage as BuildTriageProposal : undefined;
+};
+
+const normalizeRecord = (record: BuildReviewRecord): BuildReviewRecord => {
+  if (record.triage === undefined) return record;
+  if (normalizeTriage(record.triage)) return record;
+  const { triage: _discarded, ...rest } = record;
+  void _discarded;
+  return rest;
+};
+
+/** Manual decisions win; otherwise the automatic triage proposal (or `pending` when none). */
+export const getBuildTriageGroup = (record: BuildReviewRecord): BuildTriageGroup | 'pending' => {
+  if (record.decision === 'accepted') return 'accepted';
+  if (record.decision === 'skipped') return 'rejected';
+  if (record.decision === 'deferred') return 'needs-decision';
+  return record.triage?.group ?? 'pending';
+};
+
 const isRecord = (value: unknown): value is BuildReviewRecord => Boolean(
   value && typeof value === 'object' && typeof (value as BuildReviewRecord).assetId === 'string'
 );
@@ -40,8 +68,9 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   if (!value || typeof value !== 'object') return defaults;
   const input = value as Partial<BuildSession>;
   if (input.version !== 1) return defaults;
-  const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)));
-  const filter = input.filter === 'unresolved' || input.filter === 'errors' ? input.filter : 'all';
+  const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record)]));
+  const filter = BUILD_FILTERS.find((value) => value === input.filter) ?? 'all';
+  const minShortSide = Math.floor(Number(input.profile?.minShortSide));
   const reviewMode = input.profile?.reviewMode === 'uncertain-only' ? 'uncertain-only' : 'every-item';
   return {
     version: 1,
@@ -50,12 +79,15 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
       reviewMode,
       captionRequired: input.profile?.captionRequired !== false,
       transform: input.profile?.transform,
+      ...(minShortSide > 0 ? { minShortSide } : {}),
+      autoPipeline: input.profile?.autoPipeline !== false,
     },
     cursor: Math.max(0, Math.floor(Number(input.cursor) || 0)),
     filter,
     order: [...new Set((input.order ?? []).filter((id): id is string => typeof id === 'string'))],
     records,
     lastExport: input.lastExport,
+    ...(input.auto && typeof input.auto === 'object' ? { auto: input.auto } : {}),
   };
 };
 
@@ -143,9 +175,12 @@ export const reconcileBuildSession = (
       (!output || !previous.outputRevision || previous.outputRevision !== getBuildAssetRevision(output, output.tags, transform) ||
         !isProjectDatasetPath(output.assetPath) || getBuildValidation(output, session.profile.captionRequired) !== 'valid');
     const validation = (stale || outputStale) && previous.decision === 'accepted' ? 'stale' : previous.validation;
-    if (previous.locator !== item.assetPath || previous.revision !== revision || previous.validation !== validation) {
+    const staleTriage = previous.triage !== undefined && previous.triage.revision !== getBuildContentRevision(item, transform);
+    if (previous.locator !== item.assetPath || previous.revision !== revision || previous.validation !== validation || staleTriage) {
+      const { triage: _staleTriage, ...kept } = previous;
+      void _staleTriage;
       records[assetId] = {
-        ...previous,
+        ...(staleTriage ? kept : previous),
         locator: item.assetPath,
         revision,
         validation,
@@ -196,7 +231,12 @@ export const selectBuildQueue = <T extends BuildCandidate>(session: BuildSession
     if (!item || !record) return [];
     if (session.filter === 'errors' && record.application !== 'failed' && record.validation !== 'error') return [];
     if (session.filter === 'unresolved' && record.decision !== 'unreviewed' && record.decision !== 'deferred' && record.validation !== 'stale' && !(record.decision === 'accepted' && record.validation === 'pending')) return [];
+    if (session.filter === 'unresolved' && record.decision === 'unreviewed' && record.triage?.group === 'rejected') return [];
+    if (session.filter === 'needs-decision' && !['needs-decision', 'pending'].includes(getBuildTriageGroup(record))) return [];
+    if (session.filter === 'accepted' && getBuildTriageGroup(record) !== 'accepted') return [];
+    if (session.filter === 'rejected' && getBuildTriageGroup(record) !== 'rejected') return [];
     if (session.profile.reviewMode === 'uncertain-only' && session.filter === 'all' && record.decision === 'accepted' && record.validation === 'valid') return [];
+    if (session.profile.reviewMode === 'uncertain-only' && session.filter === 'all' && record.decision === 'unreviewed' && record.triage?.group === 'rejected') return [];
     return [item];
   });
 };
@@ -220,7 +260,8 @@ export const getBuildCounts = (session: BuildSession, items: BuildCandidate[]): 
       getBuildValidation(physicalItem ?? item, session.profile.captionRequired) === 'valid' &&
       outputValid;
     if (isReady) ready += 1;
-    if (record.decision === 'unreviewed' || record.decision === 'deferred' || record.validation === 'stale' ||
+    const triageRejected = record.decision === 'unreviewed' && record.triage?.group === 'rejected';
+    if ((record.decision === 'unreviewed' && !triageRejected) || record.decision === 'deferred' || record.validation === 'stale' ||
       (record.decision === 'accepted' && record.application !== 'failed' && !isReady)) unresolved += 1;
   }
   return { ready, target: session.profile.target, saving, unresolved, errors };

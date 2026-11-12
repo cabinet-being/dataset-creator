@@ -18,6 +18,8 @@ try {
       'src/services/caption/captionMigrationService.ts',
       'src/services/build/buildSessionService.ts',
       'src/services/build/buildTransformService.ts',
+      'src/services/quality/imageQuality.ts',
+      'src/services/build/buildTriageService.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -30,6 +32,8 @@ try {
   const migration = await import(pathToFileURL(join(temp, 'captionMigrationService.mjs')));
   const buildSession = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
   const buildTransform = await import(pathToFileURL(join(temp, 'buildTransformService.mjs')));
+  const quality = await import(pathToFileURL(join(temp, 'imageQuality.mjs')));
+  const triage = await import(pathToFileURL(join(temp, 'buildTriageService.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/src/shared/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -219,6 +223,210 @@ try {
   });
   assert.deepEqual(disabledMigration.sourceImages.outside.tags, ['original'], 'disabled overrides remain archival only');
   assert.deepEqual(disabledMigration.report.legacyOverrides, {'source:outside':['disabled']});
+
+  // ---- Stage A: image quality ----
+  {
+    const good = {width:2000,height:1500,sharpness:0.01,brightness:0.5,darkShare:0.05,brightShare:0.05,dark:false,analysisWidth:512,analysisHeight:384};
+    const codes = (r) => r.flags.map((f) => f.code);
+    let r = quality.classifyImageQuality(good);
+    assert.equal(r.verdict,'pass'); assert.deepEqual(r.flags,[]);
+    assert.equal(r.minShortSide,1024,'default min short side is 1024'); assert.equal(r.shortSide,1500);
+    r = quality.classifyImageQuality({...good,width:700,height:900});
+    assert.equal(r.verdict,'reject'); assert.deepEqual(codes(r),['too-small'],'700 < 0.75*1024 rejects');
+    r = quality.classifyImageQuality({...good,width:768,height:900});
+    assert.deepEqual(codes(r),['below-target-resolution'],'768 == 0.75*1024 is only review'); assert.equal(r.verdict,'review');
+    r = quality.classifyImageQuality({...good,width:1023,height:2000});
+    assert.deepEqual(codes(r),['below-target-resolution']);
+    r = quality.classifyImageQuality({...good,width:383,height:2000},{minShortSide:512});
+    assert.deepEqual(codes(r),['too-small']); assert.equal(r.minShortSide,512);
+    r = quality.classifyImageQuality({...good,width:400,height:2000},{minShortSide:512});
+    assert.deepEqual(codes(r),['below-target-resolution']);
+    r = quality.classifyImageQuality({...good,width:512,height:512},{minShortSide:512});
+    assert.equal(r.verdict,'pass','preset 512 passes a 512 image');
+    r = quality.classifyImageQuality({...good,sharpness:0.0001});
+    assert.deepEqual(codes(r),['blurry']); assert.equal(r.verdict,'reject');
+    r = quality.classifyImageQuality({...good,sharpness:0.0007});
+    assert.deepEqual(codes(r),['soft']); assert.equal(r.verdict,'review');
+    r = quality.classifyImageQuality({...good,dark:true,brightness:0.01,darkShare:1});
+    assert.ok(codes(r).includes('dark')); assert.equal(r.verdict,'reject'); assert.ok(!codes(r).includes('underexposed'));
+    r = quality.classifyImageQuality({...good,brightness:0.05});
+    assert.deepEqual(codes(r),['underexposed']); assert.equal(r.verdict,'review');
+    r = quality.classifyImageQuality({...good,darkShare:0.7});
+    assert.deepEqual(codes(r),['underexposed']);
+    r = quality.classifyImageQuality({...good,brightShare:0.6});
+    assert.deepEqual(codes(r),['overexposed']); assert.equal(r.verdict,'review');
+    r = quality.classifyImageQuality({...good,width:400,height:400,brightShare:0.6,sharpness:0.0001});
+    assert.equal(r.verdict,'reject','verdict is the worst severity'); assert.equal(r.flags.length,3);
+
+    const make = (w,h,fn) => { const d = new Uint8ClampedArray(w*h*4); for (let y=0;y<h;y++) for (let x=0;x<w;x++) { const [R,G,B]=fn(x,y); const i=(y*w+x)*4; d[i]=R;d[i+1]=G;d[i+2]=B;d[i+3]=255; } return d; };
+    const src = {width:2000,height:2000};
+    const flat = quality.assessImagePixels(make(64,64,()=>[128,128,128]),64,64,src);
+    assert.ok(flat.flags.some((f)=>f.code==='blurry')); assert.equal(flat.verdict,'reject');
+    assert.equal(typeof flat.sharpness,'number'); assert.equal(typeof flat.brightness,'number');
+    assert.ok(Math.abs(flat.brightness-0.5)<0.1,'flat grey brightness ~0.5, got '+flat.brightness);
+    assert.equal(flat.shortSide,2000); assert.equal(flat.analysisWidth,64);
+    const checker = quality.assessImagePixels(make(64,64,(x,y)=>((x+y)%2?[200,200,200]:[60,60,60])),64,64,src);
+    assert.ok(checker.sharpness>0.001,'checkerboard sharp: '+checker.sharpness);
+    assert.ok(!checker.flags.some((f)=>f.code==='blurry'||f.code==='soft')); assert.equal(checker.verdict,'pass');
+    const black = quality.assessImagePixels(make(64,64,()=>[0,0,0]),64,64,src);
+    assert.ok(black.flags.some((f)=>f.code==='dark')); assert.equal(black.verdict,'reject'); assert.ok(black.brightness<0.05);
+    const white = quality.assessImagePixels(make(64,64,(x,y)=>((x+y)%2?[255,255,255]:[250,250,250])),64,64,src);
+    assert.ok(white.flags.some((f)=>f.code==='overexposed')); assert.ok(white.brightShare>0.9); assert.ok(white.brightness>0.9);
+    const small = quality.assessImagePixels(make(64,64,(x,y)=>((x+y)%2?[200,200,200]:[60,60,60])),64,64,{width:300,height:900},{minShortSide:512});
+    assert.equal(small.shortSide,300); assert.equal(small.minShortSide,512); assert.ok(small.flags.some((f)=>f.code==='too-small'));
+    const summary = quality.summarizeImageQuality(checker);
+    assert.equal(summary.flags,undefined); assert.equal(summary.sharpness,checker.sharpness); assert.equal(summary.minShortSide,1024);
+  }
+
+  // ---- Stage A: triage service ----
+  {
+    const NOW='2026-11-01T00:00:00.000Z';
+    const img = (id,path,extra={}) => item('source:'+id,id,'Project/src/'+path,{byteSize:1,modifiedAt:1,...extra});
+    const a=img('a','a.png'), b=img('b','b.png'), c=img('c','c.png'), d=img('d','d.png');
+    const video = {...img('v','v.mp4'),kind:'video'};
+    const rep = (over={}) => quality.classifyImageQuality({width:2000,height:2000,sharpness:0.01,brightness:0.5,darkShare:0,brightShare:0,dark:false,analysisWidth:64,analysisHeight:64,...over});
+    const cls = (o) => triage.classifyQualityTriage({item:a,inDataset:false,revision:'r1',now:NOW,...o});
+    let p = cls({item:video,report:rep()});
+    assert.equal(p.group,'needs-decision'); assert.equal(p.reasons[0].code,'video');
+    p = cls({}); assert.equal(p.group,'needs-decision'); assert.equal(p.reasons[0].code,'unmeasured');
+    p = cls({report:rep(),duplicateOf:'source:b',digest:'abc'});
+    assert.equal(p.group,'rejected'); assert.equal(p.duplicateOf,'source:b'); assert.ok(p.reasons.some((r)=>r.code==='exact-duplicate')); assert.equal(p.digest,'abc');
+    p = cls({report:rep({sharpness:0.0001})}); assert.equal(p.group,'rejected');
+    p = cls({report:rep({sharpness:0.0007})}); assert.equal(p.group,'needs-decision');
+    p = cls({report:rep()}); assert.equal(p.group,'accepted'); assert.ok(p.reasons.some((r)=>r.code==='quality-ok'));
+    assert.equal(p.stage,'quality'); assert.equal(p.revision,'r1'); assert.equal(p.createdAt,NOW); assert.equal(typeof p.quality.sharpness,'number');
+    p = cls({report:rep({sharpness:0.0001}),inDataset:true}); assert.notEqual(p.group,'rejected','Dataset member is never rejected');
+    p = cls({report:rep(),duplicateOf:'source:b',inDataset:true}); assert.equal(p.group,'needs-decision');
+
+    const dup = triage.findExactDuplicates([
+      {assetId:'x1',digest:'h',inDataset:false},{assetId:'x2',digest:'h',inDataset:true},{assetId:'x3',digest:'h',inDataset:false},
+      {assetId:'y1',digest:'k',inDataset:false},{assetId:'y2',digest:'k',inDataset:false},{assetId:'z',digest:'z',inDataset:false}]);
+    assert.deepEqual([...dup.entries()].sort(),[['x1','x2'],['x3','x2'],['y2','y1']]);
+
+    const base = buildSession.reconcileBuildSession(buildSession.createBuildSession(),[a,b,c,d,video],NOW);
+    const prop = {group:'accepted',reasons:[],stage:'quality',revision:'r',createdAt:NOW};
+    let s2 = triage.applyTriageProposal(base,'source:a',prop);
+    assert.equal(s2.records['source:a'].triage.group,'accepted');
+    const skipped = buildSession.updateBuildDecision(base,'source:a','skipped');
+    assert.equal(triage.applyTriageProposal(skipped,'source:a',prop).records['source:a'].triage,undefined,'only unreviewed get triage');
+    assert.equal(triage.applyTriageProposal(base,'source:missing',prop),base);
+
+    // applyAssemblyTriage
+    const pathOf = (i) => i.assetPath;
+    const keyMap = new Map([['k:a','source:a'],['k:b','source:b'],['k:c','source:c'],['k:d','source:d']]);
+    let ms = buildSession.updateBuildDecision(base,'source:d','accepted',{application:'applied',validation:'valid'});
+    ms = triage.applyTriageProposal(ms,'source:a',{...prop,revision:'qrev'});
+    const plan = {
+      selected:[{key:'k:a',reason:'gain'}],
+      duplicatePairs:[{kept:'k:a',rejected:'k:b',kind:'near',similarity:0.97},{kept:'k:a',rejected:'k:d',kind:'exact',similarity:1}],
+      rejectedCandidates:[{path:'k:b',reason:'near-duplicate'},{path:'k:c',reason:'not-selected'},{path:'k:d',reason:'exact-duplicate'}],
+      stoppedBecause:'target-reached',
+    };
+    const out = triage.applyAssemblyTriage(ms,plan,keyMap,NOW);
+    const ra=out.records['source:a'].triage, rb=out.records['source:b'].triage, rc=out.records['source:c'].triage;
+    assert.equal(ra.group,'accepted'); assert.equal(ra.stage,'assembly'); assert.equal(ra.revision,'qrev','keeps previous revision');
+    assert.equal(rb.group,'rejected'); assert.equal(rb.duplicateOf,'source:a'); assert.equal(rb.similarity,0.97); assert.equal(rb.reasons[0].code,'near-duplicate');
+    assert.equal(rc.group,'rejected'); assert.equal(rc.reasons[0].code,'not-selected'); assert.ok(rc.reasons[0].message.includes('target reached'));
+    assert.equal(out.records['source:d'].triage,undefined,'manual decision untouched'); assert.equal(out.records['source:d'].decision,'accepted');
+    const exactOut = triage.applyAssemblyTriage(base,{...plan,selected:[],duplicatePairs:[{kept:'k:a',rejected:'k:c',kind:'exact',similarity:1}]},keyMap,NOW);
+    assert.equal(exactOut.records['source:c'].triage.reasons[0].code,'exact-duplicate'); assert.equal(exactOut.records['source:c'].triage.duplicateOf,'source:a');
+
+    // counts and selectors
+    let cs = buildSession.createBuildSession();
+    cs = buildSession.reconcileBuildSession(cs,[a,b,c,d,video],NOW);
+    cs = triage.applyTriageProposal(cs,'source:a',{...prop,group:'accepted'});
+    cs = triage.applyTriageProposal(cs,'source:b',{...prop,group:'rejected'});
+    cs = triage.applyTriageProposal(cs,'source:c',{...prop,group:'needs-decision'});
+    assert.deepEqual(triage.getBuildTriageCounts(cs,[a,b,c,d,video]),{accepted:1,rejected:1,needsDecision:1,pending:2});
+    assert.deepEqual(triage.getBuildTriageCounts(cs,[a,b]),{accepted:1,rejected:1,needsDecision:0,pending:0});
+    cs = buildSession.updateBuildDecision(cs,'source:d','skipped');
+    assert.equal(triage.getBuildTriageCounts(cs,[d]).rejected,1,'manual skip counts as rejected');
+    const targets = triage.selectTriageTargets(cs,[video,c,b,a,d,{...img('new','new.png')}]).map(buildSession.getBuildAssetId);
+    assert.deepEqual(targets,['source:v'],'targets are unreviewed without triage, in session order');
+    const dsItem = {...img('ds','x.png'),assetPath:'Project/dataset/x.png'};
+    const cs2 = buildSession.reconcileBuildSession(cs,[a,b,c,d,video,dsItem],NOW);
+    const withDs = triage.applyTriageProposal(triage.applyTriageProposal(cs2,'source:a',{...prop,group:'accepted'}),'source:ds',{...prop,group:'accepted'});
+    assert.equal(cs2.records['source:a'].triage,undefined,'proposals with a foreign revision are dropped on reconcile');
+    assert.deepEqual(triage.selectAssemblyCandidates(withDs,[dsItem,b,a,c]).map(buildSession.getBuildAssetId),['source:a'],'only quality-accepted, unreviewed, non-Dataset');
+    const asm = triage.applyAssemblyTriage(cs,{selected:[{key:'k:a',reason:'g'}],duplicatePairs:[],rejectedCandidates:[],stoppedBecause:'x'},keyMap,NOW);
+    assert.deepEqual(triage.selectAssemblyCandidates(asm,[a]),[],'assembly-stage triage is not a candidate');
+    const k1 = triage.createAssemblyKey(10,[a,b],cs), k2 = triage.createAssemblyKey(10,[b,a],cs);
+    assert.equal(k1,k2); assert.notEqual(k1,triage.createAssemblyKey(11,[a,b],cs));
+    assert.notEqual(k1,triage.createAssemblyKey(10,[a],cs));
+    const revChanged = {...cs,records:{...cs.records,'source:a':{...cs.records['source:a'],triage:{...cs.records['source:a'].triage,revision:'other'}}}};
+    assert.notEqual(k1,triage.createAssemblyKey(10,[a,b],revChanged));
+    void pathOf;
+  }
+
+  // ---- Stage A: build session triage behaviour ----
+  {
+    const NOW='2026-11-01T00:00:00.000Z';
+    const mk = (id,extra={}) => item('source:'+id,id,'Project/src/t/'+id+'.png',{byteSize:5,modifiedAt:1,...extra});
+    const a=mk('a'), b=mk('b'), c=mk('c');
+    const tri = (group,revision) => ({group,reasons:[{code:'quality-ok',message:'x'}],stage:'quality',revision,createdAt:NOW});
+    let s = buildSession.reconcileBuildSession(buildSession.createBuildSession(),[a,b,c],NOW);
+    const rev = (id,i) => buildSession.getBuildContentRevision(i,undefined);
+    s = {...s,records:{...s.records,
+      'source:a':{...s.records['source:a'],triage:tri('rejected',rev('a',a))},
+      'source:b':{...s.records['source:b'],triage:tri('accepted',rev('b',b))},
+    }};
+    assert.equal(buildSession.getBuildCounts(s,[a,b,c]).unresolved,2,'triage-rejected unreviewed is not unresolved');
+    const ids = (sess) => buildSession.selectBuildQueue(sess,[a,b,c]).map(buildSession.getBuildAssetId);
+    assert.deepEqual(ids({...s,filter:'unresolved'}),['source:b','source:c']);
+    assert.deepEqual(ids({...s,filter:'rejected'}),['source:a']);
+    assert.deepEqual(ids({...s,filter:'accepted'}),['source:b']);
+    assert.deepEqual(ids({...s,filter:'needs-decision'}),['source:c'],'pending counts as needs-decision filter');
+    assert.deepEqual(ids({...s,filter:'all'}),['source:a','source:b','source:c']);
+    assert.deepEqual(ids({...s,filter:'all',profile:{...s.profile,reviewMode:'uncertain-only'}}),['source:b','source:c'],'uncertain-only hides triage-rejected in all');
+    // manual override wins
+    const accepted = buildSession.updateBuildDecision(s,'source:a','accepted',{application:'applied',validation:'valid'});
+    assert.equal(buildSession.getBuildTriageGroup(accepted.records['source:a']),'accepted');
+    assert.equal(buildSession.getBuildTriageGroup(buildSession.updateBuildDecision(s,'source:b','skipped').records['source:b']),'rejected');
+    assert.equal(buildSession.getBuildTriageGroup(buildSession.updateBuildDecision(s,'source:b','deferred').records['source:b']),'needs-decision');
+    assert.equal(buildSession.getBuildTriageGroup(s.records['source:c']),'pending');
+    assert.equal(buildSession.getBuildTriageGroup(s.records['source:a']),'rejected');
+    // reconcile
+    const same = buildSession.reconcileBuildSession(s,[a,b,c],NOW);
+    assert.equal(same,s,'unchanged reconcile keeps session identity'); assert.ok(same.records['source:a'].triage);
+    const tagOnly = buildSession.reconcileBuildSession(s,[{...a,tags:['other','tags']},b,c],NOW);
+    assert.ok(tagOnly.records['source:a'].triage,'tag-only change keeps triage');
+    const changed = buildSession.reconcileBuildSession(s,[{...a,byteSize:999,modifiedAt:7},b,c],NOW);
+    assert.equal(changed.records['source:a'].triage,undefined,'content change drops triage');
+    assert.ok(changed.records['source:b'].triage);
+    // normalize
+    const json = JSON.parse(JSON.stringify({...s,filter:'needs-decision',profile:{...s.profile,minShortSide:512.7,autoPipeline:false},auto:{assemblyKey:'k'}}));
+    json.records['source:c'].triage = {group:'bogus',reasons:[],revision:'x'};
+    json.records['source:b'].triage = {group:'accepted',reasons:'no',revision:'x'};
+    const n = buildSession.normalizeBuildSession(json);
+    assert.ok(n.records['source:a'].triage,'valid triage kept'); assert.equal(n.records['source:b'].triage,undefined); assert.equal(n.records['source:c'].triage,undefined);
+    assert.equal(n.filter,'needs-decision'); assert.equal(n.profile.minShortSide,512); assert.equal(n.profile.autoPipeline,false); assert.equal(n.auto.assemblyKey,'k');
+    for (const f of ['accepted','rejected']) assert.equal(buildSession.normalizeBuildSession({...json,filter:f}).filter,f);
+    assert.equal(buildSession.normalizeBuildSession({...json,filter:'nope'}).filter,'all');
+    const def = buildSession.normalizeBuildSession({version:1});
+    assert.equal(def.profile.autoPipeline,true,'autoPipeline defaults on'); assert.equal(def.profile.minShortSide,undefined);
+    assert.equal(buildSession.normalizeBuildSession(null).profile.autoPipeline ?? true,true);
+  }
+
+  // ---- Stage A: encodeAssemblyInputs ----
+  {
+    const mkImg = (id,tags) => ({id,sourceImageId:id,assetPath:'Project/src/'+id+'.png',kind:'image',imageData:new Blob(['x']),tags,width:2048,height:512,dimensionsKnown:true});
+    const items = [mkImg('e1',['hero','a']),mkImg('e2',['b']),mkImg('e3',['c'])];
+    const calls = []; const progress = [];
+    const encoder = {async encode(i,cap){ calls.push([i.id,cap]); return {id:i.id}; }};
+    const res = await assembly.encodeAssemblyInputs(items,{triggerWord:'hero',encoder,onProgress:(x,y)=>progress.push([x,y])});
+    assert.deepEqual(res.map((r)=>r.item.id),['e1','e2','e3']); assert.deepEqual(calls.map((x)=>x[0]),['e1','e2','e3']);
+    assert.deepEqual(res.map((r)=>r.caption),calls.map((x)=>x[1]),'caption passed to encoder and returned');
+    assert.equal(calls[0][1],caption.resolveAssetCaption(items[0],'hero').normalized); assert.ok(calls[0][1].includes('a'));
+    assert.deepEqual(res[0].feature,{id:'e1'}); assert.equal(res[0].quality,Math.min(1,Math.sqrt(2048*512)/1024));
+    assert.deepEqual(progress.map((x)=>x[0]),[0,1,2]); assert.ok(progress.every((x)=>x[1]===3));
+    const ctrl = new AbortController(); const seen = [];
+    await assert.rejects(assembly.encodeAssemblyInputs(items,{triggerWord:'hero',signal:ctrl.signal,
+      encoder:{async encode(i){ seen.push(i.id); ctrl.abort(); return {id:i.id}; }}}));
+    assert.deepEqual(seen,['e1'],'abort stops after the in-flight item');
+    const pre = new AbortController(); pre.abort(); const none=[];
+    await assert.rejects(assembly.encodeAssemblyInputs(items,{triggerWord:'',signal:pre.signal,encoder:{async encode(i){none.push(i);return {};}}}));
+    assert.equal(none.length,0);
+  }
   console.log('dataset assembly contracts: ok');
 } finally {
   await rm(temp, { recursive: true, force: true });
