@@ -7,7 +7,7 @@
 | Перевірка документації | `scripts/check-docs.mjs`, `tests/docs-checker.mjs` | `checkDocs`, локальні посилання, шляхи та npm-команди |
 | Назви, іконки, scopes, tiers інструментів | `src/lib/toolDefinitions.ts`, `src/lib/constants.ts` | `TOOL_DEFINITIONS` (`tier`: `primary` Build / `advanced` решта; `PRIMARY_TOOLS`, `ADVANCED_TOOLS`), `DATASET_TOOL_DEFINITIONS` з окремими id (`add-files`, `review`, `analysis`, `tagging`), похідні labels/slugs; ToolHub видалено; відповідність URL slug і інструмента (`getToolFromUrlSlug`, `getUrlSlugForTool`) |
 | Типи проєктів і початкові значення | `src/lib/projectProfiles.ts`, `src/types/entities.ts` | Профілі та фабрики сутностей |
-| Єдиний список ресурсів | `src/lib/workspaceImages.ts` | `toWorkspaceImages`, `toWorkspaceReviewAssets`, нормалізація шляхів (`toProjectRelativePath`, `getProjectDataFileExtension`) |
+| Єдиний список ресурсів | `src/lib/workspaceImages.ts` | `toWorkspaceImages`, `toWorkspaceReviewAssets`, нормалізація шляхів (`toProjectRelativePath`, `getProjectDataFileExtension`, `findWorkspaceImageIdForPath`/`findSourceImageIdForPath`) |
 | Файлові ресурси та incremental cache | `src/lib/workspaceFileAssets.ts` | `collectWorkspaceFileAssets`, `updateWorkspaceFileAssetCache` |
 | Прев’ю і життєвий цикл blob URL | `src/lib/previewUrlCache.ts` | `useWorkspacePreviewUrls`, cache/prune helpers |
 | Папка, manifest і differential save | `src/services/project/projectDirectoryService.ts` | `readProjectDirectory`, `writeProjectDirectoryChanges` |
@@ -16,7 +16,9 @@
 | Стабільна копія File | `src/services/project/fileSnapshotService.ts` | `snapshotFile`, `snapshotFileIfNeeded` |
 | Rename/copy/move/delete і читання папки Explorer | `src/services/project/explorerFileService.ts` | Batch-операції, unique names, recovery errors, `readExplorerDirectory` |
 | Зміни шляхів і дерева | `src/lib/datasetAssets.ts`, `src/lib/explorerTreeUpdates.ts` | Path moves, incremental tree updates, сортування/санітизація/порожнє дерево |
-| Контекстні дії Explorer | `src/lib/explorerContextActions.ts` | Чисті builder-и груп дій; виконання мутацій лишається в `runExplorerMutation` (`src/App.tsx`) |
+| Стан і читання дерева Explorer | `src/hooks/useExplorerTree.ts` | Завантаження дерева, виділення/фокус/drag, `refreshExplorer`, `refreshChangedExplorer`; чисті запити — `explorerTreeUpdates.ts` |
+| Мутації Explorer і життєвий цикл проєкту | `src/hooks/useExplorerMutations.ts`, `src/hooks/useProjectLifecycle.ts`, `src/hooks/useExplorerShortcuts.ts` | `runExplorerMutation` (єдина exclusive-обгортка Explorer над `runProjectFileOperation`): CRUD, paste/duplicate, inline edit, drop, зовнішній імпорт, оновлення вкладок/clipboard/store при path move, `indexProjectWorkspaceAssets`; new/open/switch/rename проєкту, версії, `activateProjectDirectory`, `indexActiveProject`; клавіатурна навігація Explorer |
+| Контекстні дії Explorer | `src/lib/explorerContextActions.ts` | Чисті builder-и груп дій; виконання мутацій — `runExplorerMutation` у `src/hooks/useExplorerMutations.ts` |
 | Порядок Dataset board | `src/lib/datasetBoard.ts` | `datasetBoardItems`, `orderDatasetBoardItems`, ключ ресурсу |
 | Файлові вкладки | `src/lib/workspaceFileTabs.ts` | Пошук, перейменування та перевірка file-backed tabs |
 | Модель вкладок workspace | `src/lib/workspaceTabs.ts`, `src/lib/workspacePersistence.ts`, `src/hooks/useWorkspaceTabs.ts` | Міграція старого dataset tool id `select` → `add-files` (`normalizeDatasetToolName`, `migrateDatasetToolTabId`, `migrateDatasetToolDockIds`); типи й фабрики вкладок, persist/dedupe/order, `getInspectorContext`; `useWorkspaceTabsState` і `useWorkspaceTabActions` для стану й дій |
@@ -25,7 +27,7 @@
 | Фізичне членство Dataset | `src/services/dataset/datasetFolderService.ts`, `datasetMembershipResolver.ts` | Move/reverse операції, `isProjectDatasetPath`, resolver |
 | Кандидати й пропозиції Dataset | `src/services/dataset/sharedCandidateService.ts`, `datasetAssemblyService.ts`, `coverageService.ts` | Scan, assembly plan, coverage universe |
 | Читання та запис підписів | `src/services/caption/captionResolver.ts`, `captionMutationService.ts` | `resolveAssetCaption`, `persistCaptionTagsForItems` |
-| Імпорт і pairing TXT | `src/services/import/importService.ts` | `importImageFiles`, `getImportPairKey`, parser підписів |
+| Імпорт і pairing TXT | `src/services/import/importService.ts` | `importImageFiles`, `getImportPairKey`, parser підписів, браузерні pickers `pickImportFiles`/`pickImportDirectory` |
 | Експорт | `src/services/export/exportPlan.ts`, `datasetExportService.ts` | `buildExportPlan`, ZIP/folder writers, фізичні Dataset assets |
 | Фото/PSD-редактор | `src/components/photopea/PhotopeaFrame.tsx`, `src/hooks/usePhotopeaDocumentState.ts` | Протокол iframe і стан документа |
 | Черга PSD-прев’ю | `src/services/psd/photopeaPreviewQueue.ts` | Dedup за шляхом, timeout і завершення jobs |
@@ -53,6 +55,6 @@
 
 ## Короткий маршрут зміни
 
-Знайди рядок таблиці → прочитай реалізацію → знайди виклики → відкрий відповідний тест із [матриці перевірок](development.md) → внеси зміну у спільного власника. `App.tsx` лишає стан Explorer-дерева, мутації Explorer (`runExplorerMutation`), життєвий цикл проєкту та збирання екранів; решту шукай у власниках вище. Якщо поведінка вже є в `App.tsx`, спочатку знайди її імпортований сервіс; нова копія всередині tool зазвичай створить друге джерело правил.
+Знайди рядок таблиці → прочитай реалізацію → знайди виклики → відкрий відповідний тест із [матриці перевірок](development.md) → внеси зміну у спільного власника. `App.tsx` лишає композицію хуків, спільні рефи сесії, відкриття файлів у вкладках, `renderEditor`/`workspaceViews` і кореневий JSX; решту шукай у власниках вище. Якщо поведінка вже є в `App.tsx`, спочатку знайди її імпортований сервіс; нова копія всередині tool зазвичай створить друге джерело правил.
 
 Карту потрібно оновлювати після перенесення або перейменування модуля. Не додавай сюди повні сигнатури: вони вже визначені в TypeScript.

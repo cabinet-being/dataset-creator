@@ -16,7 +16,7 @@ flowchart TD
   UI --> Video[Video client та worker]
 ```
 
-- [`src/App.tsx`](src/App.tsx) координує відкриття проєкту, стан і мутації Explorer, збирання екранів і підключення панелей; модель вкладок (`src/lib/workspaceTabs.ts`, `src/hooks/useWorkspaceTabs.ts`), команди (`src/hooks/useWorkspaceCommands.ts`) та інспектор винесені в окремих власників. Це великий інтеграційний модуль; нову незалежну логіку краще розміщувати в наявних сервісах.
+- [`src/App.tsx`](src/App.tsx) композиційний корінь: з’єднує хуки, спільні рефи сесії, відкриття файлів у вкладках, збирання екранів (`renderEditor`, `workspaceViews`) і панелі; стан Explorer (`src/hooks/useExplorerTree.ts`), його мутації через `runExplorerMutation` (`src/hooks/useExplorerMutations.ts`), клавіатура (`useExplorerShortcuts.ts`) і життєвий цикл проєкту (`src/hooks/useProjectLifecycle.ts`) винесені в хуки; модель вкладок (`src/lib/workspaceTabs.ts`, `src/hooks/useWorkspaceTabs.ts`), команди (`src/hooks/useWorkspaceCommands.ts`) та інспектор винесені в окремих власників. Це все ще інтеграційний модуль; нову незалежну логіку краще розміщувати в наявних сервісах.
 - `src/components/workspace/` містить оболонку, докування, Explorer, Dataset, меню, статус операцій і командну палітру.
 - `src/components/build/` містить єдиний Build Dataset workspace, а `src/components/tools/` — окремі Import, Video Frames, Remove Duplicates, Photopea, Analysis, Review, Caption та Export. Список, назви й рівень (`primary` — Build, `advanced` — решта в групі «Advanced») визначає [`toolDefinitions.ts`](src/lib/toolDefinitions.ts); окремий ToolHub видалено, відкритий проєкт за замовчуванням потрапляє у Build.
 - `src/lib/` містить проєкції ресурсів, правила вкладок і шляхів, геометрію, команди та спільні дії.
