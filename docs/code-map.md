@@ -49,6 +49,7 @@
 | Прогрес і Undo/Redo | `src/hooks/useOperation.ts`, `src/stores/useOperationStore.ts`, `useHistoryStore.ts` | Поточні stores і lifecycle; не окрема історія в кожному tool |
 | Єдиний режим Build | `src/components/build/BuildWorkspace.tsx`, `src/services/build/buildSessionService.ts` | Versioned session, стабільна черга, рішення/revision/readiness; файлові дії делегуються чинним caption, Dataset та export services |
 | Тріаж і автопайплайн Build | `src/services/build/buildTriageService.ts`, `src/components/build/useBuildAutoPipeline.ts` | `classifyQualityTriage`, `getBuildTriageGroup` (ручне рішення переважає), `getBuildTriageCounts`; хук послідовно запускає тріаж, автодобір і фонове тегування |
+| Кластери Build | `src/services/build/buildClusterService.ts`, `src/components/build/useBuildClusters.ts`, `BuildClusterView.tsx`; `performClusteringSliced` у `src/services/similarity/similarityService.ts` | Майже-дублікати (поріг Strict) і тематичні кластери (поточний Strictness) над DINOv2-ознаками; у histogram — лише точні дублікати за SHA-256; вибір «Keep best», кеш за ключем; хук рахує кластери по частинах. Масові рішення з кластерів `BuildWorkspace` застосовує через `commitDecisions` — одна history-транзакція |
 | Build crop/resize | `src/services/build/buildTransformService.ts` | Детермінований PNG output, no-upscale та idempotent output ID; recipe зберігається в build session |
 
 ## Короткий маршрут зміни
