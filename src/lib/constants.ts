@@ -1,5 +1,5 @@
 import type { ToolName } from '../types';
-import { TOOL_DEFINITIONS, type ToolDefinition } from './toolDefinitions';
+import { TOOL_DEFINITIONS } from './toolDefinitions';
 // Tools in recommended image preparation order.
 export const WORKFLOW_TOOLS = [
   'build',
@@ -13,13 +13,11 @@ export const WORKFLOW_TOOLS = [
   'export',
 ] as const;
 
-export const HUB_TOOL_CARDS = ['select', 'clean', 'analysis', 'review', 'tagging'] as const;
-
-export const SIDEBAR_PRIMARY_TOOLS = [] as const;
-
-export const SIDEBAR_SECONDARY_TOOLS = ['select', 'clean', 'analysis', 'review', 'tagging'] as const;
-
 export const TOOLS = [...WORKFLOW_TOOLS] as const;
+
+// Build is the main path; every other tool stays reachable from the Advanced group.
+export const PRIMARY_TOOLS = TOOLS.filter(tool => TOOL_DEFINITIONS[tool].tier === 'primary');
+export const ADVANCED_TOOLS = TOOLS.filter(tool => TOOL_DEFINITIONS[tool].tier === 'advanced');
 
 export const TOOL_URL_SLUGS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.slug])) as Record<(typeof TOOLS)[number], string>;
 
@@ -43,8 +41,6 @@ export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
 };
 
 export const TOOL_LABELS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.label])) as Record<string, string>;
-export const TOOL_DESCRIPTIONS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.description])) as Record<string, string>;
-export const TOOL_REQUIREMENTS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.requirement])) as Record<string, ToolDefinition['requirement']>;
 
 // Aspect ratios
 export const ASPECT_RATIOS = ['2:3', '3:2', '1:1'] as const;

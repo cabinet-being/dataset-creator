@@ -46,7 +46,7 @@ export function getToolViewContext(tool: Exclude<ToolName, 'video'>, scope?: Too
   return {tool, context:{kind:'project', selectedItemId}};
 }
 
-type ScopedTab = { id: string; kind: string; tool?: ToolName; scope?: ToolSelectionScope; nested?: {itemId: string} };
+type ScopedTab = { id: string; kind: string; tool?: string; scope?: ToolSelectionScope; nested?: {itemId: string} };
 
 /** Explicitly reopening a tool changes only that view's scope. */
 export function setToolViewScope<T extends ScopedTab>(tabs: T[], id: string, scope?: ToolSelectionScope): T[] {

@@ -68,6 +68,53 @@ try {
   assert.equal(viewIds(normalizedDataset.dock).includes('dataset:global:analysis'), true);
   assert.equal(findDockGroup(normalizedDataset.dock, layoutApi.DATASET_VIEW).host.startsWith('float:'), true, 'The active legacy Dataset placement wins');
   assert.ok(normalizedDataset.dock.pinned.includes(layoutApi.DATASET_VIEW));
+  {
+    const legacyId = 'dataset:global:select', nextId = 'dataset:global:add-files';
+    const projectSelect = {kind:'tool',tool:'select'};
+    let legacyDock = migrateDockLayout({}, ['tool:review', legacyId, 'tool:select']);
+    legacyDock = {...legacyDock, pinned:[legacyId, 'tool:review'], locations:{...legacyDock.locations, [legacyId]:{host:'main',group:'main-editors',index:1,side:'center'}, 'tool:select':{host:'main',group:'main-editors',index:2,side:'center'}}};
+    legacyDock = floatDockSource(legacyDock, {type:'tab',id:'tool:review'}, {x:50,y:50,width:400,height:300});
+    assert.ok(findDockGroup(legacyDock, legacyId) && legacyDock.locations[legacyId], 'Fixture has legacy id in a group and in locations');
+    const legacyWorkspaceTabs = {projectId:'project-a', activeTabId:legacyId, openTabs:[
+      projectSelect, {kind:'dataset-tool',datasetId:'global',tool:'select',pinned:true}, {kind:'dataset-tool',datasetId:'global',tool:'analysis'},
+    ], closedTabs:[{kind:'dataset-tool',datasetId:'global',tool:'select'}]};
+    const check = (result) => {
+      assert.equal(result.workspace.activeTabId, nextId);
+      assert.deepEqual(result.workspace.openTabs, [projectSelect, {kind:'dataset-tool',datasetId:'global',tool:'add-files',pinned:true}, {kind:'dataset-tool',datasetId:'global',tool:'analysis'}], 'Project select stays Remove Duplicates; dataset select becomes add-files; nothing lost');
+      assert.deepEqual(result.workspace.closedTabs, [{kind:'dataset-tool',datasetId:'global',tool:'add-files'}]);
+      const ids = viewIds(result.dock);
+      assert.equal(ids.includes(legacyId), false);
+      assert.equal(ids.filter(id => id === nextId).length, 1);
+      assert.ok(ids.includes('tool:select') && ids.includes('tool:review'), 'Other views are kept');
+      assert.equal(ids.length, viewIds(legacyDock).length, 'No view is lost or duplicated');
+      assert.ok(findDockGroup(result.dock, nextId));
+      assert.equal(findDockGroup(result.dock, legacyId), null);
+      assert.ok(result.dock.locations[nextId] && !(legacyId in result.dock.locations));
+      assert.ok(result.dock.locations['tool:select']);
+      assert.deepEqual([...result.dock.pinned].sort(), [nextId, 'tool:review'].sort());
+      const group = groupAt(result.dock, nextId);
+      assert.ok(group.tabs.includes(nextId) && !group.tabs.includes(legacyId));
+      assert.notEqual(group.active, legacyId);
+      for (const entry of measureDockLayout({...result.dock}, 1400, 1000).groups) assert.notEqual(entry.group.active, legacyId);
+      for (const location of Object.values(result.dock.locations)) assert.notEqual(location.neighbor, legacyId);
+    };
+    const migrationValues = new Map([[WORKSPACE_STORAGE_KEY, JSON.stringify({version:2, workspace:legacyWorkspaceTabs, dock:legacyDock, projects:{}})]]);
+    check(readWorkspacePersistence({getItem:key => migrationValues.get(key) ?? null}));
+    const legacyKeyValues = new Map([[LEGACY_WORKSPACE_STORAGE_KEY, JSON.stringify(legacyWorkspaceTabs)], [layoutApi.DOCK_STORAGE_KEY, JSON.stringify(legacyDock)]]);
+    check(readWorkspacePersistence({getItem:key => legacyKeyValues.get(key) ?? null}));
+    // Active tab inside a group and a neighbor reference are renamed too.
+    const activeDock = layoutApi.focusDockView(legacyDock, legacyId);
+    const activeResult = readWorkspacePersistence({getItem:key => key === WORKSPACE_STORAGE_KEY ? JSON.stringify({version:2, workspace:legacyWorkspaceTabs, dock:activeDock, projects:{}}) : null});
+    assert.equal(groupAt(activeResult.dock, nextId).active, nextId, 'Active dock tab is migrated');
+    const neighborDock = {...legacyDock, locations:{...legacyDock.locations, 'tool:select':{...legacyDock.locations['tool:select'], neighbor:legacyId}}};
+    const neighborResult = readWorkspacePersistence({getItem:key => key === WORKSPACE_STORAGE_KEY ? JSON.stringify({version:2, workspace:legacyWorkspaceTabs, dock:neighborDock, projects:{}}) : null});
+    assert.equal(neighborResult.dock.locations['tool:select'].neighbor, nextId, 'Location neighbor is migrated');
+    // Idempotent: reading migrated data again changes nothing.
+    const again = readWorkspacePersistence({getItem:key => key === WORKSPACE_STORAGE_KEY ? JSON.stringify({version:2, workspace:activeResult.workspace, dock:activeResult.dock, projects:{}}) : null});
+    assert.deepEqual(again, activeResult);
+    const { migrateDatasetToolDockIds } = await import(pathToFileURL(join(temporary, 'workspacePersistence.js')));
+    assert.deepEqual(migrateDatasetToolDockIds(again.dock), again.dock);
+  }
   values.set(WORKSPACE_STORAGE_KEY,'broken JSON');
   assert.deepEqual(readWorkspacePersistence(storage).workspace,{projectId:'stale-legacy'},'Malformed canonical data can recover from retained legacy keys');
 
@@ -302,6 +349,8 @@ try {
       store.delete(WORKSPACE_STORAGE_KEY);
       store.set(LEGACY_WORKSPACE_STORAGE_KEY, JSON.stringify({ projectId: 'legacy', openTabs: ['review'] }));
       assert.deepEqual(readWorkspaceLayout('legacy').openTabs, [{ kind: 'tool', tool: 'review' }], 'Legacy key is still read when no canonical snapshot exists');
+      store.set(LEGACY_WORKSPACE_STORAGE_KEY, JSON.stringify({ projectId: 'legacy', openTabs: [{ kind: 'dataset-tool', datasetId: 'global', tool: 'select' }, { kind: 'tool', tool: 'select' }] }));
+      assert.deepEqual(JSON.parse(JSON.stringify(readWorkspaceLayout('legacy').openTabs)), [{ kind: 'dataset-tool', datasetId: 'global', tool: 'add-files' }, { kind: 'tool', tool: 'select' }], 'readWorkspaceLayout maps legacy dataset select to add-files and keeps project select');
     } finally {
       if (hadWindow) globalThis.window = savedWindow; else delete globalThis.window;
     }
@@ -322,13 +371,30 @@ try {
       { kind: 'tool', tool: 'review', id: 'tool:review:custom', scope: { review: scope.review }, pinned: true },
       { kind: 'tool', tool: 'analysis', id: 'tool:analysis', scope: undefined, pinned: undefined },
       { kind: 'window', window: 'inspector', pinned: true },
-      { kind: 'dataset-tool', datasetId: 'g', tool: 'select', pinned: false },
+      { kind: 'dataset-tool', datasetId: 'g', tool: 'add-files', pinned: false },
     ]) assert.deepEqual(persistWorkspaceTab(createWorkspaceTabFromPersisted(entry)), entry, `Round-trip ${entry.kind}`);
     assert.deepEqual(createWorkspaceTabFromPersisted({ kind: 'tool', tool: 'review', scope: { review: scope.review } }).id, createToolTab('review', scope).id, 'Missing id is derived from scope');
     assert.deepEqual(createWorkspaceTabFromPersisted({ kind: 'dataset', datasetId: 'old', pinned: true }), { id: 'window:dataset', kind: 'window', window: 'dataset', pinned: true }, 'Legacy dataset tab becomes the Dataset window');
     assert.deepEqual(persistWorkspaceTab({ id: 'dataset:x', kind: 'dataset', datasetId: 'x' }), { kind: 'window', window: 'dataset', pinned: undefined });
     assert.equal(persistWorkspaceTab({ id: 'file:1', kind: 'file-view' }), null, 'File tabs are not persisted');
-    assert.deepEqual(isDatasetToolName('tagging') && isDatasetToolName('select') && !isDatasetToolName('export') && !isDatasetToolName(undefined), true);
+    assert.deepEqual(['add-files', 'review', 'analysis', 'tagging'].every(isDatasetToolName), true);
+    assert.deepEqual(['select', 'export', 'build', '', undefined, null].some(isDatasetToolName), false, 'Legacy select is not a current dataset tool name');
+    const { normalizeDatasetToolName, migrateDatasetToolTabId, getDatasetToolBaseTool } = tabsApi;
+    assert.equal(normalizeDatasetToolName('select'), 'add-files');
+    for (const tool of ['add-files', 'review', 'analysis', 'tagging']) assert.equal(normalizeDatasetToolName(tool), tool);
+    assert.ok(!normalizeDatasetToolName('export') && !normalizeDatasetToolName(undefined), 'Unknown names are not normalized into tools');
+    assert.equal(migrateDatasetToolTabId('dataset:global:select'), 'dataset:global:add-files');
+    assert.equal(migrateDatasetToolTabId('dataset:abc:select'), 'dataset:abc:add-files');
+    for (const id of ['dataset:global:analysis', 'dataset:global:add-files', 'tool:select', 'tool:review', 'window:dataset', 'dataset:global']) assert.equal(migrateDatasetToolTabId(id), id, `${id} is untouched`);
+    assert.equal(getDatasetToolBaseTool('add-files'), 'review');
+    assert.equal(getDatasetToolBaseTool('review'), 'review');
+    assert.equal(getDatasetToolBaseTool('analysis'), 'analysis');
+    assert.equal(getDatasetToolBaseTool('tagging'), 'tagging');
+    const projectSelect = { kind: 'tool', tool: 'select' };
+    const projectSelectTab = createWorkspaceTabFromPersisted(projectSelect);
+    assert.equal(projectSelectTab.id, 'tool:select');
+    assert.deepEqual(persistWorkspaceTab(projectSelectTab), { ...projectSelect, id: 'tool:select', scope: undefined, pinned: undefined }, 'Project tool select (Remove Duplicates) is not migrated');
+    assert.equal(createWorkspaceTabFromPersisted({ kind: 'dataset-tool', datasetId: 'g', tool: 'select' }).id, 'dataset:g:select', 'Tab factory does not rewrite ids; migration happens in persistence');
 
     const mk = (id, pinned) => ({ id, kind: 'window', window: 'output', pinned });
     assert.deepEqual(dedupeWorkspaceTabs([mk('a'), mk('b'), mk('a', true)]).map((tab) => [tab.id, tab.pinned]), [['a', undefined], ['b', undefined]], 'The first tab with an id wins');
@@ -348,7 +414,8 @@ try {
     assert.equal(inspect({ kind: 'file-view', fileKind: 'image' }), 'file');
     assert.equal(inspect({ kind: 'file-video' }), 'file');
     assert.equal(inspect({ kind: 'tool', tool: 'review' }), 'review');
-    assert.equal(inspect({ kind: 'dataset-tool', tool: 'select' }), 'review');
+    assert.equal(inspect({ kind: 'dataset-tool', tool: 'add-files' }), 'review');
+    assert.equal(inspect({ kind: 'tool', tool: 'select' }), 'empty', 'Project Remove Duplicates tab has no review inspector');
     assert.equal(inspect({ kind: 'dataset-tool', tool: 'analysis' }), 'analysis');
     assert.equal(inspect({ kind: 'tool', tool: 'analysis' }), 'analysis');
     assert.equal(inspect({ kind: 'dataset-tool', tool: 'tagging' }), 'empty', 'dataset-tool tagging without activeTool falls through to empty');
@@ -360,6 +427,12 @@ try {
     assert.equal(getUrlSlugForTool('clean'), 'photopea');
     assert.equal(getToolFromUrlSlug('video-frames'), 'video');
     assert.equal(getToolFromUrlSlug('remove-duplicates'), 'select');
+    assert.equal(getUrlSlugForTool('select'), 'remove-duplicates');
+    const { PRIMARY_TOOLS, ADVANCED_TOOLS } = constants;
+    assert.deepEqual([...PRIMARY_TOOLS], ['build']);
+    for (const tool of ['import', 'review', 'select', 'analysis', 'tagging', 'video', 'export', 'clean']) assert.ok(ADVANCED_TOOLS.includes(tool), `ADVANCED_TOOLS contains ${tool}`);
+    assert.deepEqual([...PRIMARY_TOOLS, ...ADVANCED_TOOLS].sort(), [...TOOLS].sort(), 'Tiers partition TOOLS');
+    assert.equal(new Set([...PRIMARY_TOOLS, ...ADVANCED_TOOLS]).size, TOOLS.length);
     assert.equal(getToolFromUrlSlug('edit'), 'clean');
     assert.equal(getToolFromUrlSlug('clear'), 'clean');
     assert.equal(getToolFromUrlSlug('caption'), 'tagging');

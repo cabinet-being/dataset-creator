@@ -58,7 +58,7 @@ export function DatasetWorkspaceView({
     assemblyRequestToken={assemblyRequestToken}
     onAssemblyRequestHandled={() => setAssemblyRequestToken(0)}
     excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []}
-    onTool={tool => openDatasetToolTab(dataset.id, tool)} onExport={() => navigateToTool('export')}
+    onTool={tool => openDatasetToolTab(dataset.id, tool)} onBuild={() => navigateToTool('build')} onExport={() => navigateToTool('export')}
     onUpdate={updates => { void updateDatasetFileBackedState(dataset, updates).catch(error => addNotification('error', `Could not save Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
     onRename={name => { void updateDatasetFileBackedState(dataset, { name }).catch(error => addNotification('error', `Could not rename Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
     onContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
@@ -163,7 +163,7 @@ export function DatasetToolView({
   };
   return <WorkspaceTool tool={tab.tool} viewId={tab.id} active={activeTabId === tab.id} directory={projectDirectoryHandle}
     onRefresh={() => indexProjectWorkspaceAssets()}
-    context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'select'), onAutoAssemble:() => { setAssemblyRequestToken(Date.now()); openProjectDataset(); }}}
+    context={{kind:'dataset', datasetId:dataset.id, onUpdate:updateDataset, onAddFiles:() => openDatasetToolTab(dataset.id, 'add-files'), onAutoAssemble:() => { setAssemblyRequestToken(Date.now()); openProjectDataset(); }}}
     onOpenImport={() => navigateToTool('import')}
-    onAssetContextMenu={tab.tool === 'select' ? openAssetExplorerContextMenu : (item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)} />;
+    onAssetContextMenu={tab.tool === 'add-files' ? openAssetExplorerContextMenu : (item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)} />;
 }

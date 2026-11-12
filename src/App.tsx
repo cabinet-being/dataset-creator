@@ -6,6 +6,7 @@ import {
   createDatasetToolTabId,
   createFileTabId,
   createToolTab,
+  getDatasetToolBaseTool,
   getInspectorContext,
   isDatasetToolTab,
   type DatasetToolWorkspaceTab,
@@ -23,7 +24,7 @@ import { WorkspaceInspector, type FileInspectorMetadata, type InspectorSectionId
 import { WorkspaceTabMenus, type ExplorerContextMenuState } from './components/workspace/WorkspaceTabMenus';
 import { buildDatasetBoardContextActionGroups, buildDirectoryContextActionGroups, buildFileContextActionGroups, type CreateExplorerAction } from './lib/explorerContextActions';
 import { findFileTab, isFileBackedTab, moveFileTab, type FileWorkspaceTab } from './lib/workspaceFileTabs';
-import { TOOL_ICONS as toolIcons } from './lib/toolDefinitions';
+import { DATASET_TOOL_DEFINITIONS, TOOL_ICONS as toolIcons } from './lib/toolDefinitions';
 import { WorkspaceSettingsDialog } from './components/workspace/WorkspaceSettingsDialog';
 import { addDatasetReferences, addWorkspacePathsToDataset, removeAssetsFromDataset } from './lib/assetActions';
 import { AppShell } from './components/workspace/AppShell';
@@ -150,7 +151,6 @@ type ImportDirectoryHandle = FileSystemDirectoryHandle & {
   entries: () => AsyncIterableIterator<[string, FileSystemDirectoryHandle | FileSystemFileHandle]>;
 };
 
-const DATASET_TOOL_LABELS = { ...TOOL_LABELS, select: 'Add files', analysis: TOOL_LABELS.analysis, review: TOOL_LABELS.review, tagging: TOOL_LABELS.tagging };
 
 const formatFileSize = (size: number): string => {
   if (size < 1024) {
@@ -340,7 +340,7 @@ function App() {
 
   useEffect(() => {
     if (!(TOOLS as readonly string[]).includes(currentTool)) {
-      setCurrentTool('import');
+      setCurrentTool('build');
     }
   }, [currentTool, setCurrentTool]);
 
@@ -358,7 +358,7 @@ function App() {
       ? state.selections[activeTabId] ?? null
       : null
   );
-  const activeTool = activeTab?.kind === 'tool' || activeTab?.kind === 'dataset-tool' ? activeTab.tool : null;
+  const activeTool = activeTab?.kind === 'tool' ? activeTab.tool : activeTab?.kind === 'dataset-tool' ? getDatasetToolBaseTool(activeTab.tool) : null;
   const activeDataset =
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
       ? datasetsById[activeTab.datasetId]
@@ -474,7 +474,7 @@ function App() {
         : tab.kind === 'window'
           ? tab.window === 'output' ? PanelBottom : tab.window === 'project' ? FolderOpen : tab.window === 'dataset' ? Layers3 : PanelRight
         : tab.kind === 'dataset-tool'
-          ? toolIcons[tab.tool]
+          ? DATASET_TOOL_DEFINITIONS[tab.tool].icon
         : tab.kind === 'dataset'
           ? Layers3
           : getExplorerIcon({ name: tab.name, path: tab.path, kind: 'file' });
@@ -486,7 +486,7 @@ function App() {
         : tab.kind === 'window'
           ? tab.window === 'output' ? 'Output' : tab.window === 'project' ? 'Project' : tab.window === 'dataset' ? 'Dataset' : 'Inspector'
         : tab.kind === 'dataset-tool'
-          ? `${DATASET_TOOL_LABELS[tab.tool]}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
+          ? `${DATASET_TOOL_DEFINITIONS[tab.tool].label}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'dataset'
           ? `Dataset: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'file-edit'
@@ -1181,7 +1181,7 @@ function App() {
   };
 
   const openDatasetToolTab = (datasetId: string, tool: DatasetToolName) => {
-    if (!profile.enabledTools.includes(tool)) return;
+    if (!profile.enabledTools.includes(getDatasetToolBaseTool(tool))) return;
     const dataset = useProjectStore.getState().dataset;
     if (!dataset) {
       addNotification('error', 'Dataset is no longer available');
@@ -2815,7 +2815,7 @@ function App() {
             activeEditorId={activeTabId}
             emptyContent={<WorkspaceWelcome projectName={projectDirectoryName} hasDirectory={Boolean(projectDirectoryHandle)} recoveryNeeded={navigationRecovery}
               onOpen={() => void handleOpenProject()} onCreate={() => void handleNewProject()}
-              onContinue={() => navigateToTool(projectDirectoryHandle ? 'review' : 'import')} />}
+              onContinue={() => navigateToTool('build')} />}
             layout={dock.layout}
             onLayout={dock.setLayout}
             views={workspaceViews}

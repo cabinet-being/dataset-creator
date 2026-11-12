@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, SetStateAction } from 'react';
 import {
-  dedupeWorkspaceTabs, orderWorkspaceTabs, persistWorkspaceTab,
+  createToolTab, dedupeWorkspaceTabs, orderWorkspaceTabs, persistWorkspaceTab,
   type PersistedWorkspaceTab, type ToolWorkspaceTab, type WorkspaceTab,
 } from '../lib/workspaceTabs';
 import {
@@ -136,20 +136,20 @@ export function useWorkspaceTabActions({
       ...(restoredToolTabs.length > 0 ? restoredToolTabs : currentToolTabs),
       ...restoredTabs.filter((tab) => tab.kind !== 'tool'),
     ]);
-    setOpenTabs(nextTabs);
 
     const restoredActiveTab = nextTabs.find((tab) => tab.id === layout.activeTabId);
     if (restoredActiveTab) {
+      setOpenTabs(nextTabs);
       setActiveTabId(restoredActiveTab.id);
       return;
     }
 
-    setActiveTabId((current) => {
-      if (current && nextTabs.some((tab) => tab.id === current)) {
-        return current;
-      }
-      return nextTabs[0]?.id ?? null;
-    });
+    // Without a saved active editor, an opened project lands in Build, the main path.
+    const buildTab = nextTabs.find((tab) => tab.kind === 'tool' && tab.tool === 'build') ?? createToolTab('build');
+    setOpenTabs(nextTabs.includes(buildTab) ? nextTabs : [...nextTabs, buildTab]);
+    dock.show(buildTab.id);
+    setActiveTabId(buildTab.id);
+    setCurrentTool('build');
   };
 
   const confirmClosingTabs = async (tabs: WorkspaceTab[]): Promise<boolean> => {
