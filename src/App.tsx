@@ -28,20 +28,24 @@ import { TOOL_ICONS as toolIcons } from './lib/toolDefinitions';
 import { WorkspaceSettingsDialog } from './components/workspace/WorkspaceSettingsDialog';
 import { addDatasetReferences, addWorkspacePathsToDataset, removeAssetsFromDataset } from './lib/assetActions';
 import { AppShell } from './components/workspace/AppShell';
-import { WorkspaceMenus, WORKSPACE_WINDOWS, type WorkspaceMenu } from './components/workspace/WorkspaceMenus';
+import { WorkspaceMenus, type WorkspaceMenu } from './components/workspace/WorkspaceMenus';
 import { WorkspaceStatusBar } from './components/workspace/WorkspaceStatusBar';
 import { WorkspaceNotifications } from './components/workspace/WorkspaceNotifications';
 import { isOperationRunning, useOperationStore } from './stores/useOperationStore';
 import { MenuSurface } from './components/ui/MenuSurface';
+import { useWorkspaceAppearance } from './hooks/useWorkspaceAppearance';
+import { useEscapeToClose } from './hooks/useEscapeToClose';
+import { useLocalTaggerFilePicker } from './hooks/useLocalTaggerFilePicker';
+import { useWorkspaceCommands, type ExplorerItemEntry, type ExplorerClipboard } from './hooks/useWorkspaceCommands';
 import { useHistoryStore } from './stores/useHistoryStore';
-import { useCommands, useCommandPalette, type Command } from './components/workspace/Commands';
+import { useCommandPalette } from './components/workspace/Commands';
 import { InspectorSlot } from './components/workspace/InspectorHost';
 import { flushProjectSave, runProjectFileOperation, useProjectSave } from './hooks/useProjectSave';
 import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
 import type { ProjectType } from './types';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, DragEvent, MouseEvent, ReactNode, SetStateAction } from 'react';
+import type { DragEvent, MouseEvent, ReactNode, SetStateAction } from 'react';
 import {
   ArrowLeft,
   BarChart3,
@@ -66,7 +70,6 @@ import {
   Video,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
-import { useLocalTaggerStore } from './stores/useLocalTaggerStore';
 import { useInspectorSelectionStore } from './stores/useInspectorSelectionStore';
 import { useUIStore } from './stores/useUIStore';
 import {
@@ -97,8 +100,7 @@ import {
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
 import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from './services/import/importService';
-import { type LocalTaggerFileKey } from './services/tagging/localTaggerFileSettings';
-import { restoreSavedLocalTagger, saveAndConnectLocalTaggerFile } from './services/tagging/localTaggerConnectionService';
+import { restoreSavedLocalTagger } from './services/tagging/localTaggerConnectionService';
 import { createOperationLogger } from './services/logging/applicationLog';
 import { applyBuildSessionPathMoves } from './services/build/buildSessionService';
 import { indexProjectAssets } from './services/project/assetIndexService';
@@ -144,7 +146,7 @@ import {
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
 import { useDockWorkspace } from './hooks/useDockWorkspace';
 import { useWorkspaceNavigation } from './hooks/useWorkspaceNavigation';
-import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from './lib/workspaceLayout';
+import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource } from './lib/workspaceLayout';
 import { hasBusyVideoTabs } from './services/video/videoClient';
 import { DATASET_EXPLORER_PATH, isProjectDatasetPath } from './services/dataset/datasetFolderService';
 
@@ -196,18 +198,6 @@ const getAspectRatioLabel = (width: number, height: number): string => {
   return `${Math.round(width / value)}:${Math.round(height / value)}`;
 };
 
-type ExplorerItemEntry = {
-  path: string;
-  name: string;
-  kind: ExplorerTreeNode['kind'];
-  workspaceImageId?: string;
-};
-
-type ExplorerClipboard = {
-  mode: 'copy' | 'cut';
-  entries: ExplorerItemEntry[];
-};
-
 type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file' };
 
 const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is FilesystemExplorerItemEntry =>
@@ -251,7 +241,6 @@ function App() {
     () => toWorkspaceImages(sourceImages, datasetItems),
     [datasetItems, sourceImages]
   );
-  const setDarkMode = useUIStore(state => state.setDarkMode);
   const documentStates = useDocumentStateStore(state => state.documents);
   const addNotification = useUIStore(state => state.addNotification);
   const operationLogs = useUIStore(state => state.operationLogs);
@@ -259,7 +248,6 @@ function App() {
   const projectDirectoryName = useUIStore(state => state.projectDirectoryName);
   const setProjectDirectory = useUIStore(state => state.setProjectDirectory);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
-  const darkMode = useUIStore(state => state.darkMode);
   const [openMenu, setOpenMenu] = useState<WorkspaceMenu | null>(null);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
@@ -321,8 +309,7 @@ function App() {
   const [closedTabs, setClosedTabs] = useState<WorkspaceTab[]>([]);
   const [toolMenuPosition, setToolMenuPosition] = useState({ x: 0, y: 0 });
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const taggerModelInputRef = useRef<HTMLInputElement | null>(null);
-  const taggerTagsInputRef = useRef<HTMLInputElement | null>(null);
+  const { pickLocalTaggerFile, inputs: localTaggerFileInputs } = useLocalTaggerFilePicker();
   const explorerPanelRef = useRef<HTMLDivElement | null>(null);
   const outputLogRef = useRef<HTMLDivElement | null>(null);
   const outputAutoFollowRef = useRef(true);
@@ -371,22 +358,7 @@ function App() {
     );
   };
 
-  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>(() => {
-    try { const saved = localStorage.getItem('dataset-creator-theme'); return saved === 'light' || saved === 'dark' ? saved : 'system'; } catch { return 'system'; }
-  });
-  const [density, setDensity] = useState(() => { try { return localStorage.getItem('dataset-creator-density') === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; } });
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const apply = () => setDarkMode(theme === 'dark' || (theme === 'system' && media.matches));
-    apply(); media.addEventListener('change', apply);
-    try { localStorage.setItem('dataset-creator-theme', theme); } catch {}
-    return () => media.removeEventListener('change', apply);
-  }, [theme, setDarkMode]);
-  useEffect(() => { document.documentElement.dataset.density = density; try { localStorage.setItem('dataset-creator-density', density); } catch {} }, [density]);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', darkMode);
-  }, [darkMode]);
+  const { theme, setTheme, density, setDensity } = useWorkspaceAppearance();
 
   useEffect(() => {
     const outputLog = outputLogRef.current;
@@ -427,40 +399,13 @@ function App() {
     }
   }, [currentTool, setCurrentTool]);
 
-  useEffect(() => {
-    if (!openMenu && !tabMenuOpen && !workspaceContextMenu) {
-      return;
-    }
+  useEscapeToClose(Boolean(openMenu || tabMenuOpen || workspaceContextMenu), () => {
+    setOpenMenu(null);
+    setTabMenuOpen(false);
+    setWorkspaceContextMenu(null);
+  });
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpenMenu(null);
-        setTabMenuOpen(false);
-        setWorkspaceContextMenu(null);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [openMenu, workspaceContextMenu, tabMenuOpen]);
-
-  useEffect(() => {
-    if (!explorerContextMenu) {
-      return;
-    }
-
-    const closeMenu = () => setExplorerContextMenu(null);
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeMenu();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [explorerContextMenu]);
+  useEscapeToClose(Boolean(explorerContextMenu), () => setExplorerContextMenu(null));
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeInspectorSelection = useInspectorSelectionStore((state) =>
@@ -2752,84 +2697,6 @@ function App() {
     return () => window.removeEventListener('keydown', handleExplorerShortcut);
   }, [activeExplorerDirectoryPath, explorerClipboard, explorerContextMenu, focusedExplorerPath, selectedExplorerPaths, explorerTree, expandedExplorerPaths]);
 
-  const updateLocalTaggerFileSetting = async (key: LocalTaggerFileKey, resource: FileSystemFileHandle | File) => {
-    const fileName = resource.name.toLowerCase();
-    const isValidFile = key === 'model' ? fileName.endsWith('.onnx') : fileName.endsWith('.csv');
-    if (!isValidFile) {
-      addNotification('error', `Select ${key === 'model' ? 'an ONNX model file' : 'a CSV tags file'}.`);
-      return;
-    }
-    const saved = await saveAndConnectLocalTaggerFile(key, resource);
-    if (!saved) {
-      addNotification('error', useLocalTaggerStore.getState().message);
-      return;
-    }
-  };
-
-  const handlePickLocalTaggerFile = async (key: LocalTaggerFileKey) => {
-    const pickerWindow = window as FilePickerWindow;
-    const isModel = key === 'model';
-
-    if (!pickerWindow.showOpenFilePicker) {
-      (isModel ? taggerModelInputRef : taggerTagsInputRef).current?.click();
-      return;
-    }
-
-    try {
-      const [handle] = await pickerWindow.showOpenFilePicker({
-        multiple: false,
-        excludeAcceptAllOption: false,
-        types: [
-          isModel
-            ? {
-                description: 'ONNX model',
-                accept: { 'application/octet-stream': ['.onnx'] },
-              }
-            : {
-                description: 'Selected tags CSV',
-                accept: { 'text/csv': ['.csv'] },
-              },
-        ],
-      });
-
-      if (!handle) {
-        return;
-      }
-
-      await updateLocalTaggerFileSetting(key, handle);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        return;
-      }
-
-      addNotification(
-        'error',
-        error instanceof Error ? error.message : 'Could not save local tagger file setting.'
-      );
-    }
-  };
-
-  const handleFallbackLocalTaggerFileSelected = async (
-    key: LocalTaggerFileKey,
-    event: ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-
-    if (!file) {
-      return;
-    }
-
-    const fileName = file.name.toLowerCase();
-    const isValidFile = key === 'model' ? fileName.endsWith('.onnx') : fileName.endsWith('.csv');
-    if (!isValidFile) {
-      addNotification('error', `Select ${key === 'model' ? 'an ONNX model file' : 'a CSV tags file'}.`);
-      return;
-    }
-
-    await updateLocalTaggerFileSetting(key, file);
-  };
-
   const handleProjectFileError = (error: unknown, message: string) => {
     if (error instanceof DOMException && error.name === 'AbortError') {
       return;
@@ -3519,66 +3386,14 @@ function App() {
     const next = tabs[(Math.max(0, tabs.indexOf(activeTabId ?? '')) + direction + tabs.length) % tabs.length];
     const tab = openTabs.find(tab => tab.id === next); if (tab) { activateTab(tab); focusView(tab.id); }
   };
-  const history = useHistoryStore();
-  const explorerSelection = getSelectedExplorerEntries();
-  const explorerSelectionNode = explorerSelection.length ? findExplorerNodeByPath(explorerSelection[0].path) : null;
-  const explorerCommandScope = () => explorerPanelRef.current;
-  const explorerCommands: Command[] = [
-    {id:'explorer.copy', label:'Explorer: Copy', shortcut:'Mod+C', disabled:!explorerSelection.length,
-      run:() => setExplorerClipboard({mode:'copy', entries:explorerSelection})},
-    {id:'explorer.cut', label:'Explorer: Cut', shortcut:'Mod+X', disabled:!explorerSelection.length,
-      run:() => setExplorerClipboard({mode:'cut', entries:explorerSelection})},
-    {id:'explorer.paste', label:'Explorer: Paste', shortcut:'Mod+V', disabled:!explorerClipboard || !projectDirectoryHandle,
-      reason:!projectDirectoryHandle ? 'Open a project directory first' : !explorerClipboard ? 'Copy or cut files first' : undefined,
-      run:() => handleExplorerPaste({name:activeExplorerDirectoryPath.split('/').pop() ?? 'Project', path:activeExplorerDirectoryPath, kind:'folder'})},
-    {id:'explorer.duplicate', label:'Explorer: Duplicate', shortcut:'Mod+B', disabled:!explorerSelectionNode || !projectDirectoryHandle,
-      run:() => {if (explorerSelectionNode) return handleExplorerDuplicate(explorerSelectionNode);}},
-    {id:'explorer.rename', label:'Explorer: Rename', shortcut:'F2', disabled:explorerSelection.length !== 1 || !explorerSelectionNode || !projectDirectoryHandle,
-      reason:!projectDirectoryHandle ? 'Open a project directory first' : 'Select one file or folder',
-      run:() => {if (explorerSelectionNode) handleExplorerRename(explorerSelectionNode);}},
-    {id:'explorer.delete', label:'Explorer: Delete', shortcut:'Delete', disabled:!explorerSelectionNode || !projectDirectoryHandle,
-      run:() => {if (explorerSelectionNode) return handleExplorerDelete(explorerSelectionNode);}},
-    {id:'explorer.selectAll', label:'Explorer: Select all in folder', shortcut:'Mod+A', run:() => {
-      const nodes = getActiveDirectoryChildren();
-      setSelectedExplorerPaths(new Set(nodes.map(node => node.path)));
-      setSelectionAnchorPath(nodes[0]?.path ?? null);
-    }},
-  ];
-  const workspaceCommands: Command[] = [
-    ...explorerCommands.map(command => ({...command, group:'Explorer', scope:explorerCommandScope,
-      reason:command.reason ?? (command.disabled ? !projectDirectoryHandle ? 'Open a project directory first' : 'Select files in Explorer' : undefined)})),
-    { id: 'history.undo', label: `Undo${history.past.length ? " · " + history.past[history.past.length - 1].label : ""}`, shortcut: 'Mod+Z', disabled: !history.past.length || history.busy, run: history.undo },
-    { id: 'history.redo', label: 'Redo', shortcut: 'Mod+Shift+Z', disabled: !history.future.length || history.busy, run: history.redo },
-    { id: 'project.new', label: 'New project', disabled: isProjectDirectoryBusy, run: handleNewProject },
-    { id: 'project.open', label: 'Open project', disabled: isProjectDirectoryBusy, run: handleOpenProject },
-    { id: 'project.rename', label: 'Rename project', disabled: isProjectDirectoryBusy, run: handleRenameProject },
-    { id: 'project.versions', label: 'Project versions', disabled: !projectDirectoryHandle, reason: !projectDirectoryHandle ? 'Open a project directory first' : undefined, run: openProjectVersions },
-    ...(['system', 'light', 'dark'] as const).map(mode => ({ id: `theme.${mode}`, label: `Theme: ${mode}`, run: () => setTheme(mode) })),
-    ...WORKSPACE_WINDOWS.map(window => ({ id: `window.${window.id}`, label: `Toggle ${window.label}`, run: () => {
-      const id = `window:${window.id}`;
-      if (dock.isOpen(id)) return closeWorkspaceViews([id]);
-      if (id === DATASET_VIEW) return openProjectDataset();
-      dock.show(id);
-    } })),
-    { id: 'dataset.open', label: 'Open Dataset', run: openProjectDataset },
-    { id: 'dataset.add', label: 'Add files to Dataset', run: () => openDatasetToolTab(globalDataset.id, 'select') },
-    { id: 'settings', label: 'Settings', run: () => setIsWorkspaceSettingsOpen(true) },
-    { id: 'help', label: 'Keyboard shortcuts', run: () => openCommands(true) },
-    { id: 'focus.editor', label: 'Return to active editor', disabled: !activeTabId, run: () => { if (activeTabId) focusView(activeTabId); } },
-    { id: 'layout.reset', label: 'Reset workspace layout', run: () => dock.setLayout(layout => { const next = migrateDockLayout({ bottomPanelOpen: false }, openTabs.map(tab => tab.id), window.innerWidth - 40, window.innerHeight - 80); return { ...(activeTabId ? focusDockView(next, activeTabId) : next), pinned: layout.pinned }; }) },
-    { id: 'tabs.next', label: 'Next editor tab', run: () => stepTab(1), disabled: openTabs.length < 2 },
-    { id: 'tabs.previous', label: 'Previous editor tab', run: () => stepTab(-1), disabled: openTabs.length < 2 },
-    { id: 'tabs.close', label: 'Close editor tab', run: () => { if (activeTab) closeWorkspaceViews([activeTab.id]); }, disabled: !activeTab || activeTab.pinned },
-    { id: 'tabs.reopen', label: 'Reopen closed editor', run: reopenClosedTab, disabled: !closedTabs.length },
-    { id: 'project.save', label: 'Save project', shortcut: 'Mod+S', shortcutEnabled: !(activeTool === 'clean' || activeTab?.kind === 'file-edit' || (activeTab?.kind === 'file-view' && activeTab.fileKind === 'psd')), allowInInput: true, disabled: !projectDirectoryHandle, run: projectSave.retry },
-    ...(['explorer', 'inspector', 'output', 'project', 'dataset'] as const).map(id => ({ id: `focus.${id}`, label: `Focus ${id[0].toUpperCase() + id.slice(1)}`, run: () => focusView(`window:${id}`) })),
-    ...TOOLS.filter(tool => profile.enabledTools.includes(tool)).map(tool => ({ id: `tool.${tool}`, label: TOOL_LABELS[tool], group: 'Tools', run: () => navigateToTool(tool) })),
-    ...(['right', 'bottom'] as const).map(side => ({ id: `tabs.split.${side}`, label: `Split editor ${side}`, disabled: !activeTab || (findDockGroup(dock.layout, activeTab.id)?.group.tabs.length ?? 0) < 2, run: () => {
-      if (!activeTab) return; const group = findDockGroup(dock.layout, activeTab.id); if (group) dock.setLayout(layout => moveDockSource(layout, { type: 'tab', id: activeTab.id }, { host: group.host, group: group.group.id, side }));
-    } })),
-    { id: 'tabs.dock', label: 'Dock / detach editor', disabled: !activeTab, run: () => { if (!activeTab) return; const group = findDockGroup(dock.layout, activeTab.id); if (group) dock.setLayout(layout => group.host !== 'main' && group.host !== 'left' ? pinDockHost(layout, group.host) : floatDockSource(layout, { type: 'tab', id: activeTab.id }, { x: 100, y: 80, width: 600, height: 450 })); } },
-  ];
-  useCommands(workspaceCommands.map(command => isProjectDirectoryBusy ? {...command,disabled:true,reason:'Wait for the project operation to finish'} : command));
+  useWorkspaceCommands({
+    activeExplorerDirectoryPath, activeTab, activeTabId, activeTool, closedTabs, closeWorkspaceViews, dock, explorerClipboard,
+    explorerPanelRef, findExplorerNodeByPath, focusView, getActiveDirectoryChildren, getSelectedExplorerEntries, globalDataset,
+    handleExplorerDelete, handleExplorerDuplicate, handleExplorerPaste, handleExplorerRename, handleNewProject, handleOpenProject,
+    handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openDatasetToolTab, openProjectDataset,
+    openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard,
+    setIsWorkspaceSettingsOpen, setSelectedExplorerPaths, setSelectionAnchorPath, setTheme, stepTab,
+  });
 
   return <AppShell
     busy={isProjectDirectoryBusy}
@@ -3618,25 +3433,10 @@ function App() {
         <WorkspaceSettingsDialog open={isWorkspaceSettingsOpen} onOpenChange={setIsWorkspaceSettingsOpen}
           theme={theme} onThemeChange={setTheme} density={density} onDensityChange={setDensity}
           settings={workspaceSettings} onSettingsChange={updateWorkspaceSettings}
-          onPickTaggerFile={kind => void handlePickLocalTaggerFile(kind)}
+          onPickTaggerFile={kind => void pickLocalTaggerFile(kind)}
           onRestoreTaggerAccess={() => void restoreSavedLocalTagger(true)}
           onShortcuts={() => openCommands(true)} onOpenTool={tool => navigateToTool(tool)} />
-        <input
-          ref={taggerModelInputRef}
-          type="file"
-          accept=".onnx"
-          className="hidden"
-          onChange={(event) => void handleFallbackLocalTaggerFileSelected('model', event)}
-          aria-hidden="true"
-        />
-        <input
-          ref={taggerTagsInputRef}
-          type="file"
-          accept=".csv,text/csv"
-          className="hidden"
-          onChange={(event) => void handleFallbackLocalTaggerFileSelected('tags', event)}
-          aria-hidden="true"
-        />
+        {localTaggerFileInputs}
 
       {renderWorkspaceMenus()}
       <WorkspaceNotifications />
