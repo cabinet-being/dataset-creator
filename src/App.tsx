@@ -36,12 +36,10 @@ import { useWorkspaceAppearance } from './hooks/useWorkspaceAppearance';
 import { useEscapeToClose } from './hooks/useEscapeToClose';
 import { useLocalTaggerFilePicker } from './hooks/useLocalTaggerFilePicker';
 import { useWorkspaceCommands, type ExplorerItemEntry } from './hooks/useWorkspaceCommands';
-import { useHistoryStore } from './stores/useHistoryStore';
 import { useCommandPalette } from './components/workspace/Commands';
 import { flushProjectSave, runProjectFileOperation, useProjectSave } from './hooks/useProjectSave';
 import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
-import type { ProjectType } from './types';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import {
@@ -74,21 +72,14 @@ import {
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
 import { useExplorerTree } from './hooks/useExplorerTree';
 import { useExplorerShortcuts } from './hooks/useExplorerShortcuts';
+import { useProjectLifecycle } from './hooks/useProjectLifecycle';
 import { useExplorerMutations, isFilesystemExplorerEntry } from './hooks/useExplorerMutations';
-import { isAbortError } from './lib/utils';
 import {
-  createProjectDirectory,
-  clearProjectDirectory,
-  pickProjectDirectory,
-  projectDirectoryHasManifest,
-  readProjectDirectory,
   writeProjectPreview,
-  type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
 import { getImportFilesFromDataTransfer, importImageFiles } from './services/import/importService';
 import { restoreSavedLocalTagger } from './services/tagging/localTaggerConnectionService';
 import { createOperationLogger } from './services/logging/applicationLog';
-import { indexProjectAssets } from './services/project/assetIndexService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { type ContextActionGroup } from './components/ui/ContextActions';
 import { PhotopeaPsdPreviewWorker } from './components/photopea/PhotopeaFrame';
@@ -99,8 +90,7 @@ import {
   getUniqueExplorerName,
   readExplorerFile,
 } from './services/project/explorerFileService';
-import { createProject, type ProjectState, type Dataset, type ToolName } from './types';
-import { createProjectVersion, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from './services/project/projectVersionService';
+import { type Dataset, type ToolName } from './types';
 import {
   PROJECT_SHARED_DIRECTORY,
 } from './services/project/projectLayoutService';
@@ -128,12 +118,6 @@ function App() {
   const projectType = useProjectStore((state) => state.projectType);
   const currentTool = useProjectStore((state) => state.currentTool);
   const profile = useProjectStore((state) => PROJECT_TYPE_PROFILES[state.projectType]);
-  const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType } | null) => void } | null>(null);
-  const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType } | null>((resolve) => {
-    setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
-  });
-  const loadProject = useProjectStore((state) => state.loadProject);
-  const renameProject = useProjectStore((state) => state.renameProject);
   const setCurrentTool = useProjectStore((state) => state.setCurrentTool);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   useEffect(() => { void restoreSavedLocalTagger(); }, []);
@@ -161,7 +145,6 @@ function App() {
   const operationLogs = useUIStore(state => state.operationLogs);
   const projectDirectoryHandle = useUIStore(state => state.projectDirectoryHandle);
   const projectDirectoryName = useUIStore(state => state.projectDirectoryName);
-  const setProjectDirectory = useUIStore(state => state.setProjectDirectory);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const [openMenu, setOpenMenu] = useState<WorkspaceMenu | null>(null);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
@@ -183,9 +166,6 @@ function App() {
     }
     projectWasBusyRef.current = isProjectDirectoryBusy;
   }, [isProjectDirectoryBusy]);
-  const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
-  const [currentProjectVersionId, setCurrentProjectVersionId] = useState<string | undefined>();
-  const [newVersionName, setNewVersionName] = useState('');
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const persistWorkspaceRef = useRef<(() => void) | null>(null);
   const tabsState = useWorkspaceTabsState(storedWorkspaceLayout);
@@ -596,6 +576,19 @@ function App() {
     activeTab,
     confirmClosingTabs: (tabs) => confirmClosingTabs(tabs),
     projectOperationBusyRef,
+  });
+  const {
+    projectSetup, projectVersions, currentProjectVersionId, newVersionName, setNewVersionName,
+    handleNewProject, handleOpenProject, handleRenameProject, openProjectVersions,
+    handleCreateProjectVersion, handleRestoreProjectVersion,
+  } = useProjectLifecycle({
+    workspace: {
+      openTabs, workspaceImages, dock, setOpenMenu, setActiveActivityView, setClosedTabs, setNavigationRecovery,
+      applyWorkspaceTabsForProject, confirmClosingTabs, focusView: (id) => focusView(id), setIsProjectDirectoryBusy,
+    },
+    sessionRefs: { projectSessionRef, projectOperationBusyRef, persistWorkspaceRef, projectOperationOriginRef },
+    explorer,
+    runExplorerMutation,
   });
 
   const openAssetExplorerContextMenu: AssetContextMenuHandler = (item, event) => {
@@ -1081,242 +1074,6 @@ function App() {
     projectOperationBusyRef,
     openExplorerFile,
   });
-
-  const handleProjectFileError = (error: unknown, message: string) => {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      return;
-    }
-    addNotification('error', error instanceof Error ? error.message : message);
-  };
-
-  const activateProjectDirectory = (directory: ProjectDirectoryHandle, project: ProjectState) => {
-    persistWorkspaceRef.current?.();
-    setNavigationRecovery(false);
-    projectSessionRef.current += 1;
-    setProjectDirectory(undefined);
-    loadProject(project);
-    setClosedTabs([]);
-    useHistoryStore.setState({past:[],future:[]});
-    applyWorkspaceTabsForProject(project);
-    setProjectDirectory({handle:directory,name:directory.name});
-  };
-
-  const indexActiveProject = async (directory: ProjectDirectoryHandle, expectedProjectId: string) => {
-    const operations = useOperationStore.getState();
-    const operationId = `project-index:${crypto.randomUUID()}`;
-    operations.start({id:operationId,viewId:EXPLORER_VIEW,label:'Index project files'});
-    try {
-      await runProjectFileOperation(async () => {
-        await indexProjectAssets(directory, {
-          logger: createOperationLogger('Index'),
-          existingSourceImages: useProjectStore.getState().sourceImages,
-          onAssetIndexed: ({sourceImage}) => {
-            const current = useProjectStore.getState();
-            if (current.id !== expectedProjectId || useUIStore.getState().projectDirectoryHandle !== directory) {
-              throw new DOMException('Project changed during indexing', 'AbortError');
-            }
-            if (sourceImage && !current.sourceImages[sourceImage.id]) addSourceImage(sourceImage);
-            refreshExplorer();
-          },
-          onProgress: (completed,total) => operations.update(operationId,{completed,total}),
-        });
-      });
-      operations.finish(operationId,'completed');
-      refreshExplorer();
-    } catch (error) {
-      operations.finish(operationId,'failed',error instanceof Error ? error.message : String(error));
-      throw error;
-    }
-  };
-
-  const canSwitchProject = async () => {
-    if (useHistoryStore.getState().busy) { addNotification('warning', 'Wait for Undo or Redo to finish saving.'); return false; }
-    const running = useOperationStore.getState().entries.find(isOperationRunning);
-    if (!running) return confirmClosingTabs(openTabs);
-    addNotification('warning', `Finish or cancel ${running.label} before switching projects.`); focusView(running.viewId); return false;
-  };
-
-  const handleNewProject = async () => {
-    if (!await canSwitchProject()) return;
-    if (projectOperationBusyRef.current) {
-      return;
-    }
-    const logger = createOperationLogger('Project');
-    setOpenMenu(null);
-    if (workspaceImages.length > 0 && !window.confirm('Create a new project and clear the current workspace?')) {
-      return;
-    }
-
-    projectOperationBusyRef.current = true;
-    projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setIsProjectDirectoryBusy(true);
-    try {
-      const setup = await requestProjectSetup('Untitled Project', false);
-      if (!setup) {
-        logger.warning('new project canceled');
-        return;
-      }
-
-      const { name: nextName, projectType } = setup;
-      const parentDirectory = await pickProjectDirectory();
-      logger.info(`creating project directory ${nextName}`);
-      const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
-      if (
-        (await projectDirectoryHasManifest(directory)) &&
-        !window.confirm(`Overwrite the Dataset Creator project in "${nextName}"?`)
-      ) {
-        logger.warning(`new project canceled before overwriting ${nextName}`);
-        return;
-      }
-      await flushProjectSave();
-      const project = createProject(nextName, projectType);
-      logger.info('writing project manifest and folders');
-      const create = async () => {
-        await clearProjectDirectory(directory);
-        await createProjectDirectory(directory, project);
-        activateProjectDirectory(directory, project);
-      };
-      if (projectDirectoryHandle) await runProjectFileOperation(create);
-      else await create();
-      logger.success(`created project directory ${directory.name}`);
-      addNotification('success', 'New project directory created');
-    } catch (error) {
-      if (!isAbortError(error)) {
-        logger.error(error instanceof Error ? error.message : 'failed to create project directory');
-      }
-      handleProjectFileError(error, 'Failed to create project directory');
-    } finally {
-      projectOperationBusyRef.current = false;
-      setIsProjectDirectoryBusy(false);
-    }
-  };
-
-  const openProjectDirectory = async (directory: ProjectDirectoryHandle) => {
-    const logger = createOperationLogger('Project');
-    logger.info(`opening project directory ${directory.name}`);
-    await flushProjectSave();
-    const previousProject = useProjectStore.getState();
-    const project = await readProjectDirectory(directory, async (name) => {
-      const setup = await requestProjectSetup(name, true);
-      if (!setup) throw new DOMException('Project opening canceled', 'AbortError');
-      return setup.projectType;
-    });
-    if (useProjectStore.getState() !== previousProject) {
-      throw new Error('The current project changed while opening the folder. Open it again after your changes are saved.');
-    }
-    activateProjectDirectory(directory, project);
-    await indexActiveProject(directory, project.id);
-    logger.success(`opened project directory ${directory.name}`);
-    addNotification('success', 'Project directory opened');
-  };
-
-  const handleOpenProject = async () => {
-    if (!await canSwitchProject()) return;
-    if (projectOperationBusyRef.current) {
-      return;
-    }
-    projectOperationBusyRef.current = true;
-    projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setOpenMenu(null);
-    setIsProjectDirectoryBusy(true);
-    try {
-      const directory = await pickProjectDirectory();
-      await openProjectDirectory(directory);
-    } catch (error) {
-      if (!isAbortError(error)) {
-        createOperationLogger('Project').error(
-          error instanceof Error ? error.message : 'failed to open project directory'
-        );
-      }
-      handleProjectFileError(error, 'Failed to open project directory');
-    } finally {
-      projectOperationBusyRef.current = false;
-      setIsProjectDirectoryBusy(false);
-    }
-  };
-
-  const handleRenameProject = () => {
-    setOpenMenu(null);
-    const nextName = window.prompt('Project name', projectName)?.trim();
-    if (!nextName || nextName === projectName) {
-      return;
-    }
-
-    renameProject(nextName);
-    addNotification('success', 'Project renamed');
-  };
-
-  const openProjectVersions = async () => {
-    setActiveActivityView('versions');
-    dock.show(EXPLORER_VIEW);
-    if (!projectDirectoryHandle) {
-      addNotification('warning', 'Open a project directory before managing versions');
-      return;
-    }
-    try {
-      const { currentId, versions } = await listProjectVersions(projectDirectoryHandle);
-      setCurrentProjectVersionId(currentId);
-      setProjectVersions(versions);
-      setOpenMenu(null);
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to read project versions');
-    }
-  };
-
-  const handleCreateProjectVersion = async () => {
-    if (!projectDirectoryHandle || !newVersionName.trim()) {
-      return;
-    }
-    try {
-      const version = await runExplorerMutation('Create project version', () => createProjectVersion(projectDirectoryHandle, newVersionName));
-      setProjectVersions((versions) => [...versions, version]);
-      setCurrentProjectVersionId(version.id);
-      setNewVersionName('');
-      addNotification('success', `Created version ${version.name}`);
-    } catch (error) {
-      addNotification('error', error instanceof Error ? error.message : 'Failed to create project version');
-    }
-  };
-
-  const handleRestoreProjectVersion = async (version: ProjectVersion) => {
-    if (!projectDirectoryHandle || projectOperationBusyRef.current || !await canSwitchProject()) return;
-    if (!window.confirm(`Restore project version "${version.name}"? Current changes will be replaced.`)) return;
-    const directory = projectDirectoryHandle;
-    const operations = useOperationStore.getState();
-    const operationId = `project-restore:${crypto.randomUUID()}`;
-    projectOperationBusyRef.current = true;
-    projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setIsProjectDirectoryBusy(true);
-    operations.start({id:operationId,viewId:EXPLORER_VIEW,label:'Restore project version'});
-    try {
-      await runProjectFileOperation(async () => {
-        let restoredOnDisk = false;
-        try {
-          let project!: ProjectState;
-          await restoreProjectVersion(directory, version.id, async () => { project = await readProjectDirectory(directory); });
-          restoredOnDisk = true;
-          activateProjectDirectory(directory, project);
-        } catch (error) {
-          // Stop the old queue before its finally block can write over a partial restore.
-          if (restoredOnDisk || (error instanceof ProjectVersionRestoreError && !error.previousRestored)) {
-            setProjectDirectory(undefined);
-          }
-          throw error;
-        }
-      });
-      await indexActiveProject(directory, useProjectStore.getState().id);
-      setCurrentProjectVersionId(version.id);
-      operations.finish(operationId,'completed');
-      addNotification('success', `Restored version ${version.name}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to restore project version';
-      operations.finish(operationId,'failed',message);
-      addNotification('error', message);
-    } finally {
-      projectOperationBusyRef.current = false;
-      setIsProjectDirectoryBusy(false);
-    }
-  };
 
   const closeTopMenus = () => {
     setOpenMenu(null);
