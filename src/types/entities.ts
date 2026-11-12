@@ -173,6 +173,8 @@ export interface ImageQualitySummary {
   darkShare: number;
   brightShare: number;
   minShortSide: number;
+  /** Almost entirely black frame; absent in summaries saved before it was recorded. */
+  dark?: boolean;
 }
 export interface BuildTriageProposal {
   group: BuildTriageGroup;

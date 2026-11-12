@@ -9,7 +9,7 @@ import { assembleDataset, encodeAssemblyInputs } from '../../services/dataset/da
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
-import { DEFAULT_MIN_SHORT_SIDE, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
+import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
 import { getBuildAssetId, getBuildAssetRevision, getBuildContentRevision } from '../../services/build/buildSessionService';
 import {
@@ -78,7 +78,7 @@ export function useBuildAutoPipeline(input: Input) {
     [input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags]);
   useEffect(() => { setPaused(false); }, [input.enabled]);
 
-  const minShortSideOf = (session: BuildSession) => session.profile.minShortSide ?? DEFAULT_MIN_SHORT_SIDE;
+  const minShortSideOf = (session: BuildSession) => getMinShortSide(session.profile);
   const triageKey = (session: BuildSession, item: WorkspaceImage) => {
     const record = session.records[getBuildAssetId(item)];
     return `triage:${getBuildAssetId(item)}:${getBuildContentRevision(item, record?.transform ?? session.profile.transform)}:${minShortSideOf(session)}`;

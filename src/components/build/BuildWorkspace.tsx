@@ -38,7 +38,10 @@ import {
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
 import { PROJECT_ASSETS_DIRECTORY } from '../../services/project/projectLayoutService';
 import { getBuildTriageCounts, getBuildTriageGroup } from '../../services/build/buildTriageService';
-import { DEFAULT_MIN_SHORT_SIDE, MIN_SHORT_SIDE_PRESETS } from '../../services/quality/imageQuality';
+import { getMinShortSide, MIN_SHORT_SIDE_PRESETS } from '../../services/quality/imageQuality';
+import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
+import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
+import { BuildQualityPanel } from './BuildQualityPanel';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
 
@@ -89,6 +92,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const [showImport, setShowImport] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showAssembly, setShowAssembly] = useState(false);
+  const [showQuality, setShowQuality] = useState(false);
   const [allowShortfall, setAllowShortfall] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
@@ -170,6 +174,20 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }, [current, currentId, currentRecord, effectiveItems, reconciled]);
   usePublishInspectorSelection(active, viewId, inspectorPayload);
   const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled]);
+  const quality = useDatasetQualityReport({
+    featuresActive: active && (showQuality || showExport), items: effectiveItems, candidates, session: reconciled,
+    triggerWord: dataset.triggerWord, projectType,
+  });
+  const selectQualityItem = useCallback((id: string) => {
+    const item = effectiveItems.find((candidate) => candidate.id === id);
+    if (!item) return;
+    const assetId = getBuildAssetId(item);
+    const sourceId = Object.values(reconciled.records).find((record) => record.outputAssetId === assetId)?.assetId ?? assetId;
+    const index = selectBuildQueue({ ...reconciled, filter: 'all' }, candidates).findIndex((candidate) => getBuildAssetId(candidate) === sourceId);
+    if (index < 0) { notify('info', `${quality.labelFor(id)} is not in the Build queue.`); return; }
+    setShowExport(false);
+    updateSession((value) => ({ ...value, filter: 'all', cursor: index }));
+  }, [candidates, effectiveItems, notify, quality, reconciled, updateSession]);
   const missingRecords = useMemo(() => {
     const available = new Set(effectiveItems.map(getBuildAssetId));
     return reconciled.order.map((id) => reconciled.records[id]).filter((record) => record && !available.has(record.assetId) && record.decision !== 'skipped');
@@ -456,6 +474,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         {pipeline.phase !== 'idle' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{pipeline.phase === 'triage' ? 'Analyzing images' : pipeline.phase === 'assembly' ? 'Selecting Dataset images' : 'Preparing caption suggestions'}{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}
         {pipeline.phase === 'idle' && pipeline.paused && <button className="underline" onClick={pipeline.resume}>Resume automatic pipeline</button>}
       </div>
+      <button type="button" data-testid="build-quality-toggle" data-readiness={quality.report.readiness} aria-expanded={showQuality} className="rounded border border-border px-3 py-2 text-sm" onClick={() => setShowQuality((value) => !value)}>Quality: {QUALITY_STATUS_TEXT[quality.report.readiness]}</button>
       <button className="rounded border border-border px-3 py-2 text-sm" onClick={() => setShowImport((value) => !value)}>Add materials</button>
       <button className="rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40" disabled={busy} onClick={() => {
         if (!canExport) { patchSession((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })); return; }
@@ -463,12 +482,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       }}>Finish</button>
     </header>
 
-    {showImport || !candidates.length ? <div className="min-h-0 flex-1 overflow-auto p-4"><ImportTool active={active} onImportFiles={onImportFiles} /></div> : showExport ? <div className="min-h-0 flex-1 overflow-auto"><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background p-3"><button onClick={() => setShowExport(false)} className="rounded border border-border px-3 py-1.5 text-sm">Back to review</button><span className="text-sm text-muted-foreground">Export uses the same physical Dataset and caption plan as the Export tool.</span></div><ExportTool active={active} onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div> : <>
+    {showImport || !candidates.length ? <div className="min-h-0 flex-1 overflow-auto p-4"><ImportTool active={active} onImportFiles={onImportFiles} /></div> : showExport ? <div className="min-h-0 flex-1 overflow-auto"><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background p-3"><button onClick={() => setShowExport(false)} className="rounded border border-border px-3 py-1.5 text-sm">Back to review</button><span className="text-sm text-muted-foreground">Export uses the same physical Dataset and caption plan as the Export tool.</span></div><section aria-label="Dataset quality before export" className="border-b border-border p-4"><h2 className="mb-2 text-sm font-semibold">Dataset quality</h2><BuildQualityPanel testId="build-finish-quality" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} /></section><ExportTool active={active} onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div> : <>
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">
         <label>Target <input type="number" min={0} value={reconciled.profile.target} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, target: Math.max(0, Number(event.target.value) || 0) } }))} className="ml-1 w-20 rounded border border-border bg-background px-2 py-1" /></label>
         <label>Review <select value={reconciled.profile.reviewMode} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, reviewMode: event.target.value as BuildSession['profile']['reviewMode'] } }))} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="every-item">Every photo</option><option value="uncertain-only">Uncertain only</option></select></label>
         <label>Output <select value={!reconciled.profile.transform ? 'original' : `${reconciled.profile.transform.mode}-${reconciled.profile.transform.width}`} onChange={(event) => setProfileTransform(event.target.value)} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="original">Original</option><option value="fit-512">Fit within 512</option><option value="crop-512">Center crop 512</option><option value="crop-768">Center crop 768</option></select></label>
-        <label>Min short side <select aria-label="Min short side" value={reconciled.profile.minShortSide ?? DEFAULT_MIN_SHORT_SIDE} onChange={(event) => setMinShortSide(Number(event.target.value))} className="ml-1 rounded border border-border bg-background px-2 py-1">{[...new Set<number>([...MIN_SHORT_SIDE_PRESETS, reconciled.profile.minShortSide ?? DEFAULT_MIN_SHORT_SIDE])].map((value) => <option key={value} value={value}>{value}px</option>)}</select></label>
+        <label>Min short side <select aria-label="Min short side" value={getMinShortSide(reconciled.profile)} onChange={(event) => setMinShortSide(Number(event.target.value))} className="ml-1 rounded border border-border bg-background px-2 py-1">{[...new Set<number>([...MIN_SHORT_SIDE_PRESETS, getMinShortSide(reconciled.profile)])].map((value) => <option key={value} value={value}>{value}px</option>)}</select></label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={reconciled.profile.autoPipeline !== false} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, autoPipeline: event.target.checked } }))} />Auto pipeline</label>
         <label>Trigger word <input value={dataset.triggerWord} onChange={(event) => { updateDataset(dataset.id, { triggerWord: event.target.value }); patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) })); }} className="ml-1 w-32 rounded border border-border bg-background px-2 py-1" /></label>
         <button className="ml-auto rounded border border-border px-2 py-1" onClick={() => setShowAssembly(true)}>Automatic selection</button>
@@ -479,6 +498,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         </>}
       </div>
 
+      {showQuality && <section aria-label="Dataset quality" className="max-h-[45vh] shrink-0 overflow-auto border-b border-border bg-card p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} /></section>}
       <main className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="relative flex min-h-0 flex-col items-center justify-center overflow-auto bg-black/5 p-4 dark:bg-black/20">
           {current?.kind === 'video' ? <div className="h-full w-full overflow-auto"><VideoFramesTool active={active} tabId={`${viewId}:video:${current.id}`} projectDirectoryHandle={directory} file={current.imageData} fileName={current.fileName} onSaved={onRefresh} /></div>

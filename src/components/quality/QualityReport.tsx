@@ -14,7 +14,7 @@ type QualityReportProps = {
   className?: string;
 };
 
-const STATUS_TEXT: Record<QualityStatus, string> = { ok: 'Готово', warn: 'Є зауваження', fail: 'Не готово' };
+export const QUALITY_STATUS_TEXT: Record<QualityStatus, string> = { ok: 'Готово', warn: 'Є зауваження', fail: 'Не готово' };
 const STATUS_CLASS: Record<QualityStatus, string> = {
   ok: 'text-emerald-700 dark:text-emerald-300',
   warn: 'text-amber-700 dark:text-amber-300',
@@ -101,7 +101,7 @@ export const QualityReport = ({ report, labelFor = (id) => id, onAction, onSelec
     <section className={cn('space-y-3 text-sm', className)} aria-label="Звіт якості датасету">
       <header role="status" className="flex items-center gap-2 rounded-lg border border-border px-3 py-2" data-readiness={report.readiness}>
         <StatusIcon metric={{ status: report.readiness, evaluated: true }} />
-        <span className={cn('font-semibold', STATUS_CLASS[report.readiness])}>{STATUS_TEXT[report.readiness]}</span>
+        <span className={cn('font-semibold', STATUS_CLASS[report.readiness])}>{QUALITY_STATUS_TEXT[report.readiness]}</span>
         <span className="text-xs text-muted-foreground">готовність = найгірша з обов'язкових перевірок</span>
       </header>
       <div>

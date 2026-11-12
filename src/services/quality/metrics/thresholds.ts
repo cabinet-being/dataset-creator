@@ -1,3 +1,5 @@
+import { getSimilarityThreshold } from '../../similarity/similarityLevels';
+import { DEFAULT_MIN_SHORT_SIDE, MIN_SHORT_SIDE_PRESETS } from '../imageQuality';
 import type { QualityStatus, ResolutionPreset } from './types';
 
 /**
@@ -13,13 +15,13 @@ export const QUALITY_THRESHOLDS = {
     failRatio: 0.5,
   },
   resolution: {
-    presets: { sdxl: 1024, sd15: 512 } satisfies Record<ResolutionPreset, number>,
+    presets: { sdxl: DEFAULT_MIN_SHORT_SIDE, sd15: MIN_SHORT_SIDE_PRESETS[1] } satisfies Record<ResolutionPreset, number>,
     /** Fraction of images below the minimum that still only warns. */
     warnFraction: 0.1,
   },
   nearDuplicates: {
-    /** Cosine similarity at or above which two images are near-duplicates. */
-    similarity: 0.95,
+    /** Cosine similarity at or above which two images are near-duplicates: the shared DINOv2 near-copy level used by Dataset assembly and Build triage. */
+    similarity: getSimilarityThreshold('near-copy', 'dinov2'),
     /** Fraction of items in duplicate pairs that still only warns. */
     warnFraction: 0.05,
   },

@@ -131,4 +131,9 @@ export const summarizeImageQuality = (report: ImageQualityReport): ImageQualityS
   version: report.version, width: report.width, height: report.height, shortSide: report.shortSide,
   sharpness: report.sharpness, brightness: report.brightness, darkShare: report.darkShare, brightShare: report.brightShare,
   minShortSide: report.minShortSide,
+  ...(report.flags.some((flag) => flag.code === 'dark') ? { dark: true } : {}),
 });
+
+/** The one minimum-short-side setting: Build triage and the Dataset quality report both read it. */
+export const getMinShortSide = (profile?: { minShortSide?: number }): number =>
+  resolveMinShortSide({ minShortSide: profile?.minShortSide });

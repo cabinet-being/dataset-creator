@@ -44,6 +44,9 @@ import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
 import { persistCaptionTagsForItems } from '../../services/caption/captionMutationService';
 import { flushProjectSave } from '../../hooks/useProjectSave';
 import { usePublishInspectorSelection } from '../../stores/useInspectorSelectionStore';
+import { buildDatasetQualityInput, collectBuildQualitySummaries } from '../../services/quality/datasetQualityInput';
+import { buildQualityReport } from '../../services/quality/metrics';
+import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
 
 type AnalysisTargetMode = 'project' | 'dataset' | 'file';
 type AnalysisView = 'overview' | 'duplicates' | 'similar' | 'coverage' | 'tags' | 'outliers';
@@ -947,6 +950,8 @@ export const AnalysisTool = ({
   const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
   const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
+  const buildSession = useProjectStore((state) => state.buildSession);
+  const projectType = useProjectStore((state) => state.projectType);
   const cleanupToolState = useProjectStore(
     (state) =>
       (state.toolState.clean as
@@ -1425,12 +1430,13 @@ export const AnalysisTool = ({
       ) as Record<AspectRatio, number>,
     [visualItems]
   );
-  const coverageScore = useMemo(() => {
-    const orientationCoverage = ['portrait', 'landscape', 'square'].filter((orientation) => (orientationCounts.get(orientation) ?? 0) > 0).length / 3;
-    const aspectCoverage = ASPECT_RATIOS.filter((ratio) => aspectCounts[ratio] > 0).length / ASPECT_RATIOS.length;
-    const tagCoverage = tagAnalysis.totalCaptionable ? tagAnalysis.captioned / tagAnalysis.totalCaptionable : 0;
-    return Math.round((orientationCoverage * 0.35 + aspectCoverage * 0.25 + tagCoverage * 0.25 + tagAnalysis.balanceScore / 100 * 0.15) * 100);
-  }, [aspectCounts, orientationCounts, tagAnalysis.balanceScore, tagAnalysis.captioned, tagAnalysis.totalCaptionable]);
+  // Same report as Build (minimum resolution, near-duplicate level and technical checks come from shared owners).
+  const qualityReport = useMemo(() => targetMode === 'dataset' && dataset ? buildQualityReport(buildDatasetQualityInput({
+    items: items.filter((item) => item.kind !== 'video'), candidates: coverageCandidateItems, triggerWord: dataset.triggerWord,
+    target: buildSession.profile.target, profile: buildSession.profile, projectType,
+    qualitySummaries: collectBuildQualitySummaries(buildSession), features: similarityFeatures,
+  })) : undefined, [buildSession, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode]);
+  const qualityAttention = qualityReport ? qualityReport.required.filter((metric) => metric.status !== 'ok').length : 0;
   const traitReadyCount = visualItems.filter((item) => visualTraitsById[item.id]).length;
   const embeddingReadyCount = visualItems.filter((item) => itemEmbeddings[item.id]).length;
   const preparingCount = visualItems.filter((item) => !visualTraitsById[item.id] || !itemEmbeddings[item.id]).length;
@@ -1509,7 +1515,7 @@ export const AnalysisTool = ({
   const healthItems = [
     { label: 'Duplicates', value: duplicateGroups.length === 0 ? 'No duplicate groups' : `${duplicateGroups.length} duplicate group${duplicateGroups.length === 1 ? '' : 's'}` },
     { label: 'Similar groups', value: String(similarGroups.length) },
-    { label: 'Coverage', value: `${coverageScore}/100` },
+    ...(qualityReport ? [{ label: 'Dataset readiness', value: `${QUALITY_STATUS_TEXT[qualityReport.readiness]}${qualityAttention ? ` · ${qualityAttention} check${qualityAttention === 1 ? '' : 's'} to review` : ''}`, hint: 'Same checks as the Build quality report' }] : []),
     { label: 'Captions', value: `${tagAnalysis.captioned}/${tagAnalysis.totalCaptionable} captioned` },
     { label: 'Tags', value: `Balance ${tagAnalysis.balanceScore}/100` },
   ];
@@ -1672,7 +1678,7 @@ export const AnalysisTool = ({
               <h3 className="text-base font-semibold">Review Summary</h3>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 {healthItems.map((item) => (
-                  <div key={item.label} className="rounded border border-border bg-background px-3 py-2">
+                  <div key={item.label} className="rounded border border-border bg-background px-3 py-2" title={'hint' in item ? item.hint : undefined} data-health={item.label}>
                     <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">{item.label}</p>
                     <p className="mt-1 text-sm font-semibold">{item.value}</p>
                   </div>
