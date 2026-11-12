@@ -708,3 +708,76 @@ export const importImageFiles = async (
 
   return { importedImages, importedAssets, skippedCount, summary };
 };
+
+type FilePickerWindow = Window &
+  typeof globalThis & {
+    showOpenFilePicker?: (options?: {
+      multiple?: boolean;
+      excludeAcceptAllOption?: boolean;
+      types?: Array<{
+        description?: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<FileSystemFileHandle[]>;
+    showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
+  };
+
+type ImportDirectoryHandle = FileSystemDirectoryHandle & {
+  entries: () => AsyncIterableIterator<[string, FileSystemDirectoryHandle | FileSystemFileHandle]>;
+};
+
+const joinImportPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
+
+const readImportDirectoryFiles = async (
+  directory: ImportDirectoryHandle,
+  parentPath = ''
+): Promise<ImportInputFile[]> => {
+  const directoryPath = joinImportPath(parentPath, directory.name);
+  const inputs: ImportInputFile[] = [{ directoryPath }];
+
+  for await (const [entryName, entry] of directory.entries()) {
+    if ('entries' in entry) {
+      inputs.push(...await readImportDirectoryFiles(entry as ImportDirectoryHandle, directoryPath));
+    } else {
+      const file = await (entry as FileSystemFileHandle).getFile();
+      inputs.push({ file, relativePath: joinImportPath(directoryPath, entryName) });
+    }
+  }
+
+  return inputs;
+};
+
+export const pickImportFiles = async (): Promise<ImportInputFile[]> => {
+  const pickerWindow = window as FilePickerWindow;
+  if (!pickerWindow.showOpenFilePicker) {
+    throw new Error('File picker is not available in this browser.');
+  }
+
+  const handles = await pickerWindow.showOpenFilePicker({
+    multiple: true,
+    excludeAcceptAllOption: false,
+    types: [
+      {
+        description: 'Project assets',
+        accept: {
+          'image/*': ['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.webp'],
+          'text/plain': ['.txt'],
+          'application/json': ['.json'],
+          'image/vnd.adobe.photoshop': ['.psd'],
+          'video/*': ['.mp4', '.webm'],
+        },
+      },
+    ],
+  });
+  return Promise.all(handles.map((handle) => handle.getFile()));
+};
+
+export const pickImportDirectory = async (): Promise<ImportInputFile[]> => {
+  const pickerWindow = window as FilePickerWindow;
+  if (!pickerWindow.showDirectoryPicker) {
+    throw new Error('Folder picker is not available in this browser.');
+  }
+
+  const directory = await pickerWindow.showDirectoryPicker({ mode: 'read' });
+  return readImportDirectoryFiles(directory as ImportDirectoryHandle);
+};
