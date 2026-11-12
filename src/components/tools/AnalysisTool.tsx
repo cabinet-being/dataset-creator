@@ -1,4 +1,4 @@
-import { useId, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useId, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import {
   AlertCircle,
   BarChart3,
@@ -7,7 +7,6 @@ import {
   Layers3,
   LocateFixed,
   SearchX,
-  SlidersHorizontal,
   Tags,
 } from 'lucide-react';
 import { ASPECT_RATIO_LABELS, ASPECT_RATIOS } from '../../lib/constants';
@@ -22,8 +21,19 @@ import {
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from '../../lib/workspaceFileAssets';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
-import { generateEmbedding, generateImageHash } from '../../services/image/embeddingService';
+import { generateImageHash } from '../../services/image/embeddingService';
 import { computeDistanceMatrix, findSimilarPairs, performClustering } from '../../services/similarity/similarityService';
+import {
+  getSimilarityThreshold,
+  getStrictnessThreshold,
+  hammingDistance,
+  isExactDuplicate,
+  DUPLICATE_HASH_DISTANCE,
+  type SimilarityBasis,
+  type SimilarityStrictnessId,
+} from '../../services/similarity/similarityLevels';
+import { useSimilarityFeatures } from '../../services/similarity/useSimilarityFeatures';
+import { SimilarityStrictnessControl } from './SimilarityReviewTool';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { addAssetsToDataset, removeAssetsFromDataset } from '../../lib/assetActions';
@@ -40,7 +50,6 @@ type AnalysisView = 'overview' | 'duplicates' | 'similar' | 'coverage' | 'tags' 
 type SimilarGroupSort = 'risk' | 'similarity' | 'coverage' | 'size';
 type SimilarGroupFilter = 'all' | 'high-confidence' | 'weak' | 'same-color' | 'tag-mismatch' | 'redundant';
 
-type EmbeddingCacheEntry = { blob: Blob; embedding: Float32Array };
 type TraitCacheEntry = { blob: Blob; traits: VisualTraits };
 type PsdPreviewCacheEntry = { previewUrl: string; blob: Blob };
 
@@ -174,9 +183,6 @@ type AnalysisToolProps = {
 
 const GRAPH_LIMIT = 96;
 const COVERAGE_CANDIDATE_LIMIT = 128;
-const SIMILARITY_THRESHOLD_DEFAULT = 0.94;
-const DUPLICATE_HASH_DISTANCE = 4;
-const DUPLICATE_RISK_THRESHOLD = 0.96;
 const TAG_OVERUSED_PERCENT = 42;
 
 const getPairKey = (left: string, right: string): string =>
@@ -229,16 +235,6 @@ const getOrientation = (item: WorkspaceImage): 'portrait' | 'landscape' | 'squar
   return 'square';
 };
 
-const hammingDistance = (left: string, right: string): number => {
-  const length = Math.min(left.length, right.length);
-  let distance = Math.abs(left.length - right.length);
-  for (let index = 0; index < length; index += 1) {
-    if (left[index] !== right[index]) {
-      distance += 1;
-    }
-  }
-  return distance;
-};
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
 
@@ -438,8 +434,12 @@ const buildDuplicateGroups = (
   visualItems: WorkspaceImage[],
   traitsById: Record<string, VisualTraits>,
   pairMap: Map<string, SimilarityResult>,
+  basis: SimilarityBasis,
+  sha256ById: Record<string, string>,
   dataset?: Dataset
 ): DuplicateGroup[] => {
+  const nearCopyThreshold = getSimilarityThreshold('near-copy', basis);
+  const identicalPairs = new Set<string>();
   const parent = new Map(visualItems.map((item) => [item.id, item.id]));
   const find = (id: string): string => {
     const current = parent.get(id) ?? id;
@@ -470,7 +470,14 @@ const buildDuplicateGroups = (
       if (distance !== null) {
         pairDistances.set(getPairKey(left.id, right.id), distance);
       }
-      if ((distance !== null && distance <= DUPLICATE_HASH_DISTANCE) || similarity >= DUPLICATE_RISK_THRESHOLD) {
+      const exact = isExactDuplicate(
+        { sha256: sha256ById[left.id], aHash: leftTraits?.hash },
+        { sha256: sha256ById[right.id], aHash: rightTraits?.hash }
+      );
+      if (sha256ById[left.id] && sha256ById[left.id] === sha256ById[right.id]) {
+        identicalPairs.add(getPairKey(left.id, right.id));
+      }
+      if (exact || similarity >= nearCopyThreshold) {
         union(left.id, right.id);
       }
     }
@@ -486,9 +493,12 @@ const buildDuplicateGroups = (
     .filter((items) => items.length > 1)
     .map((items, index) => {
       let maxHashDistance: number | null = null;
+      let allIdentical = true;
       for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
         for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
-          const distance = pairDistances.get(getPairKey(items[leftIndex].id, items[rightIndex].id));
+          const pairKey = getPairKey(items[leftIndex].id, items[rightIndex].id);
+          allIdentical &&= identicalPairs.has(pairKey);
+          const distance = pairDistances.get(pairKey);
           if (distance !== undefined) {
             maxHashDistance = Math.max(maxHashDistance ?? 0, distance);
           }
@@ -507,7 +517,7 @@ const buildDuplicateGroups = (
         )
       );
       const reason =
-        maxHashDistance === 0
+        allIdentical || maxHashDistance === 0
           ? 'exact visual match' as const
           : maxHashDistance !== null && maxHashDistance <= DUPLICATE_HASH_DISTANCE
             ? 'near visual match' as const
@@ -531,7 +541,9 @@ const buildSimilarGroups = ({
   traitsById,
   dataset,
   duplicateGroups,
+  basis,
 }: {
+  basis: SimilarityBasis;
   clusters: SimilarityCluster[];
   itemById: Map<string, WorkspaceImage>;
   pairMap: Map<string, SimilarityResult>;
@@ -575,7 +587,7 @@ const buildSimilarGroups = ({
       const compositionSimilarity = Math.round((avgSimilarity * 0.72 + avgColorSimilarity * 0.18 + avgTagOverlap * 0.1) * 100);
       const confidence = Math.round((avgSimilarity * 0.62 + avgColorSimilarity * 0.22 + Math.max(avgTagOverlap, 0.25) * 0.16) * 100);
       const reasons = [
-        avgSimilarity >= 0.9 ? 'pose' : 'composition',
+        avgSimilarity >= getSimilarityThreshold('similar', basis) ? 'pose' : 'composition',
         avgColorSimilarity >= 0.82 ? 'color' : null,
         avgTagOverlap >= 0.32 ? 'character' : null,
         duplicatePressure > 0 ? 'near duplicate' : null,
@@ -862,7 +874,9 @@ const buildOutliers = ({
   traitsById,
   tagAnalysis,
   dataset,
+  basis,
 }: {
+  basis: SimilarityBasis;
   items: WorkspaceImage[];
   pairMap: Map<string, SimilarityResult>;
   traitsById: Record<string, VisualTraits>;
@@ -884,7 +898,7 @@ const buildOutliers = ({
       const tags = getCaptionTags(item, dataset);
       const traits = traitsById[item.id];
       const reasons = [
-        strongestSimilarity < 0.72 ? 'low similarity' : null,
+        strongestSimilarity < getSimilarityThreshold('related', basis) ? 'low similarity' : null,
         tags.length === 0 ? 'no caption' : null,
         dominantOrientation && getOrientation(item) !== dominantOrientation ? 'orientation mismatch' : null,
         traits && (traits.brightness < 0.22 || traits.brightness > 0.86) ? 'brightness outlier' : null,
@@ -941,17 +955,15 @@ export const AnalysisTool = ({
   );
   const { addNotification } = useUIStore();
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
-  const embeddingCacheRef = useRef<Record<string, EmbeddingCacheEntry>>({});
   const traitCacheRef = useRef<Record<string, TraitCacheEntry>>({});
 
   const [activeView, setActiveView] = useState<AnalysisView>('overview');
-  const [similarityThreshold, setSimilarityThreshold] = useState(SIMILARITY_THRESHOLD_DEFAULT);
+  const [strictness, setStrictness] = useState<SimilarityStrictnessId>('balanced');
   const [similarSort, setSimilarSort] = useState<SimilarGroupSort>('risk');
   const [similarFilter, setSimilarFilter] = useState<SimilarGroupFilter>('all');
   const [overusedThreshold, setOverusedThreshold] = useState(TAG_OVERUSED_PERCENT);
   const scopedFileTargets = useMemo(() => fileTargets ?? (fileTarget ? [fileTarget] : []), [fileTargets, fileTarget]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(scopedFileTargets[0]?.workspaceImageId ?? null);
-  const [itemEmbeddings, setItemEmbeddings] = useState<Record<string, Float32Array>>({});
   const [visualTraitsById, setVisualTraitsById] = useState<Record<string, VisualTraits>>({});
   const [workspaceFileAssets, setWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
   const [psdPreviewBlobsById, setPsdPreviewBlobsById] = useState<Record<string, PsdPreviewCacheEntry>>({});
@@ -1167,66 +1179,22 @@ export const AnalysisTool = ({
 
   useEffect(() => {
     const activeIds = new Set(activeAnalysisItemIds);
-    setItemEmbeddings((previous) => {
-      const nextEntries = Object.entries(previous).filter(([id]) => activeIds.has(id));
-      return nextEntries.length === Object.keys(previous).length ? previous : Object.fromEntries(nextEntries);
-    });
     setVisualTraitsById((previous) => {
       const nextEntries = Object.entries(previous).filter(([id]) => activeIds.has(id));
       return nextEntries.length === Object.keys(previous).length ? previous : Object.fromEntries(nextEntries);
     });
   }, [activeAnalysisItemIds, activeAnalysisItemIdsSignature, analysisInputKey]);
 
-  useEffect(() => {
-    let canceled = false;
-    const activeIds = new Set(analysisVisualItems.map((item) => item.id));
-
-    const syncEmbeddings = async () => {
-      const nextEmbeddings: Record<string, Float32Array> = {};
-      for (const item of analysisVisualItems) {
-        const sourceEmbedding = sourceImagesById[item.sourceImageId]?.embedding;
-        if (sourceEmbedding) {
-          nextEmbeddings[item.id] = sourceEmbedding;
-          continue;
-        }
-        const cached = embeddingCacheRef.current[item.id];
-        if (cached && cached.blob === item.imageData) {
-          nextEmbeddings[item.id] = cached.embedding;
-          continue;
-        }
-        try {
-          const embedding = await generateEmbedding(item.imageData);
-          if (canceled) {
-            return;
-          }
-          embeddingCacheRef.current[item.id] = { blob: item.imageData, embedding };
-          nextEmbeddings[item.id] = embedding;
-        } catch (error) {
-          if (import.meta.env.DEV) {
-            console.warn('[analysis] embedding unavailable', item.id, error);
-          }
-        }
-      }
-      if (canceled) {
-        return;
-      }
-      setItemEmbeddings((previous) => {
-        const next: Record<string, Float32Array> = {};
-        for (const id of activeIds) {
-          const embedding = nextEmbeddings[id] ?? previous[id];
-          if (embedding) {
-            next[id] = embedding;
-          }
-        }
-        return next;
-      });
-    };
-
-    void syncEmbeddings();
-    return () => {
-      canceled = true;
-    };
-  }, [analysisVisualItems, sourceImagesById]);
+  const histogramFor = useCallback(
+    (item: WorkspaceImage) => {
+      const source = sourceImagesById[item.sourceImageId];
+      return source && item.imageData === source.originalFile ? source.embedding : undefined;
+    },
+    [sourceImagesById]
+  );
+  const similarityFeatures = useSimilarityFeatures(analysisVisualItems, { active, histogramFor });
+  const { basis: similarityBasis, embeddings: itemEmbeddings, sha256ById } = similarityFeatures;
+  const similarityThreshold = getStrictnessThreshold(strictness, similarityBasis);
 
   useEffect(() => {
     let canceled = false;
@@ -1292,7 +1260,7 @@ export const AnalysisTool = ({
     const allPairs = [...matrix.values()].flat();
     const pairMap = new Map(allPairs.map((pair) => [getPairKey(pair.imageId1, pair.imageId2), pair]));
     const similarPairs = findSimilarPairs(matrix, similarityThreshold);
-    const riskPairs = findSimilarPairs(matrix, DUPLICATE_RISK_THRESHOLD);
+    const riskPairs = findSimilarPairs(matrix, getSimilarityThreshold('near-copy', similarityBasis));
     const clusters = performClustering(
       usableTargetItems.map((item) => item.id),
       matrix,
@@ -1300,7 +1268,7 @@ export const AnalysisTool = ({
     ).filter((cluster) => cluster.imageIds.length > 1);
 
     return { items: usableTargetItems, pairMap, similarPairs, riskPairs, clusters };
-  }, [analysisVisualItems, itemEmbeddings, similarityThreshold, visualItems]);
+  }, [analysisVisualItems, itemEmbeddings, similarityBasis, similarityThreshold, visualItems]);
 
   const itemById = useMemo(
     () => new Map([...items, ...coverageCandidateItems].map((item) => [item.id, item])),
@@ -1318,8 +1286,8 @@ export const AnalysisTool = ({
 
   const visualItemById = useMemo(() => new Map(visualItems.map((item) => [item.id, item])), [visualItems]);
   const duplicateGroups = useMemo(
-    () => buildDuplicateGroups(visualItems, visualTraitsById, similarityData.pairMap, dataset),
-    [dataset, similarityData.pairMap, visualItems, visualTraitsById]
+    () => buildDuplicateGroups(visualItems, visualTraitsById, similarityData.pairMap, similarityBasis, sha256ById, dataset),
+    [dataset, sha256ById, similarityBasis, similarityData.pairMap, visualItems, visualTraitsById]
   );
   const tagAnalysis = useMemo(
     () => buildTagAnalysis(visualItems, dataset, overusedThreshold),
@@ -1334,8 +1302,9 @@ export const AnalysisTool = ({
         traitsById: visualTraitsById,
         dataset,
         duplicateGroups,
+        basis: similarityBasis,
       }),
-    [dataset, duplicateGroups, similarityData.clusters, similarityData.pairMap, visualItemById, visualTraitsById]
+    [dataset, duplicateGroups, similarityBasis, similarityData.clusters, similarityData.pairMap, visualItemById, visualTraitsById]
   );
   const filteredSimilarGroups = useMemo(() => {
     const filtered = similarGroups.filter((group) => {
@@ -1412,8 +1381,8 @@ export const AnalysisTool = ({
     coverageSections.captions.length +
     coverageSections.balance.length;
   const outliers = useMemo(
-    () => buildOutliers({ items: visualItems, pairMap: similarityData.pairMap, traitsById: visualTraitsById, tagAnalysis, dataset }),
-    [dataset, similarityData.pairMap, tagAnalysis, visualItems, visualTraitsById]
+    () => buildOutliers({ items: visualItems, pairMap: similarityData.pairMap, traitsById: visualTraitsById, tagAnalysis, dataset, basis: similarityBasis }),
+    [dataset, similarityBasis, similarityData.pairMap, tagAnalysis, visualItems, visualTraitsById]
   );
   const selectedItem = selectedItemId ? itemById.get(selectedItemId) ?? null : null;
   const inspectorSelection = useMemo(() => ({
@@ -1581,25 +1550,8 @@ export const AnalysisTool = ({
 
       <div className="flex flex-wrap items-start gap-3 rounded-md border border-border bg-background p-3 lg:items-center">
         <div className="min-w-[12rem] flex-1">
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <label htmlFor={`${controlId}-similarity`} className="flex items-center gap-1.5 text-muted-foreground">
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-            Similarity
-          </label>
-          <span className="font-mono">{percent(similarityThreshold)}</span>
-        </div>
-        <input
-          id={`${controlId}-similarity`}
-          aria-valuetext={percent(similarityThreshold)}
-          type="range"
-          min="0.5"
-          max="1"
-          step="0.01"
-          value={similarityThreshold}
-          onChange={(event) => setSimilarityThreshold(Number(event.target.value))}
-          className="w-full"
-        />
-        <details className="mt-1 text-xs text-muted-foreground"><summary className="cursor-pointer">About similarity</summary><p className="mt-1">Controls Similar Groups only. Duplicates use visual hash.</p></details>
+          <SimilarityStrictnessControl value={strictness} onChange={setStrictness} features={similarityFeatures} />
+          <details className="mt-1 text-xs text-muted-foreground"><summary className="cursor-pointer">About strictness</summary><p className="mt-1">Controls Similar Groups only. Duplicates always use the same file, visual hash or near-copy level.</p></details>
         </div>
 
         {selectedItem ? (

@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
-import { computeDistanceMatrix, performClustering } from '../../services/similarity/similarityService';
+import { computeDistanceMatrix, getClusterLevel, performClustering } from '../../services/similarity/similarityService';
+import {
+  getStrictness,
+  getStrictnessThreshold,
+  getSimilarityLevel,
+  SIMILARITY_BASIS_LABELS,
+  SIMILARITY_STRICTNESS,
+  type SimilarityStrictnessId,
+} from '../../services/similarity/similarityLevels';
+import { useSimilarityFeatures, type SimilarityFeatures } from '../../services/similarity/useSimilarityFeatures';
 import { SimilarityCluster } from '../../types';
 import {
   getWorkspaceKindBadgeClass,
@@ -17,6 +26,69 @@ import { BrickMasonry } from '../ui/BrickMasonry';
 import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { AlertCircle, ChevronDown, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
+
+/** Single labelled "Strictness" slider shared by Remove Duplicates and Analysis. */
+export const SimilarityStrictnessControl = ({
+  value,
+  onChange,
+  features,
+  className = '',
+}: {
+  value: SimilarityStrictnessId;
+  onChange: (value: SimilarityStrictnessId) => void;
+  features: Pick<SimilarityFeatures, 'basis' | 'modelState' | 'progress' | 'error' | 'loadModel'>;
+  className?: string;
+}) => {
+  const id = useId();
+  const index = Math.max(0, SIMILARITY_STRICTNESS.findIndex((entry) => entry.id === value));
+  const strictness = getStrictness(value);
+  const level = getSimilarityLevel(strictness.level);
+  const { basis, modelState, progress, error, loadModel } = features;
+  return (
+    <div className={`min-w-[12rem] text-xs ${className}`}>
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <label htmlFor={id} className="flex items-center gap-1.5 font-medium text-muted-foreground">
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          Strictness
+        </label>
+        <span className="font-medium">{strictness.label}: {level.label.toLowerCase()} and closer</span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={0}
+        max={SIMILARITY_STRICTNESS.length - 1}
+        step={1}
+        value={index}
+        aria-valuetext={`${strictness.label}: ${level.label}`}
+        onChange={(event) => onChange(SIMILARITY_STRICTNESS[Number(event.target.value)]?.id ?? 'strict')}
+        className="w-full"
+      />
+      <div className="flex justify-between text-[10px] text-muted-foreground">
+        {SIMILARITY_STRICTNESS.map((entry) => <span key={entry.id}>{entry.label}</span>)}
+      </div>
+      <p className="mt-1 text-muted-foreground">{level.description}</p>
+      <div
+        className={`mt-2 rounded border px-2 py-1 ${basis === 'dinov2' ? 'border-border text-muted-foreground' : 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}
+        data-similarity-basis={basis}
+      >
+        <span>Compared by: {SIMILARITY_BASIS_LABELS[basis]}</span>
+        {basis === 'histogram' && modelState === 'loading' ? (
+          <span> · Preparing DINOv2 {progress.completed}/{progress.total}…</span>
+        ) : null}
+        {basis === 'histogram' && (modelState === 'missing' || modelState === 'error') ? (
+          <>
+            <span> · Brightness only, results are rough.</span>{' '}
+            <button type="button" onClick={loadModel} className="underline underline-offset-2">
+              Download DINOv2 (88 MB)
+            </button>
+          </>
+        ) : null}
+        {error ? <p className="mt-1 text-destructive">{error}</p> : null}
+      </div>
+    </div>
+  );
+};
 
 export const SimilarityReviewTool = () => {
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
@@ -38,14 +110,7 @@ export const SimilarityReviewTool = () => {
   );
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
-  const [uiThreshold, setUiThreshold] = useState(0.7);
-  const similarityThreshold = useMemo(() => {
-    const remapped = 0.2 + 0.8 * Math.sqrt(uiThreshold);
-    if (import.meta.env.DEV) {
-      console.log(`[duplicates] threshold remap: ${uiThreshold.toFixed(2)} -> ${remapped.toFixed(3)}`);
-    }
-    return remapped;
-  }, [uiThreshold]);
+  const [strictness, setStrictness] = useState<SimilarityStrictnessId>('strict');
 
   const images = useMemo(
     () => toWorkspaceImages(sourceImages, editedAssets),
@@ -58,26 +123,21 @@ export const SimilarityReviewTool = () => {
     [sourceImages]
   );
   const cleanupInputReason = images.length > 0 ? 'synced to cleanup tool' : 'no images remaining';
+  const histogramFor = useCallback(
+    (image: WorkspaceImage) => {
+      const source = sourceImageById[image.sourceImageId];
+      return source && image.imageData === source.originalFile ? source.embedding : undefined;
+    },
+    [sourceImageById]
+  );
+  const similarityFeatures = useSimilarityFeatures(images, { histogramFor });
+  const { basis, embeddings: featureById } = similarityFeatures;
+  const similarityThreshold = getStrictnessThreshold(strictness, basis);
 
-  const duplicateGroups = useMemo<SimilarityCluster[]>(() => {
-    if (import.meta.env.DEV) {
-      console.log(`[duplicates] images: ${images.length}`);
-      console.log(`[duplicates] threshold: ${similarityThreshold}`);
-    }
-
-    const embeddings = new Map<string, Float32Array>();
-    for (const image of images) {
-      const embedding = sourceImageById[image.sourceImageId]?.embedding;
-      if (embedding) {
-        embeddings.set(image.id, embedding);
-      }
-    }
-
+  const { duplicateGroups, levelByClusterId } = useMemo(() => {
+    const embeddings = new Map(Object.entries(featureById));
     if (embeddings.size < 2) {
-      if (import.meta.env.DEV) {
-        console.log('[duplicates] groups: 0');
-      }
-      return [];
+      return { duplicateGroups: [] as SimilarityCluster[], levelByClusterId: {} as Record<string, string> };
     }
 
     const matrix = computeDistanceMatrix(embeddings);
@@ -86,14 +146,12 @@ export const SimilarityReviewTool = () => {
       matrix,
       similarityThreshold
     ).filter((cluster) => cluster.imageIds.length > 1);
+    const levels = Object.fromEntries(
+      clusters.map((cluster) => [cluster.id, getClusterLevel(cluster.imageIds, matrix, basis)?.label ?? 'Related'])
+    );
 
-    if (import.meta.env.DEV) {
-      console.log(`[duplicates] groups: ${clusters.length}`);
-      console.log(`[duplicates] group sizes: [${clusters.map((cluster) => cluster.imageIds.length).join(', ')}]`);
-    }
-
-    return clusters;
-  }, [images, similarityThreshold]);
+    return { duplicateGroups: clusters, levelByClusterId: levels };
+  }, [basis, featureById, similarityThreshold]);
 
   useEffect(() => {
     if (selectedClusterId && !duplicateGroups.some((cluster) => cluster.id === selectedClusterId)) {
@@ -107,12 +165,6 @@ export const SimilarityReviewTool = () => {
     } else {
       softDeleteDatasetItem(id.replace(/^edited:/, ''));
     }
-    const remainingImages = Math.max(images.length - 1, 0);
-
-    if (import.meta.env.DEV) {
-      console.log(`[duplicates] remaining images after delete: ${remainingImages}`);
-    }
-
     addNotification('info', 'Image removed');
   };
 
@@ -121,12 +173,6 @@ export const SimilarityReviewTool = () => {
 
     for (const id of idsToRemove) {
       handleRemoveImage(id);
-    }
-
-    if (import.meta.env.DEV) {
-      console.log(
-        `[duplicates] remaining images after delete: ${Math.max(images.length - idsToRemove.length, 0)}`
-      );
     }
 
     addNotification('info', `Removed ${idsToRemove.length} duplicate image${idsToRemove.length !== 1 ? 's' : ''} from cluster`);
@@ -161,24 +207,12 @@ export const SimilarityReviewTool = () => {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <label className="text-xs font-medium text-muted-foreground" htmlFor="similarity-threshold">
-              Threshold
-            </label>
-            <input
-              id="similarity-threshold"
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={uiThreshold}
-              onChange={(event) => setUiThreshold(parseFloat(event.target.value))}
-              className="w-32"
-            />
-            <span className="w-12 text-right font-mono text-xs">
-              {uiThreshold.toFixed(2)}
-            </span>
-          </div>
+          <SimilarityStrictnessControl
+            value={strictness}
+            onChange={setStrictness}
+            features={similarityFeatures}
+            className="w-full md:w-80"
+          />
         </div>
       </div>
 
@@ -228,7 +262,7 @@ export const SimilarityReviewTool = () => {
                       {cluster.imageIds.length !== 1 ? 's' : ''}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Average similarity: {(cluster.avgSimilarity * 100).toFixed(1)}%
+                      {levelByClusterId[cluster.id]}
                     </p>
                   </div>
                   <ChevronDown
@@ -305,9 +339,9 @@ export const SimilarityReviewTool = () => {
       {duplicateGroups.length === 0 && (
         <div className="flex min-h-[260px] flex-1 items-center justify-center rounded-md border border-dashed border-border bg-secondary/40 px-4 text-center">
           <div>
-            <p className="text-sm font-medium text-muted-foreground">No duplicate groups at this threshold</p>
+            <p className="text-sm font-medium text-muted-foreground">No duplicate groups at this strictness</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Lower the threshold to widen the match set.
+              Move Strictness towards Loose to widen the match set.
             </p>
           </div>
         </div>

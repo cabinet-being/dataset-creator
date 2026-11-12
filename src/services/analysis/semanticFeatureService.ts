@@ -17,7 +17,7 @@ export type SemanticFeature = {
   caption: string;
 };
 
-const hexDigest = async (value: Blob | string): Promise<string> => {
+export const hexDigest = async (value: Blob | string): Promise<string> => {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(await value.arrayBuffer());
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -55,27 +55,32 @@ export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progres
   const canvas = new OffscreenCanvas(224, 224);
   const context = canvas.getContext('2d', { willReadFrequently: true })!;
   context.imageSmoothingQuality = 'high';
+  const encodeImage = async (item: WorkspaceImage): Promise<{ imageHash: string; image: Float32Array }> => {
+    signal?.throwIfAborted();
+    const imageHash = await hexDigest(item.imageData);
+    const imageKey = `${imageHash}:${SEMANTIC_FEATURE_MODEL.visual}`;
+    let image = getCachedImageFeature(imageKey);
+    if (!image) {
+      const visualBlob = item.kind === 'psd' && item.previewUrl
+        ? await fetch(item.previewUrl, { signal }).then((response) => response.blob())
+        : item.imageData;
+      const bitmap = await createImageBitmap(visualBlob);
+      try {
+        const scale = 256 / Math.min(bitmap.width, bitmap.height);
+        const width = Math.floor(bitmap.width * scale);
+        const height = Math.floor(bitmap.height * scale);
+        context.fillStyle = 'black'; context.fillRect(0, 0, 224, 224);
+        context.drawImage(bitmap, -Math.floor((width - 224) / 2), -Math.floor((height - 224) / 2), width, height);
+        image = await model.infer(rgbModelTensor(context.getImageData(0, 0, 224, 224).data));
+        setCachedImageFeature(imageKey, image);
+      } finally { bitmap.close(); }
+    }
+    return { imageHash, image };
+  };
   return {
+    encodeImage,
     encode: async (item: WorkspaceImage, caption: string): Promise<SemanticFeature> => {
-      signal?.throwIfAborted();
-      const imageHash = await hexDigest(item.imageData);
-      const imageKey = `${imageHash}:${SEMANTIC_FEATURE_MODEL.visual}`;
-      let image = getCachedImageFeature(imageKey);
-      if (!image) {
-        const visualBlob = item.kind === 'psd' && item.previewUrl
-          ? await fetch(item.previewUrl, { signal }).then((response) => response.blob())
-          : item.imageData;
-        const bitmap = await createImageBitmap(visualBlob);
-        try {
-          const scale = 256 / Math.min(bitmap.width, bitmap.height);
-          const width = Math.floor(bitmap.width * scale);
-          const height = Math.floor(bitmap.height * scale);
-          context.fillStyle = 'black'; context.fillRect(0, 0, 224, 224);
-          context.drawImage(bitmap, -Math.floor((width - 224) / 2), -Math.floor((height - 224) / 2), width, height);
-          image = await model.infer(rgbModelTensor(context.getImageData(0, 0, 224, 224).data));
-          setCachedImageFeature(imageKey, image);
-        } finally { bitmap.close(); }
-      }
+      const { imageHash, image } = await encodeImage(item);
       const captionHash = await hexDigest(caption.normalize('NFKC'));
       const textKey = `${captionHash}:${SEMANTIC_FEATURE_MODEL.text}`;
       let text = getCachedTextFeature(textKey);

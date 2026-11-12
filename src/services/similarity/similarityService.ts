@@ -5,6 +5,7 @@
 
 import { SimilarityResult, SimilarityCluster } from '../../types';
 import { computeSimilarity } from '../image/embeddingService';
+import { classifySimilarity, type SimilarityBasis, type SimilarityLevel } from './similarityLevels';
 
 /**
  * Compute pairwise distances between all embeddings
@@ -42,20 +43,22 @@ export const computeDistanceMatrix = (
 };
 
 /**
- * Simple agglomerative clustering based on similarity
+ * Simple agglomerative clustering based on similarity.
+ * One threshold (take it from `similarityLevels`) governs the anchor pair, the cluster
+ * representative and the average similarity; 70% of member links must also pass it.
  */
 export const performClustering = (
   _imageIds: string[],
   distanceMatrix: Map<string, SimilarityResult[]>,
-  threshold: number = 0.7
+  threshold: number
 ): SimilarityCluster[] => {
   const clusters: string[][] = [];
   const assignment = new Map<string, number>();
   const pairMap = buildPairMap(distanceMatrix);
   const candidatePairs = findSimilarPairs(distanceMatrix, threshold);
-  const representativeThreshold = Math.min(0.999, Math.max(threshold + 0.015, threshold * 1.01));
+  const representativeThreshold = threshold;
   const clusterThreshold = threshold;
-  const averageThreshold = Math.min(0.999, Math.max(threshold + 0.01, threshold * 1.005));
+  const averageThreshold = threshold;
 
   for (const { imageId1, imageId2, similarity } of candidatePairs) {
     const clusterIndex1 = assignment.get(imageId1);
@@ -270,11 +273,29 @@ const computeAverageSimilarity = (
 };
 
 /**
+ * Weakest link inside a cluster, i.e. the level every member pair reaches at least.
+ */
+export const getClusterLevel = (
+  imageIds: string[],
+  distanceMatrix: Map<string, SimilarityResult[]>,
+  basis: SimilarityBasis
+): SimilarityLevel | null => {
+  const pairMap = buildPairMap(distanceMatrix);
+  let weakest = Infinity;
+  for (let left = 0; left < imageIds.length; left += 1) {
+    for (let right = left + 1; right < imageIds.length; right += 1) {
+      weakest = Math.min(weakest, getPairSimilarity(pairMap, imageIds[left], imageIds[right]) ?? 0);
+    }
+  }
+  return Number.isFinite(weakest) ? classifySimilarity(weakest, basis) : null;
+};
+
+/**
  * Find most similar pairs (potential duplicates)
  */
 export const findSimilarPairs = (
   distanceMatrix: Map<string, SimilarityResult[]>,
-  threshold: number = 0.85
+  threshold: number
 ): SimilarityResult[] => {
   const pairs: SimilarityResult[] = [];
 
@@ -295,8 +316,8 @@ export const findSimilarPairs = (
 export const getSimilarImages = (
   imageId: string,
   distanceMatrix: Map<string, SimilarityResult[]>,
-  limit: number = 10,
-  threshold: number = 0.5
+  limit: number,
+  threshold: number
 ): SimilarityResult[] => {
   const results = distanceMatrix.get(imageId) || [];
   return results

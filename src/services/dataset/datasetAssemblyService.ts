@@ -4,10 +4,11 @@ import type { SemanticFeature } from '../analysis/semanticFeatureService';
 import { encodeCaptionText, SEMANTIC_FEATURE_MODEL_KEY } from '../analysis/semanticFeatureService';
 import { cosineSimilarity, createCoverageUniverse, getStableSceneGroup, measureCoverage, type CoverageAsset, type CoverageMetrics } from './coverageService';
 import { normalizeDatasetPath } from './datasetMembershipResolver';
+import { getSimilarityThreshold } from '../similarity/similarityLevels';
 
 export const DATASET_ASSEMBLY_VERSION = 'diversity-v3';
 export const DATASET_ASSEMBLY_CACHE_VERSION = `${DATASET_ASSEMBLY_VERSION}:${SEMANTIC_FEATURE_MODEL_KEY}`;
-export const NEAR_DUPLICATE_THRESHOLD = 0.985;
+export const NEAR_DUPLICATE_THRESHOLD = getSimilarityThreshold('near-copy', 'dinov2');
 export type AssemblyMode =
   | { kind: 'auto'; saturationGain?: number }
   | { kind: 'total'; target: number; saturationGain?: number }
