@@ -9,6 +9,8 @@ type StoredLocalTaggerFile = {
   handle?: FileSystemFileHandle;
   file?: File;
   name?: string;
+  sha256?: string;
+  source?: 'download';
 };
 
 type PermissionCapableFileHandle = FileSystemFileHandle & {
@@ -16,10 +18,12 @@ type PermissionCapableFileHandle = FileSystemFileHandle & {
   requestPermission?: (descriptor?: { mode?: 'read' }) => Promise<PermissionState>;
 };
 
-export const saveLocalTaggerFile = async (id: LocalTaggerFileKey, resource: LocalTaggerSavedFile): Promise<void> => {
+export type LocalTaggerFileProvenance = { sha256: string; source: 'download' };
+
+export const saveLocalTaggerFile = async (id: LocalTaggerFileKey, resource: LocalTaggerSavedFile, provenance?: LocalTaggerFileProvenance): Promise<void> => {
   const name = resource.name;
   const entry: StoredLocalTaggerFile = resource instanceof File
-    ? { id, name, file: resource }
+    ? { id, name, file: resource, ...provenance }
     : { id, name, handle: resource };
   const database = await getDB();
   await new Promise<void>((resolve, reject) => {
