@@ -4,8 +4,10 @@ import {
   type SourceImage,
   type EditedAsset,
   type WorkspaceImageKind,
+  type ProjectState,
 } from '../types';
-import type { ExplorerFileKind } from '../services/project/explorerFileService';
+import { getExplorerFileKind, type ExplorerFileKind } from '../services/project/explorerFileService';
+import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 
 type CleanupWorkingEdit = {
   blob: Blob;
@@ -277,4 +279,47 @@ export const toWorkspaceReviewAssets = (
   }));
 
   return [...imageItems, ...fileItems];
+};
+
+type WorkspaceImageLookupState = Pick<ProjectState, 'sourceImages' | 'datasetItems'>;
+
+export const findWorkspaceImageIdForPath = (path: string, projectState: WorkspaceImageLookupState): string | null => {
+  const projectRelativePath = toProjectRelativePath(path);
+  if (isLegacyProjectRootPath(projectRelativePath)) {
+    return null;
+  }
+  const source = Object.values(projectState.sourceImages).find(
+    (image) =>
+      (image.originalFilePath ??
+        `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
+      projectRelativePath
+  );
+  if (source) {
+    return `source:${source.id}`;
+  }
+
+  const edited = Object.values(projectState.datasetItems).find(
+    (item) =>
+      (item.imageDataPath ?? `.dataset-creator-data/generated-images/${item.id}/image.png`) === projectRelativePath
+  );
+  if (edited) {
+    return `edited:${edited.id}`;
+  }
+
+  if (getExplorerFileKind(path.split('/').pop() ?? path) === 'psd') {
+    return createWorkspaceFileAssetId(path);
+  }
+
+  return null;
+};
+
+export const findSourceImageIdForPath = (path: string, projectState: WorkspaceImageLookupState): string | null => {
+  const projectRelativePath = toProjectRelativePath(path);
+  const source = Object.values(projectState.sourceImages).find(
+    (image) =>
+      (image.originalFilePath ??
+        `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
+      projectRelativePath
+  );
+  return source?.id ?? null;
 };

@@ -81,3 +81,59 @@ export const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTre
       .filter((child): child is ExplorerTreeNode => Boolean(child)),
   };
 };
+
+export type ExplorerPathEntry = { path: string; kind: 'folder' | 'file' };
+
+export const getVisibleExplorerNodes = (node: ExplorerTreeNode | null, expandedPaths: ReadonlySet<string>): ExplorerTreeNode[] => {
+  if (!node || (node.kind === 'folder' && !expandedPaths.has(node.path))) {
+    return [];
+  }
+
+  const nodes: ExplorerTreeNode[] = [];
+  const visit = (entry: ExplorerTreeNode) => {
+    nodes.push(entry);
+    if (entry.kind === 'folder' && expandedPaths.has(entry.path)) {
+      entry.children?.forEach(visit);
+    }
+  };
+  node.children?.forEach(visit);
+  return nodes;
+};
+
+export const getAllExplorerNodes = (node: ExplorerTreeNode | null): ExplorerTreeNode[] => {
+  if (!node) {
+    return [];
+  }
+
+  const nodes: ExplorerTreeNode[] = [];
+  const visit = (entry: ExplorerTreeNode) => {
+    nodes.push(entry);
+    entry.children?.forEach(visit);
+  };
+  node.children?.forEach(visit);
+  return nodes;
+};
+
+export const getParentExplorerPath = (path: string): string =>
+  path.split('/').slice(0, -1).join('/') || 'Project';
+
+export const getTopLevelExplorerEntries = <T extends ExplorerPathEntry>(entries: T[]): T[] =>
+  entries.filter(
+    (entry) =>
+      !entries.some(
+        (candidate) =>
+          candidate.kind === 'folder' &&
+          candidate.path !== entry.path &&
+          entry.path.startsWith(`${candidate.path}/`)
+      )
+  );
+
+export const getExplorerRangePaths = (visibleNodes: ExplorerTreeNode[], anchorPath: string, targetPath: string): string[] | null => {
+  const anchorIndex = visibleNodes.findIndex((entry) => entry.path === anchorPath);
+  const targetIndex = visibleNodes.findIndex((entry) => entry.path === targetPath);
+  if (anchorIndex < 0 || targetIndex < 0) {
+    return null;
+  }
+  const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+  return visibleNodes.slice(start, end + 1).map((entry) => entry.path);
+};

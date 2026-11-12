@@ -42,7 +42,7 @@ import { flushProjectSave, runProjectFileOperation, useProjectSave } from './hoo
 import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
 import type { ProjectType } from './types';
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, MouseEvent } from 'react';
 import {
   ArrowLeft,
@@ -64,16 +64,17 @@ import {
   readToolFromUrl,
 } from './lib/constants';
 import {
-  createWorkspaceFileAssetId,
-  getProjectDataFileExtension,
+  findSourceImageIdForPath,
+  findWorkspaceImageIdForPath,
   toProjectRelativePath,
   toWorkspaceImages,
   toWorkspaceReviewAssets,
   type WorkspaceFileAsset,
   type WorkspaceImage,
 } from './lib/workspaceImages';
-import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, invalidateWorkspaceFileAssetCache, updateWorkspaceFileAssetCache } from './lib/workspaceFileAssets';
-import { buildEmptyExplorerTree, sanitizeExplorerTree, emptyExplorerChanges, findExplorerTreeNode, moveExplorerTreeNodes, replaceExplorerTreeNode, type ExplorerChanges } from './lib/explorerTreeUpdates';
+import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
+import { emptyExplorerChanges } from './lib/explorerTreeUpdates';
+import { useExplorerTree } from './hooks/useExplorerTree';
 import { clearLegacyExclusionAtPath } from './services/project/legacyDatasetExclusionService';
 import {
   createProjectDirectory,
@@ -89,9 +90,6 @@ import { restoreSavedLocalTagger } from './services/tagging/localTaggerConnectio
 import { createOperationLogger } from './services/logging/applicationLog';
 import { applyBuildSessionPathMoves } from './services/build/buildSessionService';
 import { indexProjectAssets } from './services/project/assetIndexService';
-import {
-  isLegacyProjectRootPath,
-} from './services/project/projectPathFilters';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { type ContextActionGroup } from './components/ui/ContextActions';
 import {
@@ -108,12 +106,10 @@ import {
   deleteExplorerEntry,
   duplicateExplorerEntries,
   getExplorerParentDirectory,
-  getDirectoryAtExplorerPath,
   getExplorerFileKind,
   getUniqueExplorerName,
   isExplorerImageFileName,
   moveExplorerEntries,
-  readExplorerDirectory,
   readExplorerFile,
   renameExplorerEntry,
   ExplorerBatchError,
@@ -244,23 +240,10 @@ function App() {
   const [activeActivityView, setActiveActivityView] = useState<'explorer' | 'versions'>(
     storedWorkspaceLayout.activeActivityView ?? 'explorer'
   );
-  const [explorerTree, setExplorerTree] = useState<ExplorerTreeNode | null>(null);
-  const explorerTreeRef = useRef(explorerTree);
-  explorerTreeRef.current = explorerTree;
-  const explorerReadRevision = useRef(0);
-  const explorerMutationChanges = useRef<ExplorerChanges | null>(null);
-  const [explorerDropTargetPath, setExplorerDropTargetPath] = useState<string | null>(null);
-  const visibleExplorerTree = useMemo(() => sanitizeExplorerTree(explorerTree), [explorerTree]);
-  const [, setExplorerStatus] = useState<'ready' | 'loading' | 'error'>('ready');
-  const [explorerError, setExplorerError] = useState<string | null>(null);
-  const [expandedExplorerPaths, setExpandedExplorerPaths] = useState<Set<string>>(
-    () => new Set(['Project'])
-  );
   const [tabMenuOpen, setTabMenuOpen] = useState(false);
   const [toolMenuPosition, setToolMenuPosition] = useState({ x: 0, y: 0 });
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const { pickLocalTaggerFile, inputs: localTaggerFileInputs } = useLocalTaggerFilePicker();
-  const explorerPanelRef = useRef<HTMLDivElement | null>(null);
   const outputLogRef = useRef<HTMLDivElement | null>(null);
   const outputAutoFollowRef = useRef(true);
   const projectSessionRef = useRef(0);
@@ -282,12 +265,6 @@ function App() {
     () => new Set()
   );
   const [explorerClipboard, setExplorerClipboard] = useState<ExplorerClipboard | null>(null);
-  const [selectedExplorerPaths, setSelectedExplorerPaths] = useState<Set<string>>(new Set());
-  const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
-  const [focusedExplorerPath, setFocusedExplorerPath] = useState<string | null>(null);
-  const [draggedExplorerEntries, setDraggedExplorerEntries] = useState<ExplorerItemEntry[] | null>(null);
-  const draggedExplorerEntriesRef = useRef<ExplorerItemEntry[] | null>(null);
-  const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
   const [inlineExplorerEdit, setInlineExplorerEdit] = useState<{
     mode: 'create' | 'rename';
     parentPath: string;
@@ -295,7 +272,6 @@ function App() {
     kind: 'folder' | 'file';
     value: string;
   } | null>(null);
-  const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
 
   const setInspectorSectionOpen = (section: InspectorSectionId, open: boolean) => {
     setInspectorSectionsOpen((sections) =>
@@ -647,355 +623,20 @@ function App() {
   const isTabDirty = (tab: WorkspaceTab): boolean =>
     Boolean(documentStates[tab.id]?.dirty ?? tab.dirty);
 
-  useEffect(() => {
-    let canceled = false;
-
-    const loadExplorerTree = async () => {
-      const revision = ++explorerReadRevision.current;
-      if (projectDirectoryHandle) {
-        setExplorerStatus('loading');
-        setExplorerError(null);
-        try {
-          const tree = await readExplorerDirectory(
-            projectDirectoryHandle,
-            projectDirectoryName ?? projectDirectoryHandle.name,
-            'Project'
-          );
-          if (!canceled && revision === explorerReadRevision.current) {
-            setExplorerTree(tree);
-            setExplorerStatus('ready');
-          }
-        } catch (error) {
-          if (!canceled && revision === explorerReadRevision.current) {
-            setExplorerTree(buildEmptyExplorerTree(projectName));
-            setExplorerStatus('error');
-            setExplorerError(error instanceof Error ? error.message : 'Unable to read project files');
-          }
-        }
-        return;
-      }
-
-      setExplorerTree(buildEmptyExplorerTree(projectName));
-      setExplorerStatus('ready');
-      setExplorerError(null);
-    };
-
-    void loadExplorerTree();
-
-    return () => {
-      canceled = true;
-    };
-  }, [explorerRefreshKey, projectDirectoryHandle, projectDirectoryName, projectName]);
-
-  const toggleExplorerPath = (path: string) => {
-    setExpandedExplorerPaths((paths) => {
-      const next = new Set(paths);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  };
-
-  const getVisibleExplorerNodes = (node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode[] => {
-    if (!node || (node.kind === 'folder' && !expandedExplorerPaths.has(node.path))) {
-      return [];
-    }
-
-    const nodes: ExplorerTreeNode[] = [];
-    const visit = (entry: ExplorerTreeNode) => {
-      nodes.push(entry);
-      if (entry.kind === 'folder' && expandedExplorerPaths.has(entry.path)) {
-        entry.children?.forEach(visit);
-      }
-    };
-    node.children?.forEach(visit);
-    return nodes;
-  };
-
-  const getAllExplorerNodes = (node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode[] => {
-    if (!node) {
-      return [];
-    }
-
-    const nodes: ExplorerTreeNode[] = [];
-    const visit = (entry: ExplorerTreeNode) => {
-      nodes.push(entry);
-      entry.children?.forEach(visit);
-    };
-    node.children?.forEach(visit);
-    return nodes;
-  };
-
-  const findExplorerNodeByPath = (path: string, node: ExplorerTreeNode | null = visibleExplorerTree): ExplorerTreeNode | null => {
-    if (!node) {
-      return null;
-    }
-    if (node.path === path) {
-      return node;
-    }
-    for (const child of node.children ?? []) {
-      const match = findExplorerNodeByPath(path, child);
-      if (match) {
-        return match;
-      }
-    }
-    return null;
-  };
-
-  const getActiveDirectoryChildren = (): ExplorerTreeNode[] => {
-    const directory = findExplorerNodeByPath(activeExplorerDirectoryPath);
-    return directory?.kind === 'folder' ? directory.children ?? [] : [];
-  };
-
-  const getFocusedExplorerNode = (): ExplorerTreeNode | null => {
-    if (focusedExplorerPath) {
-      return findExplorerNodeByPath(focusedExplorerPath);
-    }
-    const firstSelectedPath = getVisibleExplorerNodes().find((node) => selectedExplorerPaths.has(node.path))?.path;
-    return firstSelectedPath ? findExplorerNodeByPath(firstSelectedPath) : null;
-  };
-
-  const getParentExplorerNode = (path: string): ExplorerTreeNode | null => {
-    const parentPath = path.split('/').slice(0, -1).join('/') || 'Project';
-    return parentPath === path ? null : findExplorerNodeByPath(parentPath);
-  };
-
-  const focusExplorerNode = (node: ExplorerTreeNode, extendSelection: boolean) => {
-    setActiveExplorerNode(node);
-    const row = Array.from(explorerPanelRef.current?.querySelectorAll<HTMLElement>('[data-explorer-row]') ?? [])
-      .find(element => element.dataset.explorerPath === node.path);
-    row?.focus({ preventScroll: true });
-    row?.scrollIntoView({ block: 'nearest' });
-    if (extendSelection) {
-      const anchor = selectionAnchorPath ?? focusedExplorerPath ?? node.path;
-      setSelectionAnchorPath(anchor);
-      selectExplorerRange(anchor, node.path);
-      return;
-    }
-    setSelectedExplorerPaths(new Set([node.path]));
-    setSelectionAnchorPath(node.path);
-  };
-
-  const moveExplorerKeyboardFocus = (direction: -1 | 1, extendSelection: boolean) => {
-    const visibleNodes = getVisibleExplorerNodes();
-    if (visibleNodes.length === 0) {
-      return;
-    }
-    const focusedPath = focusedExplorerPath ?? selectedExplorerPaths.values().next().value;
-    const currentIndex = visibleNodes.findIndex((node) => node.path === focusedPath);
-    const nextIndex = Math.max(0, Math.min(visibleNodes.length - 1, currentIndex + direction));
-    focusExplorerNode(visibleNodes[nextIndex], extendSelection);
-  };
-
-  const getTopLevelExplorerEntries = (entries: ExplorerItemEntry[]): ExplorerItemEntry[] =>
-    entries.filter(
-      (entry) =>
-        !entries.some(
-          (candidate) =>
-            candidate.kind === 'folder' &&
-            candidate.path !== entry.path &&
-            entry.path.startsWith(`${candidate.path}/`)
-        )
-    );
-
-  const getSelectedExplorerEntries = (): ExplorerItemEntry[] =>
-    getTopLevelExplorerEntries(
-      getVisibleExplorerNodes()
-        .flatMap((node): ExplorerItemEntry[] =>
-          selectedExplorerPaths.has(node.path)
-            ? [{
-                path: node.path,
-                name: node.name,
-                kind: node.kind,
-                workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
-              }]
-            : []
-        )
-    );
-
-  const getExplorerEntriesForPaths = (paths: Set<string>): ExplorerItemEntry[] =>
-    getTopLevelExplorerEntries(
-      getVisibleExplorerNodes()
-        .flatMap((node): ExplorerItemEntry[] =>
-          paths.has(node.path)
-            ? [{
-                path: node.path,
-                name: node.name,
-                kind: node.kind,
-                workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
-              }]
-            : []
-        )
-    );
-
-  const createExplorerEntryForNode = (node: ExplorerTreeNode): ExplorerItemEntry => ({
-    path: node.path,
-    name: node.name,
-    kind: node.kind,
-    workspaceImageId: node.kind === 'file' ? findWorkspaceImageIdForPath(node.path) ?? undefined : undefined,
+  const {
+    activeExplorerDirectoryPath, createExplorerEntryForNode, draggedExplorerEntries, draggedExplorerEntriesRef, expandedExplorerPaths,
+    explorerDropTargetPath, explorerError, explorerMutationChanges, explorerPanelRef, explorerTree, findExplorerNodeByPath,
+    focusExplorerNode, focusedExplorerPath, getActiveDirectoryChildren, getAllExplorerNodes, getContextEntries,
+    getExplorerEntriesFromTransferPath, getFocusedExplorerNode, getParentExplorerNode, getSelectedExplorerEntries,
+    getVisibleExplorerNodes, handleExplorerMarqueeSelection, moveExplorerKeyboardFocus, refreshChangedExplorer, refreshExplorer,
+    selectExplorerNode, selectedExplorerPaths, setActiveExplorerDirectoryPath, setActiveExplorerNode,
+    setCurrentDraggedExplorerEntries, setExpandedExplorerPaths, setExplorerDropTargetPath, setFocusedExplorerPath,
+    setSelectedExplorerPaths, setSelectionAnchorPath, startExplorerDrag, toggleExplorerPath, visibleExplorerTree,
+  } = useExplorerTree({
+    setOpenTabs,
+    setExplorerContextMenu,
+    openFile: (node) => openExplorerFile(node),
   });
-
-  const getExplorerEntriesFromTransferPath = (path: string): ExplorerItemEntry[] => {
-    const node = findExplorerNodeByPath(path);
-    return node ? [createExplorerEntryForNode(node)] : [];
-  };
-
-  const setCurrentDraggedExplorerEntries = (entries: ExplorerItemEntry[] | null) => {
-    draggedExplorerEntriesRef.current = entries;
-    setDraggedExplorerEntries(entries);
-  };
-
-  useEffect(() => {
-    setSelectedExplorerPaths((paths) => {
-      const nextPaths = [...paths].filter((path) => !isLegacyProjectRootPath(path));
-      return nextPaths.length === paths.size ? paths : new Set(nextPaths);
-    });
-    setExpandedExplorerPaths((paths) => {
-      const nextPaths = [...paths].filter((path) => !isLegacyProjectRootPath(path));
-      return nextPaths.length === paths.size ? paths : new Set(nextPaths);
-    });
-    setFocusedExplorerPath((path) => (path && isLegacyProjectRootPath(path) ? null : path));
-    setSelectionAnchorPath((path) => (path && isLegacyProjectRootPath(path) ? null : path));
-    setActiveExplorerDirectoryPath((path) => (isLegacyProjectRootPath(path) ? 'Project' : path));
-    setExplorerContextMenu((menu) => (menu && isLegacyProjectRootPath(menu.node.path) ? null : menu));
-    setOpenTabs((tabs) => {
-      const nextTabs = tabs.filter((tab) => !isFileBackedTab(tab) || !isLegacyProjectRootPath(tab.path));
-      return nextTabs.length === tabs.length ? tabs : nextTabs;
-    });
-    setDraggedExplorerEntries((entries) => {
-      if (!entries) {
-        draggedExplorerEntriesRef.current = null;
-        return entries;
-      }
-      const nextEntries = entries.filter((entry) => !isLegacyProjectRootPath(entry.path));
-      draggedExplorerEntriesRef.current = nextEntries.length > 0 ? nextEntries : null;
-      return nextEntries.length === entries.length ? entries : draggedExplorerEntriesRef.current;
-    });
-  }, [explorerRefreshKey, projectDirectoryHandle]);
-
-  const getContextEntries = (node: ExplorerTreeNode): ExplorerItemEntry[] => {
-    if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {
-      return getSelectedExplorerEntries();
-    }
-    return [{ path: node.path, name: node.name, kind: node.kind }];
-  };
-
-  const setActiveExplorerNode = (node: ExplorerTreeNode) => {
-    setFocusedExplorerPath(node.path);
-    setActiveExplorerDirectoryPath(
-      node.kind === 'folder'
-        ? node.path
-        : node.path.split('/').slice(0, -1).join('/') || 'Project'
-    );
-  };
-
-  const selectExplorerRange = (anchorPath: string, targetPath: string) => {
-    const visibleNodes = getVisibleExplorerNodes();
-    const anchorIndex = visibleNodes.findIndex((entry) => entry.path === anchorPath);
-    const targetIndex = visibleNodes.findIndex((entry) => entry.path === targetPath);
-    if (anchorIndex < 0 || targetIndex < 0) {
-      return false;
-    }
-    const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-    setSelectedExplorerPaths(new Set(visibleNodes.slice(start, end + 1).map((entry) => entry.path)));
-    return true;
-  };
-
-  const handleExplorerMarqueeSelection = useCallback((paths: string[]) => {
-    setSelectedExplorerPaths(new Set(paths));
-    setSelectionAnchorPath(paths[0] ?? null);
-    setFocusedExplorerPath(paths[0] ?? null);
-  }, []);
-
-  const selectExplorerNode = (node: ExplorerTreeNode, event: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
-    setActiveExplorerNode(node);
-    if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
-      if (node.kind === 'file') {
-        void openExplorerFile(node);
-      }
-    }
-
-    if (event.shiftKey && selectionAnchorPath) {
-      if (selectExplorerRange(selectionAnchorPath, node.path)) {
-        return;
-      }
-    }
-
-    if (event.ctrlKey || event.metaKey) {
-      setSelectedExplorerPaths((paths) => {
-        const next = new Set(paths);
-        if (next.has(node.path)) {
-          next.delete(node.path);
-        } else {
-          next.add(node.path);
-        }
-        return next;
-      });
-      setSelectionAnchorPath(node.path);
-      return;
-    }
-
-    setSelectedExplorerPaths(new Set([node.path]));
-    setSelectionAnchorPath(node.path);
-  };
-
-  const startExplorerDrag = (node: ExplorerTreeNode) => {
-    if (selectedExplorerPaths.has(node.path)) {
-      setCurrentDraggedExplorerEntries(getSelectedExplorerEntries());
-      return;
-    }
-
-    const nextSelection = new Set([node.path]);
-    setActiveExplorerNode(node);
-    setSelectedExplorerPaths(nextSelection);
-    setSelectionAnchorPath(node.path);
-    setCurrentDraggedExplorerEntries(getExplorerEntriesForPaths(nextSelection));
-  };
-
-  const findWorkspaceImageIdForPath = (path: string): string | null => {
-    const projectRelativePath = toProjectRelativePath(path);
-    if (isLegacyProjectRootPath(projectRelativePath)) {
-      return null;
-    }
-    const projectState = useProjectStore.getState();
-    const source = Object.values(projectState.sourceImages).find(
-      (image) =>
-        (image.originalFilePath ??
-          `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
-        projectRelativePath
-    );
-    if (source) {
-      return `source:${source.id}`;
-    }
-
-    const edited = Object.values(projectState.datasetItems).find(
-      (item) =>
-        (item.imageDataPath ?? `.dataset-creator-data/generated-images/${item.id}/image.png`) === projectRelativePath
-    );
-    if (edited) {
-      return `edited:${edited.id}`;
-    }
-
-    if (getExplorerFileKind(path.split('/').pop() ?? path) === 'psd') {
-      return createWorkspaceFileAssetId(path);
-    }
-
-    return null;
-  };
-
-  const findSourceImageIdForPath = (path: string): string | null => {
-    const projectRelativePath = toProjectRelativePath(path);
-    const source = Object.values(useProjectStore.getState().sourceImages).find(
-      (image) =>
-        (image.originalFilePath ??
-          `.dataset-creator-data/source-images/${image.id}/original.${getProjectDataFileExtension(image.fileName, image.mimeType)}`) ===
-        projectRelativePath
-    );
-    return source?.id ?? null;
-  };
 
   const openAssetExplorerContextMenu: AssetContextMenuHandler = (item, event) => {
     const assetPath = item.assetPath;
@@ -1047,12 +688,12 @@ function App() {
           : nodes.filter((node) => node.path === entry.path && node.kind === 'file');
 
       for (const node of candidateNodes) {
-        const workspaceImageId = findWorkspaceImageIdForPath(node.path);
+        const workspaceImageId = findWorkspaceImageIdForPath(node.path, useProjectStore.getState());
         const sourceId = workspaceImageId?.startsWith('source:')
           ? workspaceImageId.replace(/^source:/, '')
           : workspaceImageId?.startsWith('edited:')
             ? datasetItemsById[workspaceImageId.replace(/^edited:/, '')]?.sourceImageId
-          : findSourceImageIdForPath(node.path);
+          : findSourceImageIdForPath(node.path, useProjectStore.getState());
         if (sourceId) {
           assetIds.add(sourceId);
         }
@@ -1264,7 +905,7 @@ function App() {
       x: event.clientX,
       y: event.clientY,
       actionGroups: buildDatasetBoardContextActionGroups(node, {
-        createExplorerAction, findWorkspaceImageIdForPath, openExplorerFile, openFileModeTab,
+        createExplorerAction, findWorkspaceImageIdForPath: (path) => findWorkspaceImageIdForPath(path, useProjectStore.getState()), openExplorerFile, openFileModeTab,
         removeFromDataset: () => removeDatasetBoardAsset(dataset, item),
       }),
     });
@@ -1312,7 +953,7 @@ function App() {
         name: node.name,
         fileKind,
         file,
-        workspaceImageId: findWorkspaceImageIdForPath(node.path) ?? undefined,
+        workspaceImageId: findWorkspaceImageIdForPath(node.path, useProjectStore.getState()) ?? undefined,
       };
 
       const current = findFileTab(openTabsRef.current, tab.path, tab.kind);
@@ -1329,7 +970,7 @@ function App() {
     if (existing) { setActiveTabId(existing.id); return; }
     const session = projectSessionRef.current;
     try {
-      const imageId = findWorkspaceImageIdForPath(node.path);
+      const imageId = findWorkspaceImageIdForPath(node.path, useProjectStore.getState());
       if (mode === 'caption' && !imageId) {
         addNotification('warning', 'Caption is available for project workspace images.');
         return;
@@ -1386,7 +1027,7 @@ function App() {
         name: node.name,
         fileKind: getExplorerFileKind(node.name, 'type' in file ? file.type : undefined),
         file,
-        workspaceImageId: findWorkspaceImageIdForPath(node.path) ?? undefined,
+        workspaceImageId: findWorkspaceImageIdForPath(node.path, useProjectStore.getState()) ?? undefined,
       });
     }
 
@@ -1401,7 +1042,7 @@ function App() {
     }
 
     const itemIds = nodes
-      .map((node) => findWorkspaceImageIdForPath(node.path))
+      .map((node) => findWorkspaceImageIdForPath(node.path, useProjectStore.getState()))
       .filter((id): id is string => Boolean(id));
     if (itemIds.length === nodes.length) {
       navigateToTool('tagging', { taggingItemIds: itemIds });
@@ -1510,56 +1151,6 @@ function App() {
       return null;
     }
     return projectDirectoryHandle;
-  };
-
-  const refreshExplorer = () => {
-    if (projectDirectoryHandle) invalidateWorkspaceFileAssetCache(projectDirectoryHandle);
-    setExplorerRefreshKey((key) => key + 1);
-  };
-
-  const refreshChangedExplorer = async (directory: ProjectDirectoryHandle, changes: ExplorerChanges) => {
-    if (!changes.moves.length && !changes.paths.length) return;
-    const operationProjectId = useProjectStore.getState().id;
-    const isCurrent = () => useUIStore.getState().projectDirectoryHandle === directory && useProjectStore.getState().id === operationProjectId;
-    if (!isCurrent()) return;
-    ++explorerReadRevision.current;
-    const paths = new Set(changes.paths);
-    for (const move of changes.moves) {
-      if (!findExplorerTreeNode(explorerTreeRef.current, move.from)) paths.add(move.to);
-      for (const path of [move.from, move.to]) {
-        const kind = getExplorerFileKind(path);
-        if (kind === 'image' || kind === 'psd') paths.add(path.replace(/\.[^.]+$/, '.txt'));
-      }
-    }
-    const replacements: Array<{ path: string; node?: ExplorerTreeNode }> = [];
-    for (const path of paths) {
-      const name = path.split('/').pop()!;
-      try {
-        let node: ExplorerTreeNode;
-        try {
-          const folder = await getDirectoryAtExplorerPath(directory, path);
-          node = await readExplorerDirectory(folder, name, path);
-        } catch (error) {
-          if (!(error instanceof Error) || !['NotFoundError', 'TypeMismatchError'].includes(error.name)) throw error;
-          const parent = await getExplorerParentDirectory(directory, path);
-          await parent.directory.getFileHandle(name);
-          node = { name, path, kind: 'file' };
-        }
-        replacements.push({ path, node });
-      } catch (error) {
-        if (!(error instanceof Error && error.name === 'NotFoundError')) throw error;
-        replacements.push({ path });
-      }
-    }
-    await updateWorkspaceFileAssetCache(directory, changes);
-    if (!isCurrent()) return;
-    setExplorerTree(previous => {
-      let next = moveExplorerTreeNodes(previous ?? buildEmptyExplorerTree(projectName), changes.moves);
-      for (const { path, node } of replacements) next = replaceExplorerTreeNode(next, path, node);
-      return next;
-    });
-    setExpandedExplorerPaths(paths => new Set([...paths].map(path => applyExplorerPathMoves(path, changes.moves))));
-    useUIStore.getState().refreshAssetPreviews();
   };
 
   const runExplorerMutation = async <T,>(label: string, action: () => Promise<T>): Promise<T> => {
@@ -2525,13 +2116,13 @@ function App() {
   };
 
   const getFileContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => buildFileContextActionGroups(node, {
-    createExplorerAction, findWorkspaceImageIdForPath, openExplorerFile, openFileModeTab, getContextEntries, getExplorerToolScopeFileNodes,
+    createExplorerAction, findWorkspaceImageIdForPath: (path) => findWorkspaceImageIdForPath(path, useProjectStore.getState()), openExplorerFile, openFileModeTab, getContextEntries, getExplorerToolScopeFileNodes,
     createExplorerEntryForNode, addToDataset: addToDatasetFromExplorer, openExplorerFilesInPhotopea, openExplorerFilesInCaption,
     openExplorerFilesInAnalysis, openExplorerFilesInReview, setExplorerClipboard, handleExplorerRename, handleExplorerDelete,
   });
 
   const getDirectoryContextActionGroups = (node: ExplorerTreeNode): ContextActionGroup[] => buildDirectoryContextActionGroups(node, {
-    createExplorerAction, findWorkspaceImageIdForPath, openExplorerFile, openFileModeTab, getContextEntries, getExplorerToolScopeFileNodes,
+    createExplorerAction, findWorkspaceImageIdForPath: (path) => findWorkspaceImageIdForPath(path, useProjectStore.getState()), openExplorerFile, openFileModeTab, getContextEntries, getExplorerToolScopeFileNodes,
     createExplorerEntryForNode, addToDataset: addToDatasetFromExplorer, openExplorerFilesInPhotopea, openExplorerFilesInCaption,
     openExplorerFilesInAnalysis, openExplorerFilesInReview, setExplorerClipboard, handleExplorerRename, handleExplorerDelete,
     explorerClipboard, handleExplorerNewFolder, handleExplorerImport, handleExplorerPaste, handleExplorerDuplicate,
