@@ -1,27 +1,22 @@
 import { WorkspaceWelcome } from './components/workspace/WorkspaceWelcome';
 import { WorkspaceTool, type AnalysisScopeTarget, type AssetContextMenuHandler, type DatasetToolName } from './components/workspace/WorkspaceTool';
 import { getToolViewContext, setToolViewScope, moveToolViewScope, pruneToolViewScope, type ToolSelectionScope } from './lib/workspaceToolScope';
-import { readWorkspacePersistence, writeWorkspacePersistence, getRestorableWorkspaceTabs, readWorkspaceLayout, type WorkspaceLayout } from './lib/workspacePersistence';
+import { readWorkspaceLayout } from './lib/workspacePersistence';
 import {
   createDatasetToolTabId,
   createFileTabId,
   createToolTab,
-  dedupeWorkspaceTabs,
   getInspectorContext,
   isDatasetToolTab,
-  orderWorkspaceTabs,
-  persistWorkspaceTab,
   type DatasetToolWorkspaceTab,
-  type PersistedWorkspaceTab,
   type ToolNestedView,
-  type ToolWorkspaceTab,
   type WindowWorkspaceTab,
   type WorkspaceTab,
 } from './lib/workspaceTabs';
 import { orderDatasetBoardItems } from './lib/datasetBoard';
 import { ExplorerPanel } from './components/workspace/ExplorerPanel';
 import { ExplorerTree, getExplorerIcon, type ExplorerTreeNode } from './components/workspace/ExplorerTree';
-import { checkDirtyDocuments, useDocumentStateStore } from './stores/useDocumentStateStore';
+import { useDocumentStateStore } from './stores/useDocumentStateStore';
 import { type EmptyDatasetSuggestion } from './components/workspace/DatasetBoard';
 import { DatasetToolView, DatasetWorkspaceView } from './components/workspace/DatasetWorkspaceView';
 import { WorkspaceInspector, type FileInspectorMetadata, type InspectorSectionId } from './components/workspace/WorkspaceInspector';
@@ -47,7 +42,7 @@ import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
 import type { ProjectType } from './types';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DragEvent, MouseEvent, SetStateAction } from 'react';
+import type { DragEvent, MouseEvent } from 'react';
 import {
   ArrowLeft,
   FolderOpen,
@@ -132,9 +127,9 @@ import {
 } from './services/project/projectLayoutService';
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
 import { useDockWorkspace } from './hooks/useDockWorkspace';
+import { useWorkspaceTabsState, useWorkspaceTabActions } from './hooks/useWorkspaceTabs';
 import { useWorkspaceNavigation } from './hooks/useWorkspaceNavigation';
 import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup } from './lib/workspaceLayout';
-import { hasBusyVideoTabs } from './services/video/videoClient';
 import { DATASET_EXPLORER_PATH, isProjectDatasetPath } from './services/dataset/datasetFolderService';
 
 
@@ -242,21 +237,8 @@ function App() {
   const [newVersionName, setNewVersionName] = useState('');
   const [storedWorkspaceLayout] = useState(readWorkspaceLayout);
   const persistWorkspaceRef = useRef<(() => void) | null>(null);
-  const [initialWorkspaceTabs] = useState<WorkspaceTab[]>(() =>
-    getRestorableWorkspaceTabs(storedWorkspaceLayout).filter((tab) => tab.kind !== 'window' || tab.window === 'dataset')
-  );
-  const [openTabs, setOpenTabsState] = useState<WorkspaceTab[]>(initialWorkspaceTabs);
-  const openTabsRef = useRef(openTabs);
-  const setOpenTabs = useCallback((update: SetStateAction<WorkspaceTab[]>) => {
-    const next = typeof update === 'function' ? update(openTabsRef.current) : update;
-    openTabsRef.current = next;
-    setOpenTabsState(next);
-  }, []);
-  const [activeTabId, setActiveTabId] = useState<string | null>(() =>
-    storedWorkspaceLayout.activeTabId === null ? null : initialWorkspaceTabs.some((tab) => tab.id === storedWorkspaceLayout.activeTabId)
-      ? storedWorkspaceLayout.activeTabId ?? null
-      : initialWorkspaceTabs[0]?.id ?? null
-  );
+  const tabsState = useWorkspaceTabsState(storedWorkspaceLayout);
+  const { openTabs, openTabsRef, setOpenTabs, activeTabId, setActiveTabId, closedTabs, setClosedTabs } = tabsState;
   const dock = useDockWorkspace(storedWorkspaceLayout, openTabs.filter((tab) => tab.kind !== 'window').map((tab) => tab.id), activeTabId, openTabs.filter((tab) => tab.pinned).map((tab) => tab.id));
   const leftPanelOpen = dock.explorerOpen;
   const [activeActivityView, setActiveActivityView] = useState<'explorer' | 'versions'>(
@@ -275,7 +257,6 @@ function App() {
     () => new Set(['Project'])
   );
   const [tabMenuOpen, setTabMenuOpen] = useState(false);
-  const [closedTabs, setClosedTabs] = useState<WorkspaceTab[]>([]);
   const [toolMenuPosition, setToolMenuPosition] = useState({ x: 0, y: 0 });
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const { pickLocalTaggerFile, inputs: localTaggerFileInputs } = useLocalTaggerFilePicker();
@@ -641,13 +622,11 @@ function App() {
     };
   }, [activeFileCaptionEntries, activeTab]);
 
-  useEffect(() => {
-    if (activeTabId === null || openTabs.some((tab) => tab.id === activeTabId)) {
-      return;
-    }
-    setActiveTabId(openTabs[0]?.id ?? null);
-  }, [activeTabId, openTabs]);
-
+  const tabActions = useWorkspaceTabActions({
+    state: tabsState, dock, storedWorkspaceLayout, persistWorkspaceRef, projectDirectoryHandle, projectId, activeActivityView,
+    setActiveActivityView, setWorkspaceContextMenu, setNavigationRecovery, setCurrentTool, setOpenMenu, setTabMenuOpen, addNotification,
+  });
+  const { activateTab, pushClosedTabs, toggleTabPinned, reopenClosedTab, applyWorkspaceTabsForProject, confirmClosingTabs } = tabActions;
 
   const navigateToTool = (
     tool: ToolName,
@@ -665,161 +644,8 @@ function App() {
     setTabMenuOpen(false);
   };
 
-  const activateTab = (tab: WorkspaceTab) => {
-    setNavigationRecovery(false);
-    dock.show(tab.id);
-    setActiveTabId(tab.id);
-    if (tab.kind === 'tool') {
-      setCurrentTool(tab.tool);
-    }
-    setOpenMenu(null);
-    setTabMenuOpen(false);
-    setWorkspaceContextMenu(null);
-  };
-
-  const pushClosedTabs = (tabs: WorkspaceTab[]) => {
-    if (tabs.length === 0) {
-      return;
-    }
-    setClosedTabs((current) => [...tabs, ...current.filter((tab) => !tabs.some((closedTab) => closedTab.id === tab.id))].slice(0, 12));
-  };
-
-  const toggleTabPinned = (tabId: string) => {
-    setOpenTabs((tabs) => orderWorkspaceTabs(tabs.map((tab) => (tab.id === tabId ? { ...tab, pinned: !tab.pinned } : tab))));
-    setWorkspaceContextMenu(null);
-  };
-
-  const reopenClosedTab = () => {
-    const [tabToRestore, ...remainingTabs] = closedTabs;
-    if (!tabToRestore) {
-      return;
-    }
-    setClosedTabs(remainingTabs);
-    setOpenTabs((tabs) => {
-      if (tabs.some((tab) => tab.id === tabToRestore.id)) {
-        return tabs;
-      }
-      return [...tabs, tabToRestore];
-    });
-    setActiveTabId(tabToRestore.id);
-    setWorkspaceContextMenu(null);
-  };
-
   const isTabDirty = (tab: WorkspaceTab): boolean =>
     Boolean(documentStates[tab.id]?.dirty ?? tab.dirty);
-
-  const applyWorkspaceTabsForProject = (nextProject: ProjectState) => {
-    const nextProjectId = nextProject.id;
-    const layout = readWorkspaceLayout(nextProjectId);
-    if (layout.projectId === nextProjectId) {
-      const savedDock = readWorkspacePersistence(window.localStorage, nextProjectId).dock;
-      if (savedDock) dock.setLayout(savedDock);
-      setActiveActivityView(layout.activeActivityView ?? 'explorer');
-    }
-    const datasets = { [nextProject.dataset.id]: nextProject.dataset };
-    const restoredTabs = getRestorableWorkspaceTabs(layout, nextProjectId).filter((tab) => {
-      if (tab.kind === 'tool') {
-        return true;
-      }
-      if (tab.kind === 'dataset') {
-        return Boolean(datasets[tab.datasetId]);
-      }
-      if (tab.kind === 'dataset-tool') {
-        return Boolean(datasets[tab.datasetId]);
-      }
-      return tab.kind === 'window' && tab.window === 'dataset';
-    });
-
-    const currentToolTabs = openTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool').map(tab => ({
-      ...tab,
-      scope: tab.scope?.review ? { review: tab.scope.review } : undefined,
-      nested: undefined,
-      dirty: false,
-    }));
-    const restoredToolTabs = restoredTabs.filter((tab): tab is ToolWorkspaceTab => tab.kind === 'tool');
-    const nextTabs = dedupeWorkspaceTabs([
-      ...(restoredToolTabs.length > 0 ? restoredToolTabs : currentToolTabs),
-      ...restoredTabs.filter((tab) => tab.kind !== 'tool'),
-    ]);
-    setOpenTabs(nextTabs);
-
-    const restoredActiveTab = nextTabs.find((tab) => tab.id === layout.activeTabId);
-    if (restoredActiveTab) {
-      setActiveTabId(restoredActiveTab.id);
-      return;
-    }
-
-    setActiveTabId((current) => {
-      if (current && nextTabs.some((tab) => tab.id === current)) {
-        return current;
-      }
-      return nextTabs[0]?.id ?? null;
-    });
-  };
-
-  const confirmClosingTabs = async (tabs: WorkspaceTab[]): Promise<boolean> => {
-    if (hasBusyVideoTabs(tabs.map((tab) => tab.id)) && !window.confirm('Cancel the running video operation and close its tab? Already saved frames will remain in the project.')) return false;
-    let checked: string[];
-    try { checked = await checkDirtyDocuments(tabs.map(tab => tab.id)); }
-    catch (error) { addNotification('error', error instanceof Error ? error.message : 'Could not verify unsaved changes'); return false; }
-    const registered = useDocumentStateStore.getState().documents;
-    const dirtyCount = tabs.filter(tab => checked.includes(tab.id) || (!registered[tab.id] && tab.dirty)).length;
-    if (dirtyCount === 0) {
-      return true;
-    }
-    return window.confirm(
-      `Close ${dirtyCount === 1 ? '1 tab' : `${dirtyCount} tabs`} with unsaved changes?`
-    );
-  };
-
-  useEffect(() => {
-    const persist = () => {
-      try {
-        const persistableActiveTab = openTabs.find((tab) => tab.id === activeTabId);
-        const persistedActiveTab = persistableActiveTab ? persistWorkspaceTab(persistableActiveTab) : null;
-        const persistedOpenTabs = openTabs
-          .map(persistWorkspaceTab)
-          .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab));
-        const nextOpenTabs = projectDirectoryHandle
-          ? persistedOpenTabs
-          : [
-              ...persistedOpenTabs.filter((tab) => tab.kind === 'tool'),
-              ...(storedWorkspaceLayout.openTabs ?? []).filter((tab) => tab.kind !== 'tool'),
-            ];
-        writeWorkspacePersistence(
-          window.localStorage,
-          {
-            openTabs: nextOpenTabs,
-            activeTabId: persistedActiveTab
-              ? persistableActiveTab?.id ?? null
-              : projectDirectoryHandle
-                ? null
-                : storedWorkspaceLayout.activeTabId ?? null,
-            projectId: projectDirectoryHandle ? projectId : storedWorkspaceLayout.projectId ?? null,
-            activeActivityView,
-          } satisfies Partial<WorkspaceLayout>,
-          dock.layout,
-          projectDirectoryHandle ? projectId : undefined
-        );
-      } catch {
-        // Workspace layout is a convenience; private browsing can disable localStorage.
-      }
-    };
-    persistWorkspaceRef.current = persist;
-    const timer = window.setTimeout(persist, 120);
-    window.addEventListener('pagehide', persist);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener('pagehide', persist);
-    };
-  }, [
-    activeActivityView,
-    activeTabId,
-    openTabs,
-    projectDirectoryHandle,
-    projectId,
-    dock.layout,
-  ]);
 
   useEffect(() => {
     let canceled = false;
