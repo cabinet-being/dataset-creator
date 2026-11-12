@@ -1,3 +1,6 @@
+import { createWorkspaceTabFromPersisted, isDatasetToolName, type PersistedWorkspaceTab, type WorkspaceTab } from './workspaceTabs';
+import type { ToolSelectionScope } from './workspaceToolScope';
+import { isToolName } from './constants';
 import { DATASET_VIEW, DOCK_STORAGE_KEY, normalizeDatasetDockLayout, parseDockLayout, type DockLayout } from './workspaceLayout';
 
 export const WORKSPACE_STORAGE_KEY = 'dataset-creator-workspace-v2';
@@ -82,3 +85,185 @@ export function writeWorkspacePersistence(storage: StorageWriter, workspace: obj
   }
   storage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify({version:2, workspace, dock, projects}));
 }
+
+export type FloatingPanelState = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  minimized: boolean;
+};
+
+export type WorkspaceLayout = {
+  openTabs: PersistedWorkspaceTab[];
+  projectId?: string | null;
+  activeTabId?: string | null;
+  leftPanelOpen: boolean;
+  rightPanelOpen: boolean;
+  bottomPanelOpen: boolean;
+  leftPanelWidth: number;
+  rightPanelWidth: number;
+  bottomPanelHeight: number;
+  projectWindow: FloatingPanelState;
+  datasetWindow: FloatingPanelState;
+  inspectorWindow: FloatingPanelState;
+  outputWindow: FloatingPanelState;
+  projectWindowOpen: boolean;
+  datasetWindowOpen: boolean;
+  inspectorWindowOpen: boolean;
+  outputWindowOpen: boolean;
+  activeActivityView: 'explorer' | 'versions';
+};
+
+export const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+export const getRestorableWorkspaceTabs = (
+  layout: Partial<WorkspaceLayout>,
+  projectId?: string | null
+): WorkspaceTab[] => {
+  const restoreProjectTabs = Boolean(projectId && layout.projectId === projectId);
+  return (layout.openTabs ?? [])
+    .filter((tab) => tab.kind === 'tool' || tab.kind === 'window' || restoreProjectTabs)
+    .map(createWorkspaceTabFromPersisted);
+};
+
+export const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout> => {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const parsed = readWorkspacePersistence(window.localStorage, projectId).workspace;
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    const value = parsed as Record<string, unknown>;
+    const openTabs = Array.isArray(value.openTabs)
+      ? value.openTabs
+          .map((tab): PersistedWorkspaceTab | null => {
+            if (typeof tab === 'string' && isToolName(tab)) {
+              return { kind: 'tool', tool: tab };
+            }
+            if (!tab || typeof tab !== 'object') {
+              return null;
+            }
+            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; window?: unknown; pinned?: unknown; id?: unknown; scope?: unknown } & Record<string, unknown>;
+            const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
+            const legacyTool = entry[`sta${'ge'}`];
+            const entryTool = typeof entry.tool === 'string' ? entry.tool : legacyTool;
+            if (entry.kind === 'tool' && typeof entryTool === 'string' && isToolName(entryTool)) {
+              let scope: Pick<ToolSelectionScope, 'review'> | undefined;
+              if (entryTool === 'review' && entry.scope && typeof entry.scope === 'object') {
+                const review = (entry.scope as {review?:unknown}).review;
+                if (review && typeof review === 'object') {
+                  const value = review as {kind?:unknown;path?:unknown;paths?:unknown;label?:unknown};
+                  if (value.kind === 'directory' && typeof value.path === 'string' && typeof value.label === 'string') {
+                    scope = {review:{kind:'directory',path:value.path,label:value.label}};
+                  } else if (value.kind === 'selection' && Array.isArray(value.paths) && value.paths.every((path) => typeof path === 'string') && typeof value.label === 'string') {
+                    scope = {review:{kind:'selection',paths:value.paths as string[],label:value.label}};
+                  }
+                }
+              }
+              return { kind:'tool', tool:entryTool, pinned, scope, id:typeof entry.id === 'string' ? entry.id : undefined };
+            }
+            if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
+              return { kind: 'dataset', datasetId: entry.datasetId, pinned };
+            }
+            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolName(entryTool)) {
+              return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: entryTool, pinned };
+            }
+            if (entry.kind === 'window' && (entry.window === 'inspector' || entry.window === 'output' || entry.window === 'project' || entry.window === 'dataset')) {
+              return { kind: 'window', window: entry.window, pinned };
+            }
+            return null;
+          })
+          .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab))
+      : undefined;
+    const readPanel = (panel: unknown, fallback: FloatingPanelState): FloatingPanelState => {
+      if (!panel || typeof panel !== 'object') {
+        return fallback;
+      }
+      const value = panel as Record<string, unknown>;
+      return {
+        x: isFiniteNumber(value.x) ? value.x : fallback.x,
+        y: isFiniteNumber(value.y) ? value.y : fallback.y,
+        width: isFiniteNumber(value.width) ? value.width : fallback.width,
+        height: isFiniteNumber(value.height) ? value.height : fallback.height,
+        minimized: typeof value.minimized === 'boolean' ? value.minimized : fallback.minimized,
+      };
+    };
+
+    return {
+      openTabs: openTabs
+        ? openTabs.filter(
+            (tab, index, tabs) =>
+              tabs.findIndex((entry) => {
+                if (entry.kind !== tab.kind) {
+                  return false;
+                }
+                if (entry.kind === 'tool' && tab.kind === 'tool') {
+                  return entry.tool === tab.tool;
+                }
+                if (entry.kind === 'dataset' && tab.kind === 'dataset') {
+                  return entry.datasetId === tab.datasetId;
+                }
+                if (entry.kind === 'window' && tab.kind === 'window') {
+                  return entry.window === tab.window;
+                }
+                return (
+                  entry.kind === 'dataset-tool' &&
+                  tab.kind === 'dataset-tool' &&
+                  entry.datasetId === tab.datasetId &&
+                  entry.tool === tab.tool
+                );
+              }) === index
+          )
+        : undefined,
+      projectId: typeof value.projectId === 'string' ? value.projectId : null,
+      activeTabId: typeof value.activeTabId === 'string' ? value.activeTabId : null,
+      leftPanelOpen: typeof value.leftPanelOpen === 'boolean' ? value.leftPanelOpen : undefined,
+      rightPanelOpen: typeof value.rightPanelOpen === 'boolean' ? value.rightPanelOpen : undefined,
+      bottomPanelOpen: typeof value.bottomPanelOpen === 'boolean' ? value.bottomPanelOpen : undefined,
+      leftPanelWidth: isFiniteNumber(value.leftPanelWidth) ? value.leftPanelWidth : undefined,
+      rightPanelWidth: isFiniteNumber(value.rightPanelWidth) ? value.rightPanelWidth : undefined,
+      bottomPanelHeight: isFiniteNumber(value.bottomPanelHeight) ? value.bottomPanelHeight : undefined,
+      projectWindow: readPanel(value.projectWindow, {
+        x: 92,
+        y: 112,
+        width: 300,
+        height: 360,
+        minimized: false,
+      }),
+      datasetWindow: readPanel(value.datasetWindow, {
+        x: 150,
+        y: 132,
+        width: 320,
+        height: 380,
+        minimized: false,
+      }),
+      inspectorWindow: readPanel(value.inspectorWindow, {
+        x: 420,
+        y: 144,
+        width: 300,
+        height: 330,
+        minimized: false,
+      }),
+      outputWindow: readPanel(value.outputWindow, {
+        x: 320,
+        y: 420,
+        width: 620,
+        height: 260,
+        minimized: false,
+      }),
+      projectWindowOpen: typeof value.projectWindowOpen === 'boolean' ? value.projectWindowOpen : undefined,
+      datasetWindowOpen: typeof value.datasetWindowOpen === 'boolean' ? value.datasetWindowOpen : undefined,
+      inspectorWindowOpen: typeof value.inspectorWindowOpen === 'boolean' ? value.inspectorWindowOpen : undefined,
+      outputWindowOpen: typeof value.outputWindowOpen === 'boolean' ? value.outputWindowOpen : undefined,
+      activeActivityView: value.activeActivityView === 'versions' ? 'versions' : 'explorer',
+    };
+  } catch {
+    return {};
+  }
+};

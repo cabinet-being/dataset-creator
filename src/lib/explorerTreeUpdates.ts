@@ -1,5 +1,6 @@
 import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
 import type { ExplorerPathChange } from '../services/project/explorerFileService';
+import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 
 export type ExplorerChanges = { moves: ExplorerPathChange[]; paths: string[] };
 export const emptyExplorerChanges = (): ExplorerChanges => ({ moves: [], paths: [] });
@@ -46,4 +47,37 @@ export const moveExplorerTreeNodes = (tree: ExplorerTreeNode, moves: ExplorerPat
     next = replaceExplorerTreeNode(replaceExplorerTreeNode(next, from), to, relocate(node));
   }
   return next;
+};
+
+export const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
+  [...nodes].sort((a, b) => {
+    if (a.kind !== b.kind) {
+      const order = { folder: 0, dataset: 1, file: 2 };
+      return order[a.kind] - order[b.kind];
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+export const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
+  name: projectName || 'Project',
+  path: 'Project',
+  kind: 'folder',
+  children: [],
+});
+
+export const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTreeNode | null => {
+  if (!node) {
+    return null;
+  }
+
+  if (node.path !== 'Project' && isLegacyProjectRootPath(node.path)) {
+    return null;
+  }
+
+  return {
+    ...node,
+    children: node.children
+      ?.map((child) => sanitizeExplorerTree(child))
+      .filter((child): child is ExplorerTreeNode => Boolean(child)),
+  };
 };

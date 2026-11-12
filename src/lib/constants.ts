@@ -1,3 +1,4 @@
+import type { ToolName } from '../types';
 import { TOOL_DEFINITIONS, type ToolDefinition } from './toolDefinitions';
 // Tools in recommended image preparation order.
 export const WORKFLOW_TOOLS = [
@@ -85,3 +86,25 @@ export const WORKER_TIMEOUT = 30000; // 30s worker timeout
 export const SIMILARITY_HIGH_THRESHOLD = 0.85;
 export const SIMILARITY_MEDIUM_THRESHOLD = 0.65;
 export const SIMILARITY_LOW_THRESHOLD = 0.45;
+
+export const isToolName = (value: string | null): value is ToolName =>
+  Boolean(value && (TOOLS as readonly string[]).includes(value));
+
+export const getToolFromUrlSlug = (value: string | null): ToolName | null => {
+  if (!value) {
+    return null;
+  }
+
+  return (URL_TOOL_ALIASES[value] ?? null) as ToolName | null;
+};
+
+export const getUrlSlugForTool = (tool: ToolName): string => TOOL_URL_SLUGS[tool] ?? tool;
+
+export const readToolFromUrl = (): ToolName | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const tool = new URL(window.location.href).searchParams.get('tool');
+  return getToolFromUrlSlug(tool) ?? (isToolName(tool) ? tool : null);
+};

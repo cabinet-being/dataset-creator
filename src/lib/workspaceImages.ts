@@ -27,7 +27,7 @@ export const normalizeWorkspaceAssetPath = (path: string): string =>
 export const createWorkspaceFileAssetId = (path: string): string =>
   `asset:${normalizeWorkspaceAssetPath(path)}`;
 
-const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
+export const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
   const extension = fileName.split('.').pop()?.toLowerCase();
   if (extension && extension !== fileName.toLowerCase()) {
     return extension.replace(/[^a-z0-9]/g, '') || 'bin';
@@ -35,6 +35,9 @@ const getProjectDataFileExtension = (fileName: string, mimeType: string): string
 
   return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
 };
+
+export const toProjectRelativePath = (path: string): string =>
+  path === 'Project' ? '' : path.replace(/^Project\//, '');
 
 export type WorkspaceImage = {
   id: string;

@@ -1,7 +1,24 @@
 import { WorkspaceWelcome } from './components/workspace/WorkspaceWelcome';
 import { WorkspaceTool, type AnalysisScopeTarget, type AssetContextMenuHandler, type DatasetToolName } from './components/workspace/WorkspaceTool';
 import { getToolViewContext, setToolViewScope, moveToolViewScope, pruneToolViewScope, type ToolSelectionScope } from './lib/workspaceToolScope';
-import { readWorkspacePersistence, writeWorkspacePersistence } from './lib/workspacePersistence';
+import { readWorkspacePersistence, writeWorkspacePersistence, getRestorableWorkspaceTabs, readWorkspaceLayout, type WorkspaceLayout } from './lib/workspacePersistence';
+import {
+  createDatasetToolTabId,
+  createFileTabId,
+  createToolTab,
+  dedupeWorkspaceTabs,
+  getInspectorContext,
+  isDatasetToolTab,
+  orderWorkspaceTabs,
+  persistWorkspaceTab,
+  type DatasetToolWorkspaceTab,
+  type PersistedWorkspaceTab,
+  type ToolNestedView,
+  type ToolWorkspaceTab,
+  type WindowWorkspaceTab,
+  type WorkspaceTab,
+} from './lib/workspaceTabs';
+import { orderDatasetBoardItems } from './lib/datasetBoard';
 import { ExplorerPanel } from './components/workspace/ExplorerPanel';
 import { ExplorerTree, getExplorerIcon, type ExplorerTreeNode } from './components/workspace/ExplorerTree';
 import { checkDirtyDocuments, useDocumentStateStore } from './stores/useDocumentStateStore';
@@ -55,18 +72,20 @@ import { useUIStore } from './stores/useUIStore';
 import {
   TOOLS,
   TOOL_LABELS,
-  TOOL_URL_SLUGS,
-  URL_TOOL_ALIASES,
+  getUrlSlugForTool,
+  readToolFromUrl,
 } from './lib/constants';
 import {
   createWorkspaceFileAssetId,
+  getProjectDataFileExtension,
+  toProjectRelativePath,
   toWorkspaceImages,
   toWorkspaceReviewAssets,
   type WorkspaceFileAsset,
   type WorkspaceImage,
 } from './lib/workspaceImages';
 import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews, invalidateWorkspaceFileAssetCache, updateWorkspaceFileAssetCache } from './lib/workspaceFileAssets';
-import { emptyExplorerChanges, findExplorerTreeNode, moveExplorerTreeNodes, replaceExplorerTreeNode, type ExplorerChanges } from './lib/explorerTreeUpdates';
+import { buildEmptyExplorerTree, sanitizeExplorerTree, emptyExplorerChanges, findExplorerTreeNode, moveExplorerTreeNodes, replaceExplorerTreeNode, type ExplorerChanges } from './lib/explorerTreeUpdates';
 import { clearLegacyExclusionAtPath } from './services/project/legacyDatasetExclusionService';
 import {
   createProjectDirectory,
@@ -77,19 +96,15 @@ import {
   writeProjectPreview,
   type ProjectDirectoryHandle,
 } from './services/project/projectDirectoryService';
-import { isHiddenExplorerManifestName } from './services/project/assetManifestService';
 import { getImportFilesFromDataTransfer, importImageFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from './services/import/importService';
 import { type LocalTaggerFileKey } from './services/tagging/localTaggerFileSettings';
 import { restoreSavedLocalTagger, saveAndConnectLocalTaggerFile } from './services/tagging/localTaggerConnectionService';
 import { createOperationLogger } from './services/logging/applicationLog';
 import { applyBuildSessionPathMoves } from './services/build/buildSessionService';
 import { indexProjectAssets } from './services/project/assetIndexService';
-import { isSupportedProjectAsset } from './services/project/assetTypeService';
 import {
   isLegacyProjectRootPath,
-  LEGACY_PROJECT_ROOT_DIRECTORY_NAMES,
 } from './services/project/projectPathFilters';
-import { isLegacyDatasetFileName } from './services/project/legacyDatasetFileService';
 import { InternalFileViewer } from './components/InternalFileViewer';
 import { ContextActionGroups, type ContextAction, type ContextActionGroup } from './components/ui/ContextActions';
 import { InspectorSection } from './components/ui/InspectorSection';
@@ -98,9 +113,6 @@ import {
   applyExplorerPathMoves,
   applyProjectRelativePathMoves,
   applyFileAssetOrderPathMoves,
-  createDatasetFileAssetKey,
-  createDatasetImageAssetKey,
-  normalizeDatasetAssetOrder,
   type ExplorerPathMove,
 } from './lib/datasetAssets';
 import { PhotopeaPsdPreviewWorker } from './components/photopea/PhotopeaFrame';
@@ -116,6 +128,7 @@ import {
   getUniqueExplorerName,
   isExplorerImageFileName,
   moveExplorerEntries,
+  readExplorerDirectory,
   readExplorerFile,
   renameExplorerEntry,
   ExplorerBatchError,
@@ -125,9 +138,7 @@ import {
 import { createProject, type ProjectState, type Dataset, type ToolName } from './types';
 import { createProjectVersion, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from './services/project/projectVersionService';
 import {
-  DATASET_MANIFEST_FILE,
   PROJECT_DATASET_DIRECTORY,
-  PROJECT_GIT_DIRECTORY,
   PROJECT_SHARED_DIRECTORY,
 } from './services/project/projectLayoutService';
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
@@ -165,408 +176,7 @@ type FileInspectorMetadata = {
   tags?: string[];
 };
 
-type InspectorContext = 'empty' | 'tool' | 'dataset' | 'file' | 'review' | 'analysis' | 'caption' | 'photopea';
-
-
-type WorkspaceTabState = {
-  pinned?: boolean;
-  dirty?: boolean;
-};
-
-type ToolWorkspaceTab = {
-  id: string;
-  kind: 'tool';
-  tool: ToolName;
-  scope?: ToolSelectionScope;
-  nested?: ToolNestedView;
-} & WorkspaceTabState;
-
-const getDatasetBoardAssetKey = (item: WorkspaceImage): string =>
-  item.kind === 'image'
-    ? createDatasetImageAssetKey(item.sourceImageId)
-    : createDatasetFileAssetKey(item.assetPath ?? item.id);
-
-const orderDatasetBoardItems = (
-  items: WorkspaceImage[],
-  assetOrder: string[] | undefined,
-  assetIds: string[] = []
-): WorkspaceImage[] => {
-  const itemByKey = new Map(items.map((item) => [getDatasetBoardAssetKey(item), item]));
-  const assetPaths = items.map((item) => item.assetPath).filter((path): path is string => Boolean(path));
-  const orderedKeys = normalizeDatasetAssetOrder(assetOrder, assetIds, assetPaths);
-  const seenKeys = new Set<string>();
-  const orderedItems = orderedKeys
-    .map((key) => itemByKey.get(key))
-    .filter((item): item is WorkspaceImage => Boolean(item))
-    .filter((item) => {
-      const key = getDatasetBoardAssetKey(item);
-      if (seenKeys.has(key)) {
-        return false;
-      }
-      seenKeys.add(key);
-      return true;
-    });
-  return [...orderedItems, ...items.filter((item) => !seenKeys.has(getDatasetBoardAssetKey(item)))];
-};
-
-type ToolNestedView = {
-  kind: 'file';
-  itemId: string;
-};
-
 const DATASET_TOOL_LABELS = { ...TOOL_LABELS, select: 'Add files', analysis: TOOL_LABELS.analysis, review: TOOL_LABELS.review, tagging: TOOL_LABELS.tagging };
-
-type DatasetToolWorkspaceTab = {
-  id: string;
-  kind: 'dataset-tool';
-  datasetId: string;
-  tool: DatasetToolName;
-  nested?: ToolNestedView;
-} & WorkspaceTabState;
-
-type DatasetWorkspaceTab = {
-  id: string;
-  kind: 'dataset';
-  datasetId: string;
-} & WorkspaceTabState;
-
-type WorkspaceWindowId = 'inspector' | 'output' | 'project' | 'dataset';
-type WindowWorkspaceTab = {
-  id: `window:${WorkspaceWindowId}`;
-  kind: 'window';
-  window: WorkspaceWindowId;
-} & WorkspaceTabState;
-
-type WorkspaceTab = ToolWorkspaceTab | DatasetToolWorkspaceTab | FileWorkspaceTab | DatasetWorkspaceTab | WindowWorkspaceTab;
-
-type PersistedWorkspaceTab =
-  | {
-      kind: 'tool';
-      tool: ToolName;
-      pinned?: boolean;
-      id?: string;
-      scope?: Pick<ToolSelectionScope, 'review'>;
-    }
-  | {
-      kind: 'dataset';
-      datasetId: string;
-      pinned?: boolean;
-    }
-  | {
-      kind: 'dataset-tool';
-      datasetId: string;
-      tool: DatasetToolName;
-      pinned?: boolean;
-    }
-  | {
-      kind: 'window';
-      window: WindowWorkspaceTab['window'];
-      pinned?: boolean;
-    };
-
-const createToolTab = (tool: ToolName, scope?: ToolSelectionScope): ToolWorkspaceTab => ({
-  id: scope?.review
-    ? `tool:review:${encodeURIComponent(scope.review.kind === 'directory' ? scope.review.path : scope.review.paths.join('|'))}`
-    : `tool:${tool}`,
-  kind: 'tool',
-  tool,
-  scope,
-});
-
-const createFileTabId = (): string => `file:${crypto.randomUUID()}`;
-const createDatasetToolTabId = (datasetId: string, tool: DatasetToolName): string => `dataset:${datasetId}:${tool}`;
-
-const isDatasetToolName = (tool: unknown): tool is DatasetToolName =>
-  tool === 'select' || tool === 'analysis' || tool === 'review' || tool === 'tagging';
-
-const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceTab => {
-  if (tab.kind === 'tool') {
-    return { ...createToolTab(tab.tool, tab.scope), id: tab.id ?? createToolTab(tab.tool, tab.scope).id, pinned: tab.pinned };
-  }
-  if (tab.kind === 'dataset') {
-    return { id: DATASET_VIEW, kind: 'window', window: 'dataset', pinned: tab.pinned };
-  }
-  if (tab.kind === 'window') {
-    const workspaceTab: WindowWorkspaceTab = {
-      id: `window:${tab.window}`,
-      kind: 'window',
-      window: tab.window,
-      pinned: tab.pinned,
-    };
-    return workspaceTab;
-  }
-  return {
-    id: createDatasetToolTabId(tab.datasetId, tab.tool),
-    kind: 'dataset-tool',
-    datasetId: tab.datasetId,
-    tool: tab.tool,
-    pinned: tab.pinned,
-  };
-};
-
-const persistWorkspaceTab = (tab: WorkspaceTab): PersistedWorkspaceTab | null => {
-  if (tab.kind === 'tool') {
-    return { kind: 'tool', tool: tab.tool, id: tab.id, scope: tab.scope?.review ? { review: tab.scope.review } : undefined, pinned: tab.pinned };
-  }
-  if (tab.kind === 'dataset') return { kind: 'window', window: 'dataset', pinned: tab.pinned };
-  if (tab.kind === 'dataset-tool') {
-    return { kind: 'dataset-tool', datasetId: tab.datasetId, tool: tab.tool, pinned: tab.pinned };
-  }
-  if (tab.kind === 'window') {
-    return { kind: 'window', window: tab.window, pinned: tab.pinned };
-  }
-  return null;
-};
-
-const dedupeWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => {
-  const seenIds = new Set<string>();
-  return tabs.filter((tab) => {
-    if (seenIds.has(tab.id)) {
-      return false;
-    }
-    seenIds.add(tab.id);
-    return true;
-  });
-};
-
-const orderWorkspaceTabs = (tabs: WorkspaceTab[]): WorkspaceTab[] => [
-  ...tabs.filter((tab) => tab.pinned),
-  ...tabs.filter((tab) => !tab.pinned),
-];
-
-const isDatasetToolTab = (tab: WorkspaceTab): tab is DatasetToolWorkspaceTab => tab.kind === 'dataset-tool';
-const getInspectorContext = (tab: WorkspaceTab | null, activeTool: ToolName | null): InspectorContext => {
-  if (!tab) {
-    return 'empty';
-  }
-
-  if (tab.kind === 'dataset' || (tab.kind === 'window' && tab.window === 'dataset')) {
-    return 'dataset';
-  }
-
-  if (tab.kind === 'file-caption' || activeTool === 'tagging') {
-    return 'caption';
-  }
-
-  if (tab.kind === 'file-analysis') {
-    return 'analysis';
-  }
-
-  if (tab.kind === 'file-edit' || (tab.kind === 'file-view' && tab.fileKind === 'psd')) {
-    return 'photopea';
-  }
-
-  if (tab.kind === 'file-view' || tab.kind === 'file-video') {
-    return 'file';
-  }
-
-  if ((tab.kind === 'tool' && tab.tool === 'review') || (tab.kind === 'dataset-tool' && (tab.tool === 'select' || tab.tool === 'review'))) {
-    return 'review';
-  }
-
-  if ((tab.kind === 'tool' && tab.tool === 'analysis') || (tab.kind === 'dataset-tool' && tab.tool === 'analysis')) {
-    return 'analysis';
-  }
-
-  return activeTool ? 'tool' : 'empty';
-};
-
-type WorkspaceLayout = {
-  openTabs: PersistedWorkspaceTab[];
-  projectId?: string | null;
-  activeTabId?: string | null;
-  leftPanelOpen: boolean;
-  rightPanelOpen: boolean;
-  bottomPanelOpen: boolean;
-  leftPanelWidth: number;
-  rightPanelWidth: number;
-  bottomPanelHeight: number;
-  projectWindow: FloatingPanelState;
-  datasetWindow: FloatingPanelState;
-  inspectorWindow: FloatingPanelState;
-  outputWindow: FloatingPanelState;
-  projectWindowOpen: boolean;
-  datasetWindowOpen: boolean;
-  inspectorWindowOpen: boolean;
-  outputWindowOpen: boolean;
-  activeActivityView: 'explorer' | 'versions';
-};
-
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value);
-
-const getRestorableWorkspaceTabs = (
-  layout: Partial<WorkspaceLayout>,
-  projectId?: string | null
-): WorkspaceTab[] => {
-  const restoreProjectTabs = Boolean(projectId && layout.projectId === projectId);
-  return (layout.openTabs ?? [])
-    .filter((tab) => tab.kind === 'tool' || tab.kind === 'window' || restoreProjectTabs)
-    .map(createWorkspaceTabFromPersisted);
-};
-
-const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout> => {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const parsed = readWorkspacePersistence(window.localStorage, projectId).workspace;
-    if (!parsed || typeof parsed !== 'object') {
-      return {};
-    }
-
-    const value = parsed as Record<string, unknown>;
-    const openTabs = Array.isArray(value.openTabs)
-      ? value.openTabs
-          .map((tab): PersistedWorkspaceTab | null => {
-            if (typeof tab === 'string' && isToolName(tab)) {
-              return { kind: 'tool', tool: tab };
-            }
-            if (!tab || typeof tab !== 'object') {
-              return null;
-            }
-            const entry = tab as { kind?: unknown; tool?: unknown; datasetId?: unknown; window?: unknown; pinned?: unknown; id?: unknown; scope?: unknown } & Record<string, unknown>;
-            const pinned = typeof entry.pinned === 'boolean' ? entry.pinned : undefined;
-            const legacyTool = entry[`sta${'ge'}`];
-            const entryTool = typeof entry.tool === 'string' ? entry.tool : legacyTool;
-            if (entry.kind === 'tool' && typeof entryTool === 'string' && isToolName(entryTool)) {
-              let scope: Pick<ToolSelectionScope, 'review'> | undefined;
-              if (entryTool === 'review' && entry.scope && typeof entry.scope === 'object') {
-                const review = (entry.scope as {review?:unknown}).review;
-                if (review && typeof review === 'object') {
-                  const value = review as {kind?:unknown;path?:unknown;paths?:unknown;label?:unknown};
-                  if (value.kind === 'directory' && typeof value.path === 'string' && typeof value.label === 'string') {
-                    scope = {review:{kind:'directory',path:value.path,label:value.label}};
-                  } else if (value.kind === 'selection' && Array.isArray(value.paths) && value.paths.every((path) => typeof path === 'string') && typeof value.label === 'string') {
-                    scope = {review:{kind:'selection',paths:value.paths as string[],label:value.label}};
-                  }
-                }
-              }
-              return { kind:'tool', tool:entryTool, pinned, scope, id:typeof entry.id === 'string' ? entry.id : undefined };
-            }
-            if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
-              return { kind: 'dataset', datasetId: entry.datasetId, pinned };
-            }
-            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolName(entryTool)) {
-              return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: entryTool, pinned };
-            }
-            if (entry.kind === 'window' && (entry.window === 'inspector' || entry.window === 'output' || entry.window === 'project' || entry.window === 'dataset')) {
-              return { kind: 'window', window: entry.window, pinned };
-            }
-            return null;
-          })
-          .filter((tab): tab is PersistedWorkspaceTab => Boolean(tab))
-      : undefined;
-    const readPanel = (panel: unknown, fallback: FloatingPanelState): FloatingPanelState => {
-      if (!panel || typeof panel !== 'object') {
-        return fallback;
-      }
-      const value = panel as Record<string, unknown>;
-      return {
-        x: isFiniteNumber(value.x) ? value.x : fallback.x,
-        y: isFiniteNumber(value.y) ? value.y : fallback.y,
-        width: isFiniteNumber(value.width) ? value.width : fallback.width,
-        height: isFiniteNumber(value.height) ? value.height : fallback.height,
-        minimized: typeof value.minimized === 'boolean' ? value.minimized : fallback.minimized,
-      };
-    };
-
-    return {
-      openTabs: openTabs
-        ? openTabs.filter(
-            (tab, index, tabs) =>
-              tabs.findIndex((entry) => {
-                if (entry.kind !== tab.kind) {
-                  return false;
-                }
-                if (entry.kind === 'tool' && tab.kind === 'tool') {
-                  return entry.tool === tab.tool;
-                }
-                if (entry.kind === 'dataset' && tab.kind === 'dataset') {
-                  return entry.datasetId === tab.datasetId;
-                }
-                if (entry.kind === 'window' && tab.kind === 'window') {
-                  return entry.window === tab.window;
-                }
-                return (
-                  entry.kind === 'dataset-tool' &&
-                  tab.kind === 'dataset-tool' &&
-                  entry.datasetId === tab.datasetId &&
-                  entry.tool === tab.tool
-                );
-              }) === index
-          )
-        : undefined,
-      projectId: typeof value.projectId === 'string' ? value.projectId : null,
-      activeTabId: typeof value.activeTabId === 'string' ? value.activeTabId : null,
-      leftPanelOpen: typeof value.leftPanelOpen === 'boolean' ? value.leftPanelOpen : undefined,
-      rightPanelOpen: typeof value.rightPanelOpen === 'boolean' ? value.rightPanelOpen : undefined,
-      bottomPanelOpen: typeof value.bottomPanelOpen === 'boolean' ? value.bottomPanelOpen : undefined,
-      leftPanelWidth: isFiniteNumber(value.leftPanelWidth) ? value.leftPanelWidth : undefined,
-      rightPanelWidth: isFiniteNumber(value.rightPanelWidth) ? value.rightPanelWidth : undefined,
-      bottomPanelHeight: isFiniteNumber(value.bottomPanelHeight) ? value.bottomPanelHeight : undefined,
-      projectWindow: readPanel(value.projectWindow, {
-        x: 92,
-        y: 112,
-        width: 300,
-        height: 360,
-        minimized: false,
-      }),
-      datasetWindow: readPanel(value.datasetWindow, {
-        x: 150,
-        y: 132,
-        width: 320,
-        height: 380,
-        minimized: false,
-      }),
-      inspectorWindow: readPanel(value.inspectorWindow, {
-        x: 420,
-        y: 144,
-        width: 300,
-        height: 330,
-        minimized: false,
-      }),
-      outputWindow: readPanel(value.outputWindow, {
-        x: 320,
-        y: 420,
-        width: 620,
-        height: 260,
-        minimized: false,
-      }),
-      projectWindowOpen: typeof value.projectWindowOpen === 'boolean' ? value.projectWindowOpen : undefined,
-      datasetWindowOpen: typeof value.datasetWindowOpen === 'boolean' ? value.datasetWindowOpen : undefined,
-      inspectorWindowOpen: typeof value.inspectorWindowOpen === 'boolean' ? value.inspectorWindowOpen : undefined,
-      outputWindowOpen: typeof value.outputWindowOpen === 'boolean' ? value.outputWindowOpen : undefined,
-      activeActivityView: value.activeActivityView === 'versions' ? 'versions' : 'explorer',
-    };
-  } catch {
-    return {};
-  }
-};
-
-
-const isToolName = (value: string | null): value is ToolName =>
-  Boolean(value && (TOOLS as readonly string[]).includes(value));
-
-const getToolFromUrlSlug = (value: string | null): ToolName | null => {
-  if (!value) {
-    return null;
-  }
-
-  return (URL_TOOL_ALIASES[value] ?? null) as ToolName | null;
-};
-
-const getUrlSlugForTool = (tool: ToolName): string => TOOL_URL_SLUGS[tool] ?? tool;
-
-const readToolFromUrl = (): ToolName | null => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const tool = new URL(window.location.href).searchParams.get('tool');
-  return getToolFromUrlSlug(tool) ?? (isToolName(tool) ? tool : null);
-};
 
 const TOOLS_MENU_ITEMS = TOOLS;
 
@@ -586,14 +196,6 @@ const getAspectRatioLabel = (width: number, height: number): string => {
   return `${Math.round(width / value)}:${Math.round(height / value)}`;
 };
 
-type FloatingPanelState = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  minimized: boolean;
-};
-
 type ExplorerItemEntry = {
   path: string;
   name: string;
@@ -610,78 +212,6 @@ type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file'
 
 const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is FilesystemExplorerItemEntry =>
   entry.kind === 'folder' || entry.kind === 'file';
-
-const sortExplorerNodes = (nodes: ExplorerTreeNode[]): ExplorerTreeNode[] =>
-  [...nodes].sort((a, b) => {
-    if (a.kind !== b.kind) {
-      const order = { folder: 0, dataset: 1, file: 2 };
-      return order[a.kind] - order[b.kind];
-    }
-    return a.name.localeCompare(b.name);
-  });
-
-const readExplorerDirectory = async (
-  directory: ProjectDirectoryHandle,
-  name = 'Project',
-  path = 'Project'
-): Promise<ExplorerTreeNode> => {
-  const children: ExplorerTreeNode[] = [];
-
-  for await (const [entryName, entry] of directory.entries()) {
-    if (isHiddenExplorerManifestName(entryName)) {
-      continue;
-    }
-    if (
-      entryName === '.cache' ||
-      entryName === '.dataset-creator-data' ||
-      entryName === PROJECT_GIT_DIRECTORY ||
-      isLegacyDatasetFileName(entryName) ||
-      (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
-    ) {
-      continue;
-    }
-    if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
-      continue;
-    }
-    const childPath = `${path}/${entryName}`;
-    if ('entries' in entry) {
-      children.push(await readExplorerDirectory(entry, entryName, childPath));
-    } else if (isSupportedProjectAsset(entryName)) {
-      children.push({ name: entryName, path: childPath, kind: 'file' });
-    }
-  }
-
-  return {
-    name,
-    path,
-    kind: 'folder',
-    children: sortExplorerNodes(children),
-  };
-};
-
-const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode => ({
-  name: projectName || 'Project',
-  path: 'Project',
-  kind: 'folder',
-  children: [],
-});
-
-const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTreeNode | null => {
-  if (!node) {
-    return null;
-  }
-
-  if (node.path !== 'Project' && isLegacyProjectRootPath(node.path)) {
-    return null;
-  }
-
-  return {
-    ...node,
-    children: node.children
-      ?.map((child) => sanitizeExplorerTree(child))
-      .filter((child): child is ExplorerTreeNode => Boolean(child)),
-  };
-};
 
 function App() {
   const projectId = useProjectStore((state) => state.id);
@@ -1688,18 +1218,6 @@ function App() {
     setSelectedExplorerPaths(nextSelection);
     setSelectionAnchorPath(node.path);
     setCurrentDraggedExplorerEntries(getExplorerEntriesForPaths(nextSelection));
-  };
-
-  const toProjectRelativePath = (path: string): string =>
-    path === 'Project' ? '' : path.replace(/^Project\//, '');
-
-  const getProjectDataFileExtension = (fileName: string, mimeType: string): string => {
-    const extension = fileName.split('.').pop()?.toLowerCase();
-    if (extension && extension !== fileName.toLowerCase()) {
-      return extension.replace(/[^a-z0-9]/g, '') || 'bin';
-    }
-
-    return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
   };
 
   const findWorkspaceImageIdForPath = (path: string): string | null => {

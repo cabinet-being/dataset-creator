@@ -1,7 +1,12 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
-import { getAssetManifestName, isAssetManifestName, isProjectManifestName } from './assetManifestService';
-import { resolveProjectAssetKind } from './assetTypeService';
+import { getAssetManifestName, isAssetManifestName, isHiddenExplorerManifestName, isProjectManifestName } from './assetManifestService';
+import { isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
 import { snapshotFile } from './fileSnapshotService';
+import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
+import { sortExplorerNodes } from '../../lib/explorerTreeUpdates';
+import { LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from './projectPathFilters';
+import { isLegacyDatasetFileName } from './legacyDatasetFileService';
+import { DATASET_MANIFEST_FILE, PROJECT_GIT_DIRECTORY } from './projectLayoutService';
 
 export type ExplorerEntryKind = 'folder' | 'file';
 
@@ -645,4 +650,43 @@ export const duplicateExplorerEntries = async (
   sources: ExplorerClipboardEntry[]
 ): Promise<Array<{ from: string; to: string }>> => {
   return runExplorerBatch('Duplicate', sources, source => copyExplorerEntry(root, source, getParentPath(source.path)));
+};
+
+export const readExplorerDirectory = async (
+  directory: ProjectDirectoryHandle,
+  name = 'Project',
+  path = 'Project'
+): Promise<ExplorerTreeNode> => {
+  const children: ExplorerTreeNode[] = [];
+
+  for await (const [entryName, entry] of directory.entries()) {
+    if (isHiddenExplorerManifestName(entryName)) {
+      continue;
+    }
+    if (
+      entryName === '.cache' ||
+      entryName === '.dataset-creator-data' ||
+      entryName === PROJECT_GIT_DIRECTORY ||
+      isLegacyDatasetFileName(entryName) ||
+      (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
+    ) {
+      continue;
+    }
+    if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
+      continue;
+    }
+    const childPath = `${path}/${entryName}`;
+    if ('entries' in entry) {
+      children.push(await readExplorerDirectory(entry, entryName, childPath));
+    } else if (isSupportedProjectAsset(entryName)) {
+      children.push({ name: entryName, path: childPath, kind: 'file' });
+    }
+  }
+
+  return {
+    name,
+    path,
+    kind: 'folder',
+    children: sortExplorerNodes(children),
+  };
 };
