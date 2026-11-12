@@ -14,7 +14,7 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
@@ -27,6 +27,8 @@ try {
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
   const { indexProjectAssets } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
+  const { sortExplorerNodes, sanitizeExplorerTree, buildEmptyExplorerTree } = await import(pathToFileURL(join(temp, 'explorerTreeUpdates.mjs')));
+  const { orderDatasetBoardItems, datasetBoardItems } = await import(pathToFileURL(join(temp, 'datasetBoard.mjs')));
   const { collectWorkspaceFileAssets, updateWorkspaceFileAssetCache } = await import(pathToFileURL(join(temp, 'workspaceFileAssets.mjs')));
   // In-memory File System Access handles exercise the real directory serializer and reader.
   function directory(name = 'test') {
@@ -688,5 +690,45 @@ try {
   const storeSource = await readFile('src/stores/useProjectStore.ts','utf8');
   assert.doesNotMatch(storeSource,/addAssetsToDataset:\s*\(|upsertDataset:\s*\(|removeDataset:\s*\(/,'Runtime Dataset membership API was removed');
   await assert.rejects(access('src/services/project/datasetFileService.ts'),'Dataset file runtime service must stay removed');
+  // Pure helpers extracted from App: current behavior of explorer tree and Dataset board ordering.
+  {
+    const node = (name, kind, extra = {}) => ({ name, path: `Project/${name}`, kind, ...extra });
+    assert.deepEqual(sortExplorerNodes([node('b.png', 'file'), node('z', 'folder'), node('a.png', 'file'), node('d', 'dataset'), node('a', 'folder')]).map((entry) => entry.name),
+      ['a', 'z', 'd', 'a.png', 'b.png'], 'Folders come first, then dataset nodes, then files; names compare with localeCompare');
+    const unsorted = [node('b', 'file'), node('a', 'file')];
+    sortExplorerNodes(unsorted);
+    assert.deepEqual(unsorted.map((entry) => entry.name), ['b', 'a'], 'sortExplorerNodes does not mutate its input');
+    assert.deepEqual(buildEmptyExplorerTree('My'), { name: 'My', path: 'Project', kind: 'folder', children: [] });
+    assert.equal(buildEmptyExplorerTree('').name, 'Project', 'An empty project name falls back to Project');
+    assert.equal(sanitizeExplorerTree(null), null);
+    const tree = { name: 'P', path: 'Project', kind: 'folder', children: [
+      { name: 'sources', path: 'Project/sources', kind: 'folder', children: [] },
+      { name: 'Sources', path: 'sources/x', kind: 'folder' },
+      { name: 'dataset', path: 'Project/dataset', kind: 'folder', children: [{ name: 'a.png', path: 'Project/dataset/a.png', kind: 'file' }] },
+    ] };
+    const clean = sanitizeExplorerTree(tree);
+    assert.deepEqual(clean.children.map((entry) => entry.path), ['Project/dataset'], 'Legacy sources roots are dropped, case-insensitively, with or without the Project prefix');
+    assert.equal(clean.children[0].children[0].name, 'a.png');
+    assert.equal(tree.children.length, 3, 'sanitizeExplorerTree does not mutate its input');
+    assert.equal(sanitizeExplorerTree({ name: 'sources', path: 'Project', kind: 'folder' }).name, 'sources', 'The Project root is kept regardless of name');
+    assert.equal(sanitizeExplorerTree({ name: 'f', path: 'Project/f', kind: 'file' }).children, undefined, 'Nodes without children stay without children');
+
+    const image = (id, extra = {}) => ({ id, sourceImageId: id, kind: 'image', fileName: `${id}.png`, width: 100, height: 100, ...extra });
+    const video = (name, extra = {}) => ({ id: `asset:${name}`, sourceImageId: '', kind: 'video', fileName: name, assetPath: `dataset/${name}`, width: 100, height: 100, ...extra });
+    const items = [image('c'), video('b.mp4'), image('a')];
+    assert.deepEqual(orderDatasetBoardItems(items, ['image:a', 'image:c'], ['a', 'c']).map((entry) => entry.id), ['a', 'c', 'asset:b.mp4'], 'Explicit order wins; items missing from it (video) are appended in input order');
+    assert.deepEqual(orderDatasetBoardItems(items, ['file:dataset/b.mp4', 'image:gone', 'image:c'], ['a', 'c']).map((entry) => entry.id), ['asset:b.mp4', 'c', 'a'], 'Stale keys are ignored and a file key is honored');
+    assert.deepEqual(orderDatasetBoardItems([image('a'), image('a')], ['image:a'], ['a']).map((entry) => entry.id), ['a'], 'Items sharing one key collapse to a single entry');
+    assert.deepEqual(orderDatasetBoardItems([], ['image:a'], ['a']), []);
+    assert.deepEqual(orderDatasetBoardItems(items, undefined, []).map((entry) => entry.id), ['asset:b.mp4', 'c', 'a'], 'Without assetIds only path-backed items are ordered; image items follow in input order');
+
+    const sortable = [image('i10', { fileName: 'img10.png', tags: ['x'], width: 200 }), image('i2', { fileName: 'img2.png', tags: ['x', 'y'], width: 50 }), video('v.mp4', { width: 100 })];
+    const names = (mode) => datasetBoardItems(sortable, {}, mode).map((entry) => entry.id);
+    assert.deepEqual(names('name'), ['i2', 'i10', 'asset:v.mp4'], 'Name sort is numeric');
+    assert.deepEqual(names('type'), ['i2', 'i10', 'asset:v.mp4'], 'Type sort groups image before video');
+    assert.deepEqual(names('captioned'), ['i2', 'i10', 'asset:v.mp4'], 'Most tags first');
+    assert.deepEqual(names('aspect'), ['i2', 'asset:v.mp4', 'i10'], 'Aspect sort is ascending width/height');
+    assert.deepEqual(sortable.map((entry) => entry.id), ['i10', 'i2', 'asset:v.mp4'], 'datasetBoardItems does not mutate its input');
+  }
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }

@@ -7,7 +7,7 @@ import { build } from 'rolldown';
 
 const temporary = await mkdtemp(join(tmpdir(), 'workspace-layout-'));
 try {
-  await build({ input: ['src/lib/workspaceLayout.ts', 'src/lib/workspacePersistence.ts'], platform: 'node', output: { dir: temporary, format: 'esm' } });
+  await build({ input: ['src/lib/workspaceLayout.ts', 'src/lib/workspacePersistence.ts', 'src/lib/workspaceTabs.ts', 'src/lib/constants.ts'], platform: 'node', output: { dir: temporary, format: 'esm' } });
   const layoutApi = await import(pathToFileURL(join(temporary, 'workspaceLayout.js')));
   const { dockGroups, dockHosts, dockViews, findDockGroup, migrateDockLayout, moveDockSource, openDockView, removeDockViews, measureDockLayout, floatDockSource, pinDockHost, resizeDockSplit, parseDockLayout, getDockPreview, getDockSide, EXPLORER_VIEW } = layoutApi;
   const viewIds = (layout) => dockHosts(layout).flatMap((host) => dockViews(host.root));
@@ -239,6 +239,139 @@ try {
   assert.equal(getDockSide(rect, 500, 110), 'top');
   assert.equal(getDockSide(rect, 500, 680), 'bottom');
   assert.equal(getDockSide(rect, 500, 400), 'center');
+
+  // Pure helpers extracted from App: layout reading, tab persistence and URL slugs (current behavior).
+  {
+    const { readWorkspaceLayout, getRestorableWorkspaceTabs } = await import(pathToFileURL(join(temporary, 'workspacePersistence.js')));
+    const tabsApi = await import(pathToFileURL(join(temporary, 'workspaceTabs.js')));
+    const constants = await import(pathToFileURL(join(temporary, 'constants.js')));
+    const store = new Map();
+    const fakeStorage = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => store.set(key, value) };
+    const hadWindow = 'window' in globalThis;
+    const savedWindow = globalThis.window;
+    try {
+      assert.deepEqual(readWorkspaceLayout('p'), {}, 'Without window the layout is empty');
+      globalThis.window = { localStorage: fakeStorage };
+      assert.deepEqual(readWorkspaceLayout('p'), {}, 'A missing key yields an empty layout');
+      store.set(WORKSPACE_STORAGE_KEY, '{broken');
+      assert.deepEqual(readWorkspaceLayout('p'), {}, 'Corrupted JSON yields an empty layout');
+      store.delete(WORKSPACE_STORAGE_KEY);
+
+      const reviewScope = { review: { kind: 'directory', path: 'dataset/a', label: 'A' } };
+      store.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 2, workspace: {
+        projectId: 'p', activeTabId: 'tool:review', leftPanelOpen: false, leftPanelWidth: 280, rightPanelWidth: 'x', activeActivityView: 'versions',
+        projectWindow: { x: 1, y: 'bad', width: 10, height: Infinity, minimized: true },
+        openTabs: [
+          'import', 'nope',
+          { kind: 'tool', tool: 'review', pinned: true, id: 'tool:review', scope: reviewScope },
+          { kind: 'tool', tool: 'review', scope: { review: { kind: 'selection', paths: ['a', 1], label: 'S' } } },
+          { kind: 'tool', stage: 'analysis' },
+          { kind: 'tool', tool: 'bogus' },
+          { kind: 'dataset', datasetId: 'old', pinned: true },
+          { kind: 'dataset-tool', datasetId: 'g', tool: 'analysis' },
+          { kind: 'dataset-tool', datasetId: 'g', tool: 'export' },
+          { kind: 'window', window: 'output' },
+          { kind: 'window', window: 'unknown' },
+          null, 5,
+        ],
+      }, dock: null, projects: {} }));
+      const layout = readWorkspaceLayout('p');
+      assert.deepEqual(layout.openTabs, [
+        { kind: 'tool', tool: 'import' },
+        { kind: 'tool', tool: 'review', pinned: true, scope: reviewScope, id: 'tool:review' },
+        { kind: 'tool', tool: 'analysis', pinned: undefined, scope: undefined, id: undefined },
+        { kind: 'window', window: 'dataset', pinned: true },
+        { kind: 'dataset-tool', datasetId: 'global', tool: 'analysis', pinned: undefined },
+        { kind: 'window', window: 'output', pinned: undefined },
+      ], 'Strings, legacy stage key and window/dataset tabs are normalized; invalid scope, tools, windows and junk are dropped; duplicates collapse by tool (the second review tab is dropped); dataset tabs map to the Dataset window and dataset-tool to global');
+      assert.equal(layout.projectId, 'p');
+      assert.equal(layout.activeTabId, 'tool:review');
+      assert.equal(layout.leftPanelOpen, false);
+      assert.equal(layout.leftPanelWidth, 280);
+      assert.equal(layout.rightPanelWidth, undefined, 'Non-numeric sizes are dropped');
+      assert.equal(layout.rightPanelOpen, undefined);
+      assert.equal(layout.activeActivityView, 'versions');
+      assert.deepEqual(layout.projectWindow, { x: 1, y: 112, width: 10, height: 360, minimized: true }, 'Invalid panel fields fall back to defaults individually');
+      assert.deepEqual(layout.datasetWindow, { x: 150, y: 132, width: 320, height: 380, minimized: false });
+      store.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 2, workspace: { projectId: 7, activeActivityView: 'other' }, dock: null }));
+      const sparse = readWorkspaceLayout('p');
+      assert.equal(sparse.openTabs, undefined);
+      assert.equal(sparse.projectId, null);
+      assert.equal(sparse.activeTabId, null);
+      assert.equal(sparse.activeActivityView, 'explorer');
+      store.delete(WORKSPACE_STORAGE_KEY);
+      store.set(LEGACY_WORKSPACE_STORAGE_KEY, JSON.stringify({ projectId: 'legacy', openTabs: ['review'] }));
+      assert.deepEqual(readWorkspaceLayout('legacy').openTabs, [{ kind: 'tool', tool: 'review' }], 'Legacy key is still read when no canonical snapshot exists');
+    } finally {
+      if (hadWindow) globalThis.window = savedWindow; else delete globalThis.window;
+    }
+
+    const persisted = [
+      { kind: 'tool', tool: 'review' }, { kind: 'tool', tool: 'import' }, { kind: 'window', window: 'project' }, { kind: 'dataset-tool', datasetId: 'g', tool: 'tagging' },
+    ];
+    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }, 'a').map((tab) => tab.id), ['tool:review', 'tool:import', 'window:project', 'dataset:g:tagging']);
+    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }, 'b').map((tab) => tab.id), ['tool:review', 'tool:import', 'window:project'], 'Dataset tabs of another project are not restored');
+    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }).map((tab) => tab.id), ['tool:review', 'tool:import', 'window:project'], 'Without a project id only tool and window tabs are restored');
+    assert.deepEqual(getRestorableWorkspaceTabs({}, 'a'), []);
+
+    const { createWorkspaceTabFromPersisted, persistWorkspaceTab, dedupeWorkspaceTabs, orderWorkspaceTabs, getInspectorContext, createToolTab, isDatasetToolName } = tabsApi;
+    const scope = { review: { kind: 'selection', paths: ['a b', 'c'], label: 'S' } };
+    assert.equal(createToolTab('review', scope).id, `tool:review:${encodeURIComponent('a b|c')}`);
+    assert.equal(createToolTab('review', { review: { kind: 'directory', path: 'x/y', label: 'X' } }).id, 'tool:review:x%2Fy');
+    for (const entry of [
+      { kind: 'tool', tool: 'review', id: 'tool:review:custom', scope: { review: scope.review }, pinned: true },
+      { kind: 'tool', tool: 'analysis', id: 'tool:analysis', scope: undefined, pinned: undefined },
+      { kind: 'window', window: 'inspector', pinned: true },
+      { kind: 'dataset-tool', datasetId: 'g', tool: 'select', pinned: false },
+    ]) assert.deepEqual(persistWorkspaceTab(createWorkspaceTabFromPersisted(entry)), entry, `Round-trip ${entry.kind}`);
+    assert.deepEqual(createWorkspaceTabFromPersisted({ kind: 'tool', tool: 'review', scope: { review: scope.review } }).id, createToolTab('review', scope).id, 'Missing id is derived from scope');
+    assert.deepEqual(createWorkspaceTabFromPersisted({ kind: 'dataset', datasetId: 'old', pinned: true }), { id: 'window:dataset', kind: 'window', window: 'dataset', pinned: true }, 'Legacy dataset tab becomes the Dataset window');
+    assert.deepEqual(persistWorkspaceTab({ id: 'dataset:x', kind: 'dataset', datasetId: 'x' }), { kind: 'window', window: 'dataset', pinned: undefined });
+    assert.equal(persistWorkspaceTab({ id: 'file:1', kind: 'file-view' }), null, 'File tabs are not persisted');
+    assert.deepEqual(isDatasetToolName('tagging') && isDatasetToolName('select') && !isDatasetToolName('export') && !isDatasetToolName(undefined), true);
+
+    const mk = (id, pinned) => ({ id, kind: 'window', window: 'output', pinned });
+    assert.deepEqual(dedupeWorkspaceTabs([mk('a'), mk('b'), mk('a', true)]).map((tab) => [tab.id, tab.pinned]), [['a', undefined], ['b', undefined]], 'The first tab with an id wins');
+    assert.deepEqual(orderWorkspaceTabs([mk('a'), mk('b', true), mk('c'), mk('d', true)]).map((tab) => tab.id), ['b', 'd', 'a', 'c'], 'Pinned tabs first, stable within groups');
+
+    const inspect = (tab, tool = null) => getInspectorContext(tab, tool);
+    assert.equal(inspect(null, 'review'), 'empty');
+    assert.equal(inspect({ kind: 'window', window: 'dataset' }), 'dataset');
+    assert.equal(inspect({ kind: 'dataset' }), 'dataset');
+    assert.equal(inspect({ kind: 'window', window: 'output' }), 'empty');
+    assert.equal(inspect({ kind: 'window', window: 'output' }, 'import'), 'tool');
+    assert.equal(inspect({ kind: 'tool', tool: 'import' }, 'tagging'), 'caption');
+    assert.equal(inspect({ kind: 'file-caption' }), 'caption');
+    assert.equal(inspect({ kind: 'file-analysis' }), 'analysis');
+    assert.equal(inspect({ kind: 'file-edit' }), 'photopea');
+    assert.equal(inspect({ kind: 'file-view', fileKind: 'psd' }), 'photopea');
+    assert.equal(inspect({ kind: 'file-view', fileKind: 'image' }), 'file');
+    assert.equal(inspect({ kind: 'file-video' }), 'file');
+    assert.equal(inspect({ kind: 'tool', tool: 'review' }), 'review');
+    assert.equal(inspect({ kind: 'dataset-tool', tool: 'select' }), 'review');
+    assert.equal(inspect({ kind: 'dataset-tool', tool: 'analysis' }), 'analysis');
+    assert.equal(inspect({ kind: 'tool', tool: 'analysis' }), 'analysis');
+    assert.equal(inspect({ kind: 'dataset-tool', tool: 'tagging' }), 'empty', 'dataset-tool tagging without activeTool falls through to empty');
+    assert.equal(inspect({ kind: 'tool', tool: 'export' }, 'export'), 'tool');
+
+    const { getToolFromUrlSlug, getUrlSlugForTool, TOOLS, isToolName, URL_TOOL_ALIASES } = constants;
+    for (const tool of TOOLS) assert.equal(getToolFromUrlSlug(getUrlSlugForTool(tool)), tool, `Slug round-trip for ${tool}`);
+    assert.equal(getUrlSlugForTool('build'), 'build-dataset');
+    assert.equal(getUrlSlugForTool('clean'), 'photopea');
+    assert.equal(getToolFromUrlSlug('video-frames'), 'video');
+    assert.equal(getToolFromUrlSlug('remove-duplicates'), 'select');
+    assert.equal(getToolFromUrlSlug('edit'), 'clean');
+    assert.equal(getToolFromUrlSlug('clear'), 'clean');
+    assert.equal(getToolFromUrlSlug('caption'), 'tagging');
+    assert.equal(getToolFromUrlSlug('tagging'), 'tagging');
+    assert.equal(getToolFromUrlSlug('unknown'), null);
+    assert.equal(getToolFromUrlSlug(''), null);
+    assert.equal(getToolFromUrlSlug(null), null);
+    assert.ok(Object.values(URL_TOOL_ALIASES).every((tool) => isToolName(tool)), 'Every alias targets a real tool');
+    assert.equal(isToolName('review'), true);
+    assert.equal(isToolName('photopea'), false);
+    assert.equal(isToolName(null), false);
+  }
   console.log('PASS: accurate drop previews, empty editor targets, docking in all directions for editors and panels, nested geometry/resizing, tab and group moves, floating groups, pin restoration, Explorer constraints, persistence and legacy migration.');
 } finally {
   await rm(temporary, { recursive: true, force: true });
