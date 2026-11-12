@@ -197,6 +197,8 @@ export const updateWorkspaceFileAssetCache = async (root: ProjectDirectoryHandle
   const previous = workspaceAssetScanByRoot.get(root);
   if (!previous) return;
   let next!: Promise<WorkspaceFileAsset[]>;
+  // Self-referencing: the async body compares against `next`, so declaration and assignment must be separate.
+  // eslint-disable-next-line prefer-const
   next = (async () => {
     let assets = await previous;
     const changedPaths = new Set(changes.paths);

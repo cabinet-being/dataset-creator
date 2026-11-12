@@ -51,7 +51,7 @@ export const normalizeDatasetDockLayout = (layout: DockLayout): DockLayout => {
   const prune = (node: DockNode): DockNode | null => {
     if (node.type === 'tabs') {
       const aliasIndexes = node.tabs.flatMap((id, index) => aliases(id) ? [index] : []);
-      let tabs = [...new Set(node.tabs.filter((id) => !aliases(id)).map(normalizeScopedTool))];
+      const tabs = [...new Set(node.tabs.filter((id) => !aliases(id)).map(normalizeScopedTool))];
       if (node.id === winner.group.id) tabs.splice(Math.min(aliasIndexes[0] ?? tabs.length, tabs.length), 0, DATASET_VIEW);
       if (!tabs.length) return null;
       const normalizedActive = normalizeScopedTool(node.active ?? '');

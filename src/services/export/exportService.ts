@@ -221,7 +221,7 @@ export const generateTagString = (
   blacklist: string[]
 ): string => {
   const keyword = datasetKeyword.trim().toLowerCase();
-  let tags = keyword ? [keyword] : [];
+  const tags = keyword ? [keyword] : [];
 
   if (item.tags) {
     const seen = new Set(tags);
