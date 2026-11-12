@@ -10,11 +10,15 @@
 | `npm run build` | TypeScript і production-збірка в `dist/` |
 | `npm run preview` | Перегляд зібраного застосунку |
 | `npm test` | Усі сім офлайн-наборів, зупинка після першої помилки |
-| `npm run test:ci` | Перевірка документації, усі тести, build, компіляція браузерних стендів |
+| `npm run lint` | ESLint 9 (flat config `eslint.config.js`), без попереджень |
+| `npm run test:ci` | По черзі: lint, перевірка документації, усі тести, build, браузерні сценарії |
 | `npm run test:docs` | Тест валідатора та перевірка посилань, шляхів і npm-команд у документації |
 | `npm run test:browser-fixtures` | Збірка стендів із `vite.browser.config.ts` у `dist/browser-fixtures/` |
+| `npm run test:browser` | Збірка стендів і `playwright test` (Chromium) над `vite preview` на `127.0.0.1:4174` за `tests/e2e/*.spec.ts` |
+| `npm run test:browser:network` | Лише сценарії з тегом `@network`, один воркер |
+| `npx playwright test --grep @slow` | Тривалі сценарії (one-hour video) |
 
-`npm run lint` наразі не є робочим gate: ESLint не налаштовано. Не заявляйте про успішний lint на підставі build. Попередження ONNX про `eval` і великі chunks можуть з’являтися під час збірки; їх потрібно відрізняти від коду завершення з помилкою.
+Перед першим локальним запуском браузерних сценаріїв виконайте `npx playwright install chromium`. Lint входить у `test:ci` першим кроком; успішний build не замінює lint. У `eslint.config.js` свідомо вимкнено або приглушено з обґрунтуванням: `react-hooks/exhaustive-deps` (зміна залежностей змінила б поведінку ефектів), `no-explicit-any`, `no-empty-object-type`, `no-control-regex` (санітайзери імен); дозволено `_`-префікс невикористаних імен і порожні `catch`. Попередження ONNX про `eval` і великі chunks можуть з’являтися під час збірки; їх потрібно відрізняти від коду завершення з помилкою.
 
 ## Вибір регресійних перевірок
 
@@ -34,9 +38,11 @@
 
 ## Межі автоматизації
 
-Збірка браузерних стендів не виконує UI-assertions. Поточна конфігурація компілює explorer, export, persistence, caption, caption-editor, build, inspector, project-switch і tagger-restore. Стенд `/DatasetCreator/tests/tagger-restore-browser.html` перевіряє в реальному браузері, чи зберігаються назви й байти копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Інші HTML-стенди в `tests/` відкриваються через dev server; наприклад `/DatasetCreator/tests/video-browser.html`.
+Браузерні сценарії запускає Playwright (Chromium) над `vite preview`; конфігурація — `playwright.config.ts`, специфікації — `tests/e2e/`. Стенди збираються з `vite.browser.config.ts` (explorer, export, persistence, caption, caption-editor, build, inspector, project-switch, tagger-restore, scope, ui, video) із `react-dom/profiling`, щоб `<Profiler>` рахував рендери. Спільна guard-fixture (`tests/e2e/fixtures.ts`) провалює тест на `pageerror`, `console.error` і зовнішні запити; виняток — корінь iframe Photopea, який монтує App.
 
-Окремо перевіряйте native file picker, відновлення збережених ONNX/CSV після перезавантаження та повторний дозвіл браузера, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
+Поза типовим прогоном лишаються сценарії з тегами `@network` (живий експорт Photopea, справжня DINOv2 з Hugging Face; потребують мережі) і `@slow` (one-hour video; тривалі). Стенди document (iframe Photopea) і workspace (потрібен dev server застосунку) пропущені з поясненням у `tests/e2e/skipped.spec.ts`. Стенд tagger-restore перевіряє збереження назв і байтів копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Export і caption стенди працюють із фізичним членством у `dataset/`.
+
+Окремо перевіряйте native file picker, відновлення збережених ONNX/CSV після перезавантаження та повторний дозвіл браузера, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Сценарії `@network` залежать від мережі, частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
 
 ## Робота зі зміною
 

@@ -57,7 +57,7 @@ npm test
 npm run build
 ```
 
-`npm run test:ci` перевіряє документацію, запускає сім наборів регресійних тестів, перевірку TypeScript, production-збірку та компіляцію браузерних стендів. Це не автоматичний запуск UI-сценаріїв у браузері. Команда `lint` оголошена, але ESLint і його конфігурація не налаштовані.
+`npm run test:ci` по черзі запускає lint, перевірку документації, сім наборів регресійних тестів, production-збірку та браузерні сценарії Playwright (Chromium). Перед першим локальним запуском браузерних сценаріїв виконайте `npx playwright install chromium`. Сценарії з тегами `@network` і `@slow`, а також стенди, що потребують живого Photopea чи dev server, не входять у типовий прогін. Команди й межі автоматизації — у [розробці](docs/development.md).
 
 Стек: React 18, TypeScript, Vite, Zustand, Tailwind CSS, Radix UI, JSZip, Mediabunny та ONNX Runtime Web. Точні версії залежностей — у `package-lock.json`.
 
