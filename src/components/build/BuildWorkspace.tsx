@@ -1,3 +1,4 @@
+import { BuildClusterView } from './BuildClusterView';
 import { CaptionEditor } from '../caption/CaptionEditor';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, HelpCircle, ImageIcon, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
@@ -93,6 +94,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const [showExport, setShowExport] = useState(false);
   const [showAssembly, setShowAssembly] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
+  const [view, setView] = useState<'list' | 'clusters'>('list');
   const [allowShortfall, setAllowShortfall] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
@@ -175,7 +177,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   usePublishInspectorSelection(active, viewId, inspectorPayload);
   const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled]);
   const quality = useDatasetQualityReport({
-    featuresActive: active && (showQuality || showExport), items: effectiveItems, candidates, session: reconciled,
+    featuresActive: active && (showQuality || showExport || view === 'clusters'), items: effectiveItems, candidates, session: reconciled,
     triggerWord: dataset.triggerWord, projectType,
   });
   const selectQualityItem = useCallback((id: string) => {
@@ -260,22 +262,26 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     return outputAssetId;
   }, [addDatasetItem, reconciled.profile.transform, reconciled.records, removeDatasetItem, saveCaption]);
 
-  const commitDecision = useCallback(async (decision: BuildReviewDecision, targets = current ? [current] : [], provenance: 'manual' | 'auto' = 'manual', propagateError = false) => {
-    if (!targets.length || busy) return;
+  /** Applies one decision per item inside a single history transaction (one Undo). */
+  const commitDecisions = useCallback(async (entries: Array<{ item: WorkspaceImage; decision: BuildReviewDecision }>, provenance: 'manual' | 'auto' = 'manual', propagateError = false) => {
+    if (!entries.length || busy) return;
+    const targets = entries.map((entry) => entry.item);
     const epoch = captureHistoryEpoch();
     const before = useProjectStore.getState().buildSession;
     const targetIds = targets.map(getBuildAssetId);
-    patchSession((value) => targetIds.reduce((next, id) => updateBuildDecision(next, id, decision, {
+    const decisionById = new Map(entries.map((entry) => [getBuildAssetId(entry.item), entry.decision]));
+    const uniform = entries.every((entry) => entry.decision === entries[0].decision) ? entries[0].decision : undefined;
+    patchSession((value) => entries.reduce((next, { item, decision }) => updateBuildDecision(next, getBuildAssetId(item), decision, {
       application: decision === 'accepted' ? 'pending' : 'idle', validation: 'pending', provenance,
     }), value));
     setBusy(true);
     operation.start(undefined, targets.length);
     try {
-      await runHistoryTransaction(`${decision === 'accepted' ? 'Accept' : decision === 'skipped' ? 'Skip' : 'Defer'} ${targets.length} item${targets.length === 1 ? '' : 's'}`, async (historyWriter) => {
+      await runHistoryTransaction(`${uniform ? (uniform === 'accepted' ? 'Accept' : uniform === 'skipped' ? 'Skip' : 'Defer') : 'Review'} ${targets.length} item${targets.length === 1 ? '' : 's'}`, async (historyWriter) => {
         let next = useProjectStore.getState().buildSession;
         let activeAssetId: string | undefined;
         try {
-          for (const [index, item] of targets.entries()) {
+          for (const [index, { item, decision }] of entries.entries()) {
             if (!isHistoryEpochCurrent(epoch)) throw new Error('The project changed while applying the review decision.');
             const assetId = getBuildAssetId(item); activeAssetId = assetId;
             const recipe = next.records[assetId]?.transform ?? next.profile.transform;
@@ -325,7 +331,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         } catch (error) {
           const message = error instanceof Error ? error.message : 'The review decision could not be applied.';
           next = targetIds.reduce((value, id) => id === activeAssetId
-            ? updateBuildDecision(value, id, decision, { application:'failed', validation:'error', error:message })
+            ? updateBuildDecision(value, id, decisionById.get(id)!, { application:'failed', validation:'error', error:message })
             : before.records[id] ? { ...value, records:{ ...value.records, [id]:before.records[id] } } : value, next);
           throw error;
         } finally {
@@ -359,6 +365,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       if (propagateError) throw error;
     } finally { setBusy(false); }
   }, [busy, candidates, createTransformedOutput, current, cursor, draft, notify, operation, patchSession, projectId, queue, saveCaption, updateSession]);
+  const commitDecision = useCallback((decision: BuildReviewDecision, targets: WorkspaceImage[] = current ? [current] : [], provenance: 'manual' | 'auto' = 'manual', propagateError = false) =>
+    commitDecisions(targets.map((item) => ({ item, decision })), provenance, propagateError), [commitDecisions, current]);
 
   const pipeline = useBuildAutoPipeline({
     active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled,
@@ -420,11 +428,11 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }, [active, busy, cursor, localTagger, patchSession, pipeline.phase, queue, reconciled.records, taggingConfig.threshold, taggingConfig.maxTags]);
 
   useCommands([
-    { id: 'build.accept', label: 'Build: Accept', shortcut: 'A', active, disabled: busy || !current || current.kind === 'video', run: () => commitDecision('accepted') },
-    { id: 'build.skip', label: 'Build: Reject', shortcut: 'X', active, disabled: busy || !current, run: () => commitDecision('skipped') },
-    { id: 'build.defer', label: 'Build: Defer', shortcut: 'D', active, disabled: busy || !current, run: () => commitDecision('deferred') },
-    { id: 'build.previous', label: 'Build: Previous', shortcut: 'ArrowLeft', active, disabled: cursor <= 0, run: () => moveCursor(-1) },
-    { id: 'build.next', label: 'Build: Next', shortcut: 'ArrowRight', active, disabled: cursor >= queue.length - 1, run: () => moveCursor(1) },
+    { id: 'build.accept', label: 'Build: Accept', shortcut: 'A', active: active && view === 'list', disabled: busy || !current || current.kind === 'video', run: () => commitDecision('accepted') },
+    { id: 'build.skip', label: 'Build: Reject', shortcut: 'X', active: active && view === 'list', disabled: busy || !current, run: () => commitDecision('skipped') },
+    { id: 'build.defer', label: 'Build: Defer', shortcut: 'D', active: active && view === 'list', disabled: busy || !current, run: () => commitDecision('deferred') },
+    { id: 'build.previous', label: 'Build: Previous', shortcut: 'ArrowLeft', active: active && view === 'list', disabled: cursor <= 0, run: () => moveCursor(-1) },
+    { id: 'build.next', label: 'Build: Next', shortcut: 'ArrowRight', active: active && view === 'list', disabled: cursor >= queue.length - 1, run: () => moveCursor(1) },
     { id: 'build.finish', label: 'Build: Finish review', shortcut: 'Mod+Enter', active, disabled: busy, run: () => counts.unresolved || counts.errors ? patchSession((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })) : setShowExport(true) },
   ], () => root.current);
 
@@ -474,6 +482,10 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         {pipeline.phase !== 'idle' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{pipeline.phase === 'triage' ? 'Analyzing images' : pipeline.phase === 'assembly' ? 'Selecting Dataset images' : 'Preparing caption suggestions'}{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}
         {pipeline.phase === 'idle' && pipeline.paused && <button className="underline" onClick={pipeline.resume}>Resume automatic pipeline</button>}
       </div>
+      <div role="group" aria-label="Review view" className="flex overflow-hidden rounded border border-border text-sm">
+        <button type="button" data-testid="build-view-toggle" data-view="list" aria-pressed={view === 'list'} onClick={() => setView('list')} className={`px-3 py-2 ${view === 'list' ? 'bg-primary text-primary-foreground' : ''}`}>List</button>
+        <button type="button" data-testid="build-view-toggle" data-view="clusters" aria-pressed={view === 'clusters'} onClick={() => setView('clusters')} className={`px-3 py-2 ${view === 'clusters' ? 'bg-primary text-primary-foreground' : ''}`}>Clusters</button>
+      </div>
       <button type="button" data-testid="build-quality-toggle" data-readiness={quality.report.readiness} aria-expanded={showQuality} className="rounded border border-border px-3 py-2 text-sm" onClick={() => setShowQuality((value) => !value)}>Quality: {QUALITY_STATUS_TEXT[quality.report.readiness]}</button>
       <button className="rounded border border-border px-3 py-2 text-sm" onClick={() => setShowImport((value) => !value)}>Add materials</button>
       <button className="rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40" disabled={busy} onClick={() => {
@@ -499,6 +511,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       </div>
 
       {showQuality && <section aria-label="Dataset quality" className="max-h-[45vh] shrink-0 overflow-auto border-b border-border bg-card p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} /></section>}
+      {view === 'clusters' ? <BuildClusterView active={active && !showImport} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(reconciled.profile)} busy={busy}
+        onCommit={(entries) => commitDecisions(entries)} onOpenItem={(id) => { setView('list'); selectQualityItem(id); }} /> : <>
       <main className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="relative flex min-h-0 flex-col items-center justify-center overflow-auto bg-black/5 p-4 dark:bg-black/20">
           {current?.kind === 'video' ? <div className="h-full w-full overflow-auto"><VideoFramesTool active={active} tabId={`${viewId}:video:${current.id}`} projectDirectoryHandle={directory} file={current.imageData} fileName={current.fileName} onSaved={onRefresh} /></div>
@@ -534,6 +548,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
           {(record?.decision === 'skipped' || (record?.decision === 'unreviewed' && record.triage?.group === 'rejected')) && <span aria-label="Rejected" className="absolute right-1 top-1 rounded-full bg-red-600 p-0.5 text-white"><X className="h-3 w-3" /></span>}{(record?.decision === 'deferred' || (record?.decision === 'unreviewed' && record.triage?.group === 'needs-decision')) && <span aria-label="Needs decision" className="absolute right-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><HelpCircle className="h-3 w-3" /></span>}{record?.decision === 'accepted' && <span className="absolute right-1 top-1 rounded-full bg-emerald-600 p-0.5 text-white"><Check className="h-3 w-3" /></span>}{record?.validation === 'stale' && <span className="absolute left-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><RotateCcw className="h-3 w-3" /></span>}
         </button>; })}</div>
       </section>
+      </>}
     </>}
 
     {!canExport && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
