@@ -1,4 +1,4 @@
-import type { ProjectType } from '../../../types/entities';
+import type { ProjectType, TargetModelId } from '../../../types/entities';
 
 export type QualityStatus = 'ok' | 'warn' | 'fail';
 
@@ -64,7 +64,7 @@ export type QualityItemInput = {
 
 export type QualityCandidateInput = { id: string; embedding: Float32Array | readonly number[] };
 
-export type ResolutionPreset = 'sdxl' | 'sd15';
+export type ResolutionPreset = TargetModelId;
 
 export type QualityReportInput = {
   items: QualityItemInput[];

@@ -70,7 +70,6 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   if (input.version !== 1) return defaults;
   const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record)]));
   const filter = BUILD_FILTERS.find((value) => value === input.filter) ?? 'all';
-  const minShortSide = Math.floor(Number(input.profile?.minShortSide));
   const reviewMode = input.profile?.reviewMode === 'uncertain-only' ? 'uncertain-only' : 'every-item';
   return {
     version: 1,
@@ -79,7 +78,6 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
       reviewMode,
       captionRequired: input.profile?.captionRequired !== false,
       transform: input.profile?.transform,
-      ...(minShortSide > 0 ? { minShortSide } : {}),
       autoPipeline: input.profile?.autoPipeline !== false,
     },
     cursor: Math.max(0, Math.floor(Number(input.cursor) || 0)),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import type { BuildReviewDecision, BuildSession, Dataset } from '../../types';
+import type { BuildReviewDecision, BuildSession, Dataset, TargetModelId } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useOperation } from '../../hooks/useOperation';
@@ -26,6 +26,7 @@ type Input = {
   candidates: WorkspaceImage[];
   effectiveItems: WorkspaceImage[];
   session: BuildSession;
+  targetModel: TargetModelId;
   patchSession: (patch: (value: BuildSession) => BuildSession) => void;
   dataset: Dataset;
   commitDecision: (decision: BuildReviewDecision, targets?: WorkspaceImage[], provenance?: 'manual' | 'auto', propagateError?: boolean) => Promise<void>;
@@ -78,17 +79,17 @@ export function useBuildAutoPipeline(input: Input) {
     [input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags]);
   useEffect(() => { setPaused(false); }, [input.enabled]);
 
-  const minShortSideOf = (session: BuildSession) => getMinShortSide(session.profile);
-  const triageKey = (session: BuildSession, item: WorkspaceImage) => {
+  const minShortSideOf = (targetModel: TargetModelId) => getMinShortSide(targetModel);
+  const triageKey = (session: BuildSession, item: WorkspaceImage, targetModel: TargetModelId) => {
     const record = session.records[getBuildAssetId(item)];
-    return `triage:${getBuildAssetId(item)}:${getBuildContentRevision(item, record?.transform ?? session.profile.transform)}:${minShortSideOf(session)}`;
+    return `triage:${getBuildAssetId(item)}:${getBuildContentRevision(item, record?.transform ?? session.profile.transform)}:${minShortSideOf(targetModel)}`;
   };
   const tagKey = (id: string, revision: string) => `tag:${id}:${revision}`;
 
   useEffect(() => {
     if (!input.active || !input.enabled || input.busy || paused || running.current) return;
     const { session, candidates } = input;
-    const triageTargets = selectTriageTargets(session, candidates).filter((item) => !attempted.current.has(triageKey(session, item)));
+    const triageTargets = selectTriageTargets(session, candidates).filter((item) => !attempted.current.has(triageKey(session, item, input.targetModel)));
     let stage: 'triage' | 'assembly' | 'tagging' | undefined;
     if (triageTargets.length) stage = 'triage';
     else {
@@ -117,7 +118,7 @@ export function useBuildAutoPipeline(input: Input) {
       setPhase('idle'); setProgress({ completed: 0, total: 0 });
       setTick((value) => value + 1);
     });
-  }, [input.active, input.enabled, input.busy, input.session, input.candidates, input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, paused, tick, projectId]);
+  }, [input.active, input.enabled, input.busy, input.session, input.targetModel, input.candidates, input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, paused, tick, projectId]);
 
   const taggingTargets = (session: BuildSession, candidates: WorkspaceImage[]) => candidates.filter((item) => {
     if (!isMeasurable(item)) return false;
@@ -147,9 +148,9 @@ export function useBuildAutoPipeline(input: Input) {
   };
 
   const runTriage = (ctx: Ctx) => guarded(ctx, triageOperation, async () => {
-    const { session: startSession, candidates } = latest.current;
-    const minShortSide = minShortSideOf(startSession);
-    const targets = selectTriageTargets(startSession, candidates).filter((item) => !attempted.current.has(triageKey(startSession, item)));
+    const { session: startSession, candidates, targetModel: startModel } = latest.current;
+    const minShortSide = minShortSideOf(startModel);
+    const targets = selectTriageTargets(startSession, candidates).filter((item) => !attempted.current.has(triageKey(startSession, item, startModel)));
     if (!targets.length) return;
     triageOperation.start(() => cancel(), targets.length);
     const targetIds = new Set(targets.map(getBuildAssetId));
@@ -181,7 +182,7 @@ export function useBuildAutoPipeline(input: Input) {
         }));
         ctx.signal.throwIfAborted();
         await waitIdle(ctx.signal);
-        if (!ctx.isCurrent() || minShortSideOf(latest.current.session) !== minShortSide || !latest.current.enabled) throw abortError();
+        if (!ctx.isCurrent() || minShortSideOf(latest.current.targetModel) !== minShortSide || !latest.current.enabled) throw abortError();
         const now = new Date().toISOString();
         latest.current.patchSession((value) => chunk.reduce((next, item, index) => {
           const id = getBuildAssetId(item); const record = next.records[id];
@@ -191,13 +192,13 @@ export function useBuildAutoPipeline(input: Input) {
             inDataset: isProjectDatasetPath(item.assetPath), revision, now,
           }));
         }, value));
-        for (const item of chunk) attempted.current.add(triageKey(startSession, item));
+        for (const item of chunk) attempted.current.add(triageKey(startSession, item, startModel));
         triageOperation.progress(Math.min(targets.length, start + chunk.length), targets.length);
         setProgress({ completed: Math.min(targets.length, start + chunk.length), total: targets.length });
         await yieldToUi();
       }
     } catch (error) {
-      for (const item of targets) if (!ctx.signal.aborted && !isAbort(error)) attempted.current.add(triageKey(startSession, item));
+      for (const item of targets) if (!ctx.signal.aborted && !isAbort(error)) attempted.current.add(triageKey(startSession, item, startModel));
       throw error;
     }
     triageOperation.finish('completed', `${targets.length} image${targets.length === 1 ? '' : 's'} analyzed`);

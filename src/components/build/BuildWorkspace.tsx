@@ -1,7 +1,7 @@
 import { CaptionEditor } from '../caption/CaptionEditor';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, HelpCircle, ImageIcon, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
-import type { BuildReviewDecision, BuildSession, EditedAsset } from '../../types';
+import type { BuildReviewDecision, BuildSession, EditedAsset, TargetModelId } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { useProjectStore } from '../../stores/useProjectStore';
@@ -38,7 +38,7 @@ import {
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
 import { PROJECT_ASSETS_DIRECTORY } from '../../services/project/projectLayoutService';
 import { getBuildTriageCounts, getBuildTriageGroup } from '../../services/build/buildTriageService';
-import { getMinShortSide, MIN_SHORT_SIDE_PRESETS } from '../../services/quality/imageQuality';
+import { TARGET_MODEL_PRESETS } from '../../lib/projectProfiles';
 import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
@@ -78,6 +78,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const root = useRef<HTMLDivElement>(null);
   const projectId = useProjectStore((state) => state.id);
   const projectType = useProjectStore((state) => state.projectType);
+  const targetModel = useProjectStore((state) => state.targetModel);
+  const setProjectProfile = useProjectStore((state) => state.setProjectProfile);
   const session = useProjectStore((state) => state.buildSession);
   const dataset = useProjectStore((state) => state.dataset);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
@@ -176,7 +178,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled]);
   const quality = useDatasetQualityReport({
     featuresActive: active && (showQuality || showExport), items: effectiveItems, candidates, session: reconciled,
-    triggerWord: dataset.triggerWord, projectType,
+    triggerWord: dataset.triggerWord, projectType, targetModel,
   });
   const selectQualityItem = useCallback((id: string) => {
     const item = effectiveItems.find((candidate) => candidate.id === id);
@@ -361,7 +363,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }, [busy, candidates, createTransformedOutput, current, cursor, draft, notify, operation, patchSession, projectId, queue, saveCaption, updateSession]);
 
   const pipeline = useBuildAutoPipeline({
-    active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled,
+    active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled, targetModel,
     patchSession, dataset, commitDecision, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory,
   });
   const triageCounts = useMemo(() => getBuildTriageCounts(reconciled, candidates), [candidates, reconciled]);
@@ -450,12 +452,11 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }) : [];
   const rejectTargets = queueGroupActive ? queue.filter((item) => reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped') : [];
   const setFilter = (filter: BuildSession['filter']) => patchSession((value) => ({ ...value, filter, cursor: 0 }));
-  const setMinShortSide = (minShortSide: number) => patchSession((value) => ({
+  const setTargetModel = (model: TargetModelId) => { setProjectProfile({ targetModel: model }); patchSession((value) => ({
     ...value,
-    profile: { ...value.profile, minShortSide },
     records: Object.fromEntries(Object.entries(value.records).map(([id, record]) => [id, record.decision === 'unreviewed' && record.triage?.stage === 'quality' ? { ...record, triage: undefined } : record])),
     auto: undefined,
-  }));
+  })); };
   const canExport = counts.unresolved === 0 && counts.errors === 0 && (counts.ready >= counts.target || allowShortfall);
   const setProfileTransform = (value: string) => patchSession((currentSession) => ({ ...currentSession, profile: {
     ...currentSession.profile,
@@ -487,7 +488,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <label>Target <input type="number" min={0} value={reconciled.profile.target} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, target: Math.max(0, Number(event.target.value) || 0) } }))} className="ml-1 w-20 rounded border border-border bg-background px-2 py-1" /></label>
         <label>Review <select value={reconciled.profile.reviewMode} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, reviewMode: event.target.value as BuildSession['profile']['reviewMode'] } }))} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="every-item">Every photo</option><option value="uncertain-only">Uncertain only</option></select></label>
         <label>Output <select value={!reconciled.profile.transform ? 'original' : `${reconciled.profile.transform.mode}-${reconciled.profile.transform.width}`} onChange={(event) => setProfileTransform(event.target.value)} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="original">Original</option><option value="fit-512">Fit within 512</option><option value="crop-512">Center crop 512</option><option value="crop-768">Center crop 768</option></select></label>
-        <label>Min short side <select aria-label="Min short side" value={getMinShortSide(reconciled.profile)} onChange={(event) => setMinShortSide(Number(event.target.value))} className="ml-1 rounded border border-border bg-background px-2 py-1">{[...new Set<number>([...MIN_SHORT_SIDE_PRESETS, getMinShortSide(reconciled.profile)])].map((value) => <option key={value} value={value}>{value}px</option>)}</select></label>
+        <label>Model <select aria-label="Model" value={targetModel} onChange={(event) => setTargetModel(event.target.value as TargetModelId)} className="ml-1 rounded border border-border bg-background px-2 py-1">{(Object.keys(TARGET_MODEL_PRESETS) as TargetModelId[]).map((id) => <option key={id} value={id}>{TARGET_MODEL_PRESETS[id].label} ({TARGET_MODEL_PRESETS[id].minShortSide}px)</option>)}</select></label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={reconciled.profile.autoPipeline !== false} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, autoPipeline: event.target.checked } }))} />Auto pipeline</label>
         <label>Trigger word <input value={dataset.triggerWord} onChange={(event) => { updateDataset(dataset.id, { triggerWord: event.target.value }); patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) })); }} className="ml-1 w-32 rounded border border-border bg-background px-2 py-1" /></label>
         <button className="ml-auto rounded border border-border px-2 py-1" onClick={() => setShowAssembly(true)}>Automatic selection</button>

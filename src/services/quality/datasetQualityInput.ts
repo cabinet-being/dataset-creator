@@ -1,9 +1,10 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import type { BuildSession, ImageQualitySummary, ProjectType } from '../../types';
+import type { BuildSession, ImageQualitySummary, ProjectType, TargetModelId } from '../../types';
 import { getBuildAssetId } from '../build/buildSessionService';
 import { resolveAssetCaption } from '../caption/captionResolver';
 import type { SimilarityBasis } from '../similarity/similarityLevels';
-import { classifyImageQuality, getMinShortSide, type ImageQualityFlag } from './imageQuality';
+import { DEFAULT_TARGET_MODEL } from '../../lib/projectProfilePresets';
+import { classifyImageQuality, type ImageQualityFlag } from './imageQuality';
 import { QUALITY_THRESHOLDS, type ImageQualityVerdict, type QualityReportInput } from './metrics';
 
 /**
@@ -47,8 +48,8 @@ export type DatasetQualitySource = {
   triggerWord?: string;
   /** Build target; the count check uses it as the lower bound. */
   target?: number;
-  /** Build preparation profile that owns the one min-short-side setting. */
-  profile?: { minShortSide?: number };
+  /** Project target model; owns the one min-short-side setting. */
+  targetModel?: TargetModelId;
   projectType?: ProjectType;
   qualitySummaries?: ReadonlyMap<string, ImageQualitySummary>;
   features?: { basis: SimilarityBasis; embeddings: Record<string, Float32Array>; sha256ById?: Record<string, string> };
@@ -84,7 +85,7 @@ export const buildDatasetQualityInput = (source: DatasetQualitySource): QualityR
     ...(candidates?.length ? { candidates } : {}),
     triggerWord: source.triggerWord,
     ...(source.target && source.target > 0 ? { target: { min: source.target, max: Math.max(source.target, defaultTarget.max) } } : {}),
-    minShortSide: getMinShortSide(source.profile),
+    resolutionPreset: source.targetModel ?? DEFAULT_TARGET_MODEL,
     ...(technical ? { technical } : {}),
     projectType: source.projectType,
   };

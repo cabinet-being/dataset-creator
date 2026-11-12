@@ -1,5 +1,5 @@
 import { getSimilarityThreshold } from '../../similarity/similarityLevels';
-import { DEFAULT_MIN_SHORT_SIDE, MIN_SHORT_SIDE_PRESETS } from '../imageQuality';
+import { TARGET_MODEL_PRESETS } from '../../../lib/projectProfilePresets';
 import type { QualityStatus, ResolutionPreset } from './types';
 
 /**
@@ -15,7 +15,7 @@ export const QUALITY_THRESHOLDS = {
     failRatio: 0.5,
   },
   resolution: {
-    presets: { sdxl: DEFAULT_MIN_SHORT_SIDE, sd15: MIN_SHORT_SIDE_PRESETS[1] } satisfies Record<ResolutionPreset, number>,
+    presets: Object.fromEntries(Object.entries(TARGET_MODEL_PRESETS).map(([id, preset]) => [id, preset.minShortSide])) as Record<ResolutionPreset, number>,
     /** Fraction of images below the minimum that still only warns. */
     warnFraction: 0.1,
   },

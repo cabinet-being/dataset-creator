@@ -1,9 +1,10 @@
-import { resolveProjectType, type ProjectTypeResolver } from '../../lib/projectProfiles';
+import { normalizeProjectType, resolveProjectType, resolveTargetModel, type ProjectTypeResolver } from '../../lib/projectProfiles';
 import { URL_TOOL_ALIASES } from '../../lib/constants';
 import {
   createProject,
   type ProjectState,
   type ProjectType,
+  type TargetModelId,
   type SourceImage,
   type ToolName,
   type EditedAsset,
@@ -75,6 +76,7 @@ type DirectoryProjectManifest = {
     id: string;
     name: string;
     projectType?: ProjectType;
+    targetModel?: TargetModelId;
     currentTool: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
@@ -365,6 +367,7 @@ const getProjectManifest = (
     id: project.id,
     name: project.name,
     projectType: project.projectType,
+    targetModel: project.targetModel,
     currentTool: project.currentTool,
     taggingConfig: {
       datasetKeyword: project.taggingConfig.datasetKeyword,
@@ -1009,15 +1012,9 @@ export const readProjectDirectory = async (
     throw new Error('The project manifest contains an invalid Dataset file path.');
   }
 
-  const projectType = await resolveProjectType(manifest.project.projectType, manifest.project.name, selectProjectType);
-  if (manifest.project.projectType === undefined) {
-    manifest.project.projectType = projectType;
-    const handle = await directory.getFileHandle(manifestName);
-    const writable = await handle.createWritable();
-    await writable.write(JSON.stringify(manifest, null, 2));
-    await writable.close();
-  }
-  const defaults = createProject(manifest.project.name, projectType);
+  const projectType = normalizeProjectType(manifest.project.projectType);
+  const targetModel = resolveTargetModel(manifest.project.targetModel, manifest.project.buildSession?.profile?.minShortSide);
+  const defaults = createProject(manifest.project.name, projectType, targetModel);
   const legacyDatasetManifest = await ensureProjectLayout(directory, {
     ...defaults,
     taggingConfig: {
