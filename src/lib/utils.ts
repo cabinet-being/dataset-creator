@@ -77,3 +77,6 @@ export const formatFileSize = (bytes: number): string => {
 };
 
 export const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+export const isAbortError = (error: unknown): boolean =>
+  error instanceof DOMException && error.name === 'AbortError';
