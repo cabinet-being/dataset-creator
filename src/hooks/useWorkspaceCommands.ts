@@ -1,7 +1,7 @@
 import { useHistoryStore } from '../stores/useHistoryStore';
 import { useCommands, type Command } from '../components/workspace/Commands';
 import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
-import type { DatasetToolName } from '../components/workspace/WorkspaceTool';
+import { ADVANCED_TOOL_GROUP_LABEL, TOOL_DEFINITIONS, type DatasetToolName } from '../lib/toolDefinitions';
 import type { WorkspaceTab } from '../lib/workspaceTabs';
 import type { ProjectTypeProfile } from '../lib/projectProfiles';
 import type { Dataset, ToolName } from '../types';
@@ -115,7 +115,7 @@ export function useWorkspaceCommands({
       dock.show(id);
     } })),
     { id: 'dataset.open', label: 'Open Dataset', run: openProjectDataset },
-    { id: 'dataset.add', label: 'Add files to Dataset', run: () => openDatasetToolTab(globalDataset.id, 'select') },
+    { id: 'dataset.add', label: 'Add files to Dataset', run: () => openDatasetToolTab(globalDataset.id, 'add-files') },
     { id: 'settings', label: 'Settings', run: () => setIsWorkspaceSettingsOpen(true) },
     { id: 'help', label: 'Keyboard shortcuts', run: () => openCommands(true) },
     { id: 'focus.editor', label: 'Return to active editor', disabled: !activeTabId, run: () => { if (activeTabId) focusView(activeTabId); } },
@@ -126,7 +126,8 @@ export function useWorkspaceCommands({
     { id: 'tabs.reopen', label: 'Reopen closed editor', run: reopenClosedTab, disabled: !closedTabs.length },
     { id: 'project.save', label: 'Save project', shortcut: 'Mod+S', shortcutEnabled: !(activeTool === 'clean' || activeTab?.kind === 'file-edit' || (activeTab?.kind === 'file-view' && activeTab.fileKind === 'psd')), allowInInput: true, disabled: !projectDirectoryHandle, run: projectSave.retry },
     ...(['explorer', 'inspector', 'output', 'project', 'dataset'] as const).map(id => ({ id: `focus.${id}`, label: `Focus ${id[0].toUpperCase() + id.slice(1)}`, run: () => focusView(`window:${id}`) })),
-    ...TOOLS.filter(tool => profile.enabledTools.includes(tool)).map(tool => ({ id: `tool.${tool}`, label: TOOL_LABELS[tool], group: 'Tools', run: () => navigateToTool(tool) })),
+    ...TOOLS.filter(tool => profile.enabledTools.includes(tool)).map(tool => ({ id: `tool.${tool}`, label: TOOL_LABELS[tool],
+      group: TOOL_DEFINITIONS[tool].tier === 'advanced' ? ADVANCED_TOOL_GROUP_LABEL : 'Tools', run: () => navigateToTool(tool) })),
     ...(['right', 'bottom'] as const).map(side => ({ id: `tabs.split.${side}`, label: `Split editor ${side}`, disabled: !activeTab || (findDockGroup(dock.layout, activeTab.id)?.group.tabs.length ?? 0) < 2, run: () => {
       if (!activeTab) return; const group = findDockGroup(dock.layout, activeTab.id); if (group) dock.setLayout(layout => moveDockSource(layout, { type: 'tab', id: activeTab.id }, { host: group.host, group: group.group.id, side }));
     } })),

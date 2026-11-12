@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type DragEvent, type MouseEvent } from 'react';
-import { Download, Layers3, Pencil, Plus, Sparkles, Tags } from 'lucide-react';
-import type { Dataset, ProjectType, ToolName } from '../../types';
+import { BarChart3, Download, Layers3, Pencil, Plus, Sparkles, Tags, Wand2 } from 'lucide-react';
+import type { Dataset, ProjectType } from '../../types';
+import { ADVANCED_TOOL_GROUP_LABEL, TOOL_DEFINITIONS, type DatasetToolName } from '../../lib/toolDefinitions';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { AssetGallery } from '../ui/AssetGallery';
@@ -14,7 +15,8 @@ import { DatasetAssemblyDialog } from './DatasetAssemblyDialog';
 export type EmptyDatasetSuggestion = { signature: string; items: WorkspaceImage[]; assetIds: string[]; totalCount: number };
 type Props = {
   viewId?: string; dataset: Dataset; items: WorkspaceImage[]; active: boolean; suggestion: EmptyDatasetSuggestion | null;
-  onTool: (tool: Extract<ToolName, 'select' | 'review' | 'tagging' | 'analysis'>) => void;
+  onTool: (tool: DatasetToolName) => void;
+  onBuild?: () => void;
   onExport: () => void;
   onRename?: (name: string) => void;
   onUpdate: (updates: Partial<Pick<Dataset, 'triggerWord'>>) => void;
@@ -33,7 +35,7 @@ type Props = {
   onAssemblyRequestHandled?: () => void;
 };
 const EMPTY_ITEMS: WorkspaceImage[] = [];
-export function DatasetBoard({ viewId, dataset, items, active, suggestion, onTool, onExport, onRename, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion,
+export function DatasetBoard({ viewId, dataset, items, active, suggestion, onTool, onBuild, onExport, onRename, onUpdate, canDrop, onDrop, onContextMenu, onApplySuggestion, onDismissSuggestion,
   projectDirectoryHandle, projectId, projectType, excludedCategories, includedCategories, onApplyAssembly, assemblyRequestToken, onAssemblyRequestHandled }: Props) {
   const [sort, setSort] = useState<DatasetBoardSortMode>('name');
   const [renaming, setRenaming] = useState(false);
@@ -75,11 +77,9 @@ export function DatasetBoard({ viewId, dataset, items, active, suggestion, onToo
           <p className="text-sm text-muted-foreground">{linked} assets · {captioned}/{boardItems.length} captions</p>
         </div>
         <ContextActionGroups mode="toolbar" groups={[[
-          { id: 'add', label: 'Add files', icon: Plus, onSelect: () => onTool('select') },
+          { id: 'add', label: 'Add files', icon: Plus, onSelect: () => onTool('add-files') },
           { id: 'assemble', label: 'Auto assemble', icon: Sparkles, onSelect: () => setAssemblyOpen(true) },
-          { id: 'review', label: 'Review', icon: Layers3, onSelect: () => onTool('review') },
-          { id: 'caption', label: 'Caption', icon: Tags, onSelect: () => onTool('tagging') },
-          { id: 'export', label: 'Export', icon: Download, variant: 'primary', onSelect: onExport },
+          ...(onBuild ? [{ id: 'build', label: TOOL_DEFINITIONS.build.label, icon: Wand2, variant: 'primary' as const, onSelect: onBuild }] : []),
         ]]} />
       </header>
       <details className="rounded border border-border px-3 py-2">
@@ -88,7 +88,17 @@ export function DatasetBoard({ viewId, dataset, items, active, suggestion, onToo
           <label className="flex min-w-0 flex-wrap items-center gap-2 text-sm">Trigger
             <input value={dataset.triggerWord} onChange={event => onUpdate({ triggerWord: event.target.value })} className="w-44 max-w-full rounded border border-border bg-background px-2 py-1.5" />
           </label>
-          <button className="rounded border border-border px-3 py-1.5 text-sm hover:bg-secondary" onClick={() => onTool('analysis')}>Analysis</button>
+        </div>
+      </details>
+      <details className="rounded border border-border px-3 py-2" data-testid="dataset-advanced-tools">
+        <summary className="cursor-pointer text-sm">{ADVANCED_TOOL_GROUP_LABEL}</summary>
+        <div className="mt-3">
+          <ContextActionGroups mode="toolbar" groups={[[
+            { id: 'review', label: TOOL_DEFINITIONS.review.label, icon: Layers3, onSelect: () => onTool('review') },
+            { id: 'caption', label: TOOL_DEFINITIONS.tagging.label, icon: Tags, onSelect: () => onTool('tagging') },
+            { id: 'analysis', label: TOOL_DEFINITIONS.analysis.label, icon: BarChart3, onSelect: () => onTool('analysis') },
+            { id: 'export', label: TOOL_DEFINITIONS.export.label, icon: Download, onSelect: onExport },
+          ]]} />
         </div>
       </details>
       {dropActive && <p role="status" className="text-sm text-primary">Release to add files</p>}

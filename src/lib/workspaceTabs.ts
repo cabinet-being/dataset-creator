@@ -1,5 +1,5 @@
 import type { ToolName } from '../types';
-import type { DatasetToolName } from '../components/workspace/WorkspaceTool';
+import { DATASET_TOOL_DEFINITIONS, LEGACY_DATASET_TOOL_ALIASES, type DatasetToolName } from './toolDefinitions';
 import { DATASET_VIEW } from './workspaceLayout';
 import type { FileWorkspaceTab } from './workspaceFileTabs';
 import type { ToolSelectionScope } from './workspaceToolScope';
@@ -85,7 +85,24 @@ export const createFileTabId = (): string => `file:${crypto.randomUUID()}`;
 export const createDatasetToolTabId = (datasetId: string, tool: DatasetToolName): string => `dataset:${datasetId}:${tool}`;
 
 export const isDatasetToolName = (tool: unknown): tool is DatasetToolName =>
-  tool === 'select' || tool === 'analysis' || tool === 'review' || tool === 'tagging';
+  typeof tool === 'string' && Object.prototype.hasOwnProperty.call(DATASET_TOOL_DEFINITIONS, tool);
+
+/** Resolves current and legacy dataset tool ids (`select` was Add files before it got its own id). */
+export const normalizeDatasetToolName = (tool: unknown): DatasetToolName | null =>
+  isDatasetToolName(tool) ? tool
+    : typeof tool === 'string' && Object.prototype.hasOwnProperty.call(LEGACY_DATASET_TOOL_ALIASES, tool) ? LEGACY_DATASET_TOOL_ALIASES[tool]
+      : null;
+
+/** Rewrites a legacy `dataset:<id>:<tool>` view id to the current dataset tool id. */
+export const migrateDatasetToolTabId = (id: string): string => {
+  const match = /^(dataset:[^:]+:)([^:]+)$/.exec(id);
+  if (!match || isDatasetToolName(match[2])) return id;
+  const tool = normalizeDatasetToolName(match[2]);
+  return tool ? `${match[1]}${tool}` : id;
+};
+
+/** Project tool that owns enablement and inspector behavior for a dataset tool tab. */
+export const getDatasetToolBaseTool = (tool: DatasetToolName): ToolName => DATASET_TOOL_DEFINITIONS[tool].baseTool;
 
 export const createWorkspaceTabFromPersisted = (tab: PersistedWorkspaceTab): WorkspaceTab => {
   if (tab.kind === 'tool') {
@@ -168,7 +185,7 @@ export const getInspectorContext = (tab: WorkspaceTab | null, activeTool: ToolNa
     return 'file';
   }
 
-  if ((tab.kind === 'tool' && tab.tool === 'review') || (tab.kind === 'dataset-tool' && (tab.tool === 'select' || tab.tool === 'review'))) {
+  if ((tab.kind === 'tool' && tab.tool === 'review') || (tab.kind === 'dataset-tool' && (tab.tool === 'add-files' || tab.tool === 'review'))) {
     return 'review';
   }
 

@@ -1,7 +1,7 @@
-import { createWorkspaceTabFromPersisted, isDatasetToolName, type PersistedWorkspaceTab, type WorkspaceTab } from './workspaceTabs';
+import { createWorkspaceTabFromPersisted, migrateDatasetToolTabId, normalizeDatasetToolName, type PersistedWorkspaceTab, type WorkspaceTab } from './workspaceTabs';
 import type { ToolSelectionScope } from './workspaceToolScope';
 import { isToolName } from './constants';
-import { DATASET_VIEW, DOCK_STORAGE_KEY, normalizeDatasetDockLayout, parseDockLayout, type DockLayout } from './workspaceLayout';
+import { DATASET_VIEW, DOCK_STORAGE_KEY, mapDockNode, normalizeDatasetDockLayout, parseDockLayout, type DockLayout, type DockNode } from './workspaceLayout';
 
 export const WORKSPACE_STORAGE_KEY = 'dataset-creator-workspace-v2';
 export const LEGACY_WORKSPACE_STORAGE_KEY = 'dataset-creator-workspace-layout';
@@ -14,7 +14,7 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 
 export const normalizeDatasetWorkspaceState = (workspace: unknown): unknown => {
   if (!record(workspace)) return workspace;
-  const normalizeId = (id: unknown) => typeof id === 'string' && /^dataset:[^:]+$/.test(id) ? DATASET_VIEW : id;
+  const normalizeId = (id: unknown) => typeof id === 'string' ? /^dataset:[^:]+$/.test(id) ? DATASET_VIEW : migrateDatasetToolTabId(id) : id;
   const normalizeTabs = (value: unknown) => {
     if (!Array.isArray(value)) return value;
     let datasetPinned = false;
@@ -25,7 +25,7 @@ export const normalizeDatasetWorkspaceState = (workspace: unknown): unknown => {
         return { kind: 'window', window: 'dataset', pinned: entry.pinned === true || undefined };
       }
       if (entry.kind === 'window' && entry.window === 'dataset') datasetPinned ||= entry.pinned === true;
-      if (entry.kind === 'dataset-tool') return { ...entry, datasetId: 'global' };
+      if (entry.kind === 'dataset-tool') return { ...entry, datasetId: 'global', tool: normalizeDatasetToolName(entry.tool) ?? entry.tool };
       return entry;
     });
     const seenDataset = new Set<string>();
@@ -44,9 +44,27 @@ export const normalizeDatasetWorkspaceState = (workspace: unknown): unknown => {
   return next;
 };
 
+/** Renames legacy dataset tool view ids (for example `dataset:global:select`) everywhere the dock refers to views. */
+export const migrateDatasetToolDockIds = (layout: DockLayout): DockLayout => {
+  const rename = (node: DockNode): DockNode => node.type === 'tabs'
+    ? { ...node, tabs: [...new Set(node.tabs.map(migrateDatasetToolTabId))], active: node.active === null ? null : migrateDatasetToolTabId(node.active) }
+    : node;
+  const locations = Object.fromEntries(Object.entries(layout.locations).map(([id, location]) => [
+    migrateDatasetToolTabId(id), location.neighbor ? { ...location, neighbor: migrateDatasetToolTabId(location.neighbor) } : location,
+  ]));
+  return {
+    ...layout,
+    left: layout.left ? mapDockNode(layout.left, rename) : null,
+    main: mapDockNode(layout.main, rename),
+    floating: layout.floating.map((float) => ({ ...float, root: mapDockNode(float.root, rename) })),
+    locations,
+    pinned: layout.pinned ? [...new Set(layout.pinned.map(migrateDatasetToolTabId))] : layout.pinned,
+  };
+};
+
 const normalized = (workspace: unknown, dock: DockLayout | null) => {
   const nextWorkspace = normalizeDatasetWorkspaceState(workspace);
-  let nextDock = dock ? normalizeDatasetDockLayout(dock) : null;
+  let nextDock = dock ? migrateDatasetToolDockIds(normalizeDatasetDockLayout(dock)) : null;
   const datasetPinned = record(nextWorkspace) && Array.isArray(nextWorkspace.openTabs) && nextWorkspace.openTabs.some((entry) =>
     record(entry) && entry.kind === 'window' && entry.window === 'dataset' && entry.pinned === true);
   if (nextDock && datasetPinned && !nextDock.pinned?.includes(DATASET_VIEW)) nextDock = { ...nextDock, pinned: [...(nextDock.pinned ?? []), DATASET_VIEW] };
@@ -171,8 +189,9 @@ export const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout
             if (entry.kind === 'dataset' && typeof entry.datasetId === 'string') {
               return { kind: 'dataset', datasetId: entry.datasetId, pinned };
             }
-            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && isDatasetToolName(entryTool)) {
-              return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: entryTool, pinned };
+            const datasetTool = entry.kind === 'dataset-tool' ? normalizeDatasetToolName(entryTool) : null;
+            if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && datasetTool) {
+              return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: datasetTool, pinned };
             }
             if (entry.kind === 'window' && (entry.window === 'inspector' || entry.window === 'output' || entry.window === 'project' || entry.window === 'dataset')) {
               return { kind: 'window', window: entry.window, pinned };

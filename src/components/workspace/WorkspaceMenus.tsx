@@ -1,7 +1,8 @@
 import { useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { Check, FilePlus, FolderOpen, GitBranch, Layers3, Monitor, Moon, PanelBottom, PanelLeft, PanelRight, Pencil, Sun, type LucideIcon } from 'lucide-react';
 import type { ToolName } from '../../types';
-import { TOOL_DEFINITIONS } from '../../lib/toolDefinitions';
+import { ADVANCED_TOOL_GROUP_LABEL, TOOL_DEFINITIONS } from '../../lib/toolDefinitions';
+import { ADVANCED_TOOLS, PRIMARY_TOOLS } from '../../lib/constants';
 import { MenuSurface } from '../ui/MenuSurface';
 import { useCommandRunner, useCommandState } from './Commands';
 
@@ -72,7 +73,19 @@ export function WorkspaceMenus({ openMenu, onOpenMenuChange, fileButtonRef, enab
         {item('theme.light','Light',Sun,theme === 'light')}
         {item('theme.dark','Dark',Moon,theme === 'dark')}
       </>;
-      case 'tools': return enabledTools.map(tool => item(`tool.${tool}`,TOOL_DEFINITIONS[tool].label,TOOL_DEFINITIONS[tool].icon,activeTool === tool));
+      case 'tools': {
+        const toolItem = (tool: ToolName) => item(`tool.${tool}`,TOOL_DEFINITIONS[tool].label,TOOL_DEFINITIONS[tool].icon,activeTool === tool);
+        const advanced = ADVANCED_TOOLS.filter(tool => enabledTools.includes(tool));
+        return <>
+          {PRIMARY_TOOLS.filter(tool => enabledTools.includes(tool)).map(toolItem)}
+          {item('dataset.open','Dataset',Layers3)}
+          {advanced.length > 0 && <div role="group" aria-label={ADVANCED_TOOL_GROUP_LABEL}>
+            <div role="separator" className="my-1 border-t border-border" />
+            <div role="presentation" className="px-3 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{ADVANCED_TOOL_GROUP_LABEL}</div>
+            {advanced.map(toolItem)}
+          </div>}
+        </>;
+      }
       case 'windows': return WORKSPACE_WINDOWS.map(window => item(`window.${window.id}`,window.label,window.icon,isWindowOpen(`window:${window.id}`)));
     }
   };

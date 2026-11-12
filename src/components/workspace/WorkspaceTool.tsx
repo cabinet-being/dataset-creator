@@ -1,7 +1,8 @@
 import { lazy, type ComponentProps, type MouseEvent } from 'react';
 import type { AnalysisScopeTarget, ToolViewContext } from '../../lib/workspaceToolScope';
 export type { AnalysisScopeTarget } from '../../lib/workspaceToolScope';
-import type { Dataset, ToolName } from '../../types';
+import type { Dataset } from '../../types';
+import type { DatasetToolName } from '../../lib/toolDefinitions';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import type { ImportInputFile, ImportImagesOptions, ImportImagesResult } from '../../services/import/importService';
@@ -18,7 +19,7 @@ const VideoFramesTool = lazy(() => import('../tools/VideoFramesTool').then(modul
 const BuildWorkspace = lazy(() => import('../build/BuildWorkspace').then(module => ({default:module.BuildWorkspace})));
 
 export type AssetContextMenuHandler = (item: WorkspaceImage, event: MouseEvent<HTMLElement>) => void;
-export type DatasetToolName = Extract<ToolName, 'select' | 'review' | 'analysis' | 'tagging'>;
+export type { DatasetToolName } from '../../lib/toolDefinitions';
 type DatasetUpdates = Partial<Pick<Dataset, 'assetOrder'>>;
 
 type DatasetContext = {
@@ -67,9 +68,10 @@ export function WorkspaceTool({ tool, context, active, viewId, directory, items 
   switch (tool) {
     case 'build': return <BuildWorkspace active={active} viewId={viewId ?? 'tool:build'} directory={directory} items={items} onImportFiles={onImportFiles} onRefresh={onRefresh} />;
     case 'import': return <ImportTool active={active} onImportFiles={onImportFiles} />;
-    case 'select': return dataset
+    case 'add-files': return dataset
       ? <FinalReviewTool active={active} datasetId={dataset.datasetId} mode="select" viewId={viewId} onRefresh={onRefresh} onUpdateDataset={dataset.onUpdate} onOpenImport={onOpenImport} onOpenAssetContextMenu={onAssetContextMenu} />
-      : <SimilarityReviewTool />;
+      : null;
+    case 'select': return <SimilarityReviewTool />;
     case 'clean': return <CleanupTool active={active} selectedImageId={project?.selectedItemId ?? null} onSelectImage={onOpenItem} onOpenProjectFile={onOpenProjectFile} projectDirectoryHandle={directory} />;
     case 'analysis': return <AnalysisTool viewId={viewId} active={active} datasetId={dataset?.datasetId} onUpdateDataset={dataset?.onUpdate} projectDirectoryHandle={directory}
       fileTarget={file} fileTargets={selection && 'files' in selection ? selection.files : undefined} onOpenAssetContextMenu={onAssetContextMenu} onAutoAssemble={dataset?.onAutoAssemble} />;

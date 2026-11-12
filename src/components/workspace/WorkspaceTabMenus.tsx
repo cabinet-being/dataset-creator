@@ -7,10 +7,9 @@ import type { DockView } from './DockWorkspace';
 import { isFileBackedTab } from '../../lib/workspaceFileTabs';
 import type { WorkspaceTab } from '../../lib/workspaceTabs';
 import { EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, type DockLayout } from '../../lib/workspaceLayout';
-import { TOOLS, TOOL_LABELS } from '../../lib/constants';
+import { ADVANCED_TOOLS, PRIMARY_TOOLS, TOOL_LABELS } from '../../lib/constants';
+import { ADVANCED_TOOL_GROUP_LABEL } from '../../lib/toolDefinitions';
 import type { ToolName } from '../../types';
-
-const TOOLS_MENU_ITEMS = TOOLS;
 
 export type WorkspaceContextMenuState = { id: string; x: number; y: number };
 export type ExplorerContextMenuState = {
@@ -55,7 +54,13 @@ export function WorkspaceTabMenus({
     {tabMenuOpen && <>
       <button type="button" aria-label="Close tool menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setTabMenuOpen(false)} />
       <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: toolMenuPosition.x, top: toolMenuPosition.y }}>
-        {TOOLS_MENU_ITEMS.filter((tool) => enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
+        {PRIMARY_TOOLS.filter((tool) => enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
+        {ADVANCED_TOOLS.some((tool) => enabledTools.includes(tool)) && <div role="group" aria-label={ADVANCED_TOOL_GROUP_LABEL}>
+          <div role="separator" className="my-1 border-t border-border" />
+          <div role="presentation" className="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{ADVANCED_TOOL_GROUP_LABEL}</div>
+          {ADVANCED_TOOLS.filter((tool) => enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
+        </div>}
+        <div role="separator" className="my-1 border-t border-border" />
         <button type="button" className={menuClass} onClick={() => { reopenClosedTab(); setTabMenuOpen(false); }} disabled={!closedTabs.length}><RotateCcw className="h-3.5 w-3.5" />Reopen closed tab</button>
       </MenuSurface>
     </>}
