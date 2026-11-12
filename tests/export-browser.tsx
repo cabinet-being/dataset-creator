@@ -36,10 +36,11 @@ function Harness() {
       ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 16, 24);
       ctx.fillStyle = '#0000ff'; ctx.fillRect(16, 0, 16, 24);
       const psd = writePsd({ width: 32, height: 24, canvas, children: [{ name: 'Color sentinel', canvas }] });
-      const writer = await (await input.getFileHandle('sentinel.psd', { create: true })).createWritable();
+      // Dataset membership is physical: the PSD lives under dataset/ in the project folder.
+      const datasetDir = await input.getDirectoryHandle('dataset', { create: true });
+      const writer = await (await datasetDir.getFileHandle('sentinel.psd', { create: true })).createWritable();
       await writer.write(psd); await writer.close();
       const project = createProject('PSD export fixture', 'character');
-      project.dataset.assetPaths = ['sentinel.psd'];
       project.dataset.triggerWord = 'sentinel';
       useProjectStore.getState().loadProject(project);
       useUIStore.setState({ projectDirectoryHandle: input as unknown as ProjectDirectoryHandle });
