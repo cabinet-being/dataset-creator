@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 
-declare global { interface Window { __buildFixture: { paths: () => Record<string, string | undefined> } } }
+declare global { interface Window { __buildFixture: { paths: () => Record<string, string | undefined>; tags?: () => Record<string, string[] | undefined> } } }
 
 const datasetCount = async (page: Page) => Object.values(await page.evaluate(() => window.__buildFixture.paths())).filter((path) => /(^|\/)dataset\//.test(path ?? '')).length;
 const metric = (page: Page, id: string) => page.getByTestId('build-quality-panel').locator(`[data-metric="${id}"]`);
@@ -69,5 +69,48 @@ test.describe('build quality report', () => {
     await expect(finish).toBeVisible();
     await expect(finish.locator('[data-metric="count"]')).toHaveCount(1);
     await expect(finish.locator('[data-metric="captions"]')).toHaveCount(1);
+  });
+});
+
+test.describe('build quality profile coverage', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/tests/build-browser.html');
+    await page.getByRole('button', { name: 'Prepare coverage fixture' }).click();
+    await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => datasetCount(page), { timeout: 30_000 }).toBe(10);
+    await page.getByTestId('build-quality-toggle').click();
+    await expect(page.getByTestId('build-quality-panel')).toBeVisible();
+  });
+  const panel = (page: Page) => page.getByTestId('build-quality-panel');
+  const tagsOf = (page: Page) => page.evaluate(() => window.__buildFixture.tags!());
+
+  test('character coverage axis, gap hint and removing a common tag; Style keeps it', async ({ page }) => {
+    const coverage = panel(page).locator('[data-section="profile-coverage"]');
+    await expect(coverage).toBeVisible();
+    await expect(coverage.locator('[data-metric="axis-framing"]')).toHaveAttribute('data-status', 'warn');
+    await expect(coverage.locator('[data-metric="axis-framing"]')).not.toHaveAttribute('data-status', 'not-evaluated');
+    const hints = panel(page).locator('[data-section="hints"]');
+    await expect(hints.locator('[data-hint^="gap-axis-framing-"]').first()).toBeVisible();
+    await expect(hints.locator('[data-hint="trigger-missing"]')).toBeVisible();
+
+    const prune = hints.locator('[data-hint="common-tags-prune"]');
+    await expect(prune).toBeVisible();
+    expect(Object.values(await tagsOf(page)).every((tags) => tags?.includes('solo'))).toBe(true);
+    page.once('dialog', (dialog) => { expect(dialog.message()).toContain('solo'); void dialog.accept(); });
+    await prune.getByRole('button', { name: 'Застосувати' }).click();
+    await expect.poll(async () => Object.values(await tagsOf(page)).some((tags) => tags?.includes('solo')), { timeout: 30_000 }).toBe(false);
+    const after = Object.values(await tagsOf(page));
+    expect(after).toHaveLength(10);
+    expect(after.every((tags) => tags?.includes('full body') || tags?.includes('close-up') || tags?.includes('upper body'))).toBe(true);
+    await expect(hints.locator('[data-hint="common-tags-prune"]')).toHaveCount(0);
+  });
+
+  test('switching Project type to Style no longer offers common-tag removal', async ({ page }) => {
+    await expect(panel(page).locator('[data-hint="common-tags-prune"]')).toBeVisible();
+    await page.getByLabel('Project type', { exact: true }).selectOption('style');
+    await expect(panel(page).locator('[data-hint="common-tags-prune"]')).toHaveCount(0);
+    await expect(panel(page).locator('[data-hint="trigger-missing"]')).toHaveCount(0);
+    await expect(panel(page).locator('[data-metric="axis-framing"]')).toHaveCount(0);
+    expect(Object.values(await tagsOf(page)).every((tags) => tags?.includes('solo'))).toBe(true);
   });
 });

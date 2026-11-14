@@ -33,9 +33,23 @@ function Harness() {
       setReady(true);
     } catch (cause) { setError(String(cause)); }
   };
+  // New-project flow: the picker returns an empty OPFS parent; the test reads back the manifest App wrote.
+  const startNew = async () => {
+    try {
+      const parent = await (await navigator.storage.getDirectory()).getDirectoryHandle(`new-project-${crypto.randomUUID()}`, {create:true});
+      pickerWindow.showDirectoryPicker = async () => parent as unknown as ProjectDirectoryHandle;
+      (window as unknown as Record<string, unknown>).__newProject = {
+        manifest: async (name: string) => {
+          const directory = await parent.getDirectoryHandle(name);
+          return JSON.parse(await (await (await directory.getFileHandle('manifest.json')).getFile()).text());
+        },
+      };
+      setReady(true);
+    } catch (cause) { setError(String(cause)); }
+  };
   return <>
     <header className="flex gap-4 border-b p-2">
-      {!ready ? <button onClick={() => void start()}>Prepare two isolated projects</button> : <>
+      {!ready ? <><button onClick={() => void start()}>Prepare two isolated projects</button><button onClick={() => void startNew()}>Prepare empty parent for new project</button></> : <>
         <button onClick={() => {selected='A';setChoice('A');}}>Choose A for next Open</button>
         <button onClick={() => {selected='B';setChoice('B');}}>Choose B for next Open</button>
         <span role="status">Next Open project: {choice}</span>

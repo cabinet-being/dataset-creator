@@ -119,7 +119,7 @@ test.describe('build auto pipeline', () => {
   test('changing Min short side re-triages without errors', async ({ page }) => {
     await expectCounters(page, 1, 3, 5);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
-    await page.getByLabel('Min short side').selectOption('512');
+    await page.getByLabel('Model', { exact: true }).selectOption('sd15');
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
     await expect.poll(async () => Object.values(await reasonsByName(page)).filter((record) => record.codes.includes('below-target-resolution')).length, { timeout: 30_000 }).toBe(0);
     const records = Object.values(await reasonsByName(page));
