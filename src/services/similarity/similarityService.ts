@@ -42,33 +42,46 @@ export const computeDistanceMatrix = (
   return results;
 };
 
+/** Similarity of two members by index, or null when the pair was not measured. */
+type SimilarityAt = (left: number, right: number) => number | null;
+
 /**
- * Simple agglomerative clustering based on similarity.
+ * Core of the agglomerative clustering. Reads similarity through `similarityAt` and yields between
+ * steps so the synchronous and the time-sliced entry points share one implementation.
  * One threshold (take it from `similarityLevels`) governs the anchor pair, the cluster
  * representative and the average similarity; 70% of member links must also pass it.
  */
-export const performClustering = (
-  _imageIds: string[],
-  distanceMatrix: Map<string, SimilarityResult[]>,
+function* clusterSteps(
+  ids: readonly string[],
+  similarityAt: SimilarityAt,
   threshold: number
-): SimilarityCluster[] => {
-  const clusters: string[][] = [];
-  const assignment = new Map<string, number>();
-  const pairMap = buildPairMap(distanceMatrix);
-  const candidatePairs = findSimilarPairs(distanceMatrix, threshold);
+): Generator<void, SimilarityCluster[], void> {
+  const clusters: number[][] = [];
+  const assignment = new Map<number, number>();
+  const candidatePairs: Array<{ left: number; right: number; similarity: number }> = [];
+  for (let left = 0; left < ids.length; left++) {
+    for (let right = left + 1; right < ids.length; right++) {
+      const similarity = similarityAt(left, right);
+      if (similarity != null && similarity >= threshold) candidatePairs.push({ left, right, similarity });
+    }
+    yield;
+  }
+  candidatePairs.sort((a, b) => b.similarity - a.similarity);
+  yield;
   const representativeThreshold = threshold;
   const clusterThreshold = threshold;
   const averageThreshold = threshold;
 
-  for (const { imageId1, imageId2, similarity } of candidatePairs) {
-    const clusterIndex1 = assignment.get(imageId1);
-    const clusterIndex2 = assignment.get(imageId2);
+  for (const { left: index1, right: index2, similarity } of candidatePairs) {
+    yield;
+    const clusterIndex1 = assignment.get(index1);
+    const clusterIndex2 = assignment.get(index2);
 
     if (clusterIndex1 == null && clusterIndex2 == null) {
-      clusters.push([imageId1, imageId2]);
+      clusters.push([index1, index2]);
       const newIndex = clusters.length - 1;
-      assignment.set(imageId1, newIndex);
-      assignment.set(imageId2, newIndex);
+      assignment.set(index1, newIndex);
+      assignment.set(index2, newIndex);
       continue;
     }
 
@@ -83,13 +96,13 @@ export const performClustering = (
         continue;
       }
 
-      if (canMergeClusters(left, right, pairMap, clusterThreshold, representativeThreshold, averageThreshold)) {
+      if (canMergeClusters(left, right, similarityAt, clusterThreshold, representativeThreshold, averageThreshold)) {
         const merged = [...left, ...right];
         clusters[clusterIndex1] = merged;
         clusters[clusterIndex2] = [];
 
-        for (const id of merged) {
-          assignment.set(id, clusterIndex1);
+        for (const member of merged) {
+          assignment.set(member, clusterIndex1);
         }
       }
       continue;
@@ -97,8 +110,8 @@ export const performClustering = (
 
     const existingClusterIndex = clusterIndex1 ?? clusterIndex2!;
     const existingCluster = clusters[existingClusterIndex];
-    const candidateId = clusterIndex1 == null ? imageId1 : imageId2;
-    const anchorId = clusterIndex1 == null ? imageId2 : imageId1;
+    const candidate = clusterIndex1 == null ? index1 : index2;
+    const anchor = clusterIndex1 == null ? index2 : index1;
 
     if (!existingCluster) {
       continue;
@@ -106,18 +119,18 @@ export const performClustering = (
 
     if (
       canJoinCluster(
-        candidateId,
+        candidate,
         existingCluster,
-        anchorId,
-        pairMap,
+        anchor,
+        similarityAt,
         similarity,
         clusterThreshold,
         representativeThreshold,
         averageThreshold
       )
     ) {
-      existingCluster.push(candidateId);
-      assignment.set(candidateId, existingClusterIndex);
+      existingCluster.push(candidate);
+      assignment.set(candidate, existingClusterIndex);
     }
   }
 
@@ -125,9 +138,66 @@ export const performClustering = (
     .filter((cluster) => cluster.length > 0)
     .map((cluster, index) => ({
       id: `cluster-${index}`,
-      imageIds: cluster,
-      avgSimilarity: computeAverageSimilarity(cluster, distanceMatrix),
+      imageIds: cluster.map((member) => ids[member]),
+      avgSimilarity: computeAverageSimilarity(cluster, similarityAt),
     }));
+}
+
+const runSync = <T>(generator: Generator<void, T, void>): T => {
+  for (;;) {
+    const step = generator.next();
+    if (step.done) return step.value;
+  }
+};
+
+/**
+ * Simple agglomerative clustering based on similarity.
+ * One threshold (take it from `similarityLevels`) governs the anchor pair, the cluster
+ * representative and the average similarity; 70% of member links must also pass it.
+ */
+export const performClustering = (
+  _imageIds: string[],
+  distanceMatrix: Map<string, SimilarityResult[]>,
+  threshold: number
+): SimilarityCluster[] => {
+  const ids = Array.from(distanceMatrix.keys());
+  const pairMap = buildPairMap(distanceMatrix);
+  const similarityAt: SimilarityAt = (left, right) => getPairSimilarity(pairMap, ids[left], ids[right]);
+  return runSync(clusterSteps(ids, similarityAt, threshold));
+};
+
+export type SlicedClusteringOptions = {
+  signal?: AbortSignal;
+  yieldToUi?: () => Promise<void>;
+  /** Longest stretch of synchronous work between yields. */
+  sliceMs?: number;
+};
+
+/**
+ * Same result as `performClustering` for a dense row-major n×n similarity matrix (`ids.length`²),
+ * but hands control back to the UI between slices and honours `signal`.
+ */
+export const performClusteringSliced = async (
+  ids: string[],
+  matrix: Float32Array,
+  threshold: number,
+  options: SlicedClusteringOptions = {}
+): Promise<SimilarityCluster[]> => {
+  const { signal, sliceMs = 12 } = options;
+  const yieldToUi = options.yieldToUi ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  const count = ids.length;
+  const generator = clusterSteps(ids, (left, right) => matrix[left * count + right], threshold);
+  let sliceStart = performance.now();
+  for (;;) {
+    signal?.throwIfAborted();
+    const step = generator.next();
+    if (step.done) return step.value;
+    if (performance.now() - sliceStart >= sliceMs) {
+      await yieldToUi();
+      signal?.throwIfAborted();
+      sliceStart = performance.now();
+    }
+  }
 };
 
 const buildPairMap = (
@@ -157,10 +227,10 @@ const getPairSimilarity = (
 };
 
 const canJoinCluster = (
-  candidateId: string,
-  cluster: string[],
-  anchorId: string,
-  pairMap: Map<string, SimilarityResult>,
+  candidate: number,
+  cluster: number[],
+  anchor: number,
+  similarityAt: SimilarityAt,
   anchorSimilarity: number,
   clusterThreshold: number,
   representativeThreshold: number,
@@ -170,8 +240,8 @@ const canJoinCluster = (
     return false;
   }
 
-  const representativeId = cluster[0] ?? anchorId;
-  const representativeSimilarity = getPairSimilarity(pairMap, candidateId, representativeId);
+  const representative = cluster[0] ?? anchor;
+  const representativeSimilarity = similarityAt(candidate, representative);
   if (representativeSimilarity == null || representativeSimilarity < representativeThreshold) {
     return false;
   }
@@ -180,8 +250,8 @@ const canJoinCluster = (
   let similaritySum = 0;
   let similarityCount = 0;
 
-  for (const memberId of cluster) {
-    const similarity = getPairSimilarity(pairMap, candidateId, memberId);
+  for (const member of cluster) {
+    const similarity = similarityAt(candidate, member);
     if (similarity == null) {
       continue;
     }
@@ -203,16 +273,14 @@ const canJoinCluster = (
 };
 
 const canMergeClusters = (
-  left: string[],
-  right: string[],
-  pairMap: Map<string, SimilarityResult>,
+  left: number[],
+  right: number[],
+  similarityAt: SimilarityAt,
   clusterThreshold: number,
   representativeThreshold: number,
   averageThreshold: number
 ): boolean => {
-  const leftRepresentative = left[0];
-  const rightRepresentative = right[0];
-  const representativeSimilarity = getPairSimilarity(pairMap, leftRepresentative, rightRepresentative);
+  const representativeSimilarity = similarityAt(left[0], right[0]);
 
   if (representativeSimilarity == null || representativeSimilarity < representativeThreshold) {
     return false;
@@ -222,9 +290,9 @@ const canMergeClusters = (
   let similaritySum = 0;
   let similarityCount = 0;
 
-  for (const leftId of left) {
-    for (const rightId of right) {
-      const similarity = getPairSimilarity(pairMap, leftId, rightId);
+  for (const leftMember of left) {
+    for (const rightMember of right) {
+      const similarity = similarityAt(leftMember, rightMember);
       if (similarity == null) {
         continue;
       }
@@ -248,24 +316,23 @@ const canMergeClusters = (
 };
 
 /**
- * Compute average similarity within a cluster
+ * Compute average similarity within a cluster. Pairs are summed in the same order as the
+ * distance-matrix layout (each member against the later-indexed members).
  */
-const computeAverageSimilarity = (
-  imageIds: string[],
-  distanceMatrix: Map<string, SimilarityResult[]>
-): number => {
-  if (imageIds.length < 2) return 1;
+const computeAverageSimilarity = (members: number[], similarityAt: SimilarityAt): number => {
+  if (members.length < 2) return 1;
 
+  const sorted = [...members].sort((a, b) => a - b);
   let sumSimilarity = 0;
   let count = 0;
 
-  for (let i = 0; i < imageIds.length; i++) {
-    const results = distanceMatrix.get(imageIds[i]) || [];
-    for (const result of results) {
-      if (imageIds.includes(result.imageId2)) {
-        sumSimilarity += result.similarity;
-        count++;
-      }
+  for (const member of members) {
+    for (const other of sorted) {
+      if (other <= member) continue;
+      const similarity = similarityAt(member, other);
+      if (similarity == null) continue;
+      sumSimilarity += similarity;
+      count++;
     }
   }
 
