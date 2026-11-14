@@ -1,6 +1,6 @@
 import { Loader2 } from 'lucide-react';
 import type { SimilarityFeatures } from '../../services/similarity/useSimilarityFeatures';
-import type { QualityReport as QualityReportData } from '../../services/quality/metrics';
+import type { QualityAction, QualityReport as QualityReportData } from '../../services/quality/metrics';
 import { QualityReport } from '../quality/QualityReport';
 
 type Props = {
@@ -9,11 +9,13 @@ type Props = {
   datasetCount: number;
   labelFor: (id: string) => string;
   onSelectId?: (id: string) => void;
+  onAction?: (source: unknown, action: QualityAction) => void;
+  canApply?: (source: unknown, action: QualityAction) => boolean;
   testId: string;
 };
 
 /** Dataset quality report with the DINOv2 state that the diversity and coverage metrics depend on. */
-export function BuildQualityPanel({ report, features, datasetCount, labelFor, onSelectId, testId }: Props) {
+export function BuildQualityPanel({ report, features, datasetCount, labelFor, onSelectId, onAction, canApply, testId }: Props) {
   const needsModel = features.basis !== 'dinov2';
   return <div data-testid={testId} className="space-y-3">
     <p className="text-xs text-muted-foreground">Checks the {datasetCount} file{datasetCount === 1 ? '' : 's'} currently in Dataset. These metrics describe the files, they do not predict how well the trained LoRA will turn out.</p>
@@ -25,6 +27,6 @@ export function BuildQualityPanel({ report, features, datasetCount, labelFor, on
           {(features.modelState === 'missing' || features.modelState === 'error') && <button type="button" onClick={features.loadModel} className="rounded border border-border px-2 py-1">Download DINOv2 (≈88 MB)</button>}
         </>}
     </div>}
-    <QualityReport report={report} labelFor={labelFor} onSelectId={onSelectId} />
+    <QualityReport report={report} labelFor={labelFor} onSelectId={onSelectId} onAction={onAction} canApply={canApply} />
   </div>;
 }

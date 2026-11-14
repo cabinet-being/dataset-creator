@@ -41,7 +41,7 @@ import { useCommandPalette } from './components/workspace/Commands';
 import { flushProjectSave, runProjectFileOperation, useProjectSave } from './hooks/useProjectSave';
 import { ProjectSetupDialog } from './components/ProjectSetupDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
-import type { ProjectType } from './types';
+import type { ProjectType, TargetModelId } from './types';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, MouseEvent } from 'react';
 import {
@@ -173,8 +173,8 @@ function App() {
   const projectType = useProjectStore((state) => state.projectType);
   const currentTool = useProjectStore((state) => state.currentTool);
   const profile = useProjectStore((state) => PROJECT_TYPE_PROFILES[state.projectType]);
-  const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType } | null) => void } | null>(null);
-  const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType } | null>((resolve) => {
+  const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType; targetModel: TargetModelId } | null) => void } | null>(null);
+  const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType; targetModel: TargetModelId } | null>((resolve) => {
     setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
   });
   const loadProject = useProjectStore((state) => state.loadProject);
@@ -2320,7 +2320,7 @@ function App() {
         return;
       }
 
-      const { name: nextName, projectType } = setup;
+      const { name: nextName, projectType, targetModel } = setup;
       const parentDirectory = await pickProjectDirectory();
       logger.info(`creating project directory ${nextName}`);
       const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
@@ -2332,7 +2332,7 @@ function App() {
         return;
       }
       await flushProjectSave();
-      const project = createProject(nextName, projectType);
+      const project = createProject(nextName, projectType, targetModel);
       logger.info('writing project manifest and folders');
       const create = async () => {
         await clearProjectDirectory(directory);
