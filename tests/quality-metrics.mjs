@@ -16,6 +16,8 @@ try {
       component: 'src/components/quality/QualityReport.tsx',
       adapter: 'src/services/quality/datasetQualityInput.ts',
       similarityLevels: 'src/services/similarity/similarityLevels.ts',
+      imageQuality: 'src/services/quality/imageQuality.ts',
+      presets: 'src/lib/projectProfilePresets.ts',
     },
     platform: 'node',
     external: [/^react/, /^lucide-react/, /^clsx/, /^tailwind-merge/],
@@ -28,6 +30,8 @@ try {
   const { QualityReport } = await import(pathToFileURL(resolve(temp, 'component.mjs')));
 
   const adapter = await import(pathToFileURL(resolve(temp, 'adapter.mjs')));
+  const { PROFILE_RULES, TARGET_MODEL_PRESETS } = await import(pathToFileURL(resolve(temp, 'presets.mjs')));
+  const { getMinShortSide } = await import(pathToFileURL(resolve(temp, 'imageQuality.mjs')));
   const { getSimilarityThreshold } = await import(pathToFileURL(resolve(temp, 'similarityLevels.mjs')));
 
   const close = (actual, expected, epsilon, message) => assert.ok(Math.abs(actual - expected) <= epsilon, `${message}: ${actual} ≠ ${expected}`);
@@ -94,6 +98,9 @@ try {
     const sdxl = metrics.checkResolution(sizes);
     assert.equal(sdxl.status, 'warn', '1 of 20 below 1024 → warn');
     assert.deepEqual(sdxl.action.ids, ['item-0']);
+    assert.equal(metrics.checkResolution(sizes, 'flux').status, 'warn', 'Flux preset uses 1024');
+    assert.deepEqual(['sd15', 'sdxl', 'flux'].map((id) => metrics.QUALITY_THRESHOLDS.resolution.presets[id]), [512, 1024, 1024]);
+    assert.deepEqual(['sd15', 'sdxl', 'flux'].map((id) => getMinShortSide(id)), [512, 1024, 1024], 'checkResolution presets agree with getMinShortSide');
     assert.equal(metrics.checkResolution(sizes, 'sd15').status, 'ok', 'SD1.5 preset uses 512');
     assert.equal(metrics.checkResolution(items(4, () => ({ width: 600, height: 600 }))).status, 'fail');
     assert.equal(metrics.checkResolution(sizes, 'sdxl', 800).status, 'ok', 'Explicit minimum overrides the preset');
@@ -259,13 +266,288 @@ try {
     assert.equal(buildDatasetQualityInput({ items }).technical, undefined, 'no summaries -> technical undefined');
     assert.equal(buildDatasetQualityInput({ items, qualitySummaries: new Map() }).technical, undefined);
 
-    assert.equal(buildDatasetQualityInput({ items }).minShortSide, 1024, 'default min short side');
-    assert.equal(buildDatasetQualityInput({ items, profile: { minShortSide: 512 } }).minShortSide, 512);
+    assert.equal(buildDatasetQualityInput({ items }).resolutionPreset, 'sdxl', 'default resolution preset');
+    assert.equal(buildDatasetQualityInput({ items }).minShortSide, undefined, 'minShortSide is no longer emitted');
+    for (const targetModel of ['sd15', 'sdxl', 'flux']) assert.equal(buildDatasetQualityInput({ items, targetModel }).resolutionPreset, targetModel);
     assert.deepEqual(buildDatasetQualityInput({ items, target: 50 }).target, { min: 50, max: 200 });
     assert.deepEqual(buildDatasetQualityInput({ items, target: 500 }).target, { min: 500, max: 500 });
     assert.equal(buildDatasetQualityInput({ items }).target, undefined);
 
     assert.equal(metrics.QUALITY_THRESHOLDS.nearDuplicates.similarity, getSimilarityThreshold('near-copy', 'dinov2'));
+  }
+
+  // Profile coverage axes, tag policy and gap hints.
+  {
+    const T = metrics.QUALITY_THRESHOLDS;
+    const cfg = T.profileCoverage;
+    const mk = (count, extra = () => ({})) => Array.from({ length: count }, (_, index) => ({
+      id: `f-${index}.png`, width: 1024, height: 1024, caption: undefined, tags: ['solo'], ...extra(index),
+    }));
+    const axis = (list, type, id, extra = {}) => metrics.measureProfileCoverage({ items: list, projectType: type, ...extra }).find((metric) => metric.id === `axis-${id}`);
+    const bucketOf = (metric, id) => metric.buckets.find((bucket) => bucket.id === id);
+    const n = cfg.minItems + 12;
+
+    // Per-profile axis sets.
+    const ids = (type) => metrics.measureProfileCoverage({ items: mk(n), projectType: type }).map((metric) => metric.id.replace('axis-', ''));
+    assert.deepEqual(ids('general'), ['orientation', 'setting']);
+    assert.deepEqual(ids('character'), ['framing', 'orientation', 'setting', 'lighting']);
+    assert.deepEqual(ids('style'), ['subject', 'aspect', 'setting']);
+    assert.deepEqual(ids('concept'), ['setting', 'framing', 'orientation']);
+    assert.deepEqual(ids(undefined), ids('general'), 'Missing projectType behaves as general');
+    for (const type of Object.keys(PROFILE_RULES)) assert.deepEqual(ids(type), [...PROFILE_RULES[type].coverageAxes]);
+
+    // Vocabulary: underscores, case, patterns.
+    const framingItems = (tagFor) => mk(n, (index) => ({ tags: [tagFor(index)] }));
+    assert.equal(bucketOf(axis(framingItems(() => 'full_body'), 'character', 'framing'), 'full').count, n, 'full_body → full');
+    assert.equal(bucketOf(axis(framingItems(() => 'Full Body'), 'character', 'framing'), 'full').count, n, 'Full Body → full');
+    const halves = axis(framingItems((i) => (i % 2 ? 'Close-Up' : 'upper_body')), 'character', 'framing');
+    assert.equal(bucketOf(halves, 'close').count, n / 2);
+    assert.equal(bucketOf(halves, 'mid').count, n / 2);
+    const bg = (tag) => bucketOf(axis(mk(n, () => ({ tags: [tag, 'indoors'] })), 'general', 'setting'), 'simple').count;
+    assert.equal(bg('white background'), n, 'color background pattern');
+    assert.equal(bg('Blue_Background'), n, 'pattern after _ and case normalization');
+    assert.equal(bg('simple background'), n);
+    assert.equal(bg('forest background'), 0, 'non-color background is not simple');
+    const subj = (tag) => bucketOf(axis(mk(n, () => ({ tags: [tag, 'no humans'] })), 'style', 'subject'), 'people').count;
+    assert.equal(subj('1girl'), n);
+    assert.equal(subj('2boys'), n);
+    assert.equal(subj('6+girls'), n);
+    assert.equal(subj('multiple girls'), n);
+    assert.equal(subj('girl scouts'), 0);
+
+    // Framing precedence full > mid > close.
+    {
+      const metric = axis(mk(n, () => ({ tags: ['close-up', 'upper body', 'full body'] })), 'character', 'framing');
+      assert.deepEqual(['full', 'mid', 'close'].map((id) => bucketOf(metric, id).count), [n, 0, 0]);
+      const midClose = axis(mk(n, () => ({ tags: ['portrait', 'cowboy shot'] })), 'character', 'framing');
+      assert.deepEqual(['full', 'mid', 'close'].map((id) => bucketOf(midClose, id).count), [0, n, 0], 'mid beats close');
+    }
+
+    // Orientation from dimensions with tolerance.
+    {
+      const edge = Math.round(1000 * cfg.orientationTolerance);
+      const dims = [[1000, 1500], [1500, 1000], [1000, 1000], [1000, edge - 1], [edge - 1, 1000], [1000, edge + 5], [edge + 5, 1000]];
+      const list = mk(dims.length * 3, (index) => ({ width: dims[index % dims.length][0], height: dims[index % dims.length][1] }));
+      const metric = axis(list, 'general', 'orientation');
+      assert.deepEqual(['portrait', 'square', 'landscape'].map((id) => bucketOf(metric, id).count), [6, 9, 6]);
+      assert.equal(metric.unlabeled, 0);
+    }
+
+    // Aspect buckets for sd15 vs sdxl and the "other" bucket.
+    {
+      const used = (width, height, model) => axis(mk(n, () => ({ width, height })), 'style', 'aspect', { resolutionPreset: model }).buckets.filter((bucket) => bucket.count > 0).map((bucket) => bucket.id);
+      const bucketIds = (model) => TARGET_MODEL_PRESETS[model].buckets.map((bucket) => bucket.id);
+      const sdxlWide = TARGET_MODEL_PRESETS.sdxl.buckets.find((bucket) => bucket.width === 1344);
+      const sd15Wide = TARGET_MODEL_PRESETS.sd15.buckets.find((bucket) => bucket.width === 640);
+      assert.deepEqual(used(1344, 768, 'sdxl'), [sdxlWide.id], 'exact sdxl bucket');
+      assert.deepEqual(used(640, 384, 'sd15'), [sd15Wide.id], 'exact sd15 bucket');
+      assert.ok(!bucketIds('sd15').includes(sdxlWide.id), 'sd15 has no 1344×768 bucket');
+      const dist = Math.abs(Math.log(1344 / 768) - Math.log(640 / 384));
+      assert.deepEqual(used(1344, 768, 'sd15'), [dist <= cfg.aspectMaxLogDistance ? sd15Wide.id : 'other'], 'nearest bucket by |log ratio| or other');
+      assert.deepEqual(used(1000, 100, 'sdxl'), ['other'], 'extreme ratio → other');
+      assert.deepEqual(used(1000, 100, 'sd15'), ['other']);
+      for (const model of ['sd15', 'sdxl', 'flux']) {
+        assert.deepEqual(axis(mk(n), 'style', 'aspect', { resolutionPreset: model }).buckets.map((bucket) => bucket.id), [...bucketIds(model), 'other']);
+      }
+      assert.deepEqual(axis(mk(n), 'style', 'aspect').buckets.map((bucket) => bucket.id), [...bucketIds('sdxl'), 'other'], 'default model is sdxl');
+      const mostlyOther = axis(mk(n, (index) => (index < n * 0.6 ? { width: 1000, height: 100 } : {})), 'style', 'aspect');
+      assert.equal(mostlyOther.status, 'warn');
+      assert.match(mostlyOther.explanation, /не підходять до жодного бакета/);
+    }
+
+    // Not evaluated: too few items.
+    {
+      const few = axis(mk(cfg.minItems - 1, () => ({ tags: ['full body'] })), 'character', 'framing');
+      assert.equal(few.evaluated, false);
+      assert.equal(few.value, null, 'not evaluated is null, not 0');
+      assert.equal(few.status, 'ok');
+      assert.ok(few.explanation.includes(String(cfg.minItems - 1)) && few.explanation.includes(String(cfg.minItems)), few.explanation);
+      assert.equal(axis(mk(cfg.minItems, () => ({ tags: ['full body'] })), 'character', 'framing').evaluated, true, 'exactly minItems evaluates');
+    }
+
+    // Not evaluated: labeled fraction below minimum.
+    {
+      const total = 20;
+      const labeledCount = Math.ceil(cfg.minLabeledFraction * total) - 1;
+      const sparse = axis(mk(total, (index) => ({ tags: index < labeledCount ? ['full body'] : ['solo'] })), 'character', 'framing');
+      assert.equal(sparse.evaluated, false);
+      assert.equal(sparse.value, null);
+      assert.equal(sparse.unlabeled, total - labeledCount);
+      assert.ok(sparse.explanation.includes(`${labeledCount} з ${total}`), sparse.explanation);
+      assert.match(sparse.explanation, /Вісь не оцінено/);
+      assert.match(sparse.explanation, /теги кадрування/);
+      const enough = axis(mk(total, (index) => ({ tags: index <= labeledCount ? ['full body'] : ['solo'] })), 'character', 'framing');
+      assert.equal(enough.evaluated, true, 'fraction at the minimum evaluates');
+      assert.equal(enough.unlabeled, total - labeledCount - 1);
+      const noSize = axis(mk(total, () => ({ width: undefined, height: undefined })), 'general', 'orientation');
+      assert.equal(noSize.evaluated, false);
+      assert.match(noSize.explanation, /розміри відомі лише для 0 з 20/);
+    }
+
+    // Tags semantics: undefined → derive from caption; [] → unlabeled.
+    {
+      const fromCaption = axis(mk(n, () => ({ tags: undefined, caption: 'hero, full body, smile' })), 'character', 'framing');
+      assert.equal(bucketOf(fromCaption, 'full').count, n, 'tags undefined resolves from caption');
+      const empty = axis(mk(n, () => ({ tags: [], caption: 'hero, full body' })), 'character', 'framing');
+      assert.equal(empty.evaluated, false, 'tags [] are unlabeled even when the caption has vocabulary');
+      assert.equal(empty.unlabeled, n);
+      const mixed = axis(mk(n, (index) => (index % 2 ? { tags: [], caption: 'full body' } : { tags: undefined, caption: 'full body' })), 'character', 'framing');
+      assert.equal(bucketOf(mixed, 'full').count, n / 2);
+      assert.equal(mixed.unlabeled, n / 2);
+      assert.ok(!mixed.buckets.some((bucket) => bucket.id === 'unlabeled'), 'unlabeled is never a bucket');
+    }
+
+    // Recommended = ceil(share × max(items, target.min)) with the formula in explanation and hint.
+    {
+      const share = cfg.bucketMinShare.framing.full;
+      const pct = Math.round(share * 100);
+      const list = mk(n, () => ({ tags: ['close-up'] }));
+      assert.equal(bucketOf(axis(list, 'character', 'framing'), 'full').recommended, Math.ceil(share * Math.max(n, T.count.defaultTarget.min)), 'default target.min is used');
+      const withTarget = axis(list, 'character', 'framing', { target: { min: 100, max: 200 } });
+      const expected = Math.ceil(share * 100);
+      assert.equal(bucketOf(withTarget, 'full').recommended, expected, 'target.min above item count is the basis');
+      assert.equal(bucketOf(withTarget, 'full').count, 0);
+      assert.equal(withTarget.status, 'warn');
+      assert.ok(withTarget.explanation.includes(`ceil(${pct}% × 100) = ${expected}`), withTarget.explanation);
+      assert.ok(withTarget.explanation.includes(`0 з рекомендованих ${expected}`), withTarget.explanation);
+      const small = axis(list, 'character', 'framing', { target: { min: 5, max: 10 } });
+      assert.equal(bucketOf(small, 'full').recommended, Math.ceil(share * n), 'item count is the basis when above target.min');
+      assert.ok(small.explanation.includes(`ceil(${pct}% × ${n}) = ${Math.ceil(share * n)}`), small.explanation);
+      assert.equal(bucketOf(axis(list, 'general', 'orientation'), 'square').recommended, undefined, 'buckets without a share have no recommendation');
+      const input = { items: list, projectType: 'character', target: { min: 100, max: 200 }, triggerWord: 'hero' };
+      const hint = metrics.buildQualityReport(input).hints.find((entry) => entry.id === 'gap-axis-framing-full');
+      assert.ok(hint, 'gap hint for the missing bucket');
+      assert.equal(hint.metricId, 'axis-framing');
+      assert.ok(hint.text.includes(`є 0 з рекомендованих ${expected}`), hint.text);
+      assert.ok(hint.explanation.includes(`ceil(${pct}% × 100) = ${expected}`), hint.explanation);
+      assert.equal(hint.action, undefined);
+      // A bucket meeting its recommendation produces no hint.
+      const filled = mk(n, (index) => ({ tags: [index < expected ? 'full body' : 'close-up'] }));
+      const filledReport = metrics.buildQualityReport({ ...input, items: filled, target: { min: 5, max: 10 } });
+      const need = Math.ceil(share * n);
+      assert.equal(filled.filter((item) => item.tags[0] === 'full body').length >= need, true, 'precondition');
+      assert.ok(!filledReport.hints.some((entry) => entry.id === 'gap-axis-framing-full'));
+    }
+
+    // Axes never fail and never change readiness.
+    {
+      const bare = { items: mk(30, () => ({ tags: ['close-up'], width: 1000, height: 100, caption: 'hero, close-up' })), projectType: 'character', triggerWord: 'hero', target: { min: 20, max: 60 } };
+      for (const type of Object.keys(PROFILE_RULES)) {
+        for (const metric of metrics.measureProfileCoverage({ ...bare, projectType: type })) assert.notEqual(metric.status, 'fail', `${type}/${metric.id}`);
+      }
+      const report = metrics.buildQualityReport(bare);
+      assert.ok(report.coverage.some((metric) => metric.status === 'warn'), 'precondition: some axis warns');
+      assert.ok(![...report.required, ...report.insights].some((metric) => metric.id.startsWith('axis-')), 'axes live only in coverage');
+      const rank = { ok: 0, warn: 1, fail: 2 };
+      const worst = report.required.map((metric) => metric.status).reduce((acc, status) => (rank[status] > rank[acc] ? status : acc), 'ok');
+      assert.equal(report.readiness, worst, 'readiness is the worst required check');
+      // Same required checks, different axis sets → same readiness; a warning-only axis does not downgrade ok.
+      const clean = metrics.buildQualityReport({ items: mk(30, (index) => ({ embedding: basis(64, index), caption: 'hero, a', tags: ['close-up'] })), projectType: 'character', triggerWord: 'hero', target: { min: 20, max: 60 }, technical: [] });
+      assert.ok(clean.coverage.some((metric) => metric.status === 'warn'));
+      const noAxesReport = metrics.buildQualityReport({ items: clean.required.length ? mk(30, (index) => ({ embedding: basis(64, index), caption: 'hero, a', tags: ['close-up'] })).slice(0, 30) : [], projectType: 'general', triggerWord: 'hero', target: { min: 20, max: 60 }, technical: [] });
+      assert.equal(clean.readiness, noAxesReport.readiness, 'a different axis set does not change readiness');
+    }
+
+    // groupNearDuplicates grouping and order.
+    {
+      const pair = (kept, removed, kind = 'near') => ({ kept, removed, similarity: kind === 'exact' ? 1 : 0.99, kind });
+      const groups = metrics.groupNearDuplicates([
+        pair('a', 'a1'), pair('b', 'b1'), pair('b', 'b2', 'exact'), pair('c', 'c1'), pair('b', 'b3'), pair('a', 'a2'),
+      ]);
+      assert.deepEqual(groups.map((group) => group.kept), ['b', 'a', 'c'], 'larger groups first, ties by first appearance');
+      assert.deepEqual(groups.map((group) => group.removed), [['b1', 'b2', 'b3'], ['a1', 'a2'], ['c1']], 'removed keeps pair order');
+      assert.deepEqual(groups.map((group) => group.exact), [1, 0, 0]);
+      assert.deepEqual(metrics.groupNearDuplicates([]), []);
+      assert.deepEqual(metrics.groupNearDuplicates([pair('x', 'x1'), pair('y', 'y1')]).map((group) => group.kept), ['x', 'y'], 'ties keep first appearance');
+    }
+
+    // Near-duplicate hint text and action.
+    {
+      const list = mk(20, (index) => ({ id: `dir/f-${index}.png`, embedding: basis(64, index) }));
+      list[5] = { ...list[5], embedding: noisy(basis(64, 3), 0.01) };
+      list[9] = { ...list[9], embedding: noisy(basis(64, 3), 0.01) };
+      list[12] = { ...list[12], imageHash: 'h' };
+      list[13] = { ...list[13], imageHash: 'h' };
+      const report = metrics.buildQualityReport({ items: list, projectType: 'general' });
+      const hints = report.hints.filter((hint) => hint.metricId === 'near-duplicates');
+      assert.equal(hints.length, 2, 'one hint per kept anchor');
+      const first = hints[0];
+      assert.equal(first.id, 'near-duplicates-dir/f-3.png');
+      assert.equal(first.text, '2 майже-дублікати кадру «f-3.png»');
+      assert.equal(first.action.kind, 'remove');
+      assert.deepEqual(first.action.ids, ['dir/f-5.png', 'dir/f-9.png']);
+      assert.ok(first.explanation.includes('DINOv2'));
+      assert.ok(first.explanation.includes(String(T.nearDuplicates.similarity)), 'explanation names the threshold');
+      assert.ok(first.explanation.includes('знайдено 2 з 20 файлів'), first.explanation);
+      assert.ok(!first.explanation.includes('точні копії'), 'no exact note without exact copies');
+      const exactHint = hints[1];
+      assert.equal(exactHint.id, 'near-duplicates-dir/f-12.png');
+      assert.equal(exactHint.text, '1 майже-дублікат кадру «f-12.png»');
+      assert.match(exactHint.explanation, /1 точні копії за хешем/);
+      assert.deepEqual(exactHint.action.ids, ['dir/f-13.png']);
+      assert.equal(metrics.buildQualityReport({ items: mk(20, (index) => ({ embedding: basis(64, index) })) }).hints.filter((hint) => hint.metricId === 'near-duplicates').length, 0);
+      const many = mk(40, (index) => ({ embedding: basis(64, Math.floor(index / 2)) }));
+      assert.equal(metrics.buildQualityReport({ items: many }).hints.filter((hint) => hint.metricId === 'near-duplicates').length, 5, 'at most 5 groups');
+    }
+
+    // Trigger-missing hint only for requireTrigger profiles.
+    {
+      const list = mk(20, (index) => ({ embedding: basis(64, index), caption: 'a, b' }));
+      assert.deepEqual(['general', 'character', 'style', 'concept'].filter((type) => PROFILE_RULES[type].tagPolicy.requireTrigger), ['character', 'concept']);
+      for (const [type, rules] of Object.entries(PROFILE_RULES)) {
+        const hint = (trigger) => metrics.buildQualityReport({ items: list, projectType: type, triggerWord: trigger }).hints.find((entry) => entry.id === 'trigger-missing');
+        if (rules.tagPolicy.requireTrigger) {
+          assert.ok(hint(undefined) && hint('') && hint('  '), `${type}: hint without trigger`);
+          assert.equal(hint('hero'), undefined, `${type}: no hint with a trigger`);
+          assert.ok(hint('').explanation.includes(type));
+          assert.equal(hint('').metricId, 'trigger');
+        } else assert.equal(hint(''), undefined, `${type}: no trigger hint`);
+      }
+    }
+
+    // Common tags by tag policy.
+    {
+      const list = mk(20, (index) => ({ tags: ['hero', 'red hair', 'blue eyes', `unique-${index}`] }));
+      const constant = ['red hair', 'blue eyes'].sort();
+      const character = metrics.measureCommonTags(list, 'hero', PROFILE_RULES.character.tagPolicy);
+      assert.equal(character.status, 'warn');
+      assert.equal(character.action.kind, 'remove');
+      assert.equal(character.action.label, 'Прибрати з підписів');
+      assert.deepEqual([...character.action.tags].sort(), constant);
+      assert.match(character.explanation, /незмінні ознаки/);
+      assert.ok(character.explanation.includes(String(Math.ceil(T.tags.commonFraction * 20))), 'explanation states the file threshold');
+      const style = metrics.measureCommonTags(list, 'hero', PROFILE_RULES.style.tagPolicy);
+      assert.equal(style.status, 'ok');
+      assert.equal(style.action, undefined);
+      assert.equal(style.evaluated, true);
+      assert.match(style.explanation, /не прибирайте/);
+      assert.equal(style.display, character.display);
+      const general = metrics.measureCommonTags(list, 'hero', PROFILE_RULES.general.tagPolicy);
+      const legacy = metrics.measureCommonTags(list, 'hero');
+      assert.deepEqual(general, legacy, 'general policy equals the previous behaviour');
+      assert.equal(legacy.status, 'warn');
+      assert.equal(legacy.action.kind, 'review');
+      assert.deepEqual([...legacy.action.tags].sort(), constant);
+      const none = metrics.measureCommonTags(mk(20, (index) => ({ tags: [`u-${index}`] })), 'hero', PROFILE_RULES.character.tagPolicy);
+      assert.equal(none.status, 'ok');
+      assert.equal(none.action, undefined);
+      assert.equal(metrics.measureCommonTags(mk(2), 'hero', PROFILE_RULES.character.tagPolicy).evaluated, false);
+
+      const hintFor = (type) => metrics.buildQualityReport({ items: list, projectType: type, triggerWord: 'hero' }).hints.find((entry) => entry.id === 'common-tags-prune');
+      const pruneHint = hintFor('character');
+      assert.ok(pruneHint);
+      assert.equal(pruneHint.metricId, 'common-tags');
+      assert.equal(pruneHint.action.kind, 'remove');
+      assert.deepEqual([...pruneHint.action.tags].sort(), constant);
+      assert.ok(pruneHint.text.startsWith('2 теги у майже всіх файлах'), pruneHint.text);
+      assert.ok(pruneHint.explanation.length > 0);
+      assert.ok(hintFor('concept'));
+      assert.equal(hintFor('style'), undefined, 'keep: no hint');
+      assert.equal(hintFor('general'), undefined, 'review: no prune hint');
+      const styleCommon = metrics.buildQualityReport({ items: list, projectType: 'style', triggerWord: 'hero' }).insights.find((metric) => metric.id === 'common-tags');
+      assert.equal(styleCommon.status, 'ok');
+      assert.equal(styleCommon.action, undefined);
+    }
   }
 
   console.log('quality metrics: ok');

@@ -15,7 +15,7 @@ npm run dev
 
 Відкрийте адресу, яку виведе Vite; типово це `http://localhost:5173/DatasetCreator/`.
 
-1. Створіть або відкрийте папку проєкту. Виберіть тип: Character, Style або Concept.
+1. Створіть або відкрийте папку проєкту. Виберіть тип (General за замовчуванням, Character, Style або Concept) і цільову модель (SD 1.5, SDXL або Flux).
 2. Імпортуйте зображення, папку чи ZIP. Для відео скористайтеся Video Frames.
 3. Перегляньте матеріали в Review, за потреби відкрийте Photopea або Remove Duplicates.
 4. Додайте вибрані зображення до Dataset. Це фізично переміщує файли в `dataset/`.

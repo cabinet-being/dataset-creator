@@ -61,6 +61,22 @@ export const findNearDuplicates = (items: readonly QualityItemInput[], threshold
   return pairs;
 };
 
+export type NearDuplicateGroup = { kept: string; removed: string[]; exact: number };
+
+/** Groups kept→removed pairs by the kept anchor; groups are ordered by size, then by first appearance. */
+export const groupNearDuplicates = (pairs: readonly NearDuplicatePair[]): NearDuplicateGroup[] => {
+  const groups = new Map<string, NearDuplicateGroup>();
+  for (const pair of pairs) {
+    const group = groups.get(pair.kept) ?? { kept: pair.kept, removed: [], exact: 0 };
+    group.removed.push(pair.removed);
+    if (pair.kind === 'exact') group.exact += 1;
+    groups.set(pair.kept, group);
+  }
+  return [...groups.values()].map((group, index) => ({ group, index }))
+    .sort((left, right) => right.group.removed.length - left.group.removed.length || left.index - right.index)
+    .map((entry) => entry.group);
+};
+
 export const checkNearDuplicates = (items: readonly QualityItemInput[]): QualityMetric => {
   const title = 'Майже-дублікати';
   const withSignal = items.filter((item) => normalizeVector(item.embedding) || item.imageHash);

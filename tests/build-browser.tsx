@@ -97,9 +97,35 @@ function Harness() {
     };
     setAuto(true); setReady(true);
   };
+  const prepareCoverage = async () => {
+    // Character project with 10 tagged files already in dataset/: 'solo' is in every file, framing tags are mixed.
+    const framing = ['full body', 'full body', 'full body', 'full body', 'full body', 'close-up', 'close-up', 'close-up', 'upper body', 'upper body'];
+    const blob = await detailed(64, 96, 1);
+    const sourceImages = Object.fromEntries(framing.map((shot, index) => {
+      const name = `cov-${index}.png`;
+      const source = createSourceImage(blob, name, 64, 96);
+      source.tags = ['solo', shot, `extra${index}`]; source.originalFilePath = `dataset/${name}`; source.manifestPath = `dataset/${name}.manifest.json`;
+      return [source.id, source];
+    }));
+    const project = createProject('Build coverage fixture', 'character'); project.sourceImages = sourceImages;
+    const storage = await navigator.storage.getDirectory();
+    const directory = await storage.getDirectoryHandle(`build-coverage-fixture-${crypto.randomUUID()}`, { create:true }) as unknown as ProjectDirectoryHandle;
+    await createProjectDirectory(directory, project);
+    useProjectStore.getState().loadProject(project);
+    useUIStore.setState({ projectDirectoryHandle:directory });
+    (window as unknown as Record<string, unknown>).__buildFixture = {
+      paths: () => {
+        const state = useProjectStore.getState();
+        return Object.fromEntries(toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems)).map((item) => [(item.assetPath ?? item.fileName).split('/').pop()!, item.assetPath]));
+      },
+      tags: () => Object.fromEntries(Object.values(useProjectStore.getState().sourceImages).map((source) => [(source.originalFilePath ?? source.fileName).split('/').pop()!, source.tags])),
+      projectType: () => useProjectStore.getState().projectType,
+    };
+    setReady(true);
+  };
   return <CommandProvider><main className="h-screen">{ready
     ? <BuildWorkspace active viewId="fixture:build" items={items} directory={useUIStore.getState().projectDirectoryHandle} semanticEncoderFactory={auto ? fakeEncoderFactory : undefined} />
-    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button></>}</main></CommandProvider>;
+    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button></>}</main></CommandProvider>;
 }
 
 const root = createRoot(document.getElementById('root')!); root.render(<Harness />);

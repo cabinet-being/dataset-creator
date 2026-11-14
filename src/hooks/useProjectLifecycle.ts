@@ -16,7 +16,7 @@ import {
 import { createProjectVersion, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from '../services/project/projectVersionService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
 import { createOperationLogger } from '../services/logging/applicationLog';
-import { createProject, type ProjectState, type ProjectType } from '../types';
+import { createProject, type ProjectState, type ProjectType, type TargetModelId } from '../types';
 import { isOperationRunning, useOperationStore } from '../stores/useOperationStore';
 import { useHistoryStore } from '../stores/useHistoryStore';
 import { useProjectStore } from '../stores/useProjectStore';
@@ -64,8 +64,8 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   const addNotification = useUIStore(state => state.addNotification);
   const projectDirectoryHandle = useUIStore(state => state.projectDirectoryHandle);
   const setProjectDirectory = useUIStore(state => state.setProjectDirectory);
-  const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType } | null) => void } | null>(null);
-  const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType } | null>((resolve) => {
+  const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType; targetModel: TargetModelId } | null) => void } | null>(null);
+  const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType; targetModel: TargetModelId } | null>((resolve) => {
     setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
   });
   const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
@@ -147,7 +147,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         return;
       }
 
-      const { name: nextName, projectType } = setup;
+      const { name: nextName, projectType, targetModel } = setup;
       const parentDirectory = await pickProjectDirectory();
       logger.info(`creating project directory ${nextName}`);
       const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
@@ -159,7 +159,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         return;
       }
       await flushProjectSave();
-      const project = createProject(nextName, projectType);
+      const project = createProject(nextName, projectType, targetModel);
       logger.info('writing project manifest and folders');
       const create = async () => {
         await clearProjectDirectory(directory);

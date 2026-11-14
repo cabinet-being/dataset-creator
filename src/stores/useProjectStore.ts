@@ -1,5 +1,5 @@
-import { PROJECT_TYPE_PROFILES } from '../lib/projectProfiles';
-import type { ProjectType } from '../types';
+import { PROJECT_TYPE_PROFILES, resolveTargetModel } from '../lib/projectProfiles';
+import type { ProjectType, TargetModelId } from '../types';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import {
@@ -58,7 +58,8 @@ const normalizeDataset = (dataset: LegacyDatasetState): Dataset => {
 
 interface ProjectStore extends ProjectState {
   // Project management
-  initializeProject: (name: string, projectType: ProjectType) => void;
+  initializeProject: (name: string, projectType: ProjectType, targetModel?: TargetModelId) => void;
+  setProjectProfile: (profile: { projectType?: ProjectType; targetModel?: TargetModelId }) => void;
   loadProject: (project: ProjectState) => void;
   renameProject: (name: string) => void;
   setCurrentTool: (tool: ToolName) => void;
@@ -102,9 +103,9 @@ interface ProjectStore extends ProjectState {
 export const useProjectStore = create<ProjectStore>()(
   devtools(
       (set, get) => ({
-        ...createProject('Untitled Project', 'character'),
+        ...createProject('Untitled Project', 'general'),
         
-        initializeProject: (name: string, projectType: ProjectType) =>
+        initializeProject: (name: string, projectType: ProjectType, targetModel?: TargetModelId) =>
           set((state) => {
             for (const image of Object.values(state.sourceImages)) {
               revokePreviewUrl(image.previewUrl);
@@ -113,7 +114,7 @@ export const useProjectStore = create<ProjectStore>()(
               revokePreviewUrl(item.previewUrl);
             }
 
-            return createProject(name, projectType);
+            return createProject(name, projectType, targetModel);
           }),
 
         loadProject: (project: ProjectState) =>
@@ -155,6 +156,7 @@ export const useProjectStore = create<ProjectStore>()(
             return {
               ...defaults,
               ...project,
+              targetModel: resolveTargetModel(project.targetModel),
               sourceImages: migrated?.sourceImages ?? project.sourceImages,
               datasetItems: migrated?.datasetItems ?? supportedDatasetItems,
               dataset,
@@ -167,6 +169,14 @@ export const useProjectStore = create<ProjectStore>()(
               lastModified: new Date(),
             };
           }),
+
+        setProjectProfile: ({ projectType, targetModel }) =>
+          set((state) => ({
+            ...state,
+            ...(projectType ? { projectType } : {}),
+            ...(targetModel ? { targetModel } : {}),
+            lastModified: new Date(),
+          })),
 
         renameProject: (name: string) =>
           set((state) => ({

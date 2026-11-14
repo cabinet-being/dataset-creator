@@ -37,13 +37,15 @@ import {
   nextBuildCursor,
   updateBuildDecision,
 } from '../../services/build/buildSessionService';
+import { getMinShortSide } from '../../services/quality/imageQuality';
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
 import { PROJECT_ASSETS_DIRECTORY } from '../../services/project/projectLayoutService';
 import { getBuildTriageCounts, getBuildTriageGroup } from '../../services/build/buildTriageService';
-import { getMinShortSide, MIN_SHORT_SIDE_PRESETS } from '../../services/quality/imageQuality';
 import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
+import { BuildProfileControls } from './BuildProfileControls';
+import { useQualityActions } from './useQualityActions';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
 
@@ -80,6 +82,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const root = useRef<HTMLDivElement>(null);
   const projectId = useProjectStore((state) => state.id);
   const projectType = useProjectStore((state) => state.projectType);
+  const targetModel = useProjectStore((state) => state.targetModel);
   const session = useProjectStore((state) => state.buildSession);
   const dataset = useProjectStore((state) => state.dataset);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
@@ -179,7 +182,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled]);
   const quality = useDatasetQualityReport({
     featuresActive: active && (showQuality || showExport || view === 'clusters'), items: effectiveItems, candidates, session: reconciled,
-    triggerWord: dataset.triggerWord, projectType,
+    triggerWord: dataset.triggerWord, projectType, targetModel,
   });
   const selectQualityItem = useCallback((id: string) => {
     const item = effectiveItems.find((candidate) => candidate.id === id);
@@ -191,6 +194,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     setShowExport(false);
     updateSession((value) => ({ ...value, filter: 'all', cursor: index }));
   }, [candidates, effectiveItems, notify, quality, reconciled, updateSession]);
+  const qualityActions = useQualityActions({ datasetItems: quality.datasetItems, directory, onSelectId: selectQualityItem });
   const missingRecords = useMemo(() => {
     const available = new Set(effectiveItems.map(getBuildAssetId));
     return reconciled.order.map((id) => reconciled.records[id]).filter((record) => record && !available.has(record.assetId) && record.decision !== 'skipped');
@@ -370,7 +374,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     commitDecisions(targets.map((item) => ({ item, decision })), provenance, propagateError), [commitDecisions, current]);
 
   const pipeline = useBuildAutoPipeline({
-    active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled,
+    active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled, targetModel,
     patchSession, dataset, commitDecision, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory,
   });
   const triageCounts = useMemo(() => getBuildTriageCounts(reconciled, candidates), [candidates, reconciled]);
@@ -459,12 +463,11 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }) : [];
   const rejectTargets = queueGroupActive ? queue.filter((item) => reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped') : [];
   const setFilter = (filter: BuildSession['filter']) => patchSession((value) => ({ ...value, filter, cursor: 0 }));
-  const setMinShortSide = (minShortSide: number) => patchSession((value) => ({
+  const clearQualityTriage = () => { patchSession((value) => ({
     ...value,
-    profile: { ...value.profile, minShortSide },
     records: Object.fromEntries(Object.entries(value.records).map(([id, record]) => [id, record.decision === 'unreviewed' && record.triage?.stage === 'quality' ? { ...record, triage: undefined } : record])),
     auto: undefined,
-  }));
+  })); };
   const canExport = counts.unresolved === 0 && counts.errors === 0 && (counts.ready >= counts.target || allowShortfall);
   const setProfileTransform = (value: string) => patchSession((currentSession) => ({ ...currentSession, profile: {
     ...currentSession.profile,
@@ -495,12 +498,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       }}>Finish</button>
     </header>
 
-    {showImport || !candidates.length ? <div className="min-h-0 flex-1 overflow-auto p-4"><ImportTool active={active} onImportFiles={onImportFiles} /></div> : showExport ? <div className="min-h-0 flex-1 overflow-auto"><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background p-3"><button onClick={() => setShowExport(false)} className="rounded border border-border px-3 py-1.5 text-sm">Back to review</button><span className="text-sm text-muted-foreground">Export uses the same physical Dataset and caption plan as the Export tool.</span></div><section aria-label="Dataset quality before export" className="border-b border-border p-4"><h2 className="mb-2 text-sm font-semibold">Dataset quality</h2><BuildQualityPanel testId="build-finish-quality" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} /></section><ExportTool active={active} onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div> : <>
+    {showImport || !candidates.length ? <div className="min-h-0 flex-1 overflow-auto p-4"><ImportTool active={active} onImportFiles={onImportFiles} /></div> : showExport ? <div className="min-h-0 flex-1 overflow-auto"><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background p-3"><button onClick={() => setShowExport(false)} className="rounded border border-border px-3 py-1.5 text-sm">Back to review</button><span className="text-sm text-muted-foreground">Export uses the same physical Dataset and caption plan as the Export tool.</span></div><section aria-label="Dataset quality before export" className="border-b border-border p-4"><h2 className="mb-2 text-sm font-semibold">Dataset quality</h2><BuildQualityPanel testId="build-finish-quality" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section><ExportTool active={active} onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div> : <>
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">
         <label>Target <input type="number" min={0} value={reconciled.profile.target} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, target: Math.max(0, Number(event.target.value) || 0) } }))} className="ml-1 w-20 rounded border border-border bg-background px-2 py-1" /></label>
         <label>Review <select value={reconciled.profile.reviewMode} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, reviewMode: event.target.value as BuildSession['profile']['reviewMode'] } }))} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="every-item">Every photo</option><option value="uncertain-only">Uncertain only</option></select></label>
         <label>Output <select value={!reconciled.profile.transform ? 'original' : `${reconciled.profile.transform.mode}-${reconciled.profile.transform.width}`} onChange={(event) => setProfileTransform(event.target.value)} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="original">Original</option><option value="fit-512">Fit within 512</option><option value="crop-512">Center crop 512</option><option value="crop-768">Center crop 768</option></select></label>
-        <label>Min short side <select aria-label="Min short side" value={getMinShortSide(reconciled.profile)} onChange={(event) => setMinShortSide(Number(event.target.value))} className="ml-1 rounded border border-border bg-background px-2 py-1">{[...new Set<number>([...MIN_SHORT_SIDE_PRESETS, getMinShortSide(reconciled.profile)])].map((value) => <option key={value} value={value}>{value}px</option>)}</select></label>
+        <BuildProfileControls onModelChange={clearQualityTriage} />
         <label className="flex items-center gap-1"><input type="checkbox" checked={reconciled.profile.autoPipeline !== false} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, autoPipeline: event.target.checked } }))} />Auto pipeline</label>
         <label>Trigger word <input value={dataset.triggerWord} onChange={(event) => { updateDataset(dataset.id, { triggerWord: event.target.value }); patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) })); }} className="ml-1 w-32 rounded border border-border bg-background px-2 py-1" /></label>
         <button className="ml-auto rounded border border-border px-2 py-1" onClick={() => setShowAssembly(true)}>Automatic selection</button>
@@ -511,8 +514,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         </>}
       </div>
 
-      {showQuality && <section aria-label="Dataset quality" className="max-h-[45vh] shrink-0 overflow-auto border-b border-border bg-card p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} /></section>}
-      {view === 'clusters' ? <BuildClusterView active={active && !showImport} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(reconciled.profile)} busy={busy}
+      {showQuality && <section aria-label="Dataset quality" className="max-h-[45vh] shrink-0 overflow-auto border-b border-border bg-card p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>}
+      {view === 'clusters' ? <BuildClusterView active={active && !showImport} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(targetModel)} busy={busy}
         onCommit={(entries) => commitDecisions(entries)} onOpenItem={(id) => { setView('list'); selectQualityItem(id); }} /> : <>
       <main className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="relative flex min-h-0 flex-col items-center justify-center overflow-auto bg-black/5 p-4 dark:bg-black/20">

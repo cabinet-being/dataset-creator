@@ -212,6 +212,7 @@ export interface BuildPreparationProfile {
   reviewMode: BuildReviewMode;
   captionRequired: boolean;
   transform?: BuildTransformRecipe;
+  /** Legacy: read only to migrate to `ProjectState.targetModel`; no longer written. */
   minShortSide?: number;
   autoPipeline?: boolean;
 }
@@ -244,10 +245,13 @@ export interface SimilarityCluster {
 
 // ============ PROJECT ============
 
-export type ProjectType = 'character' | 'style' | 'concept';
+export type ProjectType = 'general' | 'character' | 'style' | 'concept';
+export type TargetModelId = 'sd15' | 'sdxl' | 'flux';
 
 export interface ProjectState {
   projectType: ProjectType;
+  /** Project-level target model; the single source of the minimum short side. */
+  targetModel: TargetModelId;
   id: string;
   name: string;
   sourceImages: Record<string, SourceImage>;
@@ -362,8 +366,9 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   updatedAt: new Date(),
 });
 
-export const createProject = (name: string, projectType: ProjectType): ProjectState => ({
+export const createProject = (name: string, projectType: ProjectType = 'general', targetModel: TargetModelId = 'sdxl'): ProjectState => ({
   projectType,
+  targetModel,
   id: uuidv4(),
   name,
   sourceImages: {},

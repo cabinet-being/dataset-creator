@@ -19,6 +19,7 @@ try {
       'src/services/build/buildSessionService.ts',
       'src/services/build/buildTransformService.ts',
       'src/services/quality/imageQuality.ts',
+      'src/lib/projectProfilePresets.ts',
       'src/services/build/buildTriageService.ts',
     ],
     platform: 'node',
@@ -33,6 +34,7 @@ try {
   const buildSession = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
   const buildTransform = await import(pathToFileURL(join(temp, 'buildTransformService.mjs')));
   const quality = await import(pathToFileURL(join(temp, 'imageQuality.mjs')));
+  const presets = await import(pathToFileURL(join(temp, 'projectProfilePresets.mjs')));
   const triage = await import(pathToFileURL(join(temp, 'buildTriageService.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/src/shared/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
@@ -399,11 +401,22 @@ try {
     json.records['source:b'].triage = {group:'accepted',reasons:'no',revision:'x'};
     const n = buildSession.normalizeBuildSession(json);
     assert.ok(n.records['source:a'].triage,'valid triage kept'); assert.equal(n.records['source:b'].triage,undefined); assert.equal(n.records['source:c'].triage,undefined);
-    assert.equal(n.filter,'needs-decision'); assert.equal(n.profile.minShortSide,512); assert.equal(n.profile.autoPipeline,false); assert.equal(n.auto.assemblyKey,'k');
+    assert.equal(n.filter,'needs-decision'); assert.equal(n.profile.minShortSide,undefined,'normalize no longer emits profile.minShortSide'); assert.equal(n.profile.autoPipeline,false); assert.equal(n.auto.assemblyKey,'k');
+    // legacy Build minShortSide migrates to the project target model
+    assert.equal(presets.resolveTargetModel(undefined,512),'sd15','legacy 512 -> sd15');
+    assert.equal(presets.resolveTargetModel(undefined,512.7),'sd15','legacy 512.7 floors to 512 -> sd15');
+    assert.equal(presets.resolveTargetModel(undefined,1024),'sdxl'); assert.equal(presets.resolveTargetModel(undefined,768),'sdxl');
+    assert.equal(presets.resolveTargetModel(undefined),'sdxl','missing -> sdxl'); assert.equal(presets.resolveTargetModel(null,undefined),'sdxl');
+    assert.equal(presets.resolveTargetModel('flux',512),'flux','stored targetModel wins over legacy'); assert.equal(presets.resolveTargetModel('sdxl',512),'sdxl');
+    assert.equal(presets.resolveTargetModel('bogus',512),'sd15','invalid stored value falls back to legacy migration');
+    assert.deepEqual(['sd15','sdxl','flux'].map((m)=>quality.getMinShortSide(m)),[512,1024,1024]);
+    assert.equal(quality.getMinShortSide(),1024,'default target model is sdxl');
+    assert.equal(quality.getMinShortSide(buildSession.normalizeBuildSession(json).profile.targetModel),1024);
     for (const f of ['accepted','rejected']) assert.equal(buildSession.normalizeBuildSession({...json,filter:f}).filter,f);
     assert.equal(buildSession.normalizeBuildSession({...json,filter:'nope'}).filter,'all');
     const def = buildSession.normalizeBuildSession({version:1});
     assert.equal(def.profile.autoPipeline,true,'autoPipeline defaults on'); assert.equal(def.profile.minShortSide,undefined);
+    assert.equal('minShortSide' in n.profile,false);
     assert.equal(buildSession.normalizeBuildSession(null).profile.autoPipeline ?? true,true);
   }
 

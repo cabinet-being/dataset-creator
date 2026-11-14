@@ -1,6 +1,8 @@
 import { measureCaptionLength, measureCommonTags, measureRareTags } from './captionBalance';
+import { PROFILE_RULES } from '../../../lib/projectProfilePresets';
 import { measureConsistency, measureEffectiveSize, measureMaterialCoverage, measureSaturation } from './embeddingMetrics';
 import { checkCaptions, checkCount, checkNearDuplicates, checkResolution, checkTechnical, checkTrigger } from './requiredChecks';
+import { buildGapHints, measureProfileCoverage } from './profileCoverage';
 import { worstStatus } from './thresholds';
 import type { QualityReport, QualityReportInput } from './types';
 
@@ -19,10 +21,12 @@ export const buildQualityReport = (input: QualityReportInput): QualityReport => 
     measureEffectiveSize(items),
     measureMaterialCoverage(items, input.candidates),
     measureSaturation(items, input.candidates, input.selectionOrder),
-    measureCommonTags(items, input.triggerWord),
+    measureCommonTags(items, input.triggerWord, PROFILE_RULES[input.projectType ?? 'general'].tagPolicy),
     measureRareTags(items, input.triggerWord),
     measureCaptionLength(items),
     measureConsistency(items, input.projectType),
   ];
-  return { readiness: worstStatus(required.map((metric) => metric.status)), required, insights };
+  const coverage = measureProfileCoverage(input);
+  const hints = buildGapHints(input, { required, insights, coverage });
+  return { readiness: worstStatus(required.map((metric) => metric.status)), required, insights, coverage, hints };
 };

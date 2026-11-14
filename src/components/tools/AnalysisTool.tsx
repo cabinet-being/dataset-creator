@@ -952,6 +952,7 @@ export const AnalysisTool = ({
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
   const buildSession = useProjectStore((state) => state.buildSession);
   const projectType = useProjectStore((state) => state.projectType);
+  const targetModel = useProjectStore((state) => state.targetModel);
   const cleanupToolState = useProjectStore(
     (state) =>
       (state.toolState.clean as
@@ -1433,9 +1434,9 @@ export const AnalysisTool = ({
   // Same report as Build (minimum resolution, near-duplicate level and technical checks come from shared owners).
   const qualityReport = useMemo(() => targetMode === 'dataset' && dataset ? buildQualityReport(buildDatasetQualityInput({
     items: items.filter((item) => item.kind !== 'video'), candidates: coverageCandidateItems, triggerWord: dataset.triggerWord,
-    target: buildSession.profile.target, profile: buildSession.profile, projectType,
+    target: buildSession.profile.target, targetModel, projectType,
     qualitySummaries: collectBuildQualitySummaries(buildSession), features: similarityFeatures,
-  })) : undefined, [buildSession, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode]);
+  })) : undefined, [buildSession, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode, targetModel]);
   const qualityAttention = qualityReport ? qualityReport.required.filter((metric) => metric.status !== 'ok').length : 0;
   const traitReadyCount = visualItems.filter((item) => visualTraitsById[item.id]).length;
   const embeddingReadyCount = visualItems.filter((item) => itemEmbeddings[item.id]).length;

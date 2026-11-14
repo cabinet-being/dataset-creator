@@ -1,9 +1,9 @@
-import type { ImageQualitySummary } from '../../types';
+import type { ImageQualitySummary, TargetModelId } from '../../types';
+import { DEFAULT_TARGET_MODEL, TARGET_MODEL_PRESETS } from '../../lib/projectProfilePresets';
 import { inspectFramePixels } from '../video/frameQuality';
 
 export const IMAGE_QUALITY_VERSION = 1;
-export const DEFAULT_MIN_SHORT_SIDE = 1024;
-export const MIN_SHORT_SIDE_PRESETS = [1024, 512] as const;
+export const DEFAULT_MIN_SHORT_SIDE = TARGET_MODEL_PRESETS[DEFAULT_TARGET_MODEL].minShortSide;
 export const DEFAULT_ANALYSIS_MAX_SIDE = 512;
 
 /** Thresholds that decide reject/review flags. Sharpness values are Laplacian energy at analysis size. */
@@ -135,5 +135,6 @@ export const summarizeImageQuality = (report: ImageQualityReport): ImageQualityS
 });
 
 /** The one minimum-short-side setting: Build triage and the Dataset quality report both read it. */
-export const getMinShortSide = (profile?: { minShortSide?: number }): number =>
-  resolveMinShortSide({ minShortSide: profile?.minShortSide });
+/** Minimum short side of the project's target model: the single source for Build triage and the quality report. */
+export const getMinShortSide = (targetModel: TargetModelId = DEFAULT_TARGET_MODEL): number =>
+  TARGET_MODEL_PRESETS[targetModel].minShortSide;

@@ -1,5 +1,8 @@
 import { WORKFLOW_TOOLS } from './constants';
 import type { ProjectType, ToolName } from '../types';
+import { PROFILE_RULES, type CoverageAxisId, type TagPolicy } from './projectProfilePresets';
+
+export * from './projectProfilePresets';
 
 export interface ProjectTypeProfile {
   label: string;
@@ -8,9 +11,18 @@ export interface ProjectTypeProfile {
   defaults: { datasetName: string; triggerWord: string; datasetKeyword: string };
   labels: { workspace: string; emptyDatasets: string };
   flags: Readonly<Record<string, boolean>>;
+  coverageAxes: readonly CoverageAxisId[];
+  tagPolicy: TagPolicy;
 }
+type ProfileBase = Omit<ProjectTypeProfile, 'coverageAxes' | 'tagPolicy'>;
+const withRules = (type: ProjectType, base: ProfileBase): ProjectTypeProfile => ({ ...base, ...PROFILE_RULES[type] });
 const tools = WORKFLOW_TOOLS;
-export const PROJECT_TYPE_PROFILES: Record<ProjectType, ProjectTypeProfile> = {
+const PROFILE_BASES: Record<ProjectType, ProfileBase> = {
+  general: {
+    label: 'General', description: 'No specific subject: a general-purpose dataset.', enabledTools: tools,
+    defaults: { datasetName: 'New Dataset', triggerWord: '', datasetKeyword: 'dataset' },
+    labels: { workspace: 'Dataset Workspace', emptyDatasets: 'Create a dataset.' }, flags: {},
+  },
   character: {
     label: 'Character', description: 'Build datasets around a consistent character or identity.', enabledTools: tools,
     defaults: { datasetName: 'New Dataset', triggerWord: '', datasetKeyword: 'dataset' },
@@ -27,8 +39,17 @@ export const PROJECT_TYPE_PROFILES: Record<ProjectType, ProjectTypeProfile> = {
     labels: { workspace: 'Concept Workspace', emptyDatasets: 'Create a dataset for your concept.' }, flags: {},
   },
 };
+export const PROJECT_TYPE_PROFILES: Record<ProjectType, ProjectTypeProfile> = Object.fromEntries(
+  (Object.keys(PROFILE_BASES) as ProjectType[]).map((type) => [type, withRules(type, PROFILE_BASES[type])]),
+) as Record<ProjectType, ProjectTypeProfile>;
 export const isProjectType = (value: unknown): value is ProjectType =>
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(PROJECT_TYPE_PROFILES, value);
+/** Manifests written before project types existed open as `general` without a prompt. */
+export const normalizeProjectType = (value: unknown): ProjectType => {
+  if (value === undefined) return 'general';
+  if (isProjectType(value)) return value;
+  throw new Error('Unsupported project type in manifest.');
+};
 export type ProjectTypeResolver = (name: string) => Promise<ProjectType>;
 export const resolveProjectType = async (value: unknown, name: string, select?: ProjectTypeResolver): Promise<ProjectType> => {
   if (isProjectType(value)) return value;
