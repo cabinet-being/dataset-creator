@@ -1,6 +1,7 @@
 import { QUALITY_THRESHOLDS as T } from './thresholds';
 import { captionText, countCaptionTokens, countFiles, hasCaption, normalizeTag, percent, resolveItemTags } from './text';
 import type { QualityItemInput, QualityMetric } from './types';
+import type { TagPolicy } from '../../../lib/projectProfilePresets';
 import { median } from './vectorMath';
 
 export type TagFrequency = { tag: string; files: number; fraction: number };
@@ -14,20 +15,34 @@ export const countTagFrequencies = (items: readonly QualityItemInput[], triggerW
     .sort((left, right) => right.files - left.files || left.tag.localeCompare(right.tag));
 };
 
-export const measureCommonTags = (items: readonly QualityItemInput[], triggerWord = ''): QualityMetric => {
+export const measureCommonTags = (items: readonly QualityItemInput[], triggerWord = '', policy?: TagPolicy): QualityMetric => {
   const title = 'Теги майже в усіх файлах';
   if (items.length < 3) {
     return { id: 'common-tags', title, value: null, display: 'замало файлів', status: 'ok', evaluated: false, explanation: 'Потрібно щонайменше 3 файли.' };
   }
   const common = countTagFrequencies(items, triggerWord).filter((entry) => entry.fraction >= T.tags.commonFraction);
-  return {
+  const mode = policy?.constantTags ?? 'review';
+  const base = {
     id: 'common-tags', title, value: common.length,
-    display: common.length ? common.slice(0, 5).map((entry) => entry.tag).join(', ') : 'немає',
-    status: common.length ? 'warn' : 'ok', evaluated: true,
-    explanation: common.length
-      ? `${common.length} тегів є щонайменше в ${percent(T.tags.commonFraction)} файлів. Якщо це незмінна ознака, яку LoRA має прив'язати до тригера, приберіть тег із підписів; якщо ні — тег нічого не розрізняє.`
-      : 'Немає тегів, що повторюються майже всюди.',
-    action: common.length ? { kind: 'review', label: 'Переглянути теги', tags: common.map((entry) => entry.tag) } : undefined,
+    display: common.length ? common.slice(0, 5).map((entry) => entry.tag).join(', ') : 'немає', evaluated: true,
+  } as const;
+  if (!common.length) return { ...base, status: 'ok', explanation: 'Немає тегів, що повторюються майже всюди.' };
+  const source = `${common.length} тегів є щонайменше в ${percent(T.tags.commonFraction)} із ${countFiles(items.length)} (≥ ${Math.ceil(T.tags.commonFraction * items.length)} файлів).`;
+  const tags = common.map((entry) => entry.tag);
+  if (mode === 'keep') {
+    return { ...base, status: 'ok', explanation: `${source} Для стилю такі теги не прибирайте: спільні ознаки описують сам стиль.` };
+  }
+  if (mode === 'prune') {
+    return {
+      ...base, status: 'warn',
+      explanation: `${source} Це незмінні ознаки: якщо їх лишити в підписах, модель не прив'яже їх до тригера. Приберіть їх із підписів.`,
+      action: { kind: 'remove', label: 'Прибрати з підписів', tags },
+    };
+  }
+  return {
+    ...base, status: 'warn',
+    explanation: `${source} Якщо це незмінна ознака, яку LoRA має прив'язати до тригера, приберіть тег із підписів; якщо ні — тег нічого не розрізняє.`,
+    action: { kind: 'review', label: 'Переглянути теги', tags },
   };
 };
 

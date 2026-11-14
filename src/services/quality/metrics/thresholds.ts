@@ -69,6 +69,31 @@ export const QUALITY_THRESHOLDS = {
     minDistance: 0.25,
     warnFraction: 0.1,
   },
+  /**
+   * Profile coverage axes. Heuristics to calibrate on real datasets, not
+   * measured optima: shares are the minimum fraction of the recommended
+   * dataset size (max of file count and target minimum) each bucket should hold.
+   */
+  profileCoverage: {
+    /** Axes are not evaluated below this many files. */
+    minItems: 8,
+    /** Axes are not evaluated when fewer files than this fraction carry the axis signal. */
+    minLabeledFraction: 0.5,
+    /** Longer side / shorter side above this is portrait or landscape, otherwise square. */
+    orientationTolerance: 1.1,
+    /** Max |ln(w/h) difference| to the nearest model bucket; beyond it the image is "other". */
+    aspectMaxLogDistance: 0.2,
+    /** Share of images outside every model bucket that warns. */
+    aspectOtherWarnFraction: 0.3,
+    bucketMinShare: {
+      framing: { close: 0.2, mid: 0.3, full: 0.2 },
+      orientation: { portrait: 0.2, landscape: 0.2 },
+      setting: { simple: 0.2, indoors: 0.2, outdoors: 0.2 },
+      lighting: { day: 0.3, evening: 0.1, night: 0.1 },
+      subject: { people: 0.2, 'no-humans': 0.1 },
+      aspect: {},
+    } as Record<string, Record<string, number>>,
+  },
 } as const;
 
 const RANK: Record<QualityStatus, number> = { ok: 0, warn: 1, fail: 2 };

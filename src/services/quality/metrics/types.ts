@@ -15,7 +15,13 @@ export type QualityMetricId =
   | 'common-tags'
   | 'rare-tags'
   | 'caption-length'
-  | 'consistency';
+  | 'consistency'
+  | 'axis-framing'
+  | 'axis-orientation'
+  | 'axis-setting'
+  | 'axis-lighting'
+  | 'axis-subject'
+  | 'axis-aspect';
 
 export type QualityAction = {
   kind: 'remove' | 'add' | 'review' | 'caption';
@@ -24,6 +30,12 @@ export type QualityAction = {
   ids?: string[];
   /** Tags the action applies to. */
   tags?: string[];
+};
+
+export type QualityBucket = {
+  id: string; label: string; count: number; recommended?: number;
+  /** How `recommended` was derived, with the actual numbers. */
+  recommendedFrom?: string;
 };
 
 export type QualityMetric = {
@@ -40,6 +52,10 @@ export type QualityMetric = {
   action?: QualityAction;
   /** Optional series for charts, e.g. the coverage saturation curve. */
   series?: number[];
+  /** Per-bucket counts of a profile coverage axis. */
+  buckets?: QualityBucket[];
+  /** Files that carry no signal for this axis (no axis tags / unknown size); never counted in a bucket. */
+  unlabeled?: number;
 };
 
 /** Per-image verdict produced by the technical-quality stream (src/services/quality/imageQuality.ts). */
@@ -87,4 +103,17 @@ export type QualityReport = {
   readiness: QualityStatus;
   required: QualityMetric[];
   insights: QualityMetric[];
+  /** Profile coverage axes (insights only, never affect readiness). */
+  coverage?: QualityMetric[];
+  /** Actionable gaps derived from the computed results. */
+  hints?: QualityHint[];
+};
+
+/** A concrete gap with the origin of its numbers in `explanation`. */
+export type QualityHint = {
+  id: string;
+  metricId: QualityMetricId;
+  text: string;
+  explanation: string;
+  action?: QualityAction;
 };
