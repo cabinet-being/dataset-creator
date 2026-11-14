@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Перевірка документації | `scripts/check-docs.mjs`, `tests/docs-checker.mjs` | `checkDocs`, локальні посилання, шляхи та npm-команди |
 | Назви, іконки, scopes, tiers інструментів | `src/lib/toolDefinitions.ts`, `src/lib/constants.ts` | `TOOL_DEFINITIONS` (`tier`: `primary` Build / `advanced` решта; `PRIMARY_TOOLS`, `ADVANCED_TOOLS`), `DATASET_TOOL_DEFINITIONS` з окремими id (`add-files`, `review`, `analysis`, `tagging`), похідні labels/slugs; ToolHub видалено; відповідність URL slug і інструмента (`getToolFromUrlSlug`, `getUrlSlugForTool`) |
-| Типи проєктів і початкові значення | `src/lib/projectProfiles.ts`, `src/types/entities.ts` | Профілі та фабрики сутностей |
+| Типи проєктів, цільові моделі, правила профілів | `src/lib/projectProfiles.ts` (публічний власник), `src/lib/projectProfilePresets.ts` (листовий модуль: `TARGET_MODEL_PRESETS`, `resolveTargetModel`, `COVERAGE_AXES`, `PROFILE_RULES`), `src/types/entities.ts` | `normalizeProjectType` (відсутній тип → `general`); профілі, фабрики сутностей; UI вибору — `ProjectSetupDialog.tsx`, `components/build/BuildProfileControls.tsx` |
 | Єдиний список ресурсів | `src/lib/workspaceImages.ts` | `toWorkspaceImages`, `toWorkspaceReviewAssets`, нормалізація шляхів (`toProjectRelativePath`, `getProjectDataFileExtension`) |
 | Файлові ресурси та incremental cache | `src/lib/workspaceFileAssets.ts` | `collectWorkspaceFileAssets`, `updateWorkspaceFileAssetCache` |
 | Прев’ю і життєвий цикл blob URL | `src/lib/previewUrlCache.ts` | `useWorkspacePreviewUrls`, cache/prune helpers |
@@ -30,9 +30,9 @@
 | Фото/PSD-редактор | `src/components/photopea/PhotopeaFrame.tsx`, `src/hooks/usePhotopeaDocumentState.ts` | Протокол iframe і стан документа |
 | Черга PSD-прев’ю | `src/services/psd/photopeaPreviewQueue.ts` | Dedup за шляхом, timeout і завершення jobs |
 | Рівні схожості DINOv2 і Strictness | `src/services/similarity/similarityLevels.ts`, `useSimilarityFeatures.ts` | `SIMILARITY_LEVELS`, `getStrictnessThreshold`, `classifyPair`; єдина таблиця порогів для Analysis, Remove Duplicates, автодобору; хук дає DINOv2-ознаки, стан моделі й завантаження (histogram — лише запасний basis) |
-| Звіт якості Dataset | `src/services/quality/metrics/` (`thresholds.ts` — усі пороги, `report.ts`, `requiredChecks.ts`, `embeddingMetrics.ts`, `vendi.ts`, `captionBalance.ts`), `src/services/quality/datasetQualityInput.ts` | `buildQualityReport`; адаптер `buildDatasetQualityInput` збирає вхід із Dataset, Build session, caption resolver і ознак |
-| Технічна якість зображення | `src/services/quality/imageQuality.ts` | `measureImageQuality`, `classifyImageQuality`, `getMinShortSide` — одне налаштування для тріажу й звіту |
-| UI звіту якості | `src/components/quality/QualityReport.tsx`, `useDatasetQualityReport.ts`, `src/components/build/BuildQualityPanel.tsx` | Панель у Build, Finish, Dataset readiness в Analysis |
+| Звіт якості Dataset | `src/services/quality/metrics/` (`thresholds.ts` — усі пороги, `report.ts`, `requiredChecks.ts`, `embeddingMetrics.ts`, `vendi.ts`, `captionBalance.ts` (політика тегів), `profileCoverage.ts` (осі покриття, `buildGapHints`)), `src/services/quality/datasetQualityInput.ts` | `buildQualityReport`; адаптер `buildDatasetQualityInput` збирає вхід із Dataset, Build session, caption resolver і ознак |
+| Технічна якість зображення | `src/services/quality/imageQuality.ts` | `measureImageQuality`, `classifyImageQuality`, `getMinShortSide(targetModel)` — мінімум із цільової моделі проєкту, спільний для тріажу й звіту |
+| UI звіту якості | `src/components/quality/QualityReport.tsx`, `useDatasetQualityReport.ts`, `src/components/build/BuildQualityPanel.tsx` | Панель у Build, Finish, Dataset readiness в Analysis; застосування дій звіту (видалення тегів через caption mutation service, виділення дублікатів) — `components/build/useQualityActions.ts` |
 | Гістограмна схожість | `src/services/image/embeddingService.ts`, `src/services/similarity/similarityService.ts` | Наявні вектори та обчислення схожості |
 | Семантичні ознаки | `src/services/analysis/semanticFeatureService.ts` | DINOv2 image encoder і text-token hashing |
 | Відео | `src/services/video/videoClient.ts`, `video.worker.ts`, `videoAnalysis.ts` | Життєвий цикл задач, worker, bounded analysis |
