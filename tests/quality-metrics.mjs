@@ -16,6 +16,7 @@ try {
       component: 'src/components/quality/QualityReport.tsx',
       adapter: 'src/services/quality/datasetQualityInput.ts',
       similarityLevels: 'src/services/similarity/similarityLevels.ts',
+      imageQuality: 'src/services/quality/imageQuality.ts',
     },
     platform: 'node',
     external: [/^react/, /^lucide-react/, /^clsx/, /^tailwind-merge/],
@@ -28,6 +29,7 @@ try {
   const { QualityReport } = await import(pathToFileURL(resolve(temp, 'component.mjs')));
 
   const adapter = await import(pathToFileURL(resolve(temp, 'adapter.mjs')));
+  const { getMinShortSide } = await import(pathToFileURL(resolve(temp, 'imageQuality.mjs')));
   const { getSimilarityThreshold } = await import(pathToFileURL(resolve(temp, 'similarityLevels.mjs')));
 
   const close = (actual, expected, epsilon, message) => assert.ok(Math.abs(actual - expected) <= epsilon, `${message}: ${actual} ≠ ${expected}`);
@@ -94,6 +96,9 @@ try {
     const sdxl = metrics.checkResolution(sizes);
     assert.equal(sdxl.status, 'warn', '1 of 20 below 1024 → warn');
     assert.deepEqual(sdxl.action.ids, ['item-0']);
+    assert.equal(metrics.checkResolution(sizes, 'flux').status, 'warn', 'Flux preset uses 1024');
+    assert.deepEqual(['sd15', 'sdxl', 'flux'].map((id) => metrics.QUALITY_THRESHOLDS.resolution.presets[id]), [512, 1024, 1024]);
+    assert.deepEqual(['sd15', 'sdxl', 'flux'].map((id) => getMinShortSide(id)), [512, 1024, 1024], 'checkResolution presets agree with getMinShortSide');
     assert.equal(metrics.checkResolution(sizes, 'sd15').status, 'ok', 'SD1.5 preset uses 512');
     assert.equal(metrics.checkResolution(items(4, () => ({ width: 600, height: 600 }))).status, 'fail');
     assert.equal(metrics.checkResolution(sizes, 'sdxl', 800).status, 'ok', 'Explicit minimum overrides the preset');
@@ -259,8 +264,9 @@ try {
     assert.equal(buildDatasetQualityInput({ items }).technical, undefined, 'no summaries -> technical undefined');
     assert.equal(buildDatasetQualityInput({ items, qualitySummaries: new Map() }).technical, undefined);
 
-    assert.equal(buildDatasetQualityInput({ items }).minShortSide, 1024, 'default min short side');
-    assert.equal(buildDatasetQualityInput({ items, profile: { minShortSide: 512 } }).minShortSide, 512);
+    assert.equal(buildDatasetQualityInput({ items }).resolutionPreset, 'sdxl', 'default resolution preset');
+    assert.equal(buildDatasetQualityInput({ items }).minShortSide, undefined, 'minShortSide is no longer emitted');
+    for (const targetModel of ['sd15', 'sdxl', 'flux']) assert.equal(buildDatasetQualityInput({ items, targetModel }).resolutionPreset, targetModel);
     assert.deepEqual(buildDatasetQualityInput({ items, target: 50 }).target, { min: 50, max: 200 });
     assert.deepEqual(buildDatasetQualityInput({ items, target: 500 }).target, { min: 500, max: 500 });
     assert.equal(buildDatasetQualityInput({ items }).target, undefined);
