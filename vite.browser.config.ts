@@ -28,6 +28,7 @@ export default defineConfig({
         build: fixture('build'),
         inspector: fixture('inspector'),
         taggerRestore: fixture('tagger-restore'),
+        taggerDownload: fixture('tagger-download'),
         scope: fixture('scope'),
         ui: fixture('ui'),
         video: fixture('video'),

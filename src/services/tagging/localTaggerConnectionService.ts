@@ -1,6 +1,9 @@
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
+import { verifyModelAsset } from '../models/verifiedModelDownload';
+import { WD_TAGGER_MODEL } from './wdTaggerModelManifest';
 import { connectLocalTaggerBundle, type LocalTaggerBundleSource } from './localTaggerService';
 import {
+  getLocalTaggerSavedFile,
   getLocalTaggerSavedFileNames,
   readLocalTaggerSavedFile,
   saveLocalTaggerFile,
@@ -54,6 +57,16 @@ export const connectLocalTaggerSource = (source: LocalTaggerBundleSource): Promi
   return connectSource(source, generation);
 };
 
+const verifyDownloadedFiles = async (files: { model: File; tags: File }) => {
+  for (const key of ['model', 'tags'] as const) {
+    const sha256 = (await getLocalTaggerSavedFile(key))?.sha256;
+    if (!sha256) continue;
+    const asset = WD_TAGGER_MODEL.files[key];
+    await verifyModelAsset(await files[key].arrayBuffer(), { label: asset.label, bytes: files[key].size, sha256 },
+      `Downloaded ${asset.label} failed its integrity check. Download the model again.`);
+  }
+};
+
 export const restoreSavedLocalTagger = (requestPermission = false, force = false): Promise<boolean> => {
   if (restoreFlight && restoreFlightGeneration === generation && (!requestPermission || restoreFlightRequestsPermission)) return restoreFlight;
   if (!requestPermission && !force && restoredOnThisPage) return Promise.resolve(false);
@@ -77,6 +90,8 @@ export const restoreSavedLocalTagger = (requestPermission = false, force = false
       ]);
       if (current !== generation) return false;
       if (!modelFile || !tagsFile) throw new Error('Saved caption model files are unavailable. Choose them again in Settings.');
+      await verifyDownloadedFiles({ model: modelFile, tags: tagsFile });
+      if (current !== generation) return false;
       return connectSource({ kind: 'explicit-files', name: names.model, modelFile, tagsFile }, current);
     } catch (error) {
       if (current === generation) {

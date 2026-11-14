@@ -3,6 +3,7 @@ import type { VideoSample } from 'mediabunny';
 import { getVideoMeta, setVideoMeta } from './videoCache';
 import { normalizeFrameEmbedding } from './frameSelection';
 import { checkVideoAbort, type VideoProgress } from './types';
+import { downloadVerifiedModelAsset, verifyModelAsset } from '../models/verifiedModelDownload';
 
 export const VIDEO_MODEL = {
   revision: '560a572cedd01ab59cf1a614c2d9673397b65ef2',
@@ -14,34 +15,23 @@ export const VIDEO_MODEL_KEY = `dinov2-small:${VIDEO_MODEL.sha256}:${VIDEO_MODEL
 const MODEL_URL = `https://huggingface.co/Xenova/dinov2-small/resolve/${VIDEO_MODEL.revision}/onnx/model.onnx`;
 const WASM_URL = new URL('../../../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm', import.meta.url).href;
 
-export const verifyVideoModel = async (buffer: ArrayBuffer) => {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', buffer));
-  const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  if (buffer.byteLength !== VIDEO_MODEL.bytes || hash !== VIDEO_MODEL.sha256) throw new Error('DINOv2 download failed its integrity check. Clear the video cache and download again.');
-};
+const VIDEO_ASSET = { label: 'DINOv2', url: MODEL_URL, bytes: VIDEO_MODEL.bytes, sha256: VIDEO_MODEL.sha256 };
+const VIDEO_INTEGRITY_MESSAGE = 'DINOv2 download failed its integrity check. Clear the video cache and download again.';
+
+export const verifyVideoModel = (buffer: ArrayBuffer) => verifyModelAsset(buffer, VIDEO_ASSET, VIDEO_INTEGRITY_MESSAGE);
 export const downloadVideoModel = async (signal?: AbortSignal, progress?: (progress: VideoProgress) => void) => {
   const existing = await getVideoMeta<ArrayBuffer>('model');
   if (existing) { await verifyVideoModel(existing); return; }
-  const response = await fetch(MODEL_URL, { signal, credentials: 'omit' });
-  if (!response.ok || !response.body) throw new Error(`DINOv2 download failed (${response.status}). No video data was uploaded.`);
-  const buffer = new Uint8Array(VIDEO_MODEL.bytes);
-  const reader = response.body.getReader();
-  let offset = 0;
-  try {
-    while (true) {
-      checkVideoAbort(signal);
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (offset + value.byteLength > buffer.byteLength) throw new Error('Unexpected DINOv2 model size.');
-      buffer.set(value, offset);
-      offset += value.byteLength;
-      progress?.({ phase: 'Downloading DINOv2', completed: offset, total: VIDEO_MODEL.bytes });
-    }
-  } finally { await reader.cancel(); }
-  if (offset !== buffer.byteLength) throw new Error('Incomplete DINOv2 download. Please retry.');
-  await verifyVideoModel(buffer.buffer);
-  checkVideoAbort(signal);
-  await setVideoMeta('model', buffer.buffer);
+  const buffer = await downloadVerifiedModelAsset(VIDEO_ASSET, {
+    signal, progress, phase: 'Downloading DINOv2',
+    messages: {
+      http: (status) => `DINOv2 download failed (${status}). No video data was uploaded.`,
+      size: 'Unexpected DINOv2 model size.',
+      incomplete: 'Incomplete DINOv2 download. Please retry.',
+      integrity: VIDEO_INTEGRITY_MESSAGE,
+    },
+  });
+  await setVideoMeta('model', buffer);
 };
 
 export const rgbModelTensor = (pixels: Uint8ClampedArray): Float32Array => {

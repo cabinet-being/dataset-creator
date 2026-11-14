@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import type { BrickColumnCount, WorkspaceSettings } from '../../types';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
+import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
 import { hasVideoModel } from '../../services/video/videoCache';
 
 type Props = {
@@ -42,6 +43,7 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
       <section className="mt-5 border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Caption model</h2><span role="status" className="text-xs text-muted-foreground">{captionState}</span></div>
         {taggerStatus === 'not-ready' && <p className="mt-2 text-sm text-destructive">{taggerMessage}</p>}
+        <WdTaggerDownloadPanel className="mt-3" />
         <div className="mt-3 space-y-3">{(['model', 'tags'] as const).map(kind => <div key={kind} className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-sm">{kind === 'model' ? 'model.onnx' : 'selected_tags.csv'}</p><p className="truncate text-xs text-muted-foreground">{savedFileNames[kind] ?? 'No file selected'}</p></div><button className={control} disabled={taggerStatus === 'running'} onClick={() => onPickTaggerFile(kind)}>Choose {kind}</button></div>)}</div>
         <div className="mt-3 flex gap-2"><button className={control} disabled={!savedFileNames.model || !savedFileNames.tags || taggerStatus === 'loading' || taggerStatus === 'running'} onClick={onRestoreTaggerAccess}>Reconnect</button><button className={control} onClick={() => closeThen(() => onOpenTool('tagging'))}>Open Caption</button></div>
       </section>

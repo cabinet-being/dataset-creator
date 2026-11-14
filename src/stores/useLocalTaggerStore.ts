@@ -8,7 +8,16 @@ type AutoTaggingProgress = {
   total: number;
 };
 
+export type WdTaggerDownloadState = {
+  status: 'idle' | 'downloading' | 'saving' | 'error' | 'cancelled' | 'done';
+  completed: number;
+  total: number;
+  error?: string;
+};
+
 interface LocalTaggerState {
+  modelDownload: WdTaggerDownloadState;
+  setModelDownload: (state: WdTaggerDownloadState) => void;
   bundle: LocalTaggerBundle | null;
   savedFileNames: { model?: string; tags?: string };
   status: LocalTaggerStatus;
@@ -27,6 +36,8 @@ interface LocalTaggerState {
 const defaultMessage = 'Connect a folder containing model.onnx and selected_tags.csv.';
 
 export const useLocalTaggerStore = create<LocalTaggerState>((set, get) => ({
+  modelDownload: { status: 'idle', completed: 0, total: 0 },
+  setModelDownload: (modelDownload) => set({ modelDownload }),
   bundle: null,
   savedFileNames: {},
   status: 'not-connected',
