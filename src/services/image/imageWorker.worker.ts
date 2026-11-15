@@ -2,10 +2,11 @@ import { measureImageQualityLocal, type ImageQualityOptions, type ImageQualityRe
 
 export type ImageWorkerRequest =
   | { id: number; type: 'quality'; blob: Blob; options: ImageQualityOptions }
-  | { id: number; type: 'resize'; blob: Blob; maxSide: number; quality: number };
+  | { id: number; type: 'resize'; blob: Blob; maxSide: number; quality: number }
+  | { id: number; type: 'digest'; blob: Blob };
 export type ResizeResult = { blob: Blob; width: number; height: number; sourceWidth: number; sourceHeight: number } | null;
 export type ImageWorkerResponse =
-  | { id: number; ok: true; result: ImageQualityReport | ResizeResult }
+  | { id: number; ok: true; result: ImageQualityReport | ResizeResult | string }
   | { id: number; ok: false; message: string };
 
 const decode = async (blob: Blob): Promise<ImageBitmap> => {
@@ -33,10 +34,17 @@ const resize = async (blob: Blob, maxSide: number, quality: number): Promise<Res
   } finally { bitmap.close(); }
 };
 
+const sha256Hex = async (blob: Blob): Promise<string> => {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+};
+
 const scope = globalThis as unknown as { onmessage: ((event: MessageEvent<ImageWorkerRequest>) => void) | null; postMessage: (message: ImageWorkerResponse) => void };
 scope.onmessage = async ({ data }) => {
   try {
-    const result = data.type === 'quality' ? await measureImageQualityLocal(data.blob, data.options) : await resize(data.blob, data.maxSide, data.quality);
+    const result = data.type === 'quality' ? await measureImageQualityLocal(data.blob, data.options)
+      : data.type === 'digest' ? await sha256Hex(data.blob)
+      : await resize(data.blob, data.maxSide, data.quality);
     scope.postMessage({ id: data.id, ok: true, result });
   } catch (error) {
     scope.postMessage({ id: data.id, ok: false, message: error instanceof Error ? error.message : String(error) });

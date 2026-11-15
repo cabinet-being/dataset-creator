@@ -39,6 +39,7 @@ type Input = {
 };
 
 const CHUNK = 8;
+const TRIAGE_APPLY_INTERVAL_MS = 1000;
 const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const isAbort = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 const abortError = () => new DOMException('Auto pipeline stopped', 'AbortError');
@@ -155,6 +156,7 @@ export function useBuildAutoPipeline(input: Input) {
     triageOperation.start(() => cancel(), targets.length);
     const targetIds = new Set(targets.map(getBuildAssetId));
     const digests = new Map<string, string>();
+    let flushReceived = () => {};
     try {
       for (const item of candidates) {
         ctx.signal.throwIfAborted();
@@ -173,6 +175,28 @@ export function useBuildAutoPipeline(input: Input) {
         return [{ assetId: id, digest, inDataset }];
       });
       const duplicates = findExactDuplicates(entries);
+      // Results are applied in one session patch at most once per interval instead of once per chunk.
+      const received: { item: WorkspaceImage; report: ImageQualityReport | undefined }[] = [];
+      let lastApplied = Date.now();
+      let completed = 0;
+      const applyReceived = () => {
+        lastApplied = Date.now();
+        triageOperation.progress(completed, targets.length);
+        setProgress({ completed, total: targets.length });
+        if (!received.length) return;
+        const batch = received.splice(0);
+        const now = new Date().toISOString();
+        latest.current.patchSession((value) => batch.reduce((next, { item, report }) => {
+          const id = getBuildAssetId(item); const record = next.records[id];
+          const revision = getBuildContentRevision(item, record?.transform ?? next.profile.transform);
+          return applyTriageProposal(next, id, classifyQualityTriage({
+            item, report, digest: digests.get(id), duplicateOf: duplicates.get(id),
+            inDataset: isProjectDatasetPath(item.assetPath), revision, now,
+          }));
+        }, value));
+        for (const { item } of batch) attempted.current.add(triageKey(startSession, item, startModel));
+      };
+      flushReceived = () => { if (ctx.isCurrent()) applyReceived(); };
       for (let start = 0; start < targets.length; start += CHUNK) {
         const chunk = targets.slice(start, start + CHUNK);
         const reports = await Promise.all(chunk.map(async (item): Promise<ImageQualityReport | undefined> => {
@@ -183,21 +207,14 @@ export function useBuildAutoPipeline(input: Input) {
         ctx.signal.throwIfAborted();
         await waitIdle(ctx.signal);
         if (!ctx.isCurrent() || minShortSideOf(latest.current.targetModel) !== minShortSide || !latest.current.enabled) throw abortError();
-        const now = new Date().toISOString();
-        latest.current.patchSession((value) => chunk.reduce((next, item, index) => {
-          const id = getBuildAssetId(item); const record = next.records[id];
-          const revision = getBuildContentRevision(item, record?.transform ?? next.profile.transform);
-          return applyTriageProposal(next, id, classifyQualityTriage({
-            item, report: reports[index], digest: digests.get(id), duplicateOf: duplicates.get(id),
-            inDataset: isProjectDatasetPath(item.assetPath), revision, now,
-          }));
-        }, value));
-        for (const item of chunk) attempted.current.add(triageKey(startSession, item, startModel));
-        triageOperation.progress(Math.min(targets.length, start + chunk.length), targets.length);
-        setProgress({ completed: Math.min(targets.length, start + chunk.length), total: targets.length });
+        chunk.forEach((item, index) => received.push({ item, report: reports[index] }));
+        if (Date.now() - lastApplied >= TRIAGE_APPLY_INTERVAL_MS) applyReceived();
+        completed = Math.min(targets.length, start + chunk.length);
         await yieldToUi();
       }
+      applyReceived();
     } catch (error) {
+      flushReceived();
       for (const item of targets) if (!ctx.signal.aborted && !isAbort(error)) attempted.current.add(triageKey(startSession, item, startModel));
       throw error;
     }

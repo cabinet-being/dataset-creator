@@ -4,7 +4,7 @@ import type { ImageWorkerRequest, ImageWorkerResponse, ResizeResult } from './im
 type Body = ImageWorkerRequest extends infer Value ? Value extends { id: number } ? Omit<Value, 'id'> : never : never;
 type Job = {
   body: Body; priority: number; seq: number; signal?: AbortSignal; isWanted?: () => boolean;
-  resolve: (value: ImageQualityReport | ResizeResult) => void; reject: (error: unknown) => void; onAbort?: () => void;
+  resolve: (value: ImageQualityReport | ResizeResult | string) => void; reject: (error: unknown) => void; onAbort?: () => void;
 };
 type Slot = { worker: Worker; job?: Job; id: number };
 
@@ -97,3 +97,12 @@ export const measureImageQualityInWorker = (blob: Blob, options: ImageQualityOpt
 
 export const resizeImageInWorker = (blob: Blob, maxSide: number, options: { priority: number; quality?: number; isWanted?: () => boolean }): Promise<ResizeResult> =>
   previewPool.run<ResizeResult>({ type: 'resize', blob, maxSide, quality: options.quality ?? 0.82 }, { priority: options.priority, isWanted: options.isWanted });
+
+const digestPool = new ImageWorkerPool(1);
+
+/** SHA-256 hex of a blob, read and hashed in a worker so the UI thread never holds the file bytes; null when workers are unavailable. */
+export const sha256HexInWorker = async (blob: Blob): Promise<string | null> => {
+  if (typeof Worker === 'undefined') return null;
+  try { return await digestPool.run<string>({ type: 'digest', blob }); }
+  catch { return null; }
+};

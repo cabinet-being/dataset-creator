@@ -1,3 +1,4 @@
+import { sha256HexInWorker } from '../image/imageWorkerClient';
 import type { AspectRatio, BuildTransformRecipe, CropFrame, EditedAsset } from '../../types';
 
 type TransformResult = Pick<EditedAsset, 'imageData' | 'width' | 'height' | 'aspectRatio' | 'cropFrame'>;
@@ -72,6 +73,8 @@ export const createBuildOutputAssetId = (assetId: string, revision: string, reci
 
 /** Stable across project reloads and sensitive to equal-sized image replacements. */
 export const getBuildImageDigest = async (source: Blob): Promise<string> => {
+  const hashed = await sha256HexInWorker(source);
+  if (hashed) return hashed;
   const digest = await crypto.subtle.digest('SHA-256', await source.arrayBuffer());
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 };

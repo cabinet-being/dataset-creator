@@ -1,3 +1,4 @@
+import { sha256HexInWorker } from '../image/imageWorkerClient';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { VIDEO_MODEL_KEY, downloadVideoModel, loadVideoModel, rgbModelTensor } from '../video/videoModel';
 import { getCachedImageFeature, getCachedTextFeature, setCachedImageFeature, setCachedTextFeature } from './semanticFeatureCache';
@@ -18,6 +19,7 @@ export type SemanticFeature = {
 };
 
 export const hexDigest = async (value: Blob | string): Promise<string> => {
+  if (typeof value !== 'string') { const hashed = await sha256HexInWorker(value); if (hashed) return hashed; }
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(await value.arrayBuffer());
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
