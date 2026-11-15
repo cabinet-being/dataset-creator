@@ -118,6 +118,10 @@ try {
     const captions = metrics.checkCaptions(uncaptioned);
     assert.equal(captions.status, 'fail', 'Any missing caption fails');
     assert.deepEqual(captions.action.ids, ['item-4'], 'Tags count as a caption');
+    const noCaptions = metrics.checkCaptions([]);
+    assert.equal(noCaptions.evaluated, false, 'An empty Dataset is not reported as fully captioned');
+    assert.equal(noCaptions.display, 'no files');
+    assert.doesNotMatch(noCaptions.explanation, /Every file has a caption/);
 
     const trigger = metrics.checkTrigger(items(10, (index) => (index === 2 ? { caption: 'heroine, smile' } : index === 3 ? { caption: 'HERO. portrait' } : {})), 'hero');
     assert.deepEqual(trigger.action.ids, ['item-2'], 'Trigger matches whole words case-insensitively');

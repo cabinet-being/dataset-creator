@@ -65,6 +65,7 @@ test('empty Select offers "Add materials" which opens the Add stage', async ({ p
   await expect(page.getByTestId('build-stage-add')).toHaveAttribute('data-state', 'empty');
   await page.getByTestId('build-stage-select').click();
   await expect(page.getByText('No materials yet', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Finish with fewer' }), 'No shortfall banner without any materials').toHaveCount(0);
   await page.getByRole('button', { name: 'Add materials →' }).click();
   await expect(page.getByTestId('build-stage-add')).toHaveAttribute('aria-current', 'step');
   await expect(page.getByRole('group', { name: 'Project settings' })).toBeVisible();

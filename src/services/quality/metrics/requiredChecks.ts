@@ -99,6 +99,9 @@ export const checkNearDuplicates = (items: readonly QualityItemInput[]): Quality
 };
 
 export const checkCaptions = (items: readonly QualityItemInput[]): QualityMetric => {
+  if (!items.length) {
+    return { id: 'captions', title: 'Captions', value: null, display: 'no files', status: 'ok', evaluated: false, explanation: 'The Dataset has no files yet, so captions were not checked.' };
+  }
   const missing = items.filter((item) => !hasCaption(item));
   const fraction = items.length ? missing.length / items.length : 0;
   return {

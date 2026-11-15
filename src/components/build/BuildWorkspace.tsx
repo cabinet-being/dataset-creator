@@ -557,7 +557,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         </button>; })}</div>}
       </section>
       </>}
-    {!canExport && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
+    {!canExport && candidates.length > 0 && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
     </>}
     <BuildNextStageFooter current={stage} onNext={goToStage} />
     <DatasetAssemblyDialog open={showAssembly} onOpenChange={setShowAssembly} dataset={dataset} items={items} directory={directory ?? undefined} projectId={projectId} projectType={projectType} defaultMode="total" defaultTotal={reconciled.profile.target} excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []} onApply={async (paths) => {
