@@ -17,8 +17,8 @@ flowchart TD
 ```
 
 - [`src/App.tsx`](src/App.tsx) композиційний корінь: з’єднує хуки, спільні рефи сесії, відкриття файлів у вкладках, збирання екранів (`renderEditor`, `workspaceViews`) і панелі; стан Explorer (`src/hooks/useExplorerTree.ts`), його мутації через `runExplorerMutation` (`src/hooks/useExplorerMutations.ts`), клавіатура (`useExplorerShortcuts.ts`) і життєвий цикл проєкту (`src/hooks/useProjectLifecycle.ts`) винесені в хуки; модель вкладок (`src/lib/workspaceTabs.ts`, `src/hooks/useWorkspaceTabs.ts`), команди (`src/hooks/useWorkspaceCommands.ts`) та інспектор винесені в окремих власників. Це все ще інтеграційний модуль; нову незалежну логіку краще розміщувати в наявних сервісах.
-- `src/components/workspace/` містить оболонку, докування, Explorer, Dataset, меню, статус операцій і командну палітру.
-- `src/components/build/` містить єдиний Build Dataset workspace, а `src/components/tools/` — окремі Import, Video Frames, Remove Duplicates, Photopea, Analysis, Review, Caption та Export. Список, назви й рівень (`primary` — Build, `advanced` — решта в групі «Advanced») визначає [`toolDefinitions.ts`](src/lib/toolDefinitions.ts); окремий ToolHub видалено, відкритий проєкт за замовчуванням потрапляє у Build.
+- `src/components/workspace/` містить оболонку (меню File, View, Tools без activity bar; панелі Explorer, Inspector, Output відкриває View, Versions — File), докування, Explorer, Dataset, Project home, статус операцій і командну палітру.
+- `src/components/build/` містить єдиний Build Dataset workspace зі степером етапів Add → Select (List/Grid/Clusters) → Caption → Check → Export (`BuildStepper`, `buildStageSummary.ts`), а `src/components/tools/` — окремі Import, Video Frames, Remove Duplicates, Photopea, Analysis, Review, Caption та Export. Список, назви й рівень (`primary` — Build, `advanced` — решта в групі «Advanced») визначає [`toolDefinitions.ts`](src/lib/toolDefinitions.ts); окремий ToolHub видалено, відкритий проєкт за замовчуванням потрапляє у Build.
 - `src/lib/` містить проєкції ресурсів, правила вкладок і шляхів, геометрію, команди та спільні дії.
 - `src/services/` відповідає за імпорт, файли проєкту, Dataset, підписи, експорт, зображення, відео й моделі.
 - `src/hooks/` з’єднує життєвий цикл React зі збереженням, навігацією, операціями та документами Photopea.
@@ -33,7 +33,7 @@ flowchart TD
 | `useUIStore` | UI, вибір, фільтри, доступ до папки проєкту |
 | `useDocumentStateStore` | Стан відкритих документів, незбережені зміни, запис і перевірка перед закриттям |
 | `useOperationStore` | Прогрес, скасування й завершення тривалих операцій |
-| `useHistoryStore` | Асинхронні Undo/Redo, до 20 записів, ізоляція за ID проєкту |
+| `useHistoryStore` | Асинхронні Undo/Redo, до 20 записів, ізоляція за ID проєкту; Undo/Redo чекають завершення запущених history-транзакцій |
 | `useLocalTaggerStore` | Сесія, стан і назви збережених файлів локального тегера |
 
 Versioned `BuildSession` є частиною `ProjectState`, а не окремим глобальним store. Pure transitions, стабільна черга, revision stamps і readiness належать `services/build/buildSessionService.ts`; React-компонент лише оркеструє наявні caption, Dataset, transform, video та export owners.
@@ -50,11 +50,11 @@ Versioned `BuildSession` є частиною `ProjectState`, а не окрем�
 
 ## Dataset, підписи й експорт
 
-Dataset — фізична папка `dataset/`, а не список активних ID. `datasetMembershipResolver.ts` визначає членство за шляхом. `datasetFolderService.ts` переміщує файли, а `assetActions.ts` додає інтеграцію з історією. Видалення з Dataset переміщує ресурс у `src/shared/`.
+Dataset — фізична папка `dataset/` (лише пари image + TXT, підпапки дозволені), а не список активних ID. `datasetMembershipResolver.ts` визначає членство за шляхом. `datasetFolderService.ts` переміщує файли, а `assetActions.ts` додає інтеграцію з історією. Видалення з Dataset переміщує ресурс у `inbox/`. Службові дані проєкту лежать у `.datasetcreator/` (`project.json`, реєстр `assets.json`, cache, versions, journal, backup); `.git` не використовується, справжній Git-репозиторій захищено. Формат теки, відкриття (reconcile з реєстром, rebind за SHA-256) і міграція описані в [моделі даних](docs/data-model.md).
 
-Підписи належать ресурсам. `resolveAssetCaption` розрізняє відсутні tags і явно порожній масив: порожній підпис не слід підміняти fallback-текстом. Старі Dataset overrides читаються лише для сумісності й міграції.
+Підпис ресурсу — файл `<stem>.txt` поруч із зображенням; формат (trigger word першим лише в `dataset/`) належить `captionFileService.ts`. `resolveAssetCaption` розрізняє відсутній TXT (tags відсутні) і порожній (`[]`): порожній підпис не слід підміняти fallback-текстом. Зміна trigger word — пакетний перезапис TXT з Undo (`rewriteTriggerWord`, застосовується на Enter/blur). Старі sidecar-теги й Dataset overrides читаються лише міграцією.
 
-`buildExportPlan` створює план імен, blob-даних і фінальних підписів. ZIP і запис у папку використовують цей план. Перед записом у папку перевіряються конфлікти вихідних імен. Підтримка PSD делегує конвертацію Photopea, а не змінює лише розширення файлу.
+`buildExportPlan` у `exportPlan.ts` — єдиний власник експорту: план імен, blob-даних і фінальних підписів. Експорт Dataset — побайтова копія `dataset/` з підпапками (TXT як на диску), ZIP за замовчуванням зберігається в `exports/` (`saveZipToProjectExports`). ZIP і запис у папку використовують цей план. Перед записом у папку перевіряються конфлікти вихідних імен. Підтримка PSD делегує конвертацію Photopea, а не змінює лише розширення файлу.
 
 План має content fingerprint. Під час folder export UI веде журнал повністю записаних image+TXT пар; retry перевіряє їх у вибраній папці, пропускає лише підтверджені пари й не перезаписує конфлікти.
 
@@ -72,7 +72,7 @@ Dataset — фізична папка `dataset/`, а не список акти�
 
 Відео має окремий client/worker, кеш кадрів і обмеження паралельних операцій. Photopea — зовнішній iframe із протоколом повідомлень і чергою PSD-прев’ю. Тегер використовує вибрані користувачем ONNX/CSV-файли. Наявність типів crop/augmentation не означає наявності окремих інструментів або workers для них.
 
-Формат файлів і міграції описані в [моделі даних](docs/data-model.md), перевірки — у [посібнику розробника](docs/development.md).
+Старі проєкти (v2/v1) оновлює `layoutMigrationService.ts` із журналом, знімком і бекапами; діалог — `ProjectUpgradeDialog`. Формат файлів і міграції описані в [моделі даних](docs/data-model.md), перевірки — у [посібнику розробника](docs/development.md).
 
 
 ## Інспектор і робочі екрани

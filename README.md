@@ -15,20 +15,19 @@ npm run dev
 
 Відкрийте адресу, яку виведе Vite; типово це `http://localhost:5173/DatasetCreator/`.
 
-1. Створіть або відкрийте папку проєкту. Виберіть тип (General за замовчуванням, Character, Style або Concept) і цільову модель (SD 1.5, SDXL або Flux).
-2. Імпортуйте зображення, папку чи ZIP. Для відео скористайтеся Video Frames.
-3. Перегляньте матеріали в Review, за потреби відкрийте Photopea або Remove Duplicates.
-4. Додайте вибрані зображення до Dataset. Це фізично переміщує файли в `dataset/`.
-5. Відредагуйте підписи в Caption.
-6. У Export перевірте список файлів і підписів, потім збережіть ZIP або виберіть вихідну папку.
+1. Створіть або відкрийте папку проєкту (File). Виберіть тип (General за замовчуванням, Character, Style або Concept) і цільову модель (SD 1.5, SDXL або Flux). Project home показує, на якому етапі проєкт.
+2. У Build пройдіть етапи Add → Select → Caption → Check → Export: імпортуйте матеріали в `inbox/`, виберіть зображення в Dataset (List, Grid або Clusters; Auto-select), відредагуйте підписи, перевірте звіт якості й експортуйте.
+3. Решта інструментів (Video Frames, Similar images, Photopea, Similarity map, Browse files) — у Tools → Advanced.
 
-Растрові файли під час експорту зберігають формат; PSD конвертується в PNG через Photopea. Dataset один на проєкт. Старі `*.dataset.json` належать до механізму міграції, а не до поточного способу створення наборів.
+Структура проєкту: `inbox/` (сирі матеріали), `dataset/` (пари зображення + TXT, придатні для kohya/OneTrainer напряму), `exports/` (ZIP експорту), `.datasetcreator/` (службові дані). Підпис — єдиний файл `<ім’я>.txt`. Старі проєкти оновлюються через діалог з журналом, знімком і бекапами; деталі — у [моделі даних](docs/data-model.md).
+
+Dataset експортується побайтовою копією `dataset/` зі всіма підпапками; PSD конвертується в PNG через Photopea. Dataset один на проєкт.
 
 ## Можливості
 
 - Імпорт BMP, GIF, JPEG/JPG, PNG, WebP, TXT, JSON, PSD, MP4 та WebM.
 - Explorer, вкладки, доковані й плаваючі панелі, командна палітра та історія переходів.
-- Build Dataset як основний шлях: автотріаж якості зображень, автодобір до Dataset, звіт готовності Dataset; решта інструментів у групі Advanced.
+- Build Dataset зі степером етапів і Project home: автотріаж якості зображень, автодобір до Dataset, Grid-перегляд, швидке підписування, звіт готовності; решта інструментів у групі Advanced.
 - Перегляд схожості зображень (рівні DINOv2 і повзунок Strictness), ручний відбір і пропозиції для розширення Dataset.
 - Редагування зображень і PSD через Photopea.
 - Ручне та автоматичне виділення кадрів із відео.
@@ -58,7 +57,7 @@ npm test
 npm run build
 ```
 
-`npm run test:ci` по черзі запускає lint, перевірку документації, сім наборів регресійних тестів, production-збірку та браузерні сценарії Playwright (Chromium). Перед першим локальним запуском браузерних сценаріїв виконайте `npx playwright install chromium`. Сценарії з тегами `@network` і `@slow`, а також стенди, що потребують живого Photopea чи dev server, не входять у типовий прогін. Команди й межі автоматизації — у [розробці](docs/development.md).
+`npm run test:ci` по черзі запускає lint, перевірку документації, офлайн-набори регресійних тестів, production-збірку та браузерні сценарії Playwright (Chromium). Перед першим локальним запуском браузерних сценаріїв виконайте `npx playwright install chromium`. Сценарії з тегами `@network` і `@slow`, а також стенди, що потребують живого Photopea чи dev server, не входять у типовий прогін. Команди й межі автоматизації — у [розробці](docs/development.md).
 
 Стек: React 18, TypeScript, Vite, Zustand, Tailwind CSS, Radix UI, JSZip, Mediabunny та ONNX Runtime Web. Точні версії залежностей — у `package-lock.json`.
 

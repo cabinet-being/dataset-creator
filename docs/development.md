@@ -9,12 +9,13 @@
 | `npm run dev` | Vite dev server |
 | `npm run build` | TypeScript і production-збірка в `dist/` |
 | `npm run preview` | Перегляд зібраного застосунку |
-| `npm test` | Усі дев’ять офлайн-наборів, зупинка після першої помилки |
+| `npm test` | Усі одинадцять офлайн-наборів, зупинка після першої помилки |
 | `npm run lint` | ESLint 9 (flat config `eslint.config.js`), без попереджень |
 | `npm run test:ci` | По черзі: lint, перевірка документації, усі тести, build, браузерні сценарії |
 | `npm run test:docs` | Тест валідатора та перевірка посилань, шляхів і npm-команд у документації |
 | `npm run test:browser-fixtures` | Збірка стендів із `vite.browser.config.ts` у `dist/browser-fixtures/` |
-| `npm run test:browser` | Збірка стендів і `playwright test` (Chromium) над `vite preview` на `127.0.0.1:4174` за `tests/e2e/*.spec.ts` |
+| `npm run test:browser` | Збірка стендів і `playwright test` (Chromium) над `vite preview` на `127.0.0.1:4174` за `tests/e2e/*.spec.ts`; порт змінює `PW_PORT` (наприклад `PW_PORT=4175 npm run test:browser`), щоб паралельні checkout-и або worktrees не конфліктували |
+| `npm run test:caption-txt` | TXT як єдине джерело підпису: формат, trigger word, переміщення через межу `dataset/`, міграція sidecar-тегів |
 | `npm run test:browser:network` | Лише сценарії з тегом `@network`, один воркер |
 | `npx playwright test --grep @slow` | Тривалі сценарії (one-hour video) |
 
@@ -24,7 +25,8 @@
 
 | Зона зміни | Команда |
 | --- | --- |
-| Серіалізація, міграції, індексація, Explorer, Dataset-файли, версії | `npm run test:project-types` |
+| Серіалізація, формат v3, міграція layout (знімок, журнал, resume), реєстр ресурсів і rebind, експорт, індексація, Explorer, Dataset-файли, версії | `npm run test:project-types` |
+| TXT-підписи, trigger word, пакетний перезапис, sidecar → TXT | `npm run test:caption-txt` |
 | Docking, геометрія, вкладки й відновлення layout | `npm run test:workspace-layout` |
 | Вибір кадрів, індекс, скасування, fingerprints, запис PNG | `npm run test:video-frames` |
 | Команди, підписи, імпорт/експорт, save queue, навігація | `npm run test:ui-workflows` |
@@ -41,7 +43,7 @@
 
 ## Межі автоматизації
 
-Браузерні сценарії запускає Playwright (Chromium) над `vite preview`; конфігурація — `playwright.config.ts`, специфікації — `tests/e2e/`. Стенди збираються з `vite.browser.config.ts` (explorer, export, persistence, caption, caption-editor, build, inspector, project-switch, tagger-restore, scope, ui, video) із `react-dom/profiling`, щоб `<Profiler>` рахував рендери. Специфікація `tests/e2e/explorer-mutations.spec.ts` покриває rename, нову папку, copy/paste, duplicate, delete і клавіатуру Explorer. Спільна guard-fixture (`tests/e2e/fixtures.ts`) провалює тест на `pageerror`, `console.error` і зовнішні запити; виняток — корінь iframe Photopea, який монтує App.
+Браузерні сценарії запускає Playwright (Chromium) над `vite preview`; конфігурація — `playwright.config.ts`, специфікації — `tests/e2e/`. Стенди збираються з `vite.browser.config.ts` (explorer, export, persistence, caption, caption-editor, build, inspector, project-switch, tagger-restore, scope, ui, video) із `react-dom/profiling`, щоб `<Profiler>` рахував рендери. Етапи Build, Project home, Grid і етап Caption покривають `tests/e2e/build-stages.spec.ts` і `build-grid.spec.ts`; перемикання проєктів — `project-switch.spec.ts`. Специфікація `tests/e2e/explorer-mutations.spec.ts` покриває rename, нову папку, copy/paste, duplicate, delete і клавіатуру Explorer. Спільна guard-fixture (`tests/e2e/fixtures.ts`) провалює тест на `pageerror`, `console.error` і зовнішні запити; виняток — корінь iframe Photopea, який монтує App.
 
 Поза типовим прогоном лишаються сценарії з тегами `@network` (живий експорт Photopea, справжня DINOv2 з Hugging Face; можливе звіряння маніфесту WD-тегера з Hugging Face; потребують мережі) і `@slow` (one-hour video; тривалі). Стенди document (iframe Photopea) і workspace (потрібен dev server застосунку) пропущені з поясненням у `tests/e2e/skipped.spec.ts`. Сценарій `tests/e2e/tagger-download.spec.ts` перевіряє завантаження WD-тегера на mock-відповіді, без мережі. Стенд tagger-restore перевіряє збереження назв і байтів копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Export і caption стенди працюють із фізичним членством у `dataset/`.
 
