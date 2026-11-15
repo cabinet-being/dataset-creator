@@ -46,3 +46,46 @@ test('Dataset board hides secondary tools under Advanced and Add files opens its
   await expect(page.getByRole('tab', { name: /^Add files to Dataset/ })).toBeVisible();
   await expect(page.getByRole('tab', { name: /Similar images/ })).toHaveCount(0);
 });
+
+test.describe('workspace shell', () => {
+  const menubar = (page: Page) => page.getByRole('menubar', { name: 'Main menu' });
+  const explorerPanel = (page: Page) => page.locator('[data-dock-view="window:explorer"]');
+
+  test('menu bar has no Windows menu, no Open tool button; View lists panels and Reset layout', async ({ page }) => {
+    await openProjectA(page);
+    await expect(menubar(page).getByRole('menuitem', { name: 'Windows', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Open tool/ })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: /Open tool/ })).toHaveCount(0);
+    await menubar(page).getByRole('menuitem', { name: 'View', exact: true }).click();
+    const menu = page.getByRole('menu');
+    for (const name of ['Explorer', 'Inspector', 'Output']) {
+      await expect(menu.getByRole('menuitemcheckbox', { name, exact: true }), name).toBeVisible();
+    }
+    await expect(menu.getByRole('menuitem', { name: 'Reset layout', exact: true })).toBeVisible();
+  });
+
+  test('View > Explorer toggles the Explorer panel', async ({ page }) => {
+    await openProjectA(page);
+    await expect(explorerPanel(page)).toBeVisible();
+    await menubar(page).getByRole('menuitem', { name: 'View', exact: true }).click();
+    const item = page.getByRole('menu').getByRole('menuitemcheckbox', { name: 'Explorer', exact: true });
+    await expect(item).toHaveAttribute('aria-checked', 'true');
+    await item.click();
+    await expect(explorerPanel(page)).toBeHidden();
+    await menubar(page).getByRole('menuitem', { name: 'View', exact: true }).click();
+    const unchecked = page.getByRole('menu').getByRole('menuitemcheckbox', { name: 'Explorer', exact: true });
+    await expect(unchecked).toHaveAttribute('aria-checked', 'false');
+    await unchecked.click();
+    await expect(explorerPanel(page)).toBeVisible();
+  });
+
+  test('File > Versions opens the versions panel and Back to Explorer returns', async ({ page }) => {
+    await openProjectA(page);
+    await menubar(page).getByRole('menuitem', { name: 'File', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Versions', exact: true }).click();
+    await expect(page.getByText('Project versions')).toBeVisible();
+    await page.getByRole('button', { name: 'Back to Explorer' }).click();
+    await expect(page.getByText('Project versions')).toHaveCount(0);
+    await expect(page.locator('[data-explorer-path$="A.txt"]').first()).toBeVisible();
+  });
+});

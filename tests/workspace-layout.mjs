@@ -154,12 +154,12 @@ try {
 
   for (const targetView of ['window:inspector', 'window:output', EXPLORER_VIEW, 'tool:review']) {
     for (const side of ['left', 'right', 'top', 'bottom']) {
-      let layout = openDockView(base(), 'window:project');
+      let layout = openDockView(base(), 'window:dataset');
       const target = findDockGroup(layout, targetView);
-      assertPreviewMatchesDrop(layout, { type: 'tab', id: 'window:project' }, { host: target.host, group: target.group.id, side });
-      assertPreviewMatchesDrop(layout, { type: 'tab', id: 'window:project' }, { host: target.host, group: target.group.id, side }, 400, 300);
-      layout = moveDockSource(layout, { type: 'tab', id: 'window:project' }, { host: target.host, group: target.group.id, side });
-      const sourceRect = regionAt(layout, 'window:project').rect;
+      assertPreviewMatchesDrop(layout, { type: 'tab', id: 'window:dataset' }, { host: target.host, group: target.group.id, side });
+      assertPreviewMatchesDrop(layout, { type: 'tab', id: 'window:dataset' }, { host: target.host, group: target.group.id, side }, 400, 300);
+      layout = moveDockSource(layout, { type: 'tab', id: 'window:dataset' }, { host: target.host, group: target.group.id, side });
+      const sourceRect = regionAt(layout, 'window:dataset').rect;
       const targetRect = regionAt(layout, targetView).rect;
       if (side === 'left') assert.ok(sourceRect.x + sourceRect.width < targetRect.x);
       if (side === 'right') assert.ok(targetRect.x + targetRect.width < sourceRect.x);
@@ -224,15 +224,15 @@ try {
   const forbiddenMove = moveDockSource(layout, { type: 'tab', id: EXPLORER_VIEW }, { host: 'main', group: groupAt(layout, 'tool:review').id, side: 'right' });
   assert.equal(forbiddenMove, layout);
   assert.equal(floatDockSource(layout, { type: 'group', id: groupAt(layout, EXPLORER_VIEW).id }, { x: 0, y: 0, width: 300, height: 400 }), layout);
-  let sidebarLayout = openDockView(base(), 'window:project');
-  sidebarLayout = moveDockSource(sidebarLayout, { type: 'tab', id: 'window:project' }, { host: 'left', group: groupAt(sidebarLayout, EXPLORER_VIEW).id, side: 'bottom' });
-  assert.equal(findDockGroup(sidebarLayout, 'window:project').host, 'left');
+  let sidebarLayout = openDockView(base(), 'window:dataset');
+  sidebarLayout = moveDockSource(sidebarLayout, { type: 'tab', id: 'window:dataset' }, { host: 'left', group: groupAt(sidebarLayout, EXPLORER_VIEW).id, side: 'bottom' });
+  assert.equal(findDockGroup(sidebarLayout, 'window:dataset').host, 'left');
   sidebarLayout = removeDockViews(sidebarLayout, [EXPLORER_VIEW]);
-  assert.equal(findDockGroup(sidebarLayout, 'window:project').host, 'left');
+  assert.equal(findDockGroup(sidebarLayout, 'window:dataset').host, 'left');
   sidebarLayout = openDockView(sidebarLayout, EXPLORER_VIEW);
   assert.equal(findDockGroup(sidebarLayout, EXPLORER_VIEW).host, 'left');
-  assert.ok(regionAt(sidebarLayout, EXPLORER_VIEW).rect.y < regionAt(sidebarLayout, 'window:project').rect.y);
-  sidebarLayout = moveDockSource(sidebarLayout, { type: 'tab', id: 'window:project' }, { host: 'left', group: groupAt(sidebarLayout, EXPLORER_VIEW).id, side: 'center' });
+  assert.ok(regionAt(sidebarLayout, EXPLORER_VIEW).rect.y < regionAt(sidebarLayout, 'window:dataset').rect.y);
+  sidebarLayout = moveDockSource(sidebarLayout, { type: 'tab', id: 'window:dataset' }, { host: 'left', group: groupAt(sidebarLayout, EXPLORER_VIEW).id, side: 'center' });
   assert.equal(floatDockSource(sidebarLayout, { type: 'group', id: groupAt(sidebarLayout, EXPLORER_VIEW).id }, { x: 0, y: 0, width: 300, height: 400 }), sidebarLayout);
   assert.equal(moveDockSource(sidebarLayout, { type: 'host', id: 'left' }, { host: 'main', group: groupAt(sidebarLayout, 'tool:review').id, side: 'right' }), sidebarLayout);
   const oldSidebarWidth = regionAt(layout, EXPLORER_VIEW).rect.width;
@@ -248,7 +248,7 @@ try {
 
   const migration = migrateDockLayout({
     leftPanelWidth: 300, rightPanelWidth: 320, bottomPanelHeight: 240, bottomPanelOpen: true,
-    projectWindowOpen: true, projectWindow: { x: 100, y: 150, width: 410, height: 330, minimized: true },
+    datasetWindowOpen: true, datasetWindow: { x: 100, y: 150, width: 410, height: 330, minimized: true },
     openTabs: [{ kind: 'window', window: 'inspector' }],
   }, ['tool:review'], 1400, 1000);
   assert.equal(migration.sidebarRatio, 300 / 1400);
@@ -257,13 +257,33 @@ try {
   assert.equal(groupAt(migration, 'window:inspector').id, groupAt(migration, 'tool:review').id);
   assertUnique(migration);
   const migratedWindowOnly = migrateDockLayout({
-    openTabs: [{ kind: 'window', window: 'project', pinned: true }],
+    openTabs: [{ kind: 'window', window: 'dataset', pinned: true }],
   }, []);
-  assert.ok(findDockGroup(migratedWindowOnly, 'window:project'));
-  assert.deepEqual(migratedWindowOnly.pinned, ['window:project']);
+  assert.ok(findDockGroup(migratedWindowOnly, 'window:dataset'));
+  assert.deepEqual(migratedWindowOnly.pinned, ['window:dataset']);
+  // The removed Project window is dropped from saved and legacy layouts.
+  {
+    const clean = base();
+    const withProject = { ...clean, main: layoutApi.dockSplit(clean.main, layoutApi.dockGroup(['window:project'], 'only-project'), 'horizontal', 0.7), pinned: ['window:project', 'tool:review'],
+      locations: { ...clean.locations, 'window:project': { host: 'main', group: 'only-project', side: 'right', index: 0 } } };
+    const parsed = parseDockLayout(JSON.parse(JSON.stringify(withProject)));
+    assert.ok(parsed, 'A layout referencing window:project still parses');
+    assert.ok(!viewIds(parsed).includes('window:project'));
+    assert.equal(findDockGroup(parsed, 'window:project'), null);
+    assert.ok(!dockGroups(parsed.main).some((group) => group.id === 'only-project'), 'The emptied group is removed');
+    assert.deepEqual(parsed.main, clean.main, 'The split around the removed group collapses');
+    assert.deepEqual(parsed.pinned, ['tool:review']);
+    assert.ok(!('window:project' in parsed.locations));
+    const shared = { ...clean, main: layoutApi.dockSplit(clean.main, layoutApi.dockGroup(['window:project', 'window:dataset']), 'horizontal', 0.7) };
+    assert.deepEqual(viewIds(parseDockLayout(shared)).filter((id) => id.endsWith('project') || id.endsWith('dataset')), ['window:dataset'], 'Other tabs in a shared group survive');
+    const floated = parseDockLayout({ ...clean, floating: [{ id: 'f1', root: layoutApi.dockGroup(['window:project']), bounds: { x: 0, y: 0, width: 300, height: 300 } }] });
+    assert.equal(floated.floating.length, 0, 'A floating window holding only Project is dropped');
+    const legacy = migrateDockLayout({ projectWindowOpen: true, openTabs: [{ kind: 'window', window: 'project', pinned: true }] }, ['tool:review']);
+    assert.ok(!viewIds(legacy).includes('window:project') && legacy.floating.length === 0);
+  }
   const invalidHosts = { ...base(), floating: [
-    { id: 'float:duplicate', root: layoutApi.dockGroup(['window:project']), bounds: { x: 0, y: 0, width: 300, height: 300 } },
     { id: 'float:duplicate', root: layoutApi.dockGroup(['window:dataset']), bounds: { x: 0, y: 0, width: 300, height: 300 } },
+    { id: 'float:duplicate', root: layoutApi.dockGroup(['tool:extra']), bounds: { x: 0, y: 0, width: 300, height: 300 } },
   ] };
   assert.equal(parseDockLayout(invalidHosts).floating.length, 1);
   const closed = removeDockViews(base(), ['tool:review', 'tool:analysis', 'window:inspector', 'window:output']);
@@ -319,6 +339,7 @@ try {
           { kind: 'dataset-tool', datasetId: 'g', tool: 'export' },
           { kind: 'window', window: 'output' },
           { kind: 'window', window: 'unknown' },
+          { kind: 'window', window: 'project', pinned: true },
           null, 5,
         ],
       }, dock: null, projects: {} }));
@@ -356,11 +377,11 @@ try {
     }
 
     const persisted = [
-      { kind: 'tool', tool: 'review' }, { kind: 'tool', tool: 'import' }, { kind: 'window', window: 'project' }, { kind: 'dataset-tool', datasetId: 'g', tool: 'tagging' },
+      { kind: 'tool', tool: 'review' }, { kind: 'tool', tool: 'import' }, { kind: 'window', window: 'dataset' }, { kind: 'dataset-tool', datasetId: 'g', tool: 'tagging' },
     ];
-    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }, 'a').map((tab) => tab.id), ['tool:review', 'tool:import', 'window:project', 'dataset:g:tagging']);
-    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }, 'b').map((tab) => tab.id), ['tool:review', 'tool:import', 'window:project'], 'Dataset tabs of another project are not restored');
-    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }).map((tab) => tab.id), ['tool:review', 'tool:import', 'window:project'], 'Without a project id only tool and window tabs are restored');
+    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }, 'a').map((tab) => tab.id), ['tool:review', 'tool:import', 'window:dataset', 'dataset:g:tagging']);
+    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }, 'b').map((tab) => tab.id), ['tool:review', 'tool:import', 'window:dataset'], 'Dataset tabs of another project are not restored');
+    assert.deepEqual(getRestorableWorkspaceTabs({ projectId: 'a', openTabs: persisted }).map((tab) => tab.id), ['tool:review', 'tool:import', 'window:dataset'], 'Without a project id only tool and window tabs are restored');
     assert.deepEqual(getRestorableWorkspaceTabs({}, 'a'), []);
 
     const { createWorkspaceTabFromPersisted, persistWorkspaceTab, dedupeWorkspaceTabs, orderWorkspaceTabs, getInspectorContext, createToolTab, isDatasetToolName } = tabsApi;
