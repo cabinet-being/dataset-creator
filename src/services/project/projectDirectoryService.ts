@@ -726,16 +726,18 @@ const CLEARED_PROJECT_ENTRIES = [
 const GIT_SERVICE_ENTRIES = new Set(['dataset-creator-versions.json', 'snapshots', 'restore-backups']);
 
 // A .git folder holding anything besides Dataset Creator version files is a real repository.
+// A .git file (worktree/submodule gitfile) or an unreadable .git is treated as a real repository too.
 const hasRealGitRepository = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
   try {
     const git = await directory.getDirectoryHandle('.git');
     for await (const [name] of git.entries()) {
       if (!GIT_SERVICE_ENTRIES.has(name)) return true;
     }
-  } catch {
-    // Missing or unreadable .git is not a repository.
+    return false;
+  } catch (error) {
+    if ((error as { name?: string })?.name === 'NotFoundError') return false;
+    return true;
   }
-  return false;
 };
 
 /** Names that clearProjectDirectory would delete from the folder (a real Git repository is never listed). */

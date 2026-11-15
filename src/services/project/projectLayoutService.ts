@@ -83,11 +83,28 @@ export const writeDatasetManifest = async (
   manifest: DatasetManifest
 ): Promise<void> => writeTextFile(root, DATASET_MANIFEST_FILE, JSON.stringify(manifest, null, 2));
 
+export const isGitFile = async (root: ProjectDirectoryHandle): Promise<boolean> => {
+  try {
+    await root.getFileHandle(PROJECT_GIT_DIRECTORY);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const ensureProjectLayout = async (
   root: ProjectDirectoryHandle,
   _project?: Pick<ProjectState, 'name' | 'projectType' | 'taggingConfig' | 'dataset'>
 ): Promise<DatasetManifest | null> => {
-  await Promise.all(REQUIRED_PROJECT_DIRECTORIES.map((path) => getDirectoryAtPath(root, path, true)));
+  await Promise.all(REQUIRED_PROJECT_DIRECTORIES.map(async (path) => {
+    try {
+      await getDirectoryAtPath(root, path, true);
+    } catch (error) {
+      // A .git file (worktree/submodule gitfile) is kept untouched; project versions are unavailable then.
+      if (path === PROJECT_GIT_DIRECTORY && await isGitFile(root)) return;
+      throw error;
+    }
+  }));
   return readDatasetManifest(root);
 };
 

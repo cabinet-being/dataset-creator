@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
-import { PROJECT_CACHE_DIRECTORY, PROJECT_GIT_DIRECTORY, REQUIRED_PROJECT_DIRECTORIES } from './projectLayoutService';
+import { PROJECT_CACHE_DIRECTORY, PROJECT_GIT_DIRECTORY, REQUIRED_PROJECT_DIRECTORIES, isGitFile } from './projectLayoutService';
 
 const VERSION_INDEX_PATH = `${PROJECT_GIT_DIRECTORY}/dataset-creator-versions.json`;
 const VERSION_SNAPSHOT_DIRECTORY = `${PROJECT_GIT_DIRECTORY}/snapshots`;
@@ -62,6 +62,12 @@ const writeFileAtPath = async (root: ProjectDirectoryHandle, path: string, value
 const readFileAtPath = async (root: ProjectDirectoryHandle, path: string) =>
   readFile(await getDirectoryAtPath(root, getParentPath(path)), getFileName(path));
 
+const assertVersionsAvailable = async (root: ProjectDirectoryHandle) => {
+  if (await isGitFile(root)) {
+    throw new Error('Project versions are unavailable: .git in this folder is a Git file (worktree or submodule), not a folder.');
+  }
+};
+
 const readVersionIndex = async (root: ProjectDirectoryHandle): Promise<VersionIndex> => {
   try {
     const file = await readFileAtPath(root, VERSION_INDEX_PATH);
@@ -108,6 +114,8 @@ const clearProjectContents = async (root: ProjectDirectoryHandle) => {
 const applySnapshot = async (root: ProjectDirectoryHandle, zip: JSZip) => {
   await clearProjectContents(root);
   for (const entry of Object.values(zip.files)) {
+    // Preserved root names (.git, .cache) are never applied from an old snapshot.
+    if (PRESERVED_ROOT_ENTRIES.has(entry.name.split('/')[0])) continue;
     if (entry.dir) await getDirectoryAtPath(root, entry.name, true);
     else await writeFileAtPath(root, entry.name, await entry.async('blob'));
   }
@@ -120,6 +128,7 @@ export const listProjectVersions = async (root: ProjectDirectoryHandle): Promise
 };
 
 export const createProjectVersion = async (root: ProjectDirectoryHandle, name: string): Promise<ProjectVersion> => {
+  await assertVersionsAvailable(root);
   const label = name.trim();
   if (!label) {
     throw new Error('Version name is required.');
@@ -150,6 +159,7 @@ export const restoreProjectVersion = async (
   id: string,
   validate?: () => Promise<void>
 ): Promise<ProjectVersion> => {
+  await assertVersionsAvailable(root);
   const index = await readVersionIndex(root);
   const version = index.versions.find((entry) => entry.id === id);
   if (!version) {
