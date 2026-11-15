@@ -1,6 +1,6 @@
 import { test, expect, type Page } from './fixtures';
 
-const ADVANCED_TOOLS = ['Import', 'Video Frames', 'Remove Duplicates', 'Photopea', 'Analysis', 'Review', 'Caption', 'Export'];
+const ADVANCED_TOOLS = ['Import', 'Video Frames', 'Similar images', 'Photopea', 'Similarity map', 'Browse files', 'Caption', 'Export'];
 
 async function openProjectA(page: Page) {
   await page.goto('/tests/project-switch-browser.html');
@@ -37,12 +37,12 @@ test('Dataset board hides secondary tools under Advanced and Add files opens its
   await page.getByRole('menu').getByRole('menuitem', { name: 'Dataset', exact: true }).click();
   const advanced = page.getByTestId('dataset-advanced-tools');
   await expect(advanced).toBeVisible();
-  await expect(advanced.getByRole('button', { name: 'Review' })).toBeHidden();
+  await expect(advanced.getByRole('button', { name: 'Browse files' })).toBeHidden();
   await advanced.getByText('Advanced', { exact: true }).click();
-  for (const label of ['Review', 'Caption', 'Analysis', 'Export']) {
+  for (const label of ['Browse files', 'Caption', 'Similarity map', 'Export']) {
     await expect(advanced.getByRole('button', { name: label, exact: true }), label).toBeVisible();
   }
   await page.getByRole('button', { name: 'Add files', exact: true }).click();
-  await expect(page.getByRole('tab', { name: /^Add files:/ })).toBeVisible();
-  await expect(page.getByRole('tab', { name: /Remove Duplicates/ })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: /^Add files to Dataset/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Similar images/ })).toHaveCount(0);
 });

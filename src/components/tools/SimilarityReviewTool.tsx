@@ -27,7 +27,7 @@ import { MasonryImageFrame } from '../ui/MasonryImageFrame';
 import { AlertCircle, ChevronDown, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 
-/** Single labelled "Strictness" slider shared by Remove Duplicates and Analysis. */
+/** Single labelled "Strictness" slider shared by Similar images and Analysis. */
 export const SimilarityStrictnessControl = ({
   value,
   onChange,
@@ -201,7 +201,7 @@ export const SimilarityReviewTool = () => {
               <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
             </div>
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold">Remove Duplicates</h3>
+              <h3 className="text-sm font-semibold">Similar images</h3>
               <p className="truncate text-xs text-muted-foreground">
                 Review visually similar source and generated images.
               </p>

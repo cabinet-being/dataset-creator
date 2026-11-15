@@ -16,7 +16,7 @@ type QualityReportProps = {
   className?: string;
 };
 
-export const QUALITY_STATUS_TEXT: Record<QualityStatus, string> = { ok: 'Готово', warn: 'Є зауваження', fail: 'Не готово' };
+export const QUALITY_STATUS_TEXT: Record<QualityStatus, string> = { ok: 'Ready', warn: 'Needs attention', fail: 'Not ready' };
 const STATUS_CLASS: Record<QualityStatus, string> = {
   ok: 'text-emerald-700 dark:text-emerald-300',
   warn: 'text-amber-700 dark:text-amber-300',
@@ -25,10 +25,10 @@ const STATUS_CLASS: Record<QualityStatus, string> = {
 const ACTION_PREVIEW = 8;
 
 const StatusIcon = ({ metric }: { metric: Pick<QualityMetric, 'status' | 'evaluated'> }) => {
-  if (!metric.evaluated) return <CircleSlash className="h-4 w-4 shrink-0 text-muted-foreground" aria-label="Не оцінено" />;
-  if (metric.status === 'ok') return <CheckCircle2 className={cn('h-4 w-4 shrink-0', STATUS_CLASS.ok)} aria-label="Добре" />;
-  if (metric.status === 'warn') return <AlertTriangle className={cn('h-4 w-4 shrink-0', STATUS_CLASS.warn)} aria-label="Попередження" />;
-  return <XCircle className={cn('h-4 w-4 shrink-0', STATUS_CLASS.fail)} aria-label="Помилка" />;
+  if (!metric.evaluated) return <CircleSlash className="h-4 w-4 shrink-0 text-muted-foreground" aria-label="Not evaluated" />;
+  if (metric.status === 'ok') return <CheckCircle2 className={cn('h-4 w-4 shrink-0', STATUS_CLASS.ok)} aria-label="Good" />;
+  if (metric.status === 'warn') return <AlertTriangle className={cn('h-4 w-4 shrink-0', STATUS_CLASS.warn)} aria-label="Warning" />;
+  return <XCircle className={cn('h-4 w-4 shrink-0', STATUS_CLASS.fail)} aria-label="Error" />;
 };
 
 const Sparkline = ({ series }: { series: number[] }) => {
@@ -37,7 +37,7 @@ const Sparkline = ({ series }: { series: number[] }) => {
   const height = 28;
   const points = series.map((value, index) => `${(index / (series.length - 1)) * width},${height - Math.max(0, Math.min(1, value)) * height}`).join(' ');
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className="text-primary" role="img" aria-label="Крива насичення покриття">
+    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className="text-primary" role="img" aria-label="Coverage saturation curve">
       <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
     </svg>
   );
@@ -58,7 +58,7 @@ const ActionBlock = ({ metric, action, labelFor, onAction, canApply, onSelectId 
         <span className="text-[11px] font-medium text-muted-foreground">{action.label} ({values.length})</span>
         {onAction && (canApply?.(metric, action) ?? true) && (
           <button type="button" onClick={() => onAction(metric, action)} className="rounded border border-border px-1.5 py-0.5 text-[11px] hover:bg-secondary">
-            Застосувати
+            Apply
           </button>
         )}
       </div>
@@ -73,7 +73,7 @@ const ActionBlock = ({ metric, action, labelFor, onAction, canApply, onSelectId 
         {values.length > ACTION_PREVIEW && (
           <li>
             <button type="button" onClick={() => setExpanded(!expanded)} className="px-1 text-[11px] text-muted-foreground underline">
-              {expanded ? 'Згорнути' : `Ще ${values.length - ACTION_PREVIEW}`}
+              {expanded ? 'Show less' : `${values.length - ACTION_PREVIEW} more`}
             </button>
           </li>
         )}
@@ -83,7 +83,7 @@ const ActionBlock = ({ metric, action, labelFor, onAction, canApply, onSelectId 
 };
 
 const BucketBars = ({ buckets, unlabeled, evaluated }: { buckets: QualityBucket[]; unlabeled?: number; evaluated: boolean }) => {
-  if (!evaluated) return <p className="text-[11px] italic text-muted-foreground">Вісь не оцінено, розподіл не показано.</p>;
+  if (!evaluated) return <p className="text-[11px] italic text-muted-foreground">Axis not evaluated, distribution not shown.</p>;
   const scale = Math.max(1, ...buckets.map((bucket) => Math.max(bucket.count, bucket.recommended ?? 0)));
   return (
     <div className="mt-1 space-y-1">
@@ -96,11 +96,11 @@ const BucketBars = ({ buckets, unlabeled, evaluated }: { buckets: QualityBucket[
               <div className={cn('h-2 rounded', short ? 'bg-amber-500' : 'bg-primary')} style={{ width: `${(bucket.count / scale) * 100}%` }} />
               {bucket.recommended !== undefined && <div className="absolute top-[-2px] h-3 w-px bg-foreground" style={{ left: `${(bucket.recommended / scale) * 100}%` }} aria-hidden="true" />}
             </div>
-            <span className="w-24 shrink-0 text-right tabular-nums text-muted-foreground">{bucket.count}{bucket.recommended !== undefined && ` з ${bucket.recommended}`}</span>
+            <span className="w-24 shrink-0 text-right tabular-nums text-muted-foreground">{bucket.count}{bucket.recommended !== undefined && ` of ${bucket.recommended}`}</span>
           </div>
         );
       })}
-      {!!unlabeled && <p className="text-[11px] text-muted-foreground">Без ознаки осі: {unlabeled} (не враховано в розподілі)</p>}
+      {!!unlabeled && <p className="text-[11px] text-muted-foreground">No axis signal: {unlabeled} (not counted in the distribution)</p>}
     </div>
   );
 };
@@ -125,14 +125,14 @@ export const QualityReport = ({ report, labelFor = (id) => id, onAction, canAppl
   const [insightsOpen, setInsightsOpen] = useState(true);
   const rowProps = { labelFor, onAction, canApply, onSelectId };
   return (
-    <section className={cn('space-y-3 text-sm', className)} aria-label="Звіт якості датасету">
+    <section className={cn('space-y-3 text-sm', className)} aria-label="Dataset quality report">
       <header role="status" className="flex items-center gap-2 rounded-lg border border-border px-3 py-2" data-readiness={report.readiness}>
         <StatusIcon metric={{ status: report.readiness, evaluated: true }} />
         <span className={cn('font-semibold', STATUS_CLASS[report.readiness])}>{QUALITY_STATUS_TEXT[report.readiness]}</span>
-        <span className="text-xs text-muted-foreground">готовність = найгірша з обов'язкових перевірок</span>
+        <span className="text-xs text-muted-foreground">readiness = the worst of the required checks</span>
       </header>
       <div>
-        <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Обов'язкові перевірки</h3>
+        <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Required checks</h3>
         <ul>{report.required.map((metric) => <MetricRow key={metric.id} metric={metric} {...rowProps} />)}</ul>
       </div>
       <div>
@@ -143,19 +143,19 @@ export const QualityReport = ({ report, labelFor = (id) => id, onAction, canAppl
           className="mb-1 flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground"
         >
           {insightsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          Різноманіття, покриття й підписи
+          Diversity, coverage and captions
         </button>
         {insightsOpen && <ul>{report.insights.map((metric) => <MetricRow key={metric.id} metric={metric} {...rowProps} />)}</ul>}
       </div>
       {!!report.coverage?.length && (
         <div data-section="profile-coverage">
-          <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Покриття за профілем</h3>
+          <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Profile coverage</h3>
           <ul>{report.coverage.map((metric) => <MetricRow key={metric.id} metric={metric} {...rowProps} />)}</ul>
         </div>
       )}
       {!!report.hints?.length && (
         <div data-section="hints">
-          <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Що зробити</h3>
+          <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">What to do</h3>
           <ul>
             {report.hints.map((hint) => (
               <li key={hint.id} className="border-t border-border py-2 first:border-t-0" data-hint={hint.id}>

@@ -8,7 +8,7 @@ test('inspector follows the active owner when switching screens', async ({ page 
   await page.getByRole('button', { name: 'Asset gallery' }).click();
   await expect(page.getByText('Owner: none')).toBeVisible();
   await expect(page.getByText('No active selection')).toBeVisible();
-  await page.locator('main img').first().click();
+  await page.getByRole('option', { name: 'first.png' }).click();
   await expect(page.getByText('Owner: fixture:gallery')).toBeVisible();
   await page.getByRole('button', { name: 'Close Inspector' }).click();
   await expect(page.getByLabel('Inspector')).toHaveCount(0);

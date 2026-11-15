@@ -14,7 +14,7 @@ declare global { interface Window { __buildFixture: Fixture } }
 const counter = (page: import('@playwright/test').Page, label: string) =>
   page.getByRole('group', { name: 'Triage groups' }).getByRole('button', { name: new RegExp(`^${label} \\d+$`) });
 const expectCounters = (page: import('@playwright/test').Page, needs: number, accepted: number, rejected: number) => Promise.all([
-  expect(counter(page, 'Needs decision')).toHaveText(`Needs decision ${needs}`, { timeout: 60_000 }),
+  expect(counter(page, 'Flagged')).toHaveText(`Flagged ${needs}`, { timeout: 60_000 }),
   expect(counter(page, 'Accepted')).toHaveText(`Accepted ${accepted}`, { timeout: 60_000 }),
   expect(counter(page, 'Rejected')).toHaveText(`Rejected ${rejected}`, { timeout: 60_000 }),
 ]);
@@ -119,6 +119,7 @@ test.describe('build auto pipeline', () => {
   test('changing Min short side re-triages without errors', async ({ page }) => {
     await expectCounters(page, 1, 3, 5);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    await page.locator('[data-build-settings] summary').click();
     await page.getByLabel('Model', { exact: true }).selectOption('sd15');
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
     await expect.poll(async () => Object.values(await reasonsByName(page)).filter((record) => record.codes.includes('below-target-resolution')).length, { timeout: 30_000 }).toBe(0);

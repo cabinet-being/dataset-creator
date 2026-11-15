@@ -51,46 +51,46 @@ const COLOR_BACKGROUND = /^(white|grey|gray|black|transparent|gradient|red|orang
 
 export const COVERAGE_AXES: Record<CoverageAxisId, CoverageAxisSpec> = {
   framing: {
-    id: 'framing', label: 'Кадрування', source: 'tags',
+    id: 'framing', label: 'Framing', source: 'tags',
     buckets: [
-      { id: 'close', label: 'Крупний план', tags: ['close-up', 'portrait', 'face focus'] },
-      { id: 'mid', label: 'Середній план', tags: ['upper body', 'cowboy shot'] },
-      { id: 'full', label: 'На весь зріст', tags: ['full body', 'wide shot', 'very wide shot'] },
+      { id: 'close', label: 'Close-up', tags: ['close-up', 'portrait', 'face focus'] },
+      { id: 'mid', label: 'Medium shot', tags: ['upper body', 'cowboy shot'] },
+      { id: 'full', label: 'Full body', tags: ['full body', 'wide shot', 'very wide shot'] },
     ],
   },
   orientation: {
-    id: 'orientation', label: 'Орієнтація', source: 'dimensions',
+    id: 'orientation', label: 'Orientation', source: 'dimensions',
     buckets: [
-      { id: 'portrait', label: 'Вертикальні' },
-      { id: 'square', label: 'Квадратні' },
-      { id: 'landscape', label: 'Горизонтальні' },
+      { id: 'portrait', label: 'Portrait' },
+      { id: 'square', label: 'Square' },
+      { id: 'landscape', label: 'Landscape' },
     ],
   },
   setting: {
-    id: 'setting', label: 'Фон і місце', source: 'tags',
+    id: 'setting', label: 'Background and setting', source: 'tags',
     buckets: [
-      { id: 'simple', label: 'Простий фон', tags: ['simple background'], pattern: COLOR_BACKGROUND },
-      { id: 'indoors', label: 'У приміщенні', tags: ['indoors'] },
-      { id: 'outdoors', label: 'На вулиці', tags: ['outdoors', 'scenery'] },
+      { id: 'simple', label: 'Plain background', tags: ['simple background'], pattern: COLOR_BACKGROUND },
+      { id: 'indoors', label: 'Indoors', tags: ['indoors'] },
+      { id: 'outdoors', label: 'Outdoors', tags: ['outdoors', 'scenery'] },
     ],
   },
   lighting: {
-    id: 'lighting', label: 'Освітлення', source: 'tags',
+    id: 'lighting', label: 'Lighting', source: 'tags',
     buckets: [
-      { id: 'day', label: 'День', tags: ['day', 'sunlight', 'dappled sunlight'] },
-      { id: 'evening', label: 'Вечір', tags: ['sunset', 'twilight', 'evening'] },
-      { id: 'night', label: 'Ніч', tags: ['night', 'night sky', 'moonlight'] },
+      { id: 'day', label: 'Day', tags: ['day', 'sunlight', 'dappled sunlight'] },
+      { id: 'evening', label: 'Evening', tags: ['sunset', 'twilight', 'evening'] },
+      { id: 'night', label: 'Night', tags: ['night', 'night sky', 'moonlight'] },
     ],
   },
   subject: {
-    id: 'subject', label: 'Суб’єкт', source: 'tags',
+    id: 'subject', label: 'Subject', source: 'tags',
     buckets: [
-      { id: 'people', label: 'Люди', tags: ['multiple girls', 'multiple boys'], pattern: /^\d\+?(girl|boy)s?$/ },
-      { id: 'no-humans', label: 'Без людей', tags: ['no humans'] },
+      { id: 'people', label: 'People', tags: ['multiple girls', 'multiple boys'], pattern: /^\d\+?(girl|boy)s?$/ },
+      { id: 'no-humans', label: 'No people', tags: ['no humans'] },
     ],
   },
   aspect: {
-    id: 'aspect', label: 'Пропорції', source: 'dimensions',
+    id: 'aspect', label: 'Aspect ratio', source: 'dimensions',
     buckets: [],
   },
 };

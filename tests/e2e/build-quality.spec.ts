@@ -34,6 +34,7 @@ test.describe('build quality report', () => {
     await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'not-evaluated'); // no trigger word yet
 
     // A trigger word absent from captions makes the trigger check fail.
+    await page.locator('[data-build-settings] summary').click();
     // The trigger word is applied on Enter or blur only, never while typing.
     const triggerInput = page.getByLabel('Trigger word');
     await triggerInput.fill('zxqtrigger');
@@ -73,6 +74,17 @@ test.describe('build quality report', () => {
     await expect(finish).toBeVisible();
     await expect(finish.locator('[data-metric="count"]')).toHaveCount(1);
     await expect(finish.locator('[data-metric="captions"]')).toHaveCount(1);
+    // Export is pinned to the Dataset: no Source selector, heading says so.
+    await expect(page.getByRole('heading', { name: 'Export Dataset' })).toBeVisible();
+    await expect(page.getByLabel('Source', { exact: true })).toHaveCount(0);
+  });
+
+  test('Settings opens and holds the rare controls including Trigger word', async ({ page }) => {
+    const settings = page.locator('[data-build-settings]');
+    await expect(settings.getByLabel('Trigger word')).toBeHidden();
+    await settings.locator('summary').click();
+    await expect(settings.getByLabel('Trigger word')).toBeVisible();
+    await expect(settings.getByLabel('Project type', { exact: true })).toBeVisible();
   });
 });
 
@@ -101,7 +113,7 @@ test.describe('build quality profile coverage', () => {
     await expect(prune).toBeVisible();
     expect(Object.values(await tagsOf(page)).every((tags) => tags?.includes('solo'))).toBe(true);
     page.once('dialog', (dialog) => { expect(dialog.message()).toContain('solo'); void dialog.accept(); });
-    await prune.getByRole('button', { name: 'Застосувати' }).click();
+    await prune.getByRole('button', { name: 'Apply' }).click();
     await expect.poll(async () => Object.values(await tagsOf(page)).some((tags) => tags?.includes('solo')), { timeout: 30_000 }).toBe(false);
     const after = Object.values(await tagsOf(page));
     expect(after).toHaveLength(10);
@@ -111,6 +123,7 @@ test.describe('build quality profile coverage', () => {
 
   test('switching Project type to Style no longer offers common-tag removal', async ({ page }) => {
     await expect(panel(page).locator('[data-hint="common-tags-prune"]')).toBeVisible();
+    await page.locator('[data-build-settings] summary').click();
     await page.getByLabel('Project type', { exact: true }).selectOption('style');
     await expect(panel(page).locator('[data-hint="common-tags-prune"]')).toHaveCount(0);
     await expect(panel(page).locator('[data-hint="trigger-missing"]')).toHaveCount(0);

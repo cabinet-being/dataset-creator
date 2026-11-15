@@ -1,16 +1,8 @@
-/** Ukrainian plural: forms = [one, few, many], e.g. ['файл', 'файли', 'файлів']. */
-export const plural = (count: number, forms: readonly [string, string, string]): string => {
-  const value = Math.abs(Math.trunc(count));
-  const mod10 = value % 10;
-  const mod100 = value % 100;
-  if (mod10 === 1 && mod100 !== 11) return forms[0];
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
-  return forms[2];
-};
+/** Simple English plural: `1 file`, `2 files`. Pass `pluralForm` for irregular nouns. */
+export const plural = (count: number, singular: string, pluralForm = `${singular}s`): string =>
+  `${count} ${Math.abs(count) === 1 ? singular : pluralForm}`;
 
-export const FILES = ['файл', 'файли', 'файлів'] as const;
-
-export const countFiles = (count: number): string => `${count} ${plural(count, FILES)}`;
+export const countFiles = (count: number): string => plural(count, 'file');
 
 export const percent = (fraction: number): string => `${Math.round(fraction * 100)}%`;
 

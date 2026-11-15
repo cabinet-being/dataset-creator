@@ -128,7 +128,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
       <Dialog.Content className="fixed left-1/2 top-1/2 z-[2201] flex max-h-[90vh] w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
         <div className="flex items-start gap-3 border-b border-border p-5">
           <Sparkles className="mt-0.5 h-5 w-5 text-primary" />
-          <div className="min-w-0 flex-1"><Dialog.Title className="font-semibold">Automatic Dataset assembly</Dialog.Title><Dialog.Description className="mt-1 text-sm text-muted-foreground">Maximize relevant visual and caption coverage using images from Project/{PROJECT_LAYOUT.rawDir} only.</Dialog.Description></div>
+          <div className="min-w-0 flex-1"><Dialog.Title className="font-semibold">Auto-select</Dialog.Title><Dialog.Description className="mt-1 text-sm text-muted-foreground">Maximize relevant visual and caption coverage using images from Project/{PROJECT_LAYOUT.rawDir} only.</Dialog.Description></div>
           <Dialog.Close className="rounded p-1 text-muted-foreground hover:bg-secondary" aria-label="Close"><X className="h-4 w-4" /></Dialog.Close>
         </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-auto p-5">
