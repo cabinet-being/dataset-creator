@@ -25,7 +25,7 @@ try {
   const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
   const { DATASET_MANIFEST_FILE, REQUIRED_PROJECT_DIRECTORIES, readDatasetManifest } = await import(pathToFileURL(join(temp, 'projectLayoutService.mjs')));
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
-  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError, detectLegacyRawLayout, planRawMaterialsMove, runRawMaterialsMove } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
+  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError, detectLegacyRawLayout, planRawMaterialsMove, runRawMaterialsMove, runCaptionTxtMigration } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
   const { getProjectVersionLayout } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
   const { indexProjectAssets } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
@@ -391,7 +391,8 @@ try {
     const reopened = await readProjectDirectory(root);
     assert.equal(reopened.name,'After retry');
     for (const source of sources) {
-      assert.deepEqual(reopened.sourceImages[source.id].tags,['after']);
+      // The TXT next to the image is the caption; saving the project never rewrites it from in-memory tags.
+      assert.deepEqual(reopened.sourceImages[source.id].tags,['before']);
       assert.equal(await reopened.sourceImages[source.id].originalFile.text(),await source.originalFile.text());
     }
   }
@@ -426,7 +427,7 @@ try {
     assert.equal(dataset.triggerWord, PROJECT_TYPE_PROFILES[type].defaults.triggerWord);
     useProjectStore.getState().loadProject(project);
     assert.equal(useProjectStore.getState().projectType, type);
-    assert.equal(project.taggingConfig.datasetKeyword, PROJECT_TYPE_PROFILES[type].defaults.datasetKeyword);
+    assert.equal('datasetKeyword' in project.taggingConfig, false, 'The trigger word lives only in dataset.triggerWord');
     assert.equal(PROJECT_TYPE_PROFILES[type].enabledTools.length, 9);
     assert.ok(PROJECT_TYPE_PROFILES[type].enabledTools.includes('build'));
     assert.ok(PROJECT_TYPE_PROFILES[type].enabledTools.includes('video'));
@@ -452,7 +453,6 @@ try {
     assert.equal(reopenedArchiveProject.buildSession.profile.reviewMode,'uncertain-only');
   }
   const layoutProject = createProject('Structured project', 'character');
-  layoutProject.taggingConfig.datasetKeyword = 'trigger';
   layoutProject.dataset.triggerWord = 'trigger';
   const layoutDirectory = directory();
   await createProjectDirectory(layoutDirectory, layoutProject);
@@ -504,8 +504,10 @@ try {
   const imageWritable = await (await classDirectory.getFileHandle('portrait.png', { create: true })).createWritable();
   await imageWritable.write(new Blob(['png'], { type: 'image/png' })); await imageWritable.close();
   const metadataWritable = await (await classDirectory.getFileHandle('portrait.png.manifest.json', { create: true })).createWritable();
-  await metadataWritable.write(JSON.stringify({ tags: ['portrait', 'blue hair'] })); await metadataWritable.close();
-  const { blob: exportedDataset, count: exportedCount } = await exportProjectDatasetAsZip(layoutDirectory, [], undefined, 'trigger');
+  await metadataWritable.write(JSON.stringify({ tags: ['ignored sidecar tag'] })); await metadataWritable.close();
+  const portraitCaption = await (await classDirectory.getFileHandle('portrait.txt', { create: true })).createWritable();
+  await portraitCaption.write('trigger, portrait, blue hair\n'); await portraitCaption.close();
+  const { blob: exportedDataset, count: exportedCount } = await exportProjectDatasetAsZip(layoutDirectory);
   assert.equal(exportedCount, 1);
   const datasetZip = await JSZip.loadAsync(await exportedDataset.arrayBuffer());
   assert.ok(datasetZip.file('3_character/1.png'));
@@ -555,7 +557,7 @@ try {
     await shared.getFileHandle('legacy.png',{create:true}); // Existing file must survive the collision.
     const meta=await data.getFileHandle('legacy.png.manifest.json');
     const parsed=JSON.parse(await (await meta.getFile()).text());
-    const writer=await meta.createWritable(); await writer.write(JSON.stringify({...parsed,excludedFromDataset:true})); await writer.close();
+    const writer=await meta.createWritable(); await writer.write(JSON.stringify({...parsed,tags:['legacy caption'],excludedFromDataset:true})); await writer.close();
     const captionWriter=await (await data.getFileHandle('legacy.txt',{create:true})).createWritable(); await captionWriter.write('legacy caption'); await captionWriter.close();
     const projectManifest=await root.getFileHandle('manifest.json');
     const writable=projectManifest.createWritable;
@@ -898,11 +900,13 @@ try {
       return root;
     };
     const countSteps = (root, abortAt) => {
-      const controller = new AbortController(); let steps = 0;
+      const controller = new AbortController(); let steps = 0; let layoutSteps;
+      const captionPhases = ['Rename images that share a file name', 'Update references to renamed images', 'Convert sidecar tags to text captions', 'Record the caption conversion'];
       return { signal: controller.signal, onProgress: (progress) => {
         if (progress.phase === 'Creating a safety snapshot' || progress.phase === 'Finishing old project conversions' || progress.completed >= progress.total) return;
+        if (layoutSteps === undefined && captionPhases.includes(progress.phase)) layoutSteps = steps;
         steps += 1; if (steps === abortAt) controller.abort();
-      }, steps: () => steps };
+      }, steps: () => steps, layoutSteps: () => layoutSteps ?? steps };
     };
 
     // 1. Full migration of a service-only .git.
@@ -974,17 +978,21 @@ try {
     const referenceRun = countSteps(reference, 0);
     await runLayoutMigration(reference, { signal: referenceRun.signal, onProgress: referenceRun.onProgress });
     const stepCount = referenceRun.steps();
+    const layoutStepCount = referenceRun.layoutSteps();
+    assert.ok(layoutStepCount < stepCount, 'The caption conversion runs after the layout upgrade');
     assert.ok(stepCount >= 4);
     const referenceTree = normalized(await files(reference));
     for (let abortAt = 1; abortAt < stepCount; abortAt++) {
       const interrupted = await makeLegacy();
       const tracker = countSteps(interrupted, abortAt);
       await assert.rejects(runLayoutMigration(interrupted, { signal: tracker.signal, onProgress: tracker.onProgress }), { name: 'AbortError' }, `abort at step ${abortAt}`);
-      if (await exists(interrupted, '.datasetcreator/project.json')) {
+      if (abortAt < layoutStepCount && await exists(interrupted, '.datasetcreator/project.json')) {
         assert.equal((await readJsonAt(interrupted, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt, undefined, `completedAt is absent after abort at step ${abortAt}`);
       }
       const resumedIds = await resumePendingJournals(interrupted);
-      assert.equal(resumedIds.length, 1, `journal is resumed after abort at step ${abortAt}`);
+      // Aborting right after the last layout step leaves no journal: the caption conversion has not started yet and simply runs next.
+      assert.equal(resumedIds.length, abortAt === layoutStepCount ? 0 : 1, `journal is resumed after abort at step ${abortAt}`);
+      await runCaptionTxtMigration(interrupted); // Opening a v3 project resumes journals, then converts captions that are still pending.
       assert.deepEqual(normalized(await files(interrupted)), referenceTree, `resume after abort at step ${abortAt} reaches the same layout`);
       assert.ok((await readJsonAt(interrupted, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt, 'completedAt appears after the resumed run');
       assert.deepEqual(await resumePendingJournals(interrupted), [], 'A finished journal is not resumed again');
@@ -997,6 +1005,7 @@ try {
     await assert.rejects(runLayoutMigration(viaRun, { signal: viaTracker.signal, onProgress: viaTracker.onProgress }), { name: 'AbortError' });
     const viaResult = await runLayoutMigration(viaRun);
     assert.equal(viaResult.resumed.length, 1);
+    await runCaptionTxtMigration(viaRun);
     assert.deepEqual(normalized(await files(viaRun)), referenceTree);
 
     // 6. A failed safety snapshot leaves the project untouched.

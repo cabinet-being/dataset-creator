@@ -117,15 +117,19 @@ try {
   });
   const sharedDir = directory([
     ['scene.png', file('scene.png', 'image', 'image/png')],
-    ['scene.png.manifest.json', file('scene.png.manifest.json', JSON.stringify({ id: 'scene-id', width: 640, height: 480, caption: 'back view' }), 'application/json')],
+    ['scene.png.manifest.json', file('scene.png.manifest.json', JSON.stringify({ id: 'scene-id', width: 640, height: 480, caption: 'ignored sidecar caption' }), 'application/json')],
+    ['scene.txt', file('scene.txt', 'back view\n', 'text/plain')],
     ['clip.mp4', file('clip.mp4', 'video', 'video/mp4')],
+    ['nocaption.png', file('nocaption.png', 'image', 'image/png')],
+    ['nocaption.png.manifest.json', file('nocaption.png.manifest.json', JSON.stringify({ id: 'n', width: 8, height: 8, tags: ['sidecar only'] }), 'application/json')],
   ]);
   const root = directory([['inbox', sharedDir]]);
   const scan = await shared.scanSharedCandidates(root);
   assert.equal(scan.sharedAvailable, true);
-  assert.equal(scan.candidates.length, 1);
-  assert.equal(scan.candidates[0].assetPath, 'Project/inbox/scene.png');
-  assert.deepEqual(scan.candidates[0].tags, ['back view']);
+  assert.equal(scan.candidates.length, 2, 'Caption .txt files are not listed as candidates');
+  const sceneCandidate = scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/scene.png');
+  assert.deepEqual(sceneCandidate.tags, ['back view'], 'The caption comes from the TXT next to the image, not from the sidecar');
+  assert.equal(scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/nocaption.png').tags, undefined, 'An image without a TXT has no caption even if its sidecar holds tags');
   assert.equal(scan.skipped.some((entry) => entry.reason === 'video'), true);
 
   const vector = (...values) => new Float32Array(values);

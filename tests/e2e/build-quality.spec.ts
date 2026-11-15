@@ -34,7 +34,11 @@ test.describe('build quality report', () => {
     await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'not-evaluated'); // no trigger word yet
 
     // A trigger word absent from captions makes the trigger check fail.
-    await page.getByLabel('Trigger word').fill('zxqtrigger');
+    // The trigger word is applied on Enter or blur only, never while typing.
+    const triggerInput = page.getByLabel('Trigger word');
+    await triggerInput.fill('zxqtrigger');
+    await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'not-evaluated');
+    await triggerInput.press('Enter');
     await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'fail');
     await expect(toggle).not.toHaveAttribute('data-readiness', 'ok');
 

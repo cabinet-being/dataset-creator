@@ -9,6 +9,7 @@ import { createSaveSession } from '../src/services/project/saveSession';
 import { createProjectVersion, restoreProjectVersion } from '../src/services/project/projectVersionService';
 import { toWorkspaceImages } from '../src/lib/workspaceImages';
 import { buildExportPlan, exportPlanAsZip, exportPlanToDirectory } from '../src/services/export/exportPlan';
+import { readCaptionFile, writeCaptionFile } from '../src/services/caption/captionFileService';
 import JSZip from 'jszip';
 import '../src/index.css';
 
@@ -29,6 +30,7 @@ async function verify(directory: ProjectDirectoryHandle) {
   const sources = Object.values(project.sourceImages);
   assert(sources.length === 2, `Expected 2 reopened images, got ${sources.length}`);
   assert(sources.every(source => source.originalFile.size > 0), 'Image bytes must survive reopening');
+  assert(sources.every(source => source.tags?.length === 1 && !source.captionTriggerMissing), 'Tags come from the TXT without the leading trigger word');
   assert(project.dataset.triggerWord === 'fixture-trigger', 'Latest trigger must survive reopening');
   assert(!('assetIds' in project.dataset), 'Runtime Dataset must not restore legacy membership');
   assert(sources.every(source => source.originalFilePath?.startsWith('dataset/')), 'Dataset membership must come from physical paths');
@@ -42,14 +44,14 @@ async function verify(directory: ProjectDirectoryHandle) {
   await exportPlanToDirectory(plan, output);
   const sameBytes = (first: Uint8Array, second: Uint8Array) => first.length === second.length && first.every((value,index)=>value===second[index]);
   for (const entry of plan.entries) {
-    assert(await archive.file(entry.textName)?.async('string') === `${entry.caption}\n`, 'ZIP caption differs from plan');
+    assert(entry.textContent === `${entry.caption}\n` && await archive.file(entry.textName)?.async('string') === entry.textContent, 'ZIP caption differs from the TXT on disk');
     const image = await archive.file(entry.imageName)?.async('uint8array');
     const original = new Uint8Array(await entry.blob.arrayBuffer());
     assert(image && sameBytes(image,original), 'ZIP image differs from reopened file');
     const diskImage = await (await output.getFileHandle(entry.imageName)).getFile();
     assert(sameBytes(new Uint8Array(await diskImage.arrayBuffer()), original), 'Directory image differs from reopened file');
     const diskCaption = await (await output.getFileHandle(entry.textName)).getFile();
-    assert(await diskCaption.text() === `${entry.caption}\n`, 'Directory caption differs from plan');
+    assert(await diskCaption.text() === entry.textContent, 'Directory caption differs from the TXT on disk');
   }
   return `PASS: reopened ${sources.length} physical Dataset images with final captions/order and byte-identical ZIP/directory contents`;
 }
@@ -92,7 +94,10 @@ function Harness() {
     second.originalFilePath = 'dataset/blue.jpg'; second.manifestPath = 'dataset/blue.jpg.manifest.json';
     const initial: ProjectState = {...createProject('Persistence fixture','character'), sourceImages:{[first.id]:first,[second.id]:second}};
     await writeProjectDirectoryChanges(initial, undefined, directory);
-    add('Created PNG and JPEG files in isolated browser storage');
+    // The TXT next to each image is the caption: inside dataset/ it starts with the trigger word saved below.
+    await writeCaptionFile(directory, 'dataset/amber.png', ['original'], 'fixture-trigger');
+    await writeCaptionFile(directory, 'dataset/blue.jpg', ['override'], 'fixture-trigger');
+    add('Created PNG and JPEG files with TXT captions in isolated browser storage');
     let release!: () => void;
     let activeWrites = 0; let peakWrites = 0;
     const queue = createSaveQueue(initial, async (snapshot, previous) => {
@@ -126,6 +131,9 @@ function Harness() {
     const datasetDirectory = await directory.getDirectoryHandle('dataset');
     const oldSidecar = imageToRename.manifestPath!.split('/').pop()!;
     assert(await datasetDirectory.getFileHandle(oldSidecar).then(()=>false, error=>{if(error.name==='NotFoundError') return true; throw error;}), 'Saving recreated the old image metadata');
+    const renamedCaption = await readCaptionFile(directory, 'dataset/renamed-source.png', 'fixture-trigger');
+    assert(renamedCaption.raw === 'fixture-trigger, original\n' && renamedCaption.triggerPresent, 'The TXT did not follow the image rename');
+    assert((await readCaptionFile(directory, 'dataset/amber.png')).raw === null, 'Renaming left the old TXT behind');
     imageQueue.stop();
     add('PASS: image rename retained source identity and the new sidecar path without recreating old metadata');
     add(await verify(directory));

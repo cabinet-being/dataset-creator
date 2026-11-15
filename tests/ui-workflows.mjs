@@ -8,7 +8,7 @@ import JSZip from 'jszip';
 
 const temp = await mkdtemp(join(tmpdir(), 'ui-workflows-'));
 try {
-  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
+  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
   const module = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
   const { getCaptionFragmentAtSelection, replaceCaptionFragment, getCaptionSuggestionMatches } = await module('captionEditor');
   assert.deepEqual(getCaptionFragmentAtSelection('cat, blue bird, dog', 9), {start:5,end:14,text:'blue bird'});
@@ -198,15 +198,16 @@ try {
   assert.equal(getEdgeScrollVelocity(0,0,400),-28); assert.equal(getEdgeScrollVelocity(24,0,400),-14);
   assert.equal(getEdgeScrollVelocity(200,0,400),0); assert.equal(getEdgeScrollVelocity(400,0,400),28);
   const { createSaveQueue } = await module('saveQueue');
-  const { buildExportPlan, exportPlanAsZip, exportPlanToDirectory, renderExportCaption } = await module('exportPlan');
+  const { buildExportPlan, getExportEntryText, exportPlanAsZip, exportPlanToDirectory, renderExportCaption } = await module('exportPlan');
   const { convertPsdToPng } = await module('exportService');
   const { useOperationStore, isOperationRunning } = await module('useOperationStore');
   const { useHistoryStore } = await module('useHistoryStore');
   const { useProjectStore } = await module('useProjectStore');
-  const { importImageFiles, getImportPairKey, parseImportedCaptionTags, summarizeImportPairPaths } = await module('importService');
+  const { importImageFiles, getImportPairKey, summarizeImportPairPaths } = await module('importService');
   assert.equal(getImportPairKey('animals/Cat.PNG'),getImportPairKey('animals/Cat.TxT'));
   assert.notEqual(getImportPairKey('animals/cat.png'),getImportPairKey('portraits/cat.txt'),'Caption pairs cannot cross folders');
-  assert.deepEqual(parseImportedCaptionTags('\uFEFFКіт, Blue Sky\r\nsecond line'),['Кіт','Blue Sky\nsecond line'],'Caption import preserves Unicode, case and line breaks');
+  const { parseCaptionText } = await module('captionFileService');
+  assert.deepEqual(parseCaptionText('\uFEFFКіт, Blue Sky\r\nsecond line').tags,['Кіт','Blue Sky','second line'],'Caption import preserves Unicode and case, and treats line breaks as separators');
   assert.deepEqual(summarizeImportPairPaths(['animals/cat.png','animals/cat.jpg','animals/cat.txt','portraits/cat.png','notes.txt','dup/dog.txt','dup/DOG.TXT','dup/dog.webp']),
     {pairedImages:2,imagesWithoutCaption:1,standaloneTextFiles:1,captionConflicts:1,errors:0},'Pair summaries respect folders, multiple image formats and conflicts');
   let cancelled = 0;
@@ -335,6 +336,7 @@ try {
         if (!entries.has(name)) throw new DOMException('Missing', 'NotFoundError');
         return entries.get(name);
       },
+      async removeEntry(name) { if (!entries.has(name)) throw new DOMException('Missing', 'NotFoundError'); entries.delete(name); },
     };
   }
   const write = async (dir, name, data) => { const stream = await (await dir.getFileHandle(name, { create: true })).createWritable(); await stream.write(data); await stream.close(); };
@@ -344,7 +346,8 @@ try {
   const captionDirectory = directory('caption-project');
   const captionAssets = await captionDirectory.getDirectoryHandle('assets', {create:true});
   await write(captionAssets, 'one.psd', new Blob(['one']));
-  await write(captionAssets, 'one.psd.manifest.json', JSON.stringify({id:'one',tags:['old'],custom:true}));
+  await write(captionAssets, 'one.txt', 'old\n');
+  await write(captionAssets, 'one.psd.manifest.json', JSON.stringify({id:'one',custom:true}));
   await write(captionAssets, 'two.psd', new Blob(['two']));
   await write(captionAssets, 'two.psd.manifest.json', JSON.stringify({id:'two'}));
   const captionItems = [
@@ -352,16 +355,19 @@ try {
     {id:'asset:Project/assets/two.psd',sourceImageId:'',assetPath:'Project/assets/two.psd',fileName:'two.psd',kind:'psd',tags:undefined},
   ];
   useProjectStore.setState({id:'caption-test'}); useHistoryStore.setState({past:[],future:[]});
+  const readText = async (dir, name) => (await (await dir.getFileHandle(name)).getFile()).text();
+  const captionMissing = async name => { try { await captionAssets.getFileHandle(name); return false; } catch (error) { if (error.name === 'NotFoundError') return true; throw error; } };
   let captionFlushes = 0;
   await persistCaptionTagsForItems({items:captionItems,resolveTags:item => item.id.includes('one') ? ['new'] : [],directory:captionDirectory,flush:async()=>{captionFlushes++;}});
-  assert.deepEqual((await readJson(captionAssets,'one.psd.manifest.json')).tags,['new']);
-  assert.deepEqual((await readJson(captionAssets,'two.psd.manifest.json')).tags,[],'An explicit empty caption is persisted, not treated as missing');
+  assert.equal(await readText(captionAssets,'one.txt'),'new\n','The TXT next to the file is the caption');
+  assert.equal(await readText(captionAssets,'two.txt'),'','An explicit empty caption is an empty file, not a missing one');
+  assert.equal('tags' in await readJson(captionAssets,'one.psd.manifest.json'),false,'The sidecar no longer stores tags');
   assert.equal(useHistoryStore.getState().past.length,1,'A multi-asset caption edit creates one undo entry');
   await useHistoryStore.getState().undo();
-  assert.deepEqual((await readJson(captionAssets,'one.psd.manifest.json')).tags,['old']);
-  assert.equal('tags' in await readJson(captionAssets,'two.psd.manifest.json'),false,'Undo restores a previously missing caption');
+  assert.equal(await readText(captionAssets,'one.txt'),'old\n');
+  assert.equal(await captionMissing('two.txt'),true,'Undo restores a previously missing caption file');
   await useHistoryStore.getState().redo();
-  assert.deepEqual((await readJson(captionAssets,'two.psd.manifest.json')).tags,[]);
+  assert.equal(await readText(captionAssets,'two.txt'),'');
   assert.equal(captionFlushes,3,'Save runs for edit, undo and redo');
   const { writeProjectDirectoryChanges, readProjectDirectory, createProjectDirectory } = await module('projectDirectoryService');
   const projectDirectory = directory('snapshot-project');
@@ -401,34 +407,38 @@ try {
   const b = { id: 'source:b', sourceImageId: 'b', kind: 'image', fileName: 'same.jpg', imageData: new Blob(['JPEG contents'], { type: 'image/jpeg' }), tags: ['blue', 'BLUE'] };
   const excluded = { ...a, id: 'source:c', sourceImageId: 'c', excludedFromDataset: true };
   const exportProject = directory('export-project'); const exportDataset = await exportProject.getDirectoryHandle('dataset',{create:true});
-  await write(exportDataset,'same.png',a.imageData); await write(exportDataset,'same.png.manifest.json',JSON.stringify({tags:a.tags}));
-  await write(exportDataset,'same.jpg',b.imageData); await write(exportDataset,'same.jpg.manifest.json',JSON.stringify({tags:b.tags}));
-  await write(exportDataset,'excluded.png',excluded.imageData); await write(exportDataset,'excluded.png.manifest.json',JSON.stringify({tags:excluded.tags,excludedFromDataset:true}));
+  const captionTexts = { 'same.png': 'Trigger, replacement, blocked\n', 'same.jpg': 'Trigger, blue, BLUE\r\n', 'excluded.png': 'Trigger, replacement, blocked\n' };
+  await write(exportDataset,'same.png',a.imageData); await write(exportDataset,'same.txt',captionTexts['same.png']);
+  const exportSub = await exportDataset.getDirectoryHandle('sub',{create:true}); // a.png and a.jpg beside each other would share one TXT
+  await write(exportSub,'same.jpg',b.imageData); await write(exportSub,'same.txt',captionTexts['same.jpg']);
+  await write(exportDataset,'excluded.png',excluded.imageData); await write(exportDataset,'excluded.txt',captionTexts['excluded.png']);
   const args = { scope: 'dataset', items: [a, b, excluded], dataset, directory:exportProject, blacklist: [' blocked '] };
   assert.equal(renderExportCaption(['Tag', 'tag', 'blocked', ''], 'Trigger', ['blocked']), 'Trigger, Tag');
   const plan = await buildExportPlan(args);
-  assert.deepEqual(plan.entries.map(entry => entry.imageName), ['excluded.png', 'same.jpg', 'same-2.png']);
-  assert.deepEqual(plan.entries.map(entry => entry.caption), ['Trigger, replacement', 'Trigger, blue', 'Trigger, replacement']);
+  assert.deepEqual(plan.entries.map(entry => entry.imageName), ['excluded.png', 'same.png', 'same-2.jpg']);
+  assert.deepEqual(plan.entries.map(entry => entry.caption), ['Trigger, replacement, blocked', 'Trigger, replacement, blocked', 'Trigger, blue, BLUE'], 'Dataset captions are the TXT as it is: blacklist and trigger are not applied again');
+  assert.deepEqual(plan.entries.map(entry => entry.textContent), [captionTexts['excluded.png'], captionTexts['same.png'], captionTexts['same.jpg']], 'Dataset export keeps TXT bytes (including CRLF)');
+  assert.deepEqual(plan.warnings, []);
   // Mutating source captions after preview cannot silently change the output.
   a.tags = ['changed after preview'];
   const zip = await JSZip.loadAsync(await (await exportPlanAsZip(plan)).arrayBuffer());
   const target = directory(); const progress = [];
   await exportPlanToDirectory(plan, target, undefined, (done, total) => progress.push([done, total]));
   assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]]);
-  assert.deepEqual(Object.keys(zip.files).sort(), ['excluded.png', 'excluded.txt', 'same-2.png', 'same-2.txt', 'same.jpg', 'same.txt']);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['excluded.png', 'excluded.txt', 'same-2.jpg', 'same-2.txt', 'same.png', 'same.txt']);
   for (const entry of plan.entries) {
     assert.deepEqual(await zip.file(entry.imageName).async('uint8array'), new Uint8Array(await entry.blob.arrayBuffer()));
-    assert.equal(await zip.file(entry.textName).async('string'), `${entry.caption}\n`);
+    assert.equal(await zip.file(entry.textName).async('string'), entry.textContent);
     for (const name of [entry.imageName, entry.textName]) assert.deepEqual(await bytes(target, name), await zip.file(name).async('uint8array'));
   }
   const workspace = await buildExportPlan({ ...args, scope: 'workspace' });
   assert.equal(workspace.entries[0].caption, 'Trigger, changed after preview', 'Dataset and workspace export read the same asset-owned caption');
   assert.equal(workspace.skipped.length, 0, 'Explicit exports do not use legacy flags');
   assert.equal((await buildExportPlan({ ...args, dataset: { ...dataset, assetIds: ['missing'] } })).entries.length,3,'Legacy membership cannot add or remove physical Dataset files');
-  const collision = directory(); await write(collision, 'same.jpg', 'Keep me');
+  const collision = directory(); await write(collision, 'same.png', 'Keep me');
   await assert.rejects(exportPlanToDirectory(plan, collision), /already exists/);
   assert.equal(collision.files.size, 1, 'Preflight must not write earlier files before discovering a collision');
-  assert.equal(new TextDecoder().decode(await bytes(collision, 'same.jpg')), 'Keep me');
+  assert.equal(new TextDecoder().decode(await bytes(collision, 'same.png')), 'Keep me');
   const denied = { ...directory(), getFileHandle: async () => { throw new DOMException('Permission denied', 'NotAllowedError'); } };
   await assert.rejects(exportPlanToDirectory(plan, denied), /Permission denied/);
   const abort = new AbortController(); abort.abort();
@@ -501,20 +511,24 @@ try {
 
   const root = directory(); const data = await root.getDirectoryHandle('dataset', { create: true });
   await write(data, 'linked.jpg', new Blob(['linked'], { type: 'image/jpeg' }));
-  await write(data, 'linked.jpg.manifest.json', JSON.stringify({ tags: ['disk tags'] }));
+  await write(data, 'linked.txt', 'Trigger, disk tags\n');
   await write(data, 'document.psd', new Blob(['psd']));
   const linkedDataset = { ...dataset, assetIds: [], assetPaths: ['Project/dataset/linked.jpg', 'Project/dataset/document.psd'], assetOrder: ['file:Project/dataset/document.psd', 'file:Project/dataset/linked.jpg'] };
   const linked = await buildExportPlan({ ...args, dataset: linkedDataset, directory: root });
   assert.equal(linked.entries[0].imageName, 'document.png');
   assert.equal(linked.entries[0].conversion, 'psd');
   assert.equal(linked.entries[1].caption, 'Trigger, disk tags');
+  assert.equal(linked.entries[1].textContent, 'Trigger, disk tags\n');
+  assert.equal(linked.entries[0].textContent, null, 'An image without a TXT has no caption file to export');
+  assert.deepEqual(linked.warnings, ['document.psd has no caption file; it is exported without a .txt.']);
+  assert.deepEqual(linked.entries.map(entry => getExportEntryText(entry)), [null, 'Trigger, disk tags\n'], 'No empty or invented .txt is written for a missing caption');
   const physical = await buildExportPlan({ ...args, scope: 'directory', directory: root });
   assert.equal(physical.entries.find(entry => entry.source === 'linked.jpg').caption, 'Trigger, disk tags');
   await write(data, 'linked.jpg.manifest.json', JSON.stringify({ excludedFromDataset: true }));
   const filtered = await buildExportPlan({ ...args, scope: 'directory', directory: root });
   assert.equal(filtered.entries.length, 2, 'Physical folder membership overrides stale exclusion metadata'); assert.equal(filtered.skipped.length, 0);
   await write(data, 'linked.jpg.manifest.json', 'broken JSON');
-  await assert.rejects(buildExportPlan({ ...args, scope: 'directory', directory: root }), SyntaxError);
+  assert.equal((await buildExportPlan({ ...args, scope: 'directory', directory: root })).entries.length, 2, 'Dataset export reads TXT files only, so a broken sidecar cannot affect it');
   await assert.rejects(buildExportPlan({ ...args, scope: 'directory', directory: { getDirectoryHandle: async () => { throw new DOMException('Read denied', 'NotAllowedError'); } } }), /Read denied/);
 
   // Exercise the Photopea protocol and cancellation without an external service.
