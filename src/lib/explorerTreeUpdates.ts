@@ -1,6 +1,5 @@
 import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
 import type { ExplorerPathChange } from '../services/project/explorerFileService';
-import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 
 export type ExplorerChanges = { moves: ExplorerPathChange[]; paths: string[] };
 export const emptyExplorerChanges = (): ExplorerChanges => ({ moves: [], paths: [] });
@@ -67,10 +66,6 @@ export const buildEmptyExplorerTree = (projectName: string): ExplorerTreeNode =>
 
 export const sanitizeExplorerTree = (node: ExplorerTreeNode | null): ExplorerTreeNode | null => {
   if (!node) {
-    return null;
-  }
-
-  if (node.path !== 'Project' && isLegacyProjectRootPath(node.path)) {
     return null;
   }
 

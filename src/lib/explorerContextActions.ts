@@ -4,7 +4,7 @@ import type { ContextAction, ContextActionGroup } from '../components/ui/Context
 import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
 import type { ExplorerClipboard, ExplorerItemEntry } from '../hooks/useWorkspaceCommands';
 import { canOpenExplorerFile, getExplorerFileKind, isExplorerImageFileName } from '../services/project/explorerFileService';
-import { PROJECT_SHARED_DIRECTORY } from '../services/project/projectLayoutService';
+import { PROJECT_INBOX_DIRECTORY } from '../services/project/projectLayoutService';
 
 type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file' };
 
@@ -70,7 +70,7 @@ export const buildFileContextActionGroups = (node: ExplorerTreeNode, deps: FileC
   });
   const sharedImages = selectedFiles.filter(
     (entry): entry is FilesystemExplorerItemEntry =>
-      entry.path.startsWith(`Project/${PROJECT_SHARED_DIRECTORY}/`) &&
+      entry.path.startsWith(`Project/${PROJECT_INBOX_DIRECTORY}/`) &&
       isExplorerImageFileName(entry.name)
   );
   const canAddToDataset = sharedImages.length > 0 && sharedImages.length === selectedFiles.length;

@@ -93,7 +93,7 @@ import {
 } from './services/project/explorerFileService';
 import { type Dataset, type ToolName } from './types';
 import {
-  PROJECT_SHARED_DIRECTORY,
+  PROJECT_INBOX_DIRECTORY,
 } from './services/project/projectLayoutService';
 import { DockWorkspace, type DockView } from './components/workspace/DockWorkspace';
 import { useDockWorkspace } from './hooks/useDockWorkspace';
@@ -1197,7 +1197,7 @@ function App() {
           const node = findExplorerNodeByPath(path) ?? { name:path.split('/').pop() ?? path, path, kind:'file' as const };
           void openFileModeTab(node, 'edit');
         }}
-        onImportFiles={projectDirectoryHandle ? (files, execution) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_SHARED_DIRECTORY}`, execution) : undefined}
+        onImportFiles={projectDirectoryHandle ? (files, execution) => importExternalFilesIntoExplorer(files, `Project/${PROJECT_INBOX_DIRECTORY}`, execution) : undefined}
         onOpenImport={() => navigateToTool('import')} />
     </div>;
   };
@@ -1345,7 +1345,7 @@ function App() {
 
   return <AppShell
     busy={isProjectDirectoryBusy}
-    setupDialog={projectSetup ? <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} /> : layoutUpgrade ? <ProjectUpgradeDialog name={layoutUpgrade.name} plan={layoutUpgrade.plan} blockedReason={layoutUpgrade.blockedReason} onComplete={layoutUpgrade.complete} /> : null}
+    setupDialog={projectSetup ? <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} /> : layoutUpgrade ? <ProjectUpgradeDialog name={layoutUpgrade.name} plan={layoutUpgrade.plan} rawPlan={layoutUpgrade.rawPlan} blockedReason={layoutUpgrade.blockedReason} onComplete={layoutUpgrade.complete} /> : null}
     backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
     header={<WorkspaceMenus openMenu={openMenu}
       onOpenMenuChange={menu => { setOpenMenu(menu); setTabMenuOpen(false); setWorkspaceContextMenu(null); }}

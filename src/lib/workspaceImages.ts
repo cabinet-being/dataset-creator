@@ -7,7 +7,6 @@ import {
   type ProjectState,
 } from '../types';
 import { getExplorerFileKind, type ExplorerFileKind } from '../services/project/explorerFileService';
-import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 
 type CleanupWorkingEdit = {
   blob: Blob;
@@ -285,9 +284,6 @@ type WorkspaceImageLookupState = Pick<ProjectState, 'sourceImages' | 'datasetIte
 
 export const findWorkspaceImageIdForPath = (path: string, projectState: WorkspaceImageLookupState): string | null => {
   const projectRelativePath = toProjectRelativePath(path);
-  if (isLegacyProjectRootPath(projectRelativePath)) {
-    return null;
-  }
   const source = Object.values(projectState.sourceImages).find(
     (image) =>
       (image.originalFilePath ??

@@ -4,7 +4,6 @@ import { isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeSer
 import { snapshotFile } from './fileSnapshotService';
 import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
 import { sortExplorerNodes } from '../../lib/explorerTreeUpdates';
-import { LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from './projectPathFilters';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import { DATASET_MANIFEST_FILE, isInternalProjectEntry } from './projectLayoutService';
 
@@ -668,9 +667,6 @@ export const readExplorerDirectory = async (
       isLegacyDatasetFileName(entryName) ||
       (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
     ) {
-      continue;
-    }
-    if (path === 'Project' && LEGACY_PROJECT_ROOT_DIRECTORY_NAMES.has(entryName.toLowerCase())) {
       continue;
     }
     const childPath = `${path}/${entryName}`;

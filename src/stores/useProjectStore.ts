@@ -18,7 +18,6 @@ import {
 import { OBJECT_STORES } from '../lib/constants';
 import { dbBatchPut, dbDelete, dbGetAll, dbPut } from '../services/persistence/indexedDBService';
 import { snapshotFileIfNeeded } from '../services/project/fileSnapshotService';
-import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 import { migrateLegacyCaptions } from '../services/caption/captionMigrationService';
 
 const revokePreviewUrl = (previewUrl: string | undefined) => {
@@ -37,11 +36,6 @@ const stripEditedAssetPreviewUrl = (item: EditedAsset): EditedAsset => ({
   ...item,
   previewUrl: undefined,
 });
-
-const isLegacyDatasetItem = (item: EditedAsset): boolean =>
-  [item.manifestPath, item.imageDataPath, item.psdDataPath]
-    .filter((path): path is string => Boolean(path))
-    .some((path) => isLegacyProjectRootPath(path));
 
 type LegacyDatasetState = Dataset & {
   parentPath?: string; filePath?: string; assetIds?: string[]; assetPaths?: string[]; psdAssetPaths?: string[];
@@ -127,14 +121,7 @@ export const useProjectStore = create<ProjectStore>()(
             }
 
             const defaults = createProject(project.name, project.projectType);
-            const supportedDatasetItems = Object.fromEntries(
-              Object.entries(project.datasetItems ?? {}).filter(([, item]) => !isLegacyDatasetItem(item))
-            );
-            for (const [id, item] of Object.entries(project.datasetItems ?? {})) {
-              if (isLegacyDatasetItem(item)) {
-                void dbDelete(OBJECT_STORES.DATASET_ITEMS, id);
-              }
-            }
+            const supportedDatasetItems = { ...(project.datasetItems ?? {}) };
 
             const legacyDatasets = (project as ProjectState & { datasets?: Record<string, Dataset> }).datasets;
             const fallbackDataset = Object.values(legacyDatasets ?? {})[0] ?? createDataset(project.name);
@@ -354,7 +341,7 @@ export const useProjectStore = create<ProjectStore>()(
           const storedItems = await dbGetAll<EditedAsset>(OBJECT_STORES.DATASET_ITEMS);
           const currentSourceIds = new Set(Object.keys(get().sourceImages));
           const supportedItems = storedItems.filter(
-            (item) => !isLegacyDatasetItem(item) && currentSourceIds.has(item.sourceImageId)
+            (item) => currentSourceIds.has(item.sourceImageId)
           );
           await Promise.all(
             storedItems

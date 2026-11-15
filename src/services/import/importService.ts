@@ -17,7 +17,6 @@ import {
   isSupportedProjectAsset,
   resolveProjectAssetKind,
 } from '../project/assetTypeService';
-import { isLegacyProjectRootPath } from '../project/projectPathFilters';
 import { isInternalProjectEntry } from '../project/projectLayoutService';
 
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
@@ -139,7 +138,7 @@ const isUnsafeArchivePath = (path: string): boolean => {
   return normalized.startsWith('/') || /^[a-z]:\//i.test(normalized) || normalized.split('/').includes('..');
 };
 const isInternalImportPath = (path: string): boolean =>
-  path.split('/').some((part) => isInternalProjectEntry(part)) || isLegacyProjectRootPath(path);
+  path.split('/').some((part) => isInternalProjectEntry(part));
 
 export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');

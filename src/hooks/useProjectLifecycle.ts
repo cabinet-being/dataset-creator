@@ -5,6 +5,8 @@ import type { WorkspaceImage } from '../lib/workspaceImages';
 import type { WorkspaceTab } from '../lib/workspaceTabs';
 import { EXPLORER_VIEW } from '../lib/workspaceLayout';
 import { isAbortError } from '../lib/utils';
+import { rewriteWorkspaceTabPaths } from '../lib/workspacePersistence';
+import { PROJECT_LAYOUT } from '../services/project/projectLayoutService';
 import {
   createProjectDirectory,
   clearProjectDirectory,
@@ -16,7 +18,7 @@ import {
   type ProjectDirectoryHandle,
 } from '../services/project/projectDirectoryService';
 import { createProjectVersion, getProjectVersionLayout, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from '../services/project/projectVersionService';
-import { LayoutMigrationError, detectProjectLayout, planLayoutMigration, resumePendingJournals, runLayoutMigration, type LayoutMigrationPlan } from '../services/project/layoutMigrationService';
+import { LayoutMigrationError, detectLegacyRawLayout, detectProjectLayout, planLayoutMigration, planRawMaterialsMove, resumePendingJournals, runLayoutMigration, runRawMaterialsMove, type LayoutMigrationPlan, type RawMaterialsPlan, type RawMaterialsReport } from '../services/project/layoutMigrationService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { createProject, type ProjectState, type ProjectType, type TargetModelId } from '../types';
@@ -71,9 +73,12 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType; targetModel: TargetModelId } | null>((resolve) => {
     setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
   });
-  const [layoutUpgrade, setLayoutUpgrade] = useState<{ name: string; plan: LayoutMigrationPlan; blockedReason?: string; complete: (proceed: boolean) => void } | null>(null);
+  const [layoutUpgrade, setLayoutUpgrade] = useState<{ name: string; plan?: LayoutMigrationPlan; rawPlan?: RawMaterialsPlan; blockedReason?: string; complete: (proceed: boolean) => void } | null>(null);
   const requestLayoutUpgrade = (name: string, plan: LayoutMigrationPlan, blockedReason?: string) => new Promise<boolean>((resolve) => {
     setLayoutUpgrade({ name, plan, blockedReason, complete: (upgrade) => { setLayoutUpgrade(null); resolve(upgrade); } });
+  });
+  const requestRawMaterialsMove = (name: string, rawPlan: RawMaterialsPlan) => new Promise<boolean>((resolve) => {
+    setLayoutUpgrade({ name, rawPlan, complete: (proceed) => { setLayoutUpgrade(null); resolve(proceed); } });
   });
   const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
   const [currentProjectVersionId, setCurrentProjectVersionId] = useState<string | undefined>();
@@ -201,8 +206,18 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     // The upgrade is confirmed before anything is read or written, and it runs outside runProjectFileOperation
     // (the caller already holds projectOperationBusyRef; no project is active for this directory yet).
     const layout = await detectProjectLayout(directory);
+    let rawMaterials: RawMaterialsReport | undefined;
     if (layout === 'v3') {
       await resumePendingJournals(directory);
+      if (await detectLegacyRawLayout(directory)) {
+        // Raw materials moved from src/ to inbox/ in this layout version; files are listed in the dialog only when there are any.
+        const rawPlan = await planRawMaterialsMove(directory);
+        if (rawPlan.fileCount > 0 && !await requestRawMaterialsMove(directory.name, rawPlan)) {
+          logger.warning(`raw materials move canceled for ${directory.name}`);
+          throw new DOMException('Project opening canceled', 'AbortError');
+        }
+        rawMaterials = await runRawMaterialsMove(directory, { onProgress: ({ phase }) => logger.info(phase) });
+      }
     } else if (layout === 'v2') {
       const plan = await planLayoutMigration(directory);
       if (!await requestLayoutUpgrade(directory.name, plan)) {
@@ -210,7 +225,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         throw new DOMException('Project opening canceled', 'AbortError');
       }
       try {
-        await runLayoutMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
+        rawMaterials = (await runLayoutMigration(directory, { onProgress: ({ phase }) => logger.info(phase) })).rawMaterials;
         logger.success(`upgraded project layout of ${directory.name}`);
       } catch (error) {
         if (!(error instanceof LayoutMigrationError) || error.kind !== 'blocked') throw error;
@@ -233,6 +248,13 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     });
     if (useProjectStore.getState() !== previousProject) {
       throw new Error('The current project changed while opening the folder. Open it again after your changes are saved.');
+    }
+    if (rawMaterials) {
+      rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
+      if (rawMaterials.collisions.length) {
+        addNotification('warning', `${rawMaterials.collisions.length} file${rawMaterials.collisions.length === 1 ? ' was' : 's were'} renamed while moving raw materials to ${PROJECT_LAYOUT.rawDir}/ because the name was taken.`);
+        for (const { from, to } of rawMaterials.collisions) logger.warning(`renamed ${from} to ${to}`);
+      }
     }
     activateProjectDirectory(directory, project);
     await indexActiveProject(directory, project.id);
@@ -329,10 +351,15 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
           await restoreProjectVersion(directory, version.id, async () => { project = await readProjectDirectory(directory); });
           restoredOnDisk = true;
           if (await detectProjectLayout(directory) === 'v2') {
-            await runLayoutMigration(directory);
+            const report = await runLayoutMigration(directory);
             project = await readProjectDirectory(directory);
+            if (report.rawMaterials) rewriteWorkspaceTabPaths(project.id, report.rawMaterials.pathMoves);
             const refreshed = await listProjectVersions(directory);
             setProjectVersions(refreshed.versions);
+          } else if (await detectLegacyRawLayout(directory)) {
+            const rawMaterials = await runRawMaterialsMove(directory);
+            project = await readProjectDirectory(directory);
+            if (rawMaterials) rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
           }
           activateProjectDirectory(directory, project);
         } catch (error) {

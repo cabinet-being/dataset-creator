@@ -15,8 +15,17 @@ import {
   listProjectVersions,
   isSnapshotExcludedPath,
 } from './projectVersionService';
+import { getUniqueExplorerName } from './explorerFileService';
+import { resolveProjectAssetKind } from './assetTypeService';
+import { ASSET_MANIFEST_SUFFIX, getAssetManifestName } from './assetManifestService';
+import { applyBuildSessionPathMoves, normalizeBuildSession } from '../build/buildSessionService';
+import { applyProjectRelativePathMoves, type ExplorerPathMove } from '../../lib/datasetAssets';
 import {
+  LEGACY_ASSETS_DIRECTORY,
   LEGACY_CACHE_DIRECTORY,
+  LEGACY_SHARED_DIRECTORY,
+  LEGACY_SOURCE_DIRECTORY,
+  PROJECT_DATASET_DIRECTORY,
   PROJECT_DATA_DIRECTORY,
   PROJECT_FILE,
   PROJECT_GIT_DIRECTORY,
@@ -60,6 +69,21 @@ export type LayoutMigrationReport = {
   /** Journals of interrupted upgrades that were finished before anything else. */
   resumed: string[];
   keptLegacyData: boolean;
+  /** Set when raw materials moved from `src/` to `inbox/` during this run. */
+  rawMaterials?: RawMaterialsReport;
+};
+
+export type RawMaterialsReport = {
+  journalId: string;
+  /** Project-relative folder moves plus every file or folder renamed because of a name collision. */
+  pathMoves: Array<{ from: string; to: string }>;
+  collisions: Array<{ from: string; to: string }>;
+};
+
+export type RawMaterialsPlan = {
+  fileCount: number;
+  bytes: number;
+  folders: string[];
 };
 
 export type LayoutMigrationErrorKind = 'blocked' | 'snapshot-failed' | 'failed';
@@ -73,7 +97,7 @@ export class LayoutMigrationError extends Error {
 
 type JournalStep = {
   id: string;
-  type: 'move' | 'write' | 'delete';
+  type: 'move' | 'write' | 'delete' | 'raw-move' | 'rewrite-paths';
   description: string;
   done: boolean;
   /** move: source and destination project-relative paths. */
@@ -87,14 +111,18 @@ type JournalStep = {
   backup?: boolean;
   /** delete: remove a directory only when it has no entries (never a file). */
   ifEmpty?: boolean;
+  /** raw-move: a file or folder that had to be renamed because the destination name was taken. */
+  renames?: Array<{ from: string; to: string }>;
+  /** raw-move: set when the step began, so a re-run knows it continues an interrupted attempt. */
+  started?: boolean;
 };
 
 export type LayoutJournal = {
   format: typeof JOURNAL_FORMAT;
   version: 1;
-  kind: 'layout-v3';
+  kind: 'layout-v3' | 'raw-inbox';
   id: string;
-  fromVersion: 1 | 2;
+  fromVersion: 1 | 2 | 3;
   createdAt: string;
   snapshotVersionId?: string;
   steps: JournalStep[];
@@ -198,6 +226,15 @@ const executeStep = async (root: ProjectDirectoryHandle, journal: LayoutJournal,
     if (await readTextAt(root, step.path) !== step.content) await writeAt(root, step.path, step.content);
     return;
   }
+  if (step.type === 'raw-move') {
+    if (!step.from || !step.to) throw new Error(`Journal step ${step.id} is incomplete.`);
+    await moveRawTree(root, journal, step);
+    return;
+  }
+  if (step.type === 'rewrite-paths') {
+    await rewriteMovedPaths(root, getRawPathMoves(journal));
+    return;
+  }
   if (step.type === 'move') {
     if (!step.from || !step.to) throw new Error(`Journal step ${step.id} is incomplete.`);
     if (!await getEntry(root, step.from)) return; // Already moved, or never existed.
@@ -256,7 +293,7 @@ const stampLayoutCompletion = async (root: ProjectDirectoryHandle, journal: Layo
 const parseJournal = (name: string, text: string): LayoutJournal | undefined => {
   let journal: LayoutJournal;
   try { journal = JSON.parse(text) as LayoutJournal; } catch { throw new LayoutMigrationError(`The upgrade journal ${name} is unreadable. Restore the pre-upgrade version from the Versions panel or contact support.`, 'failed'); }
-  if (journal?.format !== JOURNAL_FORMAT || journal.kind !== 'layout-v3' || !Array.isArray(journal.steps) || typeof journal.id !== 'string') return undefined;
+  if (journal?.format !== JOURNAL_FORMAT || (journal.kind !== 'layout-v3' && journal.kind !== 'raw-inbox') || !Array.isArray(journal.steps) || typeof journal.id !== 'string') return undefined;
   return journal;
 };
 
@@ -344,6 +381,9 @@ export const planLayoutMigration = async (root: ProjectDirectoryHandle): Promise
       ? `${PROJECT_DATA_DIRECTORY} still holds project data, so it stays where it is.`
       : `Leftover ${PROJECT_DATA_DIRECTORY} files are moved into ${PROJECT_LAYOUT.backupDir}/<id>/${LEGACY_DATA_BACKUP} unless the project still uses them.`);
   }
+  if (await getEntry(root, LEGACY_SHARED_DIRECTORY) || await getEntry(root, LEGACY_ASSETS_DIRECTORY)) {
+    changes.push(`Raw materials move from ${LEGACY_SHARED_DIRECTORY} to ${PROJECT_LAYOUT.rawDir}/ and from ${LEGACY_ASSETS_DIRECTORY} to ${PROJECT_LAYOUT.generatedDir}/; files whose names are taken get a numbered name and every such rename is reported.`);
+  }
   changes.push(`Originals of every replaced file are kept in ${PROJECT_LAYOUT.backupDir}/<id>/.`);
   const { files, bytes } = await measureSnapshot(root);
   return {
@@ -370,10 +410,257 @@ export const getLayoutMigrationBlockers = (manifest: Pick<LegacyProjectManifest[
   return blockers;
 };
 
-const referencesLegacyData = (paths: Array<string | undefined>) =>
-  paths.some((path) => path?.replace(/^Project\//, '').startsWith(`${PROJECT_DATA_DIRECTORY}/`));
+
+const stemOf = (name: string) => name.replace(/\.[^./]+$/, '');
+const isOwnerKind = (name: string) => { const kind = resolveProjectAssetKind(name); return kind === 'image' || kind === 'psd'; };
 
 const newId = () => crypto.randomUUID();
+
+/**
+ * Moves one folder into another (`src/shared` -> `inbox`). Sidecars (`*.manifest.json`, caption `.txt`) travel with
+ * their file; a name already taken at the destination is resolved with getUniqueExplorerName and recorded in
+ * the step so the path rewrite and the report know about it. Safe to run again after an interruption.
+ */
+const moveRawTree = async (root: ProjectDirectoryHandle, journal: LayoutJournal, step: JournalStep): Promise<void> => {
+  const resumed = Boolean(step.started);
+  if (!resumed) { step.started = true; await writeJournal(root, journal); }
+  step.renames ??= [];
+  const record = async (from: string, to: string) => {
+    if (step.renames!.some((entry) => entry.from === from)) return;
+    step.renames!.push({ from, to });
+    await writeJournal(root, journal);
+  };
+  const recorded = (from: string) => step.renames!.find((entry) => entry.from === from)?.to;
+
+  const moveFile = async (from: string, to: string) => {
+    const entry = await getEntry(root, from);
+    if (entry?.kind !== 'file') return;
+    await writeAt(root, to, await entry.handle.getFile());
+    await removeAt(root, from);
+  };
+
+  /** True when an interrupted earlier attempt already wrote this exact file to the destination. */
+  const alreadyCopied = async (from: string, to: string) => {
+    if (!resumed) return false;
+    const [source, target] = await Promise.all([getEntry(root, from), getEntry(root, to)]);
+    if (source?.kind !== 'file' || target?.kind !== 'file') return false;
+    const [a, b] = await Promise.all([source.handle.getFile(), target.handle.getFile()]);
+    if (a.size !== b.size) return false;
+    const [left, right] = await Promise.all([a.arrayBuffer(), b.arrayBuffer()]);
+    return new Uint8Array(left).every((value, index) => value === new Uint8Array(right)[index]);
+  };
+
+  const moveDirectory = async (fromDir: string, toDir: string): Promise<void> => {
+    const source = await getEntry(root, fromDir);
+    if (source?.kind !== 'directory') return;
+    const destination = await getDirectory(root, toDir, true);
+    const entries = await listEntries(source.handle);
+    const files = entries.filter(([, handle]) => 'getFile' in handle).map(([name]) => name);
+    const directories = entries.filter(([, handle]) => 'getDirectoryHandle' in handle).map(([name]) => name);
+    const ownerOf = (name: string): string | undefined => {
+      if (name.endsWith(ASSET_MANIFEST_SUFFIX)) {
+        const base = name.slice(0, -ASSET_MANIFEST_SUFFIX.length);
+        return files.includes(base) ? base : undefined;
+      }
+      if (name.toLowerCase().endsWith('.txt')) {
+        const stem = stemOf(name).toLowerCase();
+        return files.find((candidate) => candidate !== name && isOwnerKind(candidate) && stemOf(candidate).toLowerCase() === stem);
+      }
+      return undefined;
+    };
+    const sidecars = new Map<string, string[]>();
+    const owned = new Set<string>();
+    for (const name of files) {
+      const owner = ownerOf(name);
+      if (!owner) continue;
+      owned.add(name);
+      sidecars.set(owner, [...(sidecars.get(owner) ?? []), name]);
+    }
+    // A sidecar whose file moved in an earlier attempt follows that file's recorded (renamed) name.
+    const followMovedOwner = (dir: string, name: string): string => {
+      if (name.endsWith(ASSET_MANIFEST_SUFFIX)) {
+        const moved = recorded(join(dir, name.slice(0, -ASSET_MANIFEST_SUFFIX.length)));
+        return moved ? getAssetManifestName(nameOf(moved)) : name;
+      }
+      if (name.toLowerCase().endsWith('.txt')) {
+        const stem = stemOf(name).toLowerCase();
+        const moved = step.renames!.find((entry) => parentOf(entry.from) === dir && isOwnerKind(nameOf(entry.from)) && stemOf(nameOf(entry.from)).toLowerCase() === stem);
+        return moved ? `${stemOf(nameOf(moved.to))}.txt` : name;
+      }
+      return name;
+    };
+    const sidecarTarget = (name: string, finalOwner: string) =>
+      name.endsWith(ASSET_MANIFEST_SUFFIX) ? getAssetManifestName(finalOwner) : `${stemOf(finalOwner)}.txt`;
+
+    const place = async (name: string, finalName: string, from: string, to: string) => {
+      if (finalName !== name) await record(from, to);
+      if (await alreadyCopied(from, to)) { await removeAt(root, from); return; }
+      await moveFile(from, to);
+    };
+
+    for (const name of files.filter((entry) => !owned.has(entry))) {
+      const from = join(fromDir, name);
+      const known = recorded(from);
+      let finalName = known ? nameOf(known) : name;
+      if (!known) {
+        const preferred = followMovedOwner(fromDir, name);
+        const duplicate = await alreadyCopied(from, join(toDir, preferred));
+        finalName = duplicate ? preferred : await getUniqueExplorerName(destination, preferred);
+      }
+      await place(name, finalName, from, join(toDir, finalName));
+      for (const sidecar of sidecars.get(name) ?? []) {
+        const sidecarFrom = join(fromDir, sidecar);
+        const wanted = sidecarTarget(sidecar, finalName);
+        const sidecarFinal = await alreadyCopied(sidecarFrom, join(toDir, wanted)) ? wanted : await getUniqueExplorerName(destination, wanted);
+        await place(sidecar, sidecarFinal, sidecarFrom, join(toDir, sidecarFinal));
+      }
+    }
+    for (const name of directories) {
+      const from = join(fromDir, name);
+      const known = recorded(from);
+      let finalName = known ? nameOf(known) : name;
+      if (!known) {
+        const existing = await getEntry(root, join(toDir, name));
+        if (existing?.kind === 'file') finalName = await getUniqueExplorerName(destination, name);
+      }
+      if (finalName !== name) await record(from, join(toDir, finalName));
+      await moveDirectory(from, join(toDir, finalName));
+    }
+    const left = await getEntry(root, fromDir);
+    if (left?.kind === 'directory' && (await listEntries(left.handle)).length === 0) await removeAt(root, fromDir);
+  };
+
+  await moveDirectory(step.from!, step.to!);
+};
+
+const RAW_STEP_SOURCES: Array<{ id: string; from: string; to: string }> = [
+  { id: 'raw-shared', from: LEGACY_SHARED_DIRECTORY, to: PROJECT_LAYOUT.rawDir },
+  { id: 'raw-assets', from: LEGACY_ASSETS_DIRECTORY, to: PROJECT_LAYOUT.generatedDir },
+];
+
+/** Moves for the path rewrite: collision renames first (most specific), then the folder prefixes. */
+const getRawPathMoves = (journal: LayoutJournal): ExplorerPathMove[] => {
+  const toExplorer = (path: string) => `Project/${path}`;
+  const renames = journal.steps.flatMap((step) => step.type === 'raw-move' ? step.renames ?? [] : []);
+  const folders = journal.steps.filter((step) => step.type === 'raw-move' && step.from && step.to).map((step) => ({ from: step.from!, to: step.to! }));
+  return [...renames, ...folders].map((move) => ({ from: toExplorer(move.from), to: toExplorer(move.to) }));
+};
+
+const movePath = (path: string, moves: ExplorerPathMove[]): string => {
+  const hadPrefix = path.startsWith('Project/');
+  const moved = applyProjectRelativePathMoves(path, moves) ?? path;
+  return hadPrefix ? `Project/${moved}` : moved;
+};
+
+const movePathMap = (paths: Record<string, string> | undefined, moves: ExplorerPathMove[]) =>
+  paths ? Object.fromEntries(Object.entries(paths).map(([id, path]) => [id, applyProjectRelativePathMoves(path, moves, true) ?? path])) : paths;
+
+/** Rewrites every stored reference to a moved path: project.json, per-asset manifests. Applying it twice changes nothing. */
+const rewriteMovedPaths = async (root: ProjectDirectoryHandle, moves: ExplorerPathMove[]): Promise<void> => {
+  const text = await readTextAt(root, PROJECT_FILE);
+  if (text !== undefined) {
+    const json = JSON.parse(text) as { project?: Record<string, any> };
+    const project = json.project;
+    if (project) {
+      if (project.buildSession) project.buildSession = applyBuildSessionPathMoves(normalizeBuildSession(project.buildSession), moves);
+      if (project.sourceImageManifests) project.sourceImageManifests = movePathMap(project.sourceImageManifests, moves);
+      if (project.editedAssetManifests) project.editedAssetManifests = movePathMap(project.editedAssetManifests, moves);
+      if (Array.isArray(project.dataset?.assetOrder)) {
+        project.dataset.assetOrder = project.dataset.assetOrder.map((key: unknown) =>
+          typeof key === 'string' && key.startsWith('file:') ? `file:${movePath(key.slice('file:'.length), moves)}` : key);
+      }
+      const settings = project.workspaceSettings;
+      for (const key of ['excludedProjectCategories', 'includedProjectCategories']) {
+        if (Array.isArray(settings?.[key])) settings[key] = settings[key].map((path: unknown) => typeof path === 'string' ? movePath(path, moves) : path);
+      }
+      const next = JSON.stringify(json, null, 2);
+      if (next !== text) await writeAt(root, PROJECT_FILE, next);
+    }
+  }
+  const rewriteManifests = async (directoryPath: string) => {
+    const entry = await getEntry(root, directoryPath);
+    if (entry?.kind !== 'directory') return;
+    for (const [name, child] of await listEntries(entry.handle)) {
+      const path = join(directoryPath, name);
+      if ('getDirectoryHandle' in child) { await rewriteManifests(path); continue; }
+      if (!name.endsWith(ASSET_MANIFEST_SUFFIX)) continue;
+      const manifestText = await (child as ProjectDirectoryFileHandle).getFile().then((file) => file.text());
+      let manifest: Record<string, unknown>;
+      try { manifest = JSON.parse(manifestText) as Record<string, unknown>; } catch { continue; }
+      let changed = false;
+      for (const field of ['originalFilePath', 'imageDataPath', 'psdDataPath']) {
+        const value = manifest[field];
+        if (typeof value !== 'string') continue;
+        const moved = movePath(value, moves);
+        if (moved !== value) { manifest[field] = moved; changed = true; }
+      }
+      if (changed) await writeAt(root, path, JSON.stringify(manifest, null, 2));
+    }
+  };
+  await rewriteManifests(PROJECT_LAYOUT.rawDir);
+  await rewriteManifests(PROJECT_DATASET_DIRECTORY);
+};
+
+/** v3 project whose raw materials still sit in `src/shared` / `src/assets`. */
+export const detectLegacyRawLayout = async (root: ProjectDirectoryHandle): Promise<boolean> => {
+  if (await detectProjectLayout(root) !== 'v3') return false;
+  const [shared, assets] = await Promise.all([getEntry(root, LEGACY_SHARED_DIRECTORY), getEntry(root, LEGACY_ASSETS_DIRECTORY)]);
+  return Boolean(shared || assets);
+};
+
+/** Read-only description of the raw-materials move for the confirmation dialog. */
+export const planRawMaterialsMove = async (root: ProjectDirectoryHandle): Promise<RawMaterialsPlan> => {
+  let fileCount = 0;
+  let bytes = 0;
+  const folders: string[] = [];
+  const walk = async (directory: ProjectDirectoryHandle) => {
+    for (const [, entry] of await listEntries(directory)) {
+      if ('getDirectoryHandle' in entry) await walk(entry);
+      else { fileCount += 1; bytes += (await (entry as ProjectDirectoryFileHandle).getFile()).size; }
+    }
+  };
+  for (const source of RAW_STEP_SOURCES) {
+    const entry = await getEntry(root, source.from);
+    if (entry?.kind !== 'directory') continue;
+    folders.push(`${source.from} -> ${source.to}`);
+    await walk(entry.handle);
+  }
+  return { fileCount, bytes, folders };
+};
+
+/**
+ * Moves `src/shared` to `inbox/` and `src/assets` to `inbox/edits/` of an already-v3 project through its own
+ * journal, rewrites stored references, then removes `src/shared`, `src/assets` and `src` if they are empty.
+ */
+export const runRawMaterialsMove = async (root: ProjectDirectoryHandle, options: LayoutMigrationOptions = {}): Promise<RawMaterialsReport | undefined> => {
+  if (!await detectLegacyRawLayout(root)) return undefined;
+  throwIfAborted(options.signal);
+  const id = newId();
+  const steps: Omit<JournalStep, 'done'>[] = [
+    ...RAW_STEP_SOURCES.map((source) => ({ id: source.id, type: 'raw-move' as const, from: source.from, to: source.to, description: `Move ${source.from} to ${source.to}` })),
+    { id: 'raw-rewrite', type: 'rewrite-paths', description: 'Update references to the moved files' },
+    { id: 'raw-clean-shared', type: 'delete', path: LEGACY_SHARED_DIRECTORY, ifEmpty: true, description: `Remove the empty ${LEGACY_SHARED_DIRECTORY} folder` },
+    { id: 'raw-clean-assets', type: 'delete', path: LEGACY_ASSETS_DIRECTORY, ifEmpty: true, description: `Remove the empty ${LEGACY_ASSETS_DIRECTORY} folder` },
+    { id: 'raw-clean-src', type: 'delete', path: LEGACY_SOURCE_DIRECTORY, ifEmpty: true, description: `Remove the empty ${LEGACY_SOURCE_DIRECTORY} folder` },
+  ];
+  const journal: LayoutJournal = {
+    format: JOURNAL_FORMAT, version: 1, kind: 'raw-inbox', id, fromVersion: 3,
+    createdAt: new Date().toISOString(), steps: steps.map((step) => ({ ...step, done: false })),
+  };
+  await getDirectory(root, PROJECT_LAYOUT.rawDir, true);
+  await writeJournal(root, journal);
+  await runJournal(root, journal, options, 'Moving raw materials to inbox');
+  return summarizeRawJournal(journal);
+};
+
+const summarizeRawJournal = (journal: LayoutJournal): RawMaterialsReport => {
+  const pathMoves = getRawPathMoves(journal).map((move) => ({ from: move.from.replace(/^Project\//, ''), to: move.to.replace(/^Project\//, '') }));
+  const collisions = journal.steps.flatMap((step) => step.type === 'raw-move' ? step.renames ?? [] : []);
+  return { journalId: journal.id, pathMoves, collisions };
+};
+
+const referencesLegacyData = (paths: Array<string | undefined>) =>
+  paths.some((path) => path?.replace(/^Project\//, '').startsWith(`${PROJECT_DATA_DIRECTORY}/`));
 
 /**
  * Upgrades a v2 project in place. Order: finish interrupted journals, snapshot (abort without changes
@@ -462,5 +749,6 @@ export const runLayoutMigration = async (root: ProjectDirectoryHandle, options: 
   };
   await writeJournal(root, journal);
   await runJournal(root, journal, options);
-  return { journalId: id, snapshotVersionId, fromVersion: plan.fromVersion, resumed, keptLegacyData };
+  const rawMaterials = await runRawMaterialsMove(root, options);
+  return { journalId: id, snapshotVersionId, fromVersion: plan.fromVersion, resumed, keptLegacyData, rawMaterials };
 };

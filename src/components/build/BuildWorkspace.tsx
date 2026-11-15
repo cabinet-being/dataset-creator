@@ -39,7 +39,7 @@ import {
 } from '../../services/build/buildSessionService';
 import { getMinShortSide } from '../../services/quality/imageQuality';
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
-import { PROJECT_ASSETS_DIRECTORY } from '../../services/project/projectLayoutService';
+import { PROJECT_EDITS_DIRECTORY } from '../../services/project/projectLayoutService';
 import { getBuildTriageCounts, getBuildTriageGroup } from '../../services/build/buildTriageService';
 import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
@@ -251,8 +251,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       ...transformed,
       type: 'crop',
       tags: item.tags,
-      imageDataPath: `${PROJECT_ASSETS_DIRECTORY}/${outputId}.png`,
-      manifestPath: `${PROJECT_ASSETS_DIRECTORY}/${outputId}.png.manifest.json`,
+      imageDataPath: `${PROJECT_EDITS_DIRECTORY}/${outputId}.png`,
+      manifestPath: `${PROJECT_EDITS_DIRECTORY}/${outputId}.png.manifest.json`,
       deleted: false,
       createdAt: new Date(),
     };

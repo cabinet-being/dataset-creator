@@ -286,3 +286,42 @@ export const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout
     return {};
   }
 };
+
+/**
+ * Rewrites project-relative paths stored in the saved tabs of one project after its files moved
+ * (for example `src/shared` -> `inbox`). Handles plain and URI-encoded occurrences, as tab ids embed encoded paths.
+ */
+export function rewriteWorkspaceTabPaths(projectId: string, moves: Array<{ from: string; to: string }>, storage?: StorageReader & StorageWriter): void {
+  const target = storage ?? (typeof window === 'undefined' ? undefined : window.localStorage);
+  if (!target || moves.length === 0) return;
+  try {
+    const current = readJson(target, WORKSPACE_STORAGE_KEY);
+    if (!record(current) || current.version !== 2) return;
+    // Rewrites project-root paths only: at the start of a value, after an id prefix (`file:`, `tool:review:`)
+    // or after `Project/`; plain paths use `/` between segments, URI-encoded ones (inside tab ids) use `%2F`.
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const patterns = moves.flatMap(({ from, to }) => ([[from, to, '/'], [encodeURIComponent(from), encodeURIComponent(to), '%2F']] as const)
+      .map(([a, b, separator]) => ({
+        pattern: new RegExp(`(^|:|Project${escape(separator)})${escape(a)}(?=$|${escape(separator)})`, 'g'),
+        replacement: b,
+      })));
+    const rewriteString = (text: string) => patterns.reduce((value, { pattern, replacement }) => value.replace(pattern, (_match, prefix: string) => `${prefix}${replacement}`), text);
+    const rewrite = (value: unknown): unknown => {
+      if (typeof value === 'string') return rewriteString(value);
+      if (Array.isArray(value)) return value.map(rewrite);
+      if (record(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [rewriteString(key), rewrite(item)]));
+      return value;
+    };
+    const next = {...current};
+    if (record(current.projects) && record(current.projects[projectId])) {
+      next.projects = {...current.projects, [projectId]: rewrite(current.projects[projectId])};
+    }
+    if (record(current.workspace) && current.workspace.projectId === projectId) {
+      next.workspace = rewrite(current.workspace);
+      if (current.dock !== undefined) next.dock = rewrite(current.dock);
+    }
+    target.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Tabs are restored best-effort; a stale path is dropped when the file is not found.
+  }
+}

@@ -11,7 +11,7 @@ import {
   moveExplorerEntries,
   type ExplorerPathChange,
 } from '../project/explorerFileService';
-import { PROJECT_DATASET_DIRECTORY, PROJECT_SHARED_DIRECTORY } from '../project/projectLayoutService';
+import { PROJECT_DATASET_DIRECTORY, PROJECT_INBOX_DIRECTORY } from '../project/projectLayoutService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { clearLegacyExclusionAtPath } from '../project/legacyDatasetExclusionService';
 import { applyBuildSessionPathMoves } from '../build/buildSessionService';
@@ -136,7 +136,7 @@ export const addItemsToDatasetFolder = async (root: ProjectDirectoryHandle, item
   moveItems(root, items, DATASET_EXPLORER_PATH);
 
 export const removeItemsFromDatasetFolder = async (root: ProjectDirectoryHandle, items: WorkspaceImage[]) =>
-  moveItems(root, items, `Project/${PROJECT_SHARED_DIRECTORY}`);
+  moveItems(root, items, `Project/${PROJECT_INBOX_DIRECTORY}`);
 
 export const reverseDatasetFolderChanges = async (root: ProjectDirectoryHandle, changes: ExplorerPathChange[]) => {
   const completed: ExplorerPathChange[] = [];

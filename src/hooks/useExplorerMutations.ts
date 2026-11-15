@@ -40,7 +40,7 @@ import {
   ExplorerRecoveryError,
   type ExplorerClipboardEntry,
 } from '../services/project/explorerFileService';
-import { PROJECT_DATASET_DIRECTORY, PROJECT_SHARED_DIRECTORY } from '../services/project/projectLayoutService';
+import { PROJECT_DATASET_DIRECTORY, PROJECT_INBOX_DIRECTORY } from '../services/project/projectLayoutService';
 import { isProjectDatasetPath } from '../services/dataset/datasetFolderService';
 import { EXPLORER_VIEW } from '../lib/workspaceLayout';
 import { isAbortError } from '../lib/utils';
@@ -380,7 +380,7 @@ export function useExplorerMutations({
         isExplorerImageFileName(entry.name)
     );
     const confirmation = datasetFiles.length > 0 && datasetFiles.length === entries.length
-      ? `Remove ${datasetFiles.length === 1 ? `"${datasetFiles[0].name}"` : `${datasetFiles.length} images`} from the Dataset and move them to shared?`
+      ? `Remove ${datasetFiles.length === 1 ? `"${datasetFiles[0].name}"` : `${datasetFiles.length} images`} from the Dataset and move them to inbox?`
       : `Delete ${entries.length === 1 ? `"${entries[0].name}"` : `${entries.length} items`}? This cannot be undone.`;
     if (!window.confirm(confirmation)) {
       return;
@@ -397,7 +397,7 @@ export function useExplorerMutations({
         }
         const filesToReturnToShared = filesystemEntries.filter((entry) => datasetFiles.some((datasetFile) => datasetFile.path === entry.path));
         if (filesToReturnToShared.length > 0) {
-          await moveWorkspaceEntries(directory!, filesToReturnToShared, `Project/${PROJECT_SHARED_DIRECTORY}`);
+          await moveWorkspaceEntries(directory!, filesToReturnToShared, `Project/${PROJECT_INBOX_DIRECTORY}`);
         }
         const deletedFilesystemEntries = filesystemEntries.filter((entry) => !filesToReturnToShared.some((moved) => moved.path === entry.path));
         const activeFileTabDeleted =

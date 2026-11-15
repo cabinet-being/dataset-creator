@@ -102,7 +102,7 @@ export function AssetGallery({ inspectorOwnerId, items, renderItem, membership =
     </div>}
     {!!selectedItems.length && <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-secondary px-3 py-2 text-sm" role="status">
       <span>{selectedItems.length} selected</span><button className="ml-auto rounded px-2 py-1" onClick={() => void changeMembership()}>{membership === 'remove' ? 'Remove from Dataset' : 'Add to Dataset'}</button>
-      {selectedItems.some(item => item.kind !== 'video') && <button className="rounded px-2 py-1" onClick={() => void toggleDataset()}>{removeFromDataset ? 'Move to shared' : 'Move to Dataset'}</button>}
+      {selectedItems.some(item => item.kind !== 'video') && <button className="rounded px-2 py-1" onClick={() => void toggleDataset()}>{removeFromDataset ? 'Move to inbox' : 'Move to Dataset'}</button>}
       <button aria-label="Clear selection" className="rounded px-2 py-1" onClick={() => setSelected(new Set())}>Clear</button>
     </div>}
     <div className="asset-grid grid gap-3" role={directInteraction ? 'listbox' : 'group'} aria-multiselectable={directInteraction || undefined} aria-label="Files" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(min(100%,${thumbnailSize ?? size}px),1fr))` }} onKeyDown={event => {

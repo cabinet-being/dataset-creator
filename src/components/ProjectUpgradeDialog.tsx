@@ -1,11 +1,31 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { formatFileSize } from '../lib/utils';
-import type { LayoutMigrationPlan } from '../services/project/layoutMigrationService';
+import type { LayoutMigrationPlan, RawMaterialsPlan } from '../services/project/layoutMigrationService';
 import { PROJECT_LAYOUT } from '../services/project/projectLayoutService';
 
-export function ProjectUpgradeDialog({ name, plan, blockedReason, onComplete }: {
-  name: string; plan: LayoutMigrationPlan; blockedReason?: string; onComplete: (proceed: boolean) => void;
+export function ProjectUpgradeDialog({ name, plan, rawPlan, blockedReason, onComplete }: {
+  name: string; plan?: LayoutMigrationPlan; rawPlan?: RawMaterialsPlan; blockedReason?: string; onComplete: (proceed: boolean) => void;
 }) {
+  if (rawPlan) return <Dialog.Root open onOpenChange={(open) => { if (!open) onComplete(false); }}>
+    <Dialog.Portal>
+      <Dialog.Overlay className="fixed inset-0 z-[2100] bg-black/60" />
+      <Dialog.Content className="fixed left-1/2 top-1/2 z-[2101] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-6 shadow-xl">
+        <Dialog.Title className="text-lg font-semibold">Move raw materials to {PROJECT_LAYOUT.rawDir}/?</Dialog.Title>
+        <Dialog.Description className="mt-2 text-sm text-muted-foreground">“{name}” keeps raw materials in src/. They are now stored in {PROJECT_LAYOUT.rawDir}/ and tool outputs in {PROJECT_LAYOUT.generatedDir}/.</Dialog.Description>
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
+          {rawPlan.folders.map((folder) => <li key={folder}>{folder}</li>)}
+          <li>{rawPlan.fileCount} file{rawPlan.fileCount === 1 ? '' : 's'}, about {formatFileSize(rawPlan.bytes)}; captions and asset data move with their files.</li>
+          <li>Names that are already taken get a numbered name, and the project is told about each rename.</li>
+          <li>If this is interrupted, it continues the next time you open the project.</li>
+        </ul>
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={() => onComplete(false)} className="rounded border border-border px-4 py-2">Cancel</button>
+          <button type="button" autoFocus onClick={() => onComplete(true)} className="rounded bg-primary px-4 py-2 text-primary-foreground">Move to {PROJECT_LAYOUT.rawDir}/</button>
+        </div>
+      </Dialog.Content>
+    </Dialog.Portal>
+  </Dialog.Root>;
+  if (!plan) return null;
   if (blockedReason) return <Dialog.Root open onOpenChange={(open) => { if (!open) onComplete(false); }}>
     <Dialog.Portal>
       <Dialog.Overlay className="fixed inset-0 z-[2100] bg-black/60" />

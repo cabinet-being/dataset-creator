@@ -4,7 +4,6 @@ import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
 import type { ExplorerContextMenuState } from '../components/workspace/WorkspaceTabMenus';
 import type { ExplorerItemEntry } from './useWorkspaceCommands';
 import type { WorkspaceTab } from '../lib/workspaceTabs';
-import { isFileBackedTab } from '../lib/workspaceFileTabs';
 import {
   buildEmptyExplorerTree,
   sanitizeExplorerTree,
@@ -28,7 +27,6 @@ import {
   readExplorerDirectory,
 } from '../services/project/explorerFileService';
 import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
-import { isLegacyProjectRootPath } from '../services/project/projectPathFilters';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
 
@@ -38,7 +36,7 @@ interface UseExplorerTreeOptions {
   openFile: (node: ExplorerTreeNode) => Promise<void>;
 }
 
-export function useExplorerTree({ setOpenTabs, setExplorerContextMenu, openFile }: UseExplorerTreeOptions) {
+export function useExplorerTree({ openFile }: UseExplorerTreeOptions) {
   const projectName = useProjectStore((state) => state.name);
   const projectDirectoryHandle = useUIStore(state => state.projectDirectoryHandle);
   const projectDirectoryName = useUIStore(state => state.projectDirectoryName);
@@ -228,34 +226,6 @@ export function useExplorerTree({ setOpenTabs, setExplorerContextMenu, openFile 
     draggedExplorerEntriesRef.current = entries;
     setDraggedExplorerEntries(entries);
   };
-
-  useEffect(() => {
-    setSelectedExplorerPaths((paths) => {
-      const nextPaths = [...paths].filter((path) => !isLegacyProjectRootPath(path));
-      return nextPaths.length === paths.size ? paths : new Set(nextPaths);
-    });
-    setExpandedExplorerPaths((paths) => {
-      const nextPaths = [...paths].filter((path) => !isLegacyProjectRootPath(path));
-      return nextPaths.length === paths.size ? paths : new Set(nextPaths);
-    });
-    setFocusedExplorerPath((path) => (path && isLegacyProjectRootPath(path) ? null : path));
-    setSelectionAnchorPath((path) => (path && isLegacyProjectRootPath(path) ? null : path));
-    setActiveExplorerDirectoryPath((path) => (isLegacyProjectRootPath(path) ? 'Project' : path));
-    setExplorerContextMenu((menu) => (menu && isLegacyProjectRootPath(menu.node.path) ? null : menu));
-    setOpenTabs((tabs) => {
-      const nextTabs = tabs.filter((tab) => !isFileBackedTab(tab) || !isLegacyProjectRootPath(tab.path));
-      return nextTabs.length === tabs.length ? tabs : nextTabs;
-    });
-    setDraggedExplorerEntries((entries) => {
-      if (!entries) {
-        draggedExplorerEntriesRef.current = null;
-        return entries;
-      }
-      const nextEntries = entries.filter((entry) => !isLegacyProjectRootPath(entry.path));
-      draggedExplorerEntriesRef.current = nextEntries.length > 0 ? nextEntries : null;
-      return nextEntries.length === entries.length ? entries : draggedExplorerEntriesRef.current;
-    });
-  }, [explorerRefreshKey, projectDirectoryHandle]);
 
   const getContextEntries = (node: ExplorerTreeNode): ExplorerItemEntry[] => {
     if (selectedExplorerPaths.has(node.path) && selectedExplorerPaths.size > 1) {

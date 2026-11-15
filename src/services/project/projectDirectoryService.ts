@@ -27,7 +27,7 @@ import {
   PROJECT_INTERNAL_DIRECTORY,
   PROJECT_LAYOUT,
   PROJECT_PROJECT_FORMAT,
-  PROJECT_SHARED_DIRECTORY,
+  PROJECT_INBOX_DIRECTORY,
   detectProjectLayout,
   ensureProjectLayout,
   isProjectWorkspacePath,
@@ -483,7 +483,7 @@ const writeProjectManifest = async (
 
 const getDefaultSourceManifestPath = (source: SourceImage): string => {
   const fileName = `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`;
-  return joinPath(PROJECT_SHARED_DIRECTORY, getAssetManifestName(fileName));
+  return joinPath(PROJECT_INBOX_DIRECTORY, getAssetManifestName(fileName));
 };
 
 const getDefaultEditedAssetManifestPath = (item: EditedAsset): string =>
@@ -599,8 +599,7 @@ const getReusableProjectPath = (path: string | undefined): string | undefined =>
     return undefined;
   }
 
-  const relativePath = toProjectRelativePath(path);
-  return isLegacyProjectRootPath(relativePath) ? undefined : relativePath;
+  return toProjectRelativePath(path);
 };
 
 const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): Promise<string> => {
@@ -799,6 +798,7 @@ const CLEARED_PROJECT_ENTRIES = [
   PROJECT_DIRECTORY_MANIFEST,
   DATASET_MANIFEST_FILE,
   PROJECT_DATASET_DIRECTORY,
+  PROJECT_INBOX_DIRECTORY,
   'src',
 ];
 const GIT_SERVICE_ENTRIES = new Set(['dataset-creator-versions.json', 'snapshots', 'restore-backups']);
@@ -1192,7 +1192,7 @@ export const readProjectDirectory = async (
     // Discovery of new sources remains limited to shared in assetIndexService.
     .filter((source) => sourceManifestPaths
       ? !isLegacyProjectRootPath(source.originalFilePath ?? '')
-      : isProjectWorkspacePath(source.originalFilePath ?? '', 'shared'));
+      : isProjectWorkspacePath(source.originalFilePath ?? '', legacyMode ? 'legacy-shared' : 'shared'));
   let edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
 
   const datasetSettings = manifest.project.dataset;

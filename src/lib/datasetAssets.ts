@@ -1,4 +1,3 @@
-import { filterLegacyProjectAssetPaths } from '../services/project/projectPathFilters';
 import { ASSET_MANIFEST_SUFFIX } from '../services/project/assetManifestService';
 import { createWorkspaceFileAssetId, type WorkspaceImage } from './workspaceImages';
 
@@ -22,7 +21,7 @@ export const getDatasetAssetOrderKeys = (
   assetPaths: string[] = []
 ): string[] => [
   ...[...new Set(assetIds)].map(createDatasetImageAssetKey),
-  ...filterLegacyProjectAssetPaths([...new Set(assetPaths)]).map(createDatasetFileAssetKey),
+  ...[...new Set(assetPaths)].map(createDatasetFileAssetKey),
 ];
 
 export const normalizeDatasetAssetOrder = (

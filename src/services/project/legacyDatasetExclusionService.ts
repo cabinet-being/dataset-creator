@@ -1,5 +1,5 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
-import { PROJECT_DATA_DIRECTORY, PROJECT_LAYOUT } from './projectLayoutService';
+import { LEGACY_SHARED_DIRECTORY, PROJECT_DATA_DIRECTORY, PROJECT_LAYOUT } from './projectLayoutService';
 import { getAssetManifestName } from './assetManifestService';
 import { getDirectoryAtExplorerPath, getExplorerFileKind, getExplorerParentDirectory, getUniqueExplorerName, moveExplorerEntries, type ExplorerPathChange } from './explorerFileService';
 
@@ -83,8 +83,8 @@ export async function migrateLegacyDatasetExclusions(root: ProjectDirectoryHandl
       try { metadata=JSON.parse(await (await (await directory.getFileHandle(getAssetManifestName(name))).getFile()).text()); }
       catch (error) { if (missing(error)) continue; throw error; }
       if (!metadata.excludedFromDataset) continue;
-      const shared=await getDirectoryAtExplorerPath(root,`Project/${PROJECT_LAYOUT.rawDir}`);
-      const to=`Project/${PROJECT_LAYOUT.rawDir}/${await getUniqueExplorerName(shared,name)}`;
+      const shared=await getDirectoryAtExplorerPath(root,`Project/${LEGACY_SHARED_DIRECTORY}`);
+      const to=`Project/${LEGACY_SHARED_DIRECTORY}/${await getUniqueExplorerName(shared,name)}`;
       const entry={from:`${path}/${name}`,to,completed:false};
       entries.push(entry); await writeJournal(); await resume(entry);
     }
