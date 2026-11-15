@@ -221,8 +221,12 @@ export interface BuildPreparationProfile {
   autoPipeline?: boolean;
 }
 
+export type BuildStage = 'add' | 'select' | 'caption' | 'check' | 'export';
+
 export interface BuildSession {
   version: 1;
+  /** Current Build stage; absent in sessions saved before stages existed (normalized on load). */
+  stage?: BuildStage;
   profile: BuildPreparationProfile;
   cursor: number;
   filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected';
@@ -407,6 +411,7 @@ export const createProject = (name: string, projectType: ProjectType = 'general'
   },
   buildSession: {
     version: 1,
+    stage: 'add',
     profile: {
       target: 60,
       reviewMode: 'every-item',

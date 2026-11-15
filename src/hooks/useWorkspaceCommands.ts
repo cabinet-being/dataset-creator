@@ -49,6 +49,7 @@ type WorkspaceCommandsOptions = {
   isProjectDirectoryBusy: boolean;
   navigateToTool: (tool: ToolName) => void | Promise<unknown>;
   openCommands: (help?: boolean) => void;
+  openProjectHome: () => void;
   openDatasetToolTab: (datasetId: string, tool: DatasetToolName) => void | Promise<unknown>;
   openProjectDataset: () => void | Promise<unknown>;
   openProjectVersions: () => void | Promise<unknown>;
@@ -70,7 +71,7 @@ export function useWorkspaceCommands({
   activeExplorerDirectoryPath, activeTab, activeTabId, activeTool, closedTabs, closeWorkspaceViews, dock, explorerClipboard,
   explorerPanelRef, findExplorerNodeByPath, focusView, getActiveDirectoryChildren, getSelectedExplorerEntries, globalDataset,
   handleExplorerDelete, handleExplorerDuplicate, handleExplorerPaste, handleExplorerRename, handleNewProject, handleOpenProject,
-  handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openDatasetToolTab, openProjectDataset,
+  handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openProjectHome, openDatasetToolTab, openProjectDataset,
   openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard, toggleExplorer,
   setIsWorkspaceSettingsOpen, setSelectedExplorerPaths, setSelectionAnchorPath, setTheme, stepTab,
 }: WorkspaceCommandsOptions) {
@@ -104,6 +105,7 @@ export function useWorkspaceCommands({
       reason:command.reason ?? (command.disabled ? !projectDirectoryHandle ? 'Open a project directory first' : 'Select files in Explorer' : undefined)})),
     { id: 'history.undo', label: `Undo${history.past.length ? " · " + history.past[history.past.length - 1].label : ""}`, shortcut: 'Mod+Z', disabled: !history.past.length || history.busy, run: history.undo },
     { id: 'history.redo', label: 'Redo', shortcut: 'Mod+Shift+Z', disabled: !history.future.length || history.busy, run: history.redo },
+    { id: 'project.home', label: 'Project home', disabled: !projectDirectoryHandle, reason: !projectDirectoryHandle ? 'Open a project directory first' : undefined, run: openProjectHome },
     { id: 'project.new', label: 'New project', disabled: isProjectDirectoryBusy, run: handleNewProject },
     { id: 'project.open', label: 'Open project', disabled: isProjectDirectoryBusy, run: handleOpenProject },
     { id: 'project.rename', label: 'Rename project', disabled: isProjectDirectoryBusy, run: handleRenameProject },

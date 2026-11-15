@@ -2,7 +2,7 @@ import { BuildClusterView } from './BuildClusterView';
 import { CaptionEditor } from '../caption/CaptionEditor';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, HelpCircle, ImageIcon, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
-import type { BuildReviewDecision, BuildSession, EditedAsset } from '../../types';
+import type { BuildReviewDecision, BuildSession, BuildStage, EditedAsset } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { useProjectStore } from '../../stores/useProjectStore';
@@ -43,10 +43,13 @@ import { getMinShortSide } from '../../services/quality/imageQuality';
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
 import { PROJECT_EDITS_DIRECTORY } from '../../services/project/projectLayoutService';
 import { getBuildTriageCounts, getBuildTriageGroup } from '../../services/build/buildTriageService';
-import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
 import { BuildProfileControls } from './BuildProfileControls';
+import { BuildStepper, BuildNextStageFooter } from './BuildStepper';
+import { BuildCaptionStage } from './BuildCaptionStage';
+import { parseTags, sameTags } from './buildCaptionTags';
+import { getBuildStageSummary, mergeBuildItems, selectBuildCandidates, selectBuildDatasetItems } from '../../lib/buildStageSummary';
 import { useQualityActions } from './useQualityActions';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
@@ -60,18 +63,6 @@ type Props = {
   onRefresh?: () => void | Promise<void>;
   semanticEncoderFactory?: typeof createSemanticFeatureEncoder;
 };
-
-const parseTags = (value: string): string[] => {
-  const seen = new Set<string>();
-  return value.split(/[\n,]/).map((tag) => tag.trim()).filter((tag) => {
-    const key = tag.toLocaleLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-};
-
-const sameTags = (left: string[] | undefined, right: string[]) =>
-  left !== undefined && left.length === right.length && left.every((tag, index) => tag === right[index]);
 
 const itemName = (item: WorkspaceImage) => item.originalFileName || item.fileName;
 const currentRegisteredItem = (assetId: string): WorkspaceImage | undefined => {
@@ -95,10 +86,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const localTagger = useLocalTaggerStore((state) => state.bundle);
   const savedTaggerFileNames = useLocalTaggerStore((state) => state.savedFileNames);
-  const [showImport, setShowImport] = useState(false);
-  const [showExport, setShowExport] = useState(false);
   const [showAssembly, setShowAssembly] = useState(false);
-  const [showQuality, setShowQuality] = useState(false);
   const [view, setView] = useState<'list' | 'clusters'>('list');
   const [allowShortfall, setAllowShortfall] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -112,14 +100,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
 
   const effectiveItems = useMemo(() => {
     const state = useProjectStore.getState();
-    const registered = toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems));
-    const byId = new Map(registered.map((item) => [getBuildAssetId(item), item]));
-    return [...items.map((item) => item.sourceImageId ? byId.get(getBuildAssetId(item)) ?? item : item),
-      ...registered.filter((item) => !items.some((candidate) => getBuildAssetId(candidate) === getBuildAssetId(item)))];
+    return mergeBuildItems(items, Object.values(state.sourceImages), Object.values(state.datasetItems));
   }, [items, session]);
-  const outputIds = useMemo(() => new Set(Object.values(session.records).flatMap((record) => record.outputAssetId ? [record.outputAssetId] : [])), [session.records]);
-  const candidates = useMemo(() => effectiveItems.filter((item) => !outputIds.has(getBuildAssetId(item)) &&
-    !(item.kind === 'edited' && item.editedAssetType === 'crop' && item.editedAssetId?.startsWith('build-'))), [effectiveItems, outputIds]);
+  const candidates = useMemo(() => selectBuildCandidates(effectiveItems, session), [effectiveItems, session.records]);
   const reconciled = useMemo(() => busy ? session : reconcileBuildSession(session, candidates, undefined, effectiveItems), [busy, candidates, effectiveItems, session]);
   useEffect(() => { if (reconciled !== session) updateSession(reconciled); }, [reconciled, session, updateSession]);
   const queue = useMemo(() => selectBuildQueue(reconciled, candidates), [candidates, reconciled]);
@@ -181,10 +164,21 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }, [current, currentId, currentRecord, effectiveItems, reconciled]);
   usePublishInspectorSelection(active, viewId, inspectorPayload);
   const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled]);
+  const stage: BuildStage = reconciled.stage ?? 'select';
+  const setStage = useCallback((next: BuildStage) => updateSession((value) => value.stage === next ? value : { ...value, stage: next }), [updateSession]);
   const quality = useDatasetQualityReport({
-    featuresActive: active && (showQuality || showExport || view === 'clusters'), items: effectiveItems, candidates, session: reconciled,
+    featuresActive: active && (stage === 'check' || stage === 'export' || (stage === 'select' && view === 'clusters')), items: effectiveItems, candidates, session: reconciled,
     triggerWord: dataset.triggerWord, projectType, targetModel,
   });
+  const datasetItems = useMemo(() => selectBuildDatasetItems(effectiveItems), [effectiveItems]);
+  const summary = useMemo(() => getBuildStageSummary({ session: reconciled, effectiveItems, candidates, readiness: quality.report.readiness }),
+    [candidates, effectiveItems, quality.report.readiness, reconciled]);
+  // A fresh session leaves Add as soon as materials exist, unless the user went back to Add on purpose.
+  const stayInAdd = useRef(false);
+  const goToStage = useCallback((next: BuildStage) => { stayInAdd.current = next === 'add'; setStage(next); }, [setStage]);
+  useEffect(() => {
+    if (stage === 'add' && candidates.length > 0 && !stayInAdd.current) setStage('select');
+  }, [candidates.length, setStage, stage]);
   const selectQualityItem = useCallback((id: string) => {
     const item = effectiveItems.find((candidate) => candidate.id === id);
     if (!item) return;
@@ -192,8 +186,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     const sourceId = Object.values(reconciled.records).find((record) => record.outputAssetId === assetId)?.assetId ?? assetId;
     const index = selectBuildQueue({ ...reconciled, filter: 'all' }, candidates).findIndex((candidate) => getBuildAssetId(candidate) === sourceId);
     if (index < 0) { notify('info', `${quality.labelFor(id)} is not in the Build queue.`); return; }
-    setShowExport(false);
-    updateSession((value) => ({ ...value, filter: 'all', cursor: index }));
+    updateSession((value) => ({ ...value, stage: 'select', filter: 'all', cursor: index }));
   }, [candidates, effectiveItems, notify, quality, reconciled, updateSession]);
   const qualityActions = useQualityActions({ datasetItems: quality.datasetItems, directory, onSelectId: selectQualityItem });
   const missingRecords = useMemo(() => {
@@ -433,12 +426,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   }, [active, busy, cursor, localTagger, patchSession, pipeline.phase, queue, reconciled.records, taggingConfig.threshold, taggingConfig.maxTags]);
 
   useCommands([
-    { id: 'build.accept', label: 'Build: Accept', shortcut: 'A', active: active && view === 'list', disabled: busy || !current || current.kind === 'video', run: () => commitDecision('accepted') },
-    { id: 'build.skip', label: 'Build: Reject', shortcut: 'X', active: active && view === 'list', disabled: busy || !current, run: () => commitDecision('skipped') },
-    { id: 'build.defer', label: 'Build: Defer', shortcut: 'D', active: active && view === 'list', disabled: busy || !current, run: () => commitDecision('deferred') },
-    { id: 'build.previous', label: 'Build: Previous', shortcut: 'ArrowLeft', active: active && view === 'list', disabled: cursor <= 0, run: () => moveCursor(-1) },
-    { id: 'build.next', label: 'Build: Next', shortcut: 'ArrowRight', active: active && view === 'list', disabled: cursor >= queue.length - 1, run: () => moveCursor(1) },
-    { id: 'build.finish', label: 'Build: Finish review', shortcut: 'Mod+Enter', active, disabled: busy, run: () => counts.unresolved || counts.errors ? patchSession((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })) : setShowExport(true) },
+    { id: 'build.accept', label: 'Build: Accept', shortcut: 'A', active: active && stage === 'select' && view === 'list', disabled: busy || !current || current.kind === 'video', run: () => commitDecision('accepted') },
+    { id: 'build.skip', label: 'Build: Reject', shortcut: 'X', active: active && stage === 'select' && view === 'list', disabled: busy || !current, run: () => commitDecision('skipped') },
+    { id: 'build.defer', label: 'Build: Defer', shortcut: 'D', active: active && stage === 'select' && view === 'list', disabled: busy || !current, run: () => commitDecision('deferred') },
+    { id: 'build.previous', label: 'Build: Previous', shortcut: 'ArrowLeft', active: active && stage === 'select' && view === 'list', disabled: cursor <= 0, run: () => moveCursor(-1) },
+    { id: 'build.next', label: 'Build: Next', shortcut: 'ArrowRight', active: active && stage === 'select' && view === 'list', disabled: cursor >= queue.length - 1, run: () => moveCursor(1) },
+    { id: 'build.finish', label: 'Build: Finish review', shortcut: 'Mod+Enter', active, disabled: busy, run: () => counts.unresolved || counts.errors ? patchSession((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })) : setStage('export') },
   ], () => root.current);
 
   const proposal = currentRecord?.proposal && currentRecord.proposal.revision === currentRecord.revision ? currentRecord.proposal.tags : [];
@@ -475,8 +468,16 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   } }));
 
   return <div ref={root} className="flex h-full min-h-0 flex-col bg-background" data-build-workspace>
-    <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+    <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2">
       <div className="mr-auto"><h1 className="flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-primary" />Build Dataset</h1><p className="text-xs text-muted-foreground">One queue from import to export</p></div>
+    </header>
+    <BuildStepper stages={summary.stages} current={stage} onSelect={goToStage} />
+    {stage === 'add' ? <div className="min-h-0 flex-1 overflow-auto p-4"><div role="group" aria-label="Project settings" className="mb-4 flex flex-wrap items-center gap-3 text-xs"><BuildProfileControls onModelChange={clearQualityTriage} /></div><ImportTool active={active} onImportFiles={onImportFiles} /></div>
+    : stage === 'caption' ? <BuildCaptionStage items={datasetItems} suggestions={captionSuggestions} directory={directory} />
+    : stage === 'check' ? <section aria-label="Dataset quality" className="min-h-0 flex-1 overflow-auto p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>
+    : stage === 'export' ? <div className="min-h-0 flex-1 overflow-auto"><ExportTool active={active} fixedSource="dataset" onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div>
+    : <>
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2">
       <div role="status" className="rounded-lg bg-secondary px-3 py-2 text-xs"><strong>Ready {counts.ready} / target {counts.target}</strong> · saving {counts.saving} · <button onClick={() => patchSession((value) => ({ ...value, filter: 'unresolved', cursor: 0 }))} className="underline">undecided {counts.unresolved}</button> · <button onClick={() => patchSession((value) => ({ ...value, filter: 'errors', cursor: 0 }))} className={counts.errors ? 'text-destructive underline' : ''}>errors {counts.errors}</button></div>
       <div role="group" aria-label="Triage groups" className="flex flex-wrap items-center gap-2 text-xs">
         <button onClick={() => setFilter('needs-decision')} className="rounded bg-amber-500/15 px-2 py-1 text-amber-800 dark:text-amber-200">Flagged {triageCounts.needsDecision}</button>
@@ -490,15 +491,11 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <button type="button" data-testid="build-view-toggle" data-view="list" aria-pressed={view === 'list'} onClick={() => setView('list')} className={`px-3 py-2 ${view === 'list' ? 'bg-primary text-primary-foreground' : ''}`}>List</button>
         <button type="button" data-testid="build-view-toggle" data-view="clusters" aria-pressed={view === 'clusters'} onClick={() => setView('clusters')} className={`px-3 py-2 ${view === 'clusters' ? 'bg-primary text-primary-foreground' : ''}`}>Clusters</button>
       </div>
-      <button type="button" data-testid="build-quality-toggle" data-readiness={quality.report.readiness} aria-expanded={showQuality} className="rounded border border-border px-3 py-2 text-sm" onClick={() => setShowQuality((value) => !value)}>Quality: {QUALITY_STATUS_TEXT[quality.report.readiness]}</button>
-      <button className="rounded border border-border px-3 py-2 text-sm" onClick={() => setShowImport((value) => !value)}>Add materials</button>
-      <button className="rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40" disabled={busy} onClick={() => {
+      <button className="ml-auto rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40" disabled={busy} onClick={() => {
         if (!canExport) { patchSession((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })); return; }
-        setShowExport(true);
+        setStage('export');
       }}>Finish</button>
-    </header>
-
-    {showImport || !candidates.length ? <div className="min-h-0 flex-1 overflow-auto p-4"><ImportTool active={active} onImportFiles={onImportFiles} /></div> : showExport ? <div className="min-h-0 flex-1 overflow-auto"><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background p-3"><button onClick={() => setShowExport(false)} className="rounded border border-border px-3 py-1.5 text-sm">Back to review</button><span className="text-sm text-muted-foreground">Export uses the same physical Dataset and caption plan as the Export tool.</span></div><section aria-label="Dataset quality before export" className="border-b border-border p-4"><h2 className="mb-2 text-sm font-semibold">Dataset quality</h2><BuildQualityPanel testId="build-finish-quality" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section><ExportTool active={active} fixedSource="dataset" onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div> : <>
+      </div>
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">
         <label>Target <input type="number" min={0} value={reconciled.profile.target} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, target: Math.max(0, Number(event.target.value) || 0) } }))} className="ml-1 w-20 rounded border border-border bg-background px-2 py-1" /></label>
         <details className="relative" data-build-settings><summary className="cursor-pointer rounded border border-border px-2 py-1">Settings</summary><div className="absolute left-0 top-full z-20 mt-1 flex w-72 flex-col gap-2 rounded border border-border bg-popover p-3 text-popover-foreground shadow-lg">
@@ -516,8 +513,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         </>}
       </div>
 
-      {showQuality && <section aria-label="Dataset quality" className="max-h-[45vh] shrink-0 overflow-auto border-b border-border bg-card p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>}
-      {view === 'clusters' ? <BuildClusterView active={active && !showImport} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(targetModel)} busy={busy}
+      {view === 'clusters' ? <BuildClusterView active={active} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(targetModel)} busy={busy}
         onCommit={(entries) => commitDecisions(entries)} onOpenItem={(id) => { setView('list'); selectQualityItem(id); }} /> : <>
       <main className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="relative flex min-h-0 flex-col items-center justify-center overflow-auto bg-black/5 p-4 dark:bg-black/20">
@@ -525,7 +521,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
           : current && previews[current.id] ? <div className="relative flex h-full w-full items-center justify-center">{cropGeometry
             ? <svg role="img" aria-label={itemName(current)} viewBox={`${cropGeometry.sourceX} ${cropGeometry.sourceY} ${cropGeometry.sourceWidth} ${cropGeometry.sourceHeight}`} className="max-h-full max-w-full rounded-lg shadow-lg" style={{ aspectRatio: `${cropGeometry.outputWidth} / ${cropGeometry.outputHeight}`, height: '100%', width: 'auto' }}><image href={previews[current.id]} width={current.width} height={current.height} preserveAspectRatio="none" /></svg>
             : <img src={previews[current.id]} alt={itemName(current)} className="max-h-full max-w-full rounded-lg object-contain shadow-lg" />}</div>
-          : <div className="text-center text-sm text-muted-foreground"><ImageIcon className="mx-auto mb-2 h-10 w-10" />{current ? 'Preview unavailable' : 'No items match this queue'}</div>}
+          : <div className="text-center text-sm text-muted-foreground"><ImageIcon className="mx-auto mb-2 h-10 w-10" />{current ? 'Preview unavailable' : candidates.length ? 'No items match this queue' : <><p className="font-medium text-foreground">No materials yet</p><button type="button" onClick={() => goToStage('add')} className="mt-2 rounded bg-primary px-3 py-1.5 text-primary-foreground">Add materials →</button></>}</div>}
           {busy && <div className="absolute inset-0 flex items-center justify-center bg-background/60"><Loader2 className="h-6 w-6 animate-spin" /></div>}
         </section>
         <aside className="min-h-0 overflow-auto border-l border-border p-4">
@@ -543,7 +539,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
             {currentTransform?.mode === 'crop' && current.kind !== 'video' && current.kind !== 'psd' && <fieldset className="space-y-2 rounded border border-border p-2 text-xs"><legend className="px-1 font-medium">Crop frame</legend><label className="grid grid-cols-[4rem_1fr] items-center gap-2">Zoom<input type="range" min={100} max={250} value={cropZoom} onChange={(event)=>updateCrop(Number(event.target.value),cropCenterX,cropCenterY)} /></label><label className="grid grid-cols-[4rem_1fr] items-center gap-2">Horizontal<input type="range" min={0} max={100} value={cropCenterX} onChange={(event)=>updateCrop(cropZoom,Number(event.target.value),cropCenterY)} /></label><label className="grid grid-cols-[4rem_1fr] items-center gap-2">Vertical<input type="range" min={0} max={100} value={cropCenterY} onChange={(event)=>updateCrop(cropZoom,cropCenterX,Number(event.target.value))} /></label>{!currentTransform.allowUpscale && (current.width < currentTransform.width || current.height < currentTransform.height) && <p className="text-amber-700 dark:text-amber-300">Output stays below the profile size because upscale is disabled.</p>}</fieldset>}
             <div className="grid grid-cols-3 gap-2"><button disabled={busy || current.kind === 'video'} onClick={() => void commitDecision('accepted')} className="rounded bg-primary px-2 py-2 text-xs font-medium text-primary-foreground disabled:opacity-40">Accept · A</button><button disabled={busy} onClick={() => void commitDecision('skipped')} className="rounded border border-border px-2 py-2 text-xs">Reject · X</button><button disabled={busy} onClick={() => void commitDecision('deferred')} className="rounded border border-border px-2 py-2 text-xs">Defer · D</button></div>
             <div className="flex justify-between"><button disabled={cursor <= 0} onClick={() => moveCursor(-1)} className="rounded p-2 disabled:opacity-30" aria-label="Previous"><ChevronLeft className="h-4 w-4" /></button><span className="self-center text-xs capitalize text-muted-foreground">{currentRecord?.decision} · {currentRecord?.validation}</span><button disabled={cursor >= queue.length - 1} onClick={() => moveCursor(1)} className="rounded p-2 disabled:opacity-30" aria-label="Next"><ChevronRight className="h-4 w-4" /></button></div>
-          </div> : <div className="space-y-3 text-sm"><p>No visible items in this filter.</p>{missingRecords.map((record) => <div key={record.assetId} className="rounded border border-destructive/30 p-2 text-xs"><p className="break-all">Missing: {record.locator ?? record.assetId}</p><button className="mt-2 underline" onClick={() => patchSession((value) => updateBuildDecision(value, record.assetId, 'skipped', { application:'idle', validation:'pending', error:undefined }))}>Skip missing record</button></div>)}<button onClick={() => patchSession((value) => ({ ...value, filter: 'all', cursor: 0 }))} className="rounded border border-border px-3 py-2">Show all</button></div>}
+          </div> : <div className="space-y-3 text-sm">{candidates.length ? <p>No visible items in this filter.</p> : <p>No materials yet.</p>}{missingRecords.map((record) => <div key={record.assetId} className="rounded border border-destructive/30 p-2 text-xs"><p className="break-all">Missing: {record.locator ?? record.assetId}</p><button className="mt-2 underline" onClick={() => patchSession((value) => updateBuildDecision(value, record.assetId, 'skipped', { application:'idle', validation:'pending', error:undefined }))}>Skip missing record</button></div>)}{candidates.length > 0 && <button onClick={() => patchSession((value) => ({ ...value, filter: 'all', cursor: 0 }))} className="rounded border border-border px-3 py-2">Show all</button>}</div>}
         </aside>
       </main>
 
@@ -555,9 +551,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         </button>; })}</div>
       </section>
       </>}
-    </>}
-
     {!canExport && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
+    </>}
+    <BuildNextStageFooter current={stage} onNext={goToStage} />
     <DatasetAssemblyDialog open={showAssembly} onOpenChange={setShowAssembly} dataset={dataset} items={items} directory={directory ?? undefined} projectId={projectId} projectType={projectType} defaultMode="total" defaultTotal={reconciled.profile.target} excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []} onApply={async (paths) => {
       const selectedItems = candidates.filter((item) => item.assetPath && paths.some((path) => item.assetPath!.replace(/^Project\//, '') === path.replace(/^Project\//, '')));
       if (selectedItems.length !== paths.length) throw new Error('Some proposed files changed before the selection was applied. Run Auto-select again.');

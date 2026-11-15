@@ -1,4 +1,5 @@
 import { WorkspaceWelcome } from './components/workspace/WorkspaceWelcome';
+import { ProjectHome } from './components/workspace/ProjectHome';
 import { WorkspaceTool, type AnalysisScopeTarget, type AssetContextMenuHandler, type DatasetToolName } from './components/workspace/WorkspaceTool';
 import { getToolViewContext, setToolViewScope, type ToolSelectionScope } from './lib/workspaceToolScope';
 import { readWorkspaceLayout } from './lib/workspacePersistence';
@@ -89,7 +90,7 @@ import {
   getUniqueExplorerName,
   readExplorerFile,
 } from './services/project/explorerFileService';
-import { type Dataset, type ToolName } from './types';
+import { type BuildStage, type Dataset, type ToolName } from './types';
 import {
   PROJECT_INBOX_DIRECTORY,
 } from './services/project/projectLayoutService';
@@ -214,6 +215,8 @@ function App() {
   }, [operationLogs.length]);
 
   const [navigationRecovery, setNavigationRecovery] = useState(false);
+  const [homeOpen, setHomeOpen] = useState(false);
+  useEffect(() => { setHomeOpen(false); }, [activeTabId, projectId]);
   useWorkspaceNavigation({
     projectId, activeId: activeTabId, views: openTabs, closedViews: closedTabs,
     toolFromUrl: () => { const tool = readToolFromUrl(); return tool ? createToolTab(tool) : null; },
@@ -1285,10 +1288,21 @@ function App() {
     activeExplorerDirectoryPath, activeTab, activeTabId, activeTool, closedTabs, closeWorkspaceViews, dock, explorerClipboard,
     explorerPanelRef, findExplorerNodeByPath, focusView, getActiveDirectoryChildren, getSelectedExplorerEntries, globalDataset,
     handleExplorerDelete, handleExplorerDuplicate, handleExplorerPaste, handleExplorerRename, handleNewProject, handleOpenProject,
-    handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openDatasetToolTab, openProjectDataset,
+    handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openProjectHome: () => setHomeOpen(true), openDatasetToolTab, openProjectDataset,
     openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard, toggleExplorer,
     setIsWorkspaceSettingsOpen, setSelectedExplorerPaths, setSelectionAnchorPath, setTheme, stepTab,
   });
+
+  const openBuildStage = (stage: BuildStage) => {
+    useProjectStore.getState().updateBuildSession(session => session.stage === stage ? session : { ...session, stage });
+    setHomeOpen(false);
+    navigateToTool('build');
+  };
+  const homeView = <ProjectHome projectName={projectDirectoryName} saveStatus={projectSave.status} items={workspaceImages} enabledTools={profile.enabledTools}
+    onOpenStage={openBuildStage} onOpenTool={tool => navigateToTool(tool)} />;
+  const welcomeView = <WorkspaceWelcome projectName={projectDirectoryName} hasDirectory={Boolean(projectDirectoryHandle)} recoveryNeeded={navigationRecovery}
+    onOpen={() => void handleOpenProject()} onCreate={() => void handleNewProject()}
+    onContinue={() => navigateToTool('build')} />;
 
   return <AppShell
     busy={isProjectDirectoryBusy}
@@ -1323,9 +1337,9 @@ function App() {
   >
           <DockWorkspace key={`${projectId}:${projectSessionRef.current}`}
             activeEditorId={activeTabId}
-            emptyContent={<WorkspaceWelcome projectName={projectDirectoryName} hasDirectory={Boolean(projectDirectoryHandle)} recoveryNeeded={navigationRecovery}
-              onOpen={() => void handleOpenProject()} onCreate={() => void handleNewProject()}
-              onContinue={() => navigateToTool('build')} />}
+            emptyContent={projectDirectoryHandle && !navigationRecovery ? homeView : welcomeView}
+            overlay={homeOpen && projectDirectoryHandle ? <ProjectHome projectName={projectDirectoryName} saveStatus={projectSave.status} items={workspaceImages} enabledTools={profile.enabledTools}
+              onOpenStage={openBuildStage} onOpenTool={tool => { setHomeOpen(false); navigateToTool(tool); }} onClose={() => setHomeOpen(false)} /> : null}
             layout={dock.layout}
             onLayout={dock.setLayout}
             views={workspaceViews}

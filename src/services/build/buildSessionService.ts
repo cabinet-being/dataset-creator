@@ -6,6 +6,7 @@ import type {
   BuildTriageProposal,
   BuildReviewRecord,
   BuildSession,
+  BuildStage,
   BuildTransformRecipe,
   BuildValidationStatus,
 } from '../../types';
@@ -24,8 +25,11 @@ export type BuildCounts = {
   errors: number;
 };
 
+export const BUILD_STAGES: readonly BuildStage[] = ['add', 'select', 'caption', 'check', 'export'];
+
 export const createBuildSession = (): BuildSession => ({
   version: 1,
+  stage: 'add',
   profile: { target: 60, reviewMode: 'every-item', captionRequired: true },
   cursor: 0,
   filter: 'all',
@@ -71,8 +75,11 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record)]));
   const filter = BUILD_FILTERS.find((value) => value === input.filter) ?? 'all';
   const reviewMode = input.profile?.reviewMode === 'uncertain-only' ? 'uncertain-only' : 'every-item';
+  // Sessions saved before stages existed resume in Select when they already hold items, otherwise in Add.
+  const stage = BUILD_STAGES.find((value) => value === input.stage) ?? (Object.keys(records).length ? 'select' : 'add');
   return {
     version: 1,
+    stage,
     profile: {
       target: Math.max(0, Math.floor(Number(input.profile?.target) || defaults.profile.target)),
       reviewMode,

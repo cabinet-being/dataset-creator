@@ -21,6 +21,8 @@ export type DockView = {
 type Props = {
   activeEditorId?: string | null;
   emptyContent?: ReactNode;
+  /** Covers the whole workspace (e.g. Project home shown over open editors). */
+  overlay?: ReactNode;
   layout: DockLayout;
   onLayout: Dispatch<SetStateAction<DockLayout>>;
   views: DockView[];
@@ -41,7 +43,7 @@ type Interaction = {
   | { kind: 'resize'; host: string; bounds: DockRect });
 const contains = (rect: DockRect, x: number, y: number) => x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
 
-export const DockWorkspace = ({ activeEditorId = null, emptyContent, layout, onLayout, views, onFocus, onClose, onContextMenu }: Props) => {
+export const DockWorkspace = ({ activeEditorId = null, emptyContent, overlay, layout, onLayout, views, onFocus, onClose, onContextMenu }: Props) => {
   const rootRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [interaction, setInteraction] = useState<Interaction | null>(null);
@@ -285,6 +287,7 @@ export const DockWorkspace = ({ activeEditorId = null, emptyContent, layout, onL
       {preview && activeDrop && <div className="dock-preview" data-dock-preview={activeDrop.side}
         style={{ left: preview.x, top: preview.y, width: preview.width, height: preview.height }} />}
       {interaction?.kind === 'drag' && interaction.started && <div className="dock-drag-label" style={{ left: interaction.currentX + 12, top: interaction.currentY + 12 }}>{sourceViews.map((id) => viewById.get(id)?.title).join(' · ')}</div>}
+      {overlay && <div className="absolute inset-0 overflow-auto bg-background" style={{ zIndex: 400 }}>{overlay}</div>}
     </div>
   );
 };

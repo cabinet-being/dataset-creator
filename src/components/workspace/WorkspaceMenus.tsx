@@ -1,5 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { Check, FilePlus, FolderOpen, GitBranch, Layers3, Monitor, Moon, PanelBottom, PanelLeft, PanelRight, Pencil, RotateCcw, Sun, type LucideIcon } from 'lucide-react';
+import { Check, FilePlus, FolderOpen, GitBranch, Home, Layers3, Monitor, Moon, PanelBottom, PanelLeft, PanelRight, Pencil, RotateCcw, Sun, type LucideIcon } from 'lucide-react';
 import type { ToolName } from '../../types';
 import { ADVANCED_TOOL_GROUP_LABEL, TOOL_DEFINITIONS } from '../../lib/toolDefinitions';
 import { ADVANCED_TOOLS, PRIMARY_TOOLS } from '../../lib/constants';
@@ -63,6 +63,7 @@ export function WorkspaceMenus({ openMenu, onOpenMenuChange, fileButtonRef, enab
   const content = (menu: WorkspaceMenu) => {
     switch (menu) {
       case 'file': return <>
+        {item('project.home','Project home',Home)}
         {item('project.new','New Project Directory',FilePlus)}
         {item('project.open','Open Project Directory',FolderOpen)}
         {item('project.rename','Rename',Pencil)}
