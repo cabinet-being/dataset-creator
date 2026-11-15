@@ -78,7 +78,7 @@ export function DatasetBoard({ viewId, dataset, items, active, suggestion, onToo
         </div>
         <ContextActionGroups mode="toolbar" groups={[[
           { id: 'add', label: 'Add files', icon: Plus, onSelect: () => onTool('add-files') },
-          { id: 'assemble', label: 'Auto assemble', icon: Sparkles, onSelect: () => setAssemblyOpen(true) },
+          { id: 'assemble', label: 'Auto-select', icon: Sparkles, onSelect: () => setAssemblyOpen(true) },
           ...(onBuild ? [{ id: 'build', label: TOOL_DEFINITIONS.build.label, icon: Wand2, variant: 'primary' as const, onSelect: onBuild }] : []),
         ]]} />
       </header>

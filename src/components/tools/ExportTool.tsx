@@ -10,7 +10,7 @@ import { useCommands } from '../workspace/Commands';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 
-export function ExportTool({ active = true, onExportComplete }: { active?: boolean; onExportComplete?: (plan: ExportPlan) => void }) {
+export function ExportTool({ active = true, onExportComplete, fixedSource }: { active?: boolean; onExportComplete?: (plan: ExportPlan) => void; fixedSource?: ExportScope }) {
   const sources = useProjectStore(state => state.sourceImages);
   const edits = useProjectStore(state => state.datasetItems);
   const dataset = useProjectStore(state => state.dataset);
@@ -21,7 +21,7 @@ export function ExportTool({ active = true, onExportComplete }: { active?: boole
   const directory = useUIStore(state => state.projectDirectoryHandle);
   const refresh = useUIStore(state => state.assetPreviewRefreshKey);
   const notify = useUIStore(state => state.addNotification);
-  const [scope, setScope] = useState<ExportScope>('dataset');
+  const [scope, setScope] = useState<ExportScope>(fixedSource ?? 'dataset');
   const [method, setMethod] = useState<'zip' | 'directory'>('zip');
   const [plan, setPlan] = useState<ExportPlan>();
   const [loadError, setLoadError] = useState('');
@@ -91,9 +91,9 @@ export function ExportTool({ active = true, onExportComplete }: { active?: boole
   };
   useCommands([{ id: 'export.run', label: 'Export reviewed files', active, disabled: busy || loading || !plan?.entries.length, run }, { id: 'export.cancel', label: 'Cancel export', active, disabled: !busy, run: () => controller.current?.abort() }], () => root.current?.closest<HTMLElement>('[data-dock-view]') ?? root.current);
   return <div ref={root} className="mx-auto flex max-w-5xl flex-col gap-5 p-5">
-    <header className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-xl font-semibold">Export</h1><button ref={runButton} onClick={() => void run()} disabled={busy || loading || !plan?.entries.length} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40">{busy ? 'Exporting…' : `Export${plan ? ` ${plan.entries.length}` : ''}`}</button></header>
+    <header className="flex flex-wrap items-center justify-between gap-3">{fixedSource ? <h2 className="text-lg font-semibold">Export Dataset</h2> : <h1 className="text-xl font-semibold">Export</h1>}<button ref={runButton} onClick={() => void run()} disabled={busy || loading || !plan?.entries.length} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40">{busy ? 'Exporting…' : `Export${plan ? ` ${plan.entries.length}` : ''}`}</button></header>
     <div className="flex flex-wrap gap-3">
-      <label className="grid gap-1 text-xs text-muted-foreground">Source<select className="rounded-md border border-border bg-background p-2 text-sm text-foreground" value={scope} disabled={busy} onChange={e => setScope(e.target.value as ExportScope)}><option value="dataset">Dataset selection</option><option value="workspace">All workspace images</option>{directory && <option value="directory">Images in dataset/ folder</option>}</select></label>
+      {!fixedSource && <label className="grid gap-1 text-xs text-muted-foreground">Source<select className="rounded-md border border-border bg-background p-2 text-sm text-foreground" value={scope} disabled={busy} onChange={e => setScope(e.target.value as ExportScope)}><option value="dataset">Dataset selection</option><option value="workspace">All workspace images</option>{directory && <option value="directory">Images in dataset/ folder</option>}</select></label>}
       <label className="grid gap-1 text-xs text-muted-foreground">Destination<select className="rounded-md border border-border bg-background p-2 text-sm text-foreground" value={method} disabled={busy} onChange={e => setMethod(e.target.value as 'zip' | 'directory')}><option value="zip">ZIP</option><option value="directory" disabled={!('showDirectoryPicker' in window)}>Folder</option></select></label>
       <div className="ml-auto self-end text-xs text-muted-foreground">{plan?.entries.length ?? 0} images · {plan?.entries.filter(entry => entry.caption).length ?? 0} captions · original image formats{plan?.entries.some(entry => entry.conversion === 'psd') ? ' · PSD → PNG via Photopea' : ''}</div>
     </div>
