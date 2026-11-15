@@ -29,6 +29,7 @@ import {
 import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
+import { getCaptionPathForImage } from '../services/caption/captionFileService';
 
 interface UseExplorerTreeOptions {
   setOpenTabs: Dispatch<SetStateAction<WorkspaceTab[]>>;
@@ -320,7 +321,7 @@ export function useExplorerTree({ openFile }: UseExplorerTreeOptions) {
       if (!findExplorerTreeNode(explorerTreeRef.current, move.from)) paths.add(move.to);
       for (const path of [move.from, move.to]) {
         const kind = getExplorerFileKind(path);
-        if (kind === 'image' || kind === 'psd') paths.add(path.replace(/\.[^.]+$/, '.txt'));
+        if (kind === 'image' || kind === 'psd') paths.add(getCaptionPathForImage(path));
       }
     }
     const replacements: Array<{ path: string; node?: ExplorerTreeNode }> = [];

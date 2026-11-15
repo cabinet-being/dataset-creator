@@ -60,6 +60,8 @@ export type WorkspaceImage = {
   previewStatus?: 'queued' | 'generating' | 'failed';
   allowObjectPreviewUrl?: boolean;
   tags?: string[];
+  /** True when the TXT exists but does not start with the dataset trigger word (never written on read). */
+  captionTriggerMissing?: boolean;
   aspectRatio: AspectRatio;
   editedAssetType?: EditedAsset['type'];
   exportOrder?: number;
@@ -86,6 +88,8 @@ export type WorkspaceFileAsset = {
   width?: number;
   height?: number;
   tags?: string[];
+  /** True when the TXT exists but does not start with the dataset trigger word (never written on read). */
+  captionTriggerMissing?: boolean;
   byteSize?: number;
   modifiedAt?: number;
 };
@@ -197,6 +201,7 @@ export const toWorkspaceImages = (
       width: workingEdit?.width ?? image.width,
       height: workingEdit?.height ?? image.height,
       tags: image.tags,
+      captionTriggerMissing: image.captionTriggerMissing,
       hidden: image.hidden,
       byteSize: image.originalFile.size,
       modifiedAt: image.createdAt.getTime(),
@@ -230,6 +235,7 @@ export const toWorkspaceImages = (
         width: workingEdit?.width ?? image.width,
         height: workingEdit?.height ?? image.height,
         tags: image.tags,
+        captionTriggerMissing: image.captionTriggerMissing,
         aspectRatio: image.aspectRatio,
         editedAssetType: image.type,
         exportOrder: image.exportOrder,
@@ -271,6 +277,7 @@ export const toWorkspaceReviewAssets = (
     width: asset.width ?? 1,
     height: asset.height ?? 1,
     tags: asset.tags,
+    captionTriggerMissing: asset.captionTriggerMissing,
     byteSize: asset.byteSize ?? asset.file.size,
     modifiedAt: asset.modifiedAt,
     dimensionsKnown: asset.width !== undefined && asset.height !== undefined,

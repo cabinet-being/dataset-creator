@@ -11,6 +11,7 @@ import { ContextActionGroups } from '../ui/ContextActions';
 import { datasetBoardItems, DATASET_BOARD_SORT_OPTIONS, type DatasetBoardSortMode } from '../../lib/datasetBoard';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { DatasetAssemblyDialog } from './DatasetAssemblyDialog';
+import { TriggerWordInput } from '../ui/TriggerWordInput';
 
 export type EmptyDatasetSuggestion = { signature: string; items: WorkspaceImage[]; assetIds: string[]; totalCount: number };
 type Props = {
@@ -86,7 +87,7 @@ export function DatasetBoard({ viewId, dataset, items, active, suggestion, onToo
         <summary className="cursor-pointer text-sm">Dataset options</summary>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label className="flex min-w-0 flex-wrap items-center gap-2 text-sm">Trigger
-            <input value={dataset.triggerWord} onChange={event => onUpdate({ triggerWord: event.target.value })} className="w-44 max-w-full rounded border border-border bg-background px-2 py-1.5" />
+            <TriggerWordInput value={dataset.triggerWord} onApply={triggerWord => onUpdate({ triggerWord })} className="w-44 max-w-full rounded border border-border bg-background px-2 py-1.5" />
           </label>
         </div>
       </details>

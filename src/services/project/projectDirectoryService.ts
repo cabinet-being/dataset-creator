@@ -14,6 +14,7 @@ import {
 import { createThumbnail } from '../image/imageProcessor';
 import { getAssetManifestName } from './assetManifestService';
 import { snapshotFileIfNeeded } from './fileSnapshotService';
+import { isTriggerMissing, readCaptionFile, readCaptionRaw, writeCaptionFile } from '../caption/captionFileService';
 import { migrateLegacyCaptions, type PathCaptionAsset } from '../caption/captionMigrationService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
@@ -22,6 +23,7 @@ import {
   DATASET_MANIFEST_FILE,
   LEGACY_CACHE_DIRECTORY,
   PROJECT_DATASET_DIRECTORY,
+  PROJECT_DATA_DIRECTORY,
   PROJECT_FILE,
   PROJECT_GIT_DIRECTORY,
   PROJECT_INTERNAL_DIRECTORY,
@@ -78,6 +80,8 @@ type DirectoryPickerWindow = Window &
 
 /** `completedAt` is set when the migration journal finishes; until then only id and fromVersion are stored. */
 export type LayoutV3Migration = { id: string; completedAt?: string; fromVersion: 1 | 2 };
+/** Sidecar tags were turned into TXT captions; its presence means no further scan is needed. */
+export type CaptionsTxtMigration = { id: string; completedAt: string };
 
 /**
  * `.datasetcreator/project.json` (v3). Until C6 moves per-asset data into assets.json, the
@@ -87,9 +91,10 @@ export type ProjectJsonV3 = {
   format: typeof PROJECT_PROJECT_FORMAT;
   version: 3;
   project: Omit<DirectoryProjectManifest['project'], 'taggingConfig' | 'datasetMigration' | 'captionMigration' | 'datasetItemManifests' | 'datasetFilePath'> & {
-    taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint' | 'datasetKeyword'>;
+    taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     migrations?: {
       layoutV3?: LayoutV3Migration;
+      captionsTxt?: CaptionsTxtMigration;
       legacy?: { datasetMigration?: LegacyDatasetMigrationReport; captionMigration?: ProjectState['captionMigration'] };
     };
   };
@@ -323,7 +328,8 @@ const getToolFromSlug = (value: string | undefined): ToolName =>
 const serializeSourceManifest = (
   source: SourceImage,
   originalFileNameOnDisk: string,
-  originalFilePath: string
+  originalFilePath: string,
+  includeTags: boolean
 ): SourceManifest => ({
   id: source.id,
   fileName: source.fileName,
@@ -333,7 +339,7 @@ const serializeSourceManifest = (
   mimeType: source.mimeType,
   originalFilePath,
   originalFileNameOnDisk,
-  tags: source.tags,
+  ...(includeTags ? { tags: source.tags } : {}),
   hidden: source.hidden,
   createdAt: toIsoString(source.createdAt),
 });
@@ -342,8 +348,9 @@ const serializeEditedAssetManifest = (
   item: EditedAsset,
   imageFileName: string,
   imageDataPath: string,
-  psdFileName?: string,
-  psdDataPath?: string
+  psdFileName: string | undefined,
+  psdDataPath: string | undefined,
+  includeTags: boolean
 ): EditedAssetDirectoryManifest => ({
   id: item.id,
   sourceImageId: item.sourceImageId,
@@ -357,7 +364,7 @@ const serializeEditedAssetManifest = (
   cropFrame: item.cropFrame,
   augmentationConfig: item.augmentationConfig,
   cleanupOverlayId: item.cleanupOverlayId,
-  tags: item.tags,
+  ...(includeTags ? { tags: item.tags } : {}),
   aspectRatio: item.aspectRatio,
   deleted: item.deleted,
   deletedAt: item.deletedAt ? toIsoString(item.deletedAt) : undefined,
@@ -381,7 +388,6 @@ const getProjectManifest = (
     targetModel: project.targetModel,
     currentTool: project.currentTool,
     taggingConfig: {
-      datasetKeyword: project.taggingConfig.datasetKeyword,
       threshold: project.taggingConfig.threshold,
       maxTags: project.taggingConfig.maxTags,
       insertMode: project.taggingConfig.insertMode,
@@ -417,13 +423,14 @@ const serializeProjectJson = (
 ): ProjectJsonV3 => {
   const { taggingConfig, datasetMigration, captionMigration, datasetItemManifests: _items, datasetFilePath: _file, ...rest } =
     getProjectManifest(project, paths).project;
-  const { datasetKeyword: _keyword, ...tagging } = taggingConfig;
   const legacy = datasetMigration || captionMigration ? { datasetMigration, captionMigration } : migrations?.legacy;
-  const nextMigrations = migrations?.layoutV3 || legacy ? { layoutV3: migrations?.layoutV3, legacy } : undefined;
+  const nextMigrations = migrations?.layoutV3 || migrations?.captionsTxt || legacy
+    ? { layoutV3: migrations?.layoutV3, captionsTxt: migrations?.captionsTxt, legacy }
+    : undefined;
   return {
     format: PROJECT_PROJECT_FORMAT,
     version: 3,
-    project: { ...rest, taggingConfig: tagging, ...(nextMigrations ? { migrations: nextMigrations } : {}) },
+    project: { ...rest, taggingConfig, ...(nextMigrations ? { migrations: nextMigrations } : {}) },
   };
 };
 
@@ -453,7 +460,7 @@ export const projectJsonToManifest = (json: ProjectJsonV3): DirectoryProjectMani
     version: 2,
     project: {
       ...rest,
-      taggingConfig: { datasetKeyword: json.project.dataset?.triggerWord ?? '', ...taggingConfig } as DirectoryProjectManifest['project']['taggingConfig'],
+      taggingConfig,
       datasetMigration: migrations?.legacy?.datasetMigration,
       captionMigration: migrations?.legacy?.captionMigration,
     },
@@ -478,7 +485,11 @@ const writeProjectManifest = async (
     await writeTextFile(directory, PROJECT_DIRECTORY_MANIFEST, JSON.stringify(getProjectManifest(project, paths), null, 2));
     return;
   }
-  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(serializeProjectJson(project, paths, await readProjectJsonMigrations(directory)), null, 2));
+  // A brand-new project has no sidecar tags to convert, so it starts with the caption conversion marked complete.
+  const migrations = await detectProjectLayout(directory) === 'v3'
+    ? await readProjectJsonMigrations(directory)
+    : { captionsTxt: { id: 'new-project', completedAt: new Date().toISOString() } };
+  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(serializeProjectJson(project, paths, migrations), null, 2));
 };
 
 const getDefaultSourceManifestPath = (source: SourceImage): string => {
@@ -602,7 +613,18 @@ const getReusableProjectPath = (path: string | undefined): string | undefined =>
   return toProjectRelativePath(path);
 };
 
-const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): Promise<string> => {
+/** Settings the asset writers need for captions: the TXT is the caption; sidecars keep tags only in an unmigrated legacy layout. */
+type CaptionWriteContext = { trigger: string; legacy: boolean };
+const NEW_PROJECT_CAPTIONS: CaptionWriteContext = { trigger: '', legacy: false };
+
+/** A newly saved asset that carries tags in memory gets its TXT unless one already exists. */
+const writeNewCaption = async (root: ProjectDirectoryHandle, imagePath: string | undefined, tags: string[] | undefined, trigger: string) => {
+  if (!imagePath || tags === undefined) return;
+  if (await readCaptionRaw(root, imagePath) !== null) return;
+  await writeCaptionFile(root, imagePath, tags, trigger);
+};
+
+const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage, captions: CaptionWriteContext = NEW_PROJECT_CAPTIONS): Promise<string> => {
   const defaultOriginalFileName = `original.${getFileExtension(source.fileName, source.mimeType)}`;
   const manifestPath = getNormalizedAssetManifestPath(
     source.manifestPath,
@@ -615,10 +637,11 @@ const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): P
   const originalFileNameOnDisk = getFileName(originalFilePath);
   await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
   await writeProjectPreview(root, 'source', source.id, source.originalFile);
+  await writeNewCaption(root, originalFilePath, source.tags, captions.trigger);
   await writeTextFileAtPath(
     root,
     manifestPath,
-    JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath), null, 2)
+    JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath, captions.legacy), null, 2)
   );
   if (source.manifestPath && toProjectRelativePath(source.manifestPath) !== manifestPath) {
     await removeProjectFileAtPath(root, source.manifestPath);
@@ -629,7 +652,8 @@ const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage): P
 const writeSourceChanges = async (
   root: ProjectDirectoryHandle,
   source: SourceImage,
-  previousSource?: SourceImage
+  previousSource: SourceImage | undefined,
+  captions: CaptionWriteContext
 ): Promise<string> => {
   const defaultOriginalFileName = `original.${getFileExtension(source.fileName, source.mimeType)}`;
   const manifestPath = getNormalizedAssetManifestPath(
@@ -648,10 +672,11 @@ const writeSourceChanges = async (
     await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
     await writeProjectPreview(root, 'source', source.id, source.originalFile);
   }
+  if (!previousSource) await writeNewCaption(root, originalFilePath, source.tags, captions.trigger);
   await writeTextFileAtPath(
     root,
     manifestPath,
-    JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath), null, 2)
+    JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath, captions.legacy), null, 2)
   );
   const previousManifestPath = source.manifestPath ?? previousSource?.manifestPath;
   if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
@@ -660,7 +685,7 @@ const writeSourceChanges = async (
   return manifestPath;
 };
 
-const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset): Promise<string> => {
+const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset, captions: CaptionWriteContext = NEW_PROJECT_CAPTIONS): Promise<string> => {
   const defaultImageFileName = 'image.png';
   const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultEditedAssetManifestPath(item));
   const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), `${item.id}.png`);
@@ -671,13 +696,14 @@ const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset)
   const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
   await writeBlobFileAtPath(root, imageDataPath, item.imageData);
   await writeProjectPreview(root, 'edited', item.id, item.imageData);
+  await writeNewCaption(root, imageDataPath, item.tags, captions.trigger);
   if (item.psdData && psdFileName) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), psdFileName), item.psdData);
   }
   await writeTextFileAtPath(
     root,
     manifestPath,
-    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
+    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath, captions.legacy), null, 2)
   );
   if (item.manifestPath && toProjectRelativePath(item.manifestPath) !== manifestPath) {
     await removeProjectFileAtPath(root, item.manifestPath);
@@ -688,7 +714,8 @@ const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset)
 const writeEditedAssetChanges = async (
   root: ProjectDirectoryHandle,
   item: EditedAsset,
-  previousItem?: EditedAsset
+  previousItem: EditedAsset | undefined,
+  captions: CaptionWriteContext
 ): Promise<string> => {
   const defaultImageFileName = 'image.png';
   const manifestPath = getNormalizedAssetManifestPath(
@@ -711,6 +738,7 @@ const writeEditedAssetChanges = async (
     await writeBlobFileAtPath(root, imageDataPath, item.imageData);
     await writeProjectPreview(root, 'edited', item.id, item.imageData);
   }
+  if (!previousItem) await writeNewCaption(root, imageDataPath, item.tags, captions.trigger);
   if (item.psdData && (!previousItem || item.psdData !== previousItem.psdData)) {
     await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), 'image.psd'), item.psdData);
   } else if (!item.psdData && previousItem?.psdData) {
@@ -724,7 +752,7 @@ const writeEditedAssetChanges = async (
   await writeTextFileAtPath(
     root,
     manifestPath,
-    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath), null, 2)
+    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath, captions.legacy), null, 2)
   );
   const previousManifestPath = item.manifestPath ?? previousItem?.manifestPath;
   if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
@@ -777,10 +805,10 @@ export const createProjectDirectory = async (
 
   await Promise.all([
     ...Object.values(project.sourceImages).map(async (source) => {
-      sourceImageManifests[source.id] = await writeSource(directory, source);
+      sourceImageManifests[source.id] = await writeSource(directory, source, { trigger: project.dataset.triggerWord, legacy: false });
     }),
     ...Object.values(project.datasetItems).map(async (item) => {
-      editedAssetManifests[item.id] = await writeEditedAsset(directory, item);
+      editedAssetManifests[item.id] = await writeEditedAsset(directory, item, { trigger: project.dataset.triggerWord, legacy: false });
     }),
   ]);
   await writeProjectManifest(directory, project, { sourceImageManifests, editedAssetManifests });
@@ -863,6 +891,7 @@ export const writeProjectDirectoryChanges = async (
   await ensureProjectLayout(directory, project);
   const previousSources = previousProject?.sourceImages ?? {};
   const previousEditedAssets = previousProject?.datasetItems ?? {};
+  const captions: CaptionWriteContext = { trigger: project.dataset.triggerWord, legacy: await detectProjectLayout(directory) === 'v2' };
   const sourceImageManifests: Record<string, string> = {};
   const editedAssetManifests: Record<string, string> = {};
 
@@ -870,7 +899,7 @@ export const writeProjectDirectoryChanges = async (
     ...Object.entries(project.sourceImages)
       .filter(([id, source]) => source !== previousSources[id])
       .map(async ([id, source]) => {
-        sourceImageManifests[id] = await writeSourceChanges(directory, source, previousSources[id]);
+        sourceImageManifests[id] = await writeSourceChanges(directory, source, previousSources[id], captions);
       }),
     ...Object.keys(previousSources)
       .filter((id) => !project.sourceImages[id])
@@ -883,7 +912,7 @@ export const writeProjectDirectoryChanges = async (
     ...Object.entries(project.datasetItems)
       .filter(([id, item]) => item !== previousEditedAssets[id])
       .map(async ([id, item]) => {
-        editedAssetManifests[id] = await writeEditedAssetChanges(directory, item, previousEditedAssets[id]);
+        editedAssetManifests[id] = await writeEditedAssetChanges(directory, item, previousEditedAssets[id], captions);
       }),
     ...Object.keys(previousEditedAssets)
       .filter((id) => !project.datasetItems[id])
@@ -917,10 +946,29 @@ export const writeProjectDirectoryChanges = async (
   await writeProjectManifest(directory, project, { sourceImageManifests, editedAssetManifests });
 };
 
+/**
+ * Captions come from the TXT next to the image. Only an unmigrated legacy project (read while the layout upgrade
+ * runs) still takes them from the sidecar, because the upgrade moves them into TXT files.
+ */
+type CaptionReadContext = { trigger: string; legacy: boolean };
+
+const readAssetTags = async (
+  root: ProjectDirectoryHandle | undefined,
+  imagePath: string | undefined,
+  sidecarTags: string[] | undefined,
+  captions: CaptionReadContext | undefined
+): Promise<{ tags: string[] | undefined; captionTriggerMissing?: boolean }> => {
+  // Data kept in the pre-v3 payload folder was never converted, so its sidecar stays the caption.
+  if (!captions || captions.legacy || !root || !imagePath || imagePath.replace(/^Project\//, '').startsWith(`${PROJECT_DATA_DIRECTORY}/`)) return { tags: sidecarTags };
+  const caption = await readCaptionFile(root, imagePath, captions.trigger);
+  return { tags: caption.tags, captionTriggerMissing: isTriggerMissing(caption) };
+};
+
 const readSource = async (
   directory: ProjectDirectoryHandle,
   root?: ProjectDirectoryHandle,
-  paths?: { manifestPath?: string; originalFilePath?: string }
+  paths?: { manifestPath?: string; originalFilePath?: string },
+  captions?: CaptionReadContext
 ): Promise<SourceImage> => {
   const manifest = await readJsonFile<SourceManifest>(
     directory,
@@ -960,7 +1008,7 @@ const readSource = async (
     previewUrl: await getOrCreateProjectPreviewUrl(root, 'source', manifest.id, originalFile),
     originalFilePath,
     manifestPath: paths?.manifestPath,
-    tags: manifest.tags,
+    ...await readAssetTags(root, originalFilePath, manifest.tags, captions),
     hidden: manifest.hidden,
     createdAt: toDate(manifest.createdAt, new Date()),
   };
@@ -969,7 +1017,8 @@ const readSource = async (
 const readEditedAsset = async (
   directory: ProjectDirectoryHandle,
   root?: ProjectDirectoryHandle,
-  paths?: { manifestPath?: string; imageDataPath?: string; psdDataPath?: string }
+  paths?: { manifestPath?: string; imageDataPath?: string; psdDataPath?: string },
+  captions?: CaptionReadContext
 ): Promise<EditedAsset> => {
   const manifest = await readJsonFile<EditedAssetDirectoryManifest>(
     directory,
@@ -1021,7 +1070,7 @@ const readEditedAsset = async (
     cropFrame: manifest.cropFrame,
     augmentationConfig: manifest.augmentationConfig,
     cleanupOverlayId: manifest.cleanupOverlayId,
-    tags: manifest.tags,
+    ...await readAssetTags(root, imageDataPath, manifest.tags, captions),
     aspectRatio: manifest.aspectRatio,
     deleted: manifest.deleted,
     deletedAt: manifest.deletedAt ? toDate(manifest.deletedAt, new Date()) : undefined,
@@ -1153,6 +1202,10 @@ export const readProjectDirectory = async (
     await writeTextFile(directory,manifestName,JSON.stringify(manifest,null,2));
   };
   if (legacyMode) await migrateLegacyDatasetExclusions(directory, checkpointExclusionPaths, true);
+  const captionContext: CaptionReadContext = {
+    trigger: manifest.project.dataset?.triggerWord ?? legacyDatasetManifest?.triggerWord ?? '',
+    legacy: legacyMode,
+  };
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
     `syn${'thetic'}ImageManifests`
@@ -1167,7 +1220,7 @@ export const readProjectDirectory = async (
       ? Promise.all(
           Object.values(sourceManifestPaths).map(async (manifestPath) => {
             try {
-              return await readSource(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
+              return await readSource(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath }, captionContext);
             } catch {
               return null;
             }
@@ -1178,7 +1231,7 @@ export const readProjectDirectory = async (
       ? Promise.all(
           supportedEditedAssetManifestPaths.map(async (manifestPath) => {
             try {
-              return await readEditedAsset(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath });
+              return await readEditedAsset(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath }, captionContext);
             } catch {
               return null;
             }
@@ -1268,7 +1321,6 @@ export const readProjectDirectory = async (
     taggingConfig: {
       ...defaults.taggingConfig,
       ...manifest.project.taggingConfig,
-      datasetKeyword: datasetSettings?.triggerWord ?? legacyDatasetManifest?.triggerWord ?? manifest.project.taggingConfig.datasetKeyword ?? defaults.taggingConfig.datasetKeyword,
     },
     workspaceSettings: {
       ...defaults.workspaceSettings,

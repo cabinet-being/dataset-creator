@@ -73,6 +73,8 @@ export type QualityItemInput = {
   caption?: string;
   /** Resolved tags. Undefined means "derive from caption"; [] means "explicitly no tags". */
   tags?: string[];
+  /** The saved caption file starts with the trigger word; undefined derives it from the caption text. */
+  triggerPresent?: boolean;
   /** DINOv2 image embedding; normalized internally. */
   embedding?: Float32Array | readonly number[];
   imageHash?: string;

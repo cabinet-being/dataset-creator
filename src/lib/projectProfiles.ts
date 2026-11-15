@@ -8,7 +8,7 @@ export interface ProjectTypeProfile {
   label: string;
   description: string;
   enabledTools: readonly ToolName[];
-  defaults: { datasetName: string; triggerWord: string; datasetKeyword: string };
+  defaults: { datasetName: string; triggerWord: string };
   labels: { workspace: string; emptyDatasets: string };
   flags: Readonly<Record<string, boolean>>;
   coverageAxes: readonly CoverageAxisId[];
@@ -20,22 +20,22 @@ const tools = WORKFLOW_TOOLS;
 const PROFILE_BASES: Record<ProjectType, ProfileBase> = {
   general: {
     label: 'General', description: 'No specific subject: a general-purpose dataset.', enabledTools: tools,
-    defaults: { datasetName: 'New Dataset', triggerWord: '', datasetKeyword: 'dataset' },
+    defaults: { datasetName: 'New Dataset', triggerWord: '' },
     labels: { workspace: 'Dataset Workspace', emptyDatasets: 'Create a dataset.' }, flags: {},
   },
   character: {
     label: 'Character', description: 'Build datasets around a consistent character or identity.', enabledTools: tools,
-    defaults: { datasetName: 'New Dataset', triggerWord: '', datasetKeyword: 'dataset' },
+    defaults: { datasetName: 'New Dataset', triggerWord: '' },
     labels: { workspace: 'Character Workspace', emptyDatasets: 'Create a dataset for your character.' }, flags: {},
   },
   style: {
     label: 'Style', description: 'Capture a visual style, aesthetic, or artistic treatment.', enabledTools: tools,
-    defaults: { datasetName: 'Style Dataset', triggerWord: 'mystyle', datasetKeyword: 'mystyle' },
+    defaults: { datasetName: 'Style Dataset', triggerWord: 'mystyle' },
     labels: { workspace: 'Style Workspace', emptyDatasets: 'Create a dataset for your visual style.' }, flags: {},
   },
   concept: {
     label: 'Concept', description: 'Explore an object, theme, or visual concept.', enabledTools: tools,
-    defaults: { datasetName: 'Concept Dataset', triggerWord: 'myconcept', datasetKeyword: 'myconcept' },
+    defaults: { datasetName: 'Concept Dataset', triggerWord: 'myconcept' },
     labels: { workspace: 'Concept Workspace', emptyDatasets: 'Create a dataset for your concept.' }, flags: {},
   },
 };

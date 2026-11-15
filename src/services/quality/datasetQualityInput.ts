@@ -65,6 +65,7 @@ export const buildDatasetQualityInput = (source: DatasetQualitySource): QualityR
       ...(item.dimensionsKnown === false ? {} : { width: item.width, height: item.height }),
       caption: caption.text,
       tags: item.tags,
+      ...(caption.triggerPresent === undefined ? {} : { triggerPresent: caption.triggerPresent }),
       ...(embeddings?.[item.id] ? { embedding: embeddings[item.id] } : {}),
       ...(source.features?.sha256ById?.[item.id] ? { imageHash: source.features.sha256ById[item.id] } : {}),
     };

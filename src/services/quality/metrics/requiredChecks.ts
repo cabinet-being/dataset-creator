@@ -117,7 +117,7 @@ export const checkTrigger = (items: readonly QualityItemInput[], triggerWord = '
   if (!trigger) {
     return { id: 'trigger', title: 'Тригер-слово', value: null, display: 'не задано', status: 'ok', evaluated: false, explanation: 'Тригер-слово не задано, перевірку пропущено.' };
   }
-  const missing = items.filter((item) => !containsTrigger(captionText(item), trigger));
+  const missing = items.filter((item) => item.triggerPresent === undefined ? !containsTrigger(captionText(item), trigger) : !item.triggerPresent);
   const fraction = items.length ? missing.length / items.length : 0;
   return {
     id: 'trigger', title: `Тригер «${trigger}»`, value: 1 - fraction,

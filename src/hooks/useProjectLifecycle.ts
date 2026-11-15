@@ -18,7 +18,7 @@ import {
   type ProjectDirectoryHandle,
 } from '../services/project/projectDirectoryService';
 import { createProjectVersion, getProjectVersionLayout, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from '../services/project/projectVersionService';
-import { LayoutMigrationError, detectLegacyRawLayout, detectProjectLayout, planLayoutMigration, planRawMaterialsMove, resumePendingJournals, runLayoutMigration, runRawMaterialsMove, type LayoutMigrationPlan, type RawMaterialsPlan, type RawMaterialsReport } from '../services/project/layoutMigrationService';
+import { LayoutMigrationError, detectLegacyRawLayout, detectProjectLayout, planLayoutMigration, planRawMaterialsMove, resumePendingJournals, runCaptionTxtMigration, runLayoutMigration, runRawMaterialsMove, type CaptionTxtReport, type LayoutMigrationPlan, type RawMaterialsPlan, type RawMaterialsReport } from '../services/project/layoutMigrationService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { createProject, type ProjectState, type ProjectType, type TargetModelId } from '../types';
@@ -112,6 +112,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         await indexProjectAssets(directory, {
           logger: createOperationLogger('Index'),
           existingSourceImages: useProjectStore.getState().sourceImages,
+          triggerWord: useProjectStore.getState().dataset.triggerWord,
           onAssetIndexed: ({sourceImage}) => {
             const current = useProjectStore.getState();
             if (current.id !== expectedProjectId || useUIStore.getState().projectDirectoryHandle !== directory) {
@@ -207,6 +208,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     // (the caller already holds projectOperationBusyRef; no project is active for this directory yet).
     const layout = await detectProjectLayout(directory);
     let rawMaterials: RawMaterialsReport | undefined;
+    let captions: CaptionTxtReport | undefined;
     if (layout === 'v3') {
       await resumePendingJournals(directory);
       if (await detectLegacyRawLayout(directory)) {
@@ -218,6 +220,8 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         }
         rawMaterials = await runRawMaterialsMove(directory, { onProgress: ({ phase }) => logger.info(phase) });
       }
+      // Sidecar tags become TXT captions (once per project); files that are replaced are kept in the service folder's backup.
+      captions = await runCaptionTxtMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
     } else if (layout === 'v2') {
       const plan = await planLayoutMigration(directory);
       if (!await requestLayoutUpgrade(directory.name, plan)) {
@@ -225,7 +229,9 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         throw new DOMException('Project opening canceled', 'AbortError');
       }
       try {
-        rawMaterials = (await runLayoutMigration(directory, { onProgress: ({ phase }) => logger.info(phase) })).rawMaterials;
+        const report = await runLayoutMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
+        rawMaterials = report.rawMaterials;
+        captions = report.captions;
         logger.success(`upgraded project layout of ${directory.name}`);
       } catch (error) {
         if (!(error instanceof LayoutMigrationError) || error.kind !== 'blocked') throw error;
@@ -254,6 +260,14 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       if (rawMaterials.collisions.length) {
         addNotification('warning', `${rawMaterials.collisions.length} file${rawMaterials.collisions.length === 1 ? ' was' : 's were'} renamed while moving raw materials to ${PROJECT_LAYOUT.rawDir}/ because the name was taken.`);
         for (const { from, to } of rawMaterials.collisions) logger.warning(`renamed ${from} to ${to}`);
+      }
+    }
+    if (captions) {
+      if (captions.pathMoves.length) rewriteWorkspaceTabPaths(project.id, captions.pathMoves);
+      if (captions.converted || captions.triggersAdded) logger.info(`captions: ${captions.converted} converted to text files, trigger word added to ${captions.triggersAdded}; replaced files are in ${PROJECT_LAYOUT.backupDir}/${captions.journalId}/captions`);
+      if (captions.collisions.length) {
+        addNotification('warning', `${captions.collisions.length} image${captions.collisions.length === 1 ? ' was' : 's were'} renamed because another image in the folder had the same name before the extension (captions are stored as <name>.txt).`);
+        for (const { from, to } of captions.collisions) logger.warning(`renamed ${from} to ${to}`);
       }
     }
     activateProjectDirectory(directory, project);
@@ -354,12 +368,20 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
             const report = await runLayoutMigration(directory);
             project = await readProjectDirectory(directory);
             if (report.rawMaterials) rewriteWorkspaceTabPaths(project.id, report.rawMaterials.pathMoves);
+            if (report.captions?.pathMoves.length) rewriteWorkspaceTabPaths(project.id, report.captions.pathMoves);
             const refreshed = await listProjectVersions(directory);
             setProjectVersions(refreshed.versions);
           } else if (await detectLegacyRawLayout(directory)) {
             const rawMaterials = await runRawMaterialsMove(directory);
             project = await readProjectDirectory(directory);
             if (rawMaterials) rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
+          }
+          if (await detectProjectLayout(directory) === 'v3') {
+            const captions = await runCaptionTxtMigration(directory);
+            if (captions) {
+              project = await readProjectDirectory(directory);
+              if (captions.pathMoves.length) rewriteWorkspaceTabPaths(project.id, captions.pathMoves);
+            }
           }
           activateProjectDirectory(directory, project);
         } catch (error) {

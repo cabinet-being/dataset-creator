@@ -15,6 +15,7 @@ import { PROJECT_DATASET_DIRECTORY, PROJECT_INBOX_DIRECTORY } from '../project/p
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { clearLegacyExclusionAtPath } from '../project/legacyDatasetExclusionService';
 import { applyBuildSessionPathMoves } from '../build/buildSessionService';
+import { getCaptionFileName, reconcileTriggerAfterMove, renderCaptionText } from '../caption/captionFileService';
 
 export const DATASET_EXPLORER_PATH = `Project/${PROJECT_DATASET_DIRECTORY}`;
 
@@ -46,6 +47,8 @@ const updateRegisteredPaths = (moves: ExplorerPathChange[]) => {
         originalFilePath,
         manifestPath,
         fileName: originalFilePath?.split('/').pop() ?? source.fileName,
+        // Crossing dataset/ adds or removes the trigger word in the TXT, so an old "trigger missing" mark is stale.
+        ...(isProjectDatasetPath(source.originalFilePath) !== isProjectDatasetPath(originalFilePath) ? { captionTriggerMissing: undefined } : {}),
       });
     }
   }
@@ -54,7 +57,8 @@ const updateRegisteredPaths = (moves: ExplorerPathChange[]) => {
     const psdDataPath = applyProjectRelativePathMoves(item.psdDataPath, moves);
     const manifestPath = applyProjectRelativePathMoves(item.manifestPath, moves, true);
     if (imageDataPath !== item.imageDataPath || psdDataPath !== item.psdDataPath || manifestPath !== item.manifestPath) {
-      store.updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath });
+      store.updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath,
+        ...(isProjectDatasetPath(item.imageDataPath) !== isProjectDatasetPath(imageDataPath) ? { captionTriggerMissing: undefined } : {}) });
     }
   }
   store.updateBuildSession((session) => applyBuildSessionPathMoves(session, moves));
@@ -81,7 +85,12 @@ const writeUnsavedItem = async (root: ProjectDirectoryHandle, item: WorkspaceIma
   const directory = await getDirectoryAtExplorerPath(root, destinationPath);
   const targetName = await getUniqueExplorerName(directory, item.fileName);
   await writeBlob(directory, targetName, item.kind === 'psd' ? item.psdData ?? item.imageData : item.imageData);
-  if (item.tags?.length) await writeBlob(directory, targetName.replace(/\.[^.]+$/, '.txt'), new Blob([`${item.tags.join(', ')}\n`], { type: 'text/plain' }));
+  // tags: [] is an empty caption file, undefined is no file; the trigger word leads captions inside dataset/.
+  const captionName = getCaptionFileName(targetName);
+  if (item.tags !== undefined && captionName) {
+    const trigger = isProjectDatasetPath(destinationPath) ? useProjectStore.getState().dataset.triggerWord.trim() : '';
+    await writeBlob(directory, captionName, new Blob([renderCaptionText(item.tags, trigger || undefined)], { type: 'text/plain' }));
+  }
   return { from: item.assetPath ?? `memory:${item.id}`, to: `${destinationPath}/${targetName}` };
 };
 
@@ -91,6 +100,7 @@ const indexChanges = async (root: ProjectDirectoryHandle, changes: ExplorerPathC
   await indexProjectAssets(root, {
     paths: changes.map(change => change.to),
     existingSourceImages: store.sourceImages,
+    triggerWord: store.dataset.triggerWord,
     onAssetIndexed: ({ sourceImage }) => { if (sourceImage && !useProjectStore.getState().sourceImages[sourceImage.id]) useProjectStore.getState().addSourceImage(sourceImage); },
   });
 };
@@ -105,6 +115,8 @@ const moveItems = async (
   const recordMove = async (change: ExplorerPathChange) => {
     if (useProjectStore.getState().id !== projectId || useUIStore.getState().projectDirectoryHandle !== root) throw new Error('The active project changed during the Dataset operation.');
     result.completed.push(change);
+    // Same exclusive operation as the move: the caption gains or loses the trigger word as the file crosses dataset/.
+    await reconcileTriggerAfterMove(root, change, useProjectStore.getState().dataset.triggerWord);
     updateRegisteredPaths([change]);
     await clearLegacyExclusionAtPath(root,change.to);
   };
@@ -145,6 +157,7 @@ export const reverseDatasetFolderChanges = async (root: ProjectDirectoryHandle, 
     const destination = change.from.split('/').slice(0, -1).join('/') || 'Project';
     const [reversed] = await moveExplorerEntries(root, [{ path:sourcePath, name:change.from.split('/').pop()!, kind:'file' }], destination);
     completed.push(reversed);
+    await reconcileTriggerAfterMove(root, reversed, useProjectStore.getState().dataset.triggerWord);
     updateRegisteredPaths([reversed]);
   }
   await indexChanges(root, completed);

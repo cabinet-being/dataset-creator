@@ -1,6 +1,7 @@
 import { inferWorkspaceAspectRatio, type WorkspaceImage } from '../../lib/workspaceImages';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { getDirectoryAtPath, PROJECT_LAYOUT } from '../project/projectLayoutService';
+import { readCaptionFile } from '../caption/captionFileService';
 import { getAssetManifestName } from '../project/assetManifestService';
 import { isSupportedProjectAsset, resolveProjectAssetKind } from '../project/assetTypeService';
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from '../project/projectDirectoryService';
@@ -11,7 +12,7 @@ export type SharedCandidateScan = {
   sharedAvailable: boolean;
 };
 
-type SharedManifest = { id?: string; sourceImageId?: string; width?: number; height?: number; tags?: string[]; caption?: string; hidden?: boolean; deleted?: boolean };
+type SharedManifest = { id?: string; sourceImageId?: string; width?: number; height?: number; hidden?: boolean; deleted?: boolean };
 
 const isNotFound = (error: unknown) => error instanceof Error && error.name === 'NotFoundError';
 const readOptionalFile = async (directory: ProjectDirectoryHandle, name: string): Promise<File | null> => {
@@ -57,14 +58,14 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
     if (!isSupportedProjectAsset(entry.handle.name)) { skipped.push({ path, reason: 'unsupported' }); continue; }
     const kind = resolveProjectAssetKind(entry.handle.name, '');
     if (kind === 'video') { skipped.push({ path, reason: 'video' }); continue; }
+    // Caption .txt files sit next to every image; only images and PSDs are candidates.
+    if (kind !== 'image' && kind !== 'psd') { skipped.push({ path, reason: 'unsupported' }); continue; }
     if (!isProjectPathIncluded(path, options.excludedCategories ?? [], options.includedCategories ?? [])) { skipped.push({ path, reason: 'category excluded' }); continue; }
     const file = await entry.handle.getFile();
     const manifest = await readManifest(entry.directory, file.name);
     if (manifest?.hidden || manifest?.deleted) { skipped.push({ path, reason: 'excluded' }); continue; }
     const size = await dimensions(file, manifest);
-    const stem = file.name.replace(/\.[^.]+$/, '');
-    const textCaption = manifest?.caption === undefined && manifest?.tags === undefined ? await readOptionalFile(entry.directory, `${stem}.txt`) : null;
-    const tags = manifest?.caption !== undefined ? [manifest.caption] : manifest?.tags ?? (textCaption ? [await textCaption.text()] : []);
+    const { tags } = await readCaptionFile(root, path);
     const sourceImageId = manifest?.sourceImageId ?? manifest?.id ?? '';
     candidates.push({
       id: sourceImageId ? `source:${sourceImageId}` : `asset:${path}`,

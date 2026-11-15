@@ -686,9 +686,9 @@ const buildTagAnalysis = (items: WorkspaceImage[], dataset?: Dataset, overusedTh
   const triggerWord = dataset?.triggerWord.trim().toLowerCase() ?? '';
   const tagEntries = captionable.map((item) => ({ item, tags: getCaptionTags(item, dataset) }));
   const missingCaptionItems = tagEntries.filter(({ tags }) => tags.length === 0).map(({ item }) => item);
-  const triggerMissingItems = triggerWord
-    ? tagEntries.filter(({ tags }) => !tags.includes(triggerWord)).map(({ item }) => item)
-    : [];
+  // The trigger word lives first in the TXT of files inside dataset/ and is never part of the in-memory tags.
+  const triggerApplies = (item: WorkspaceImage) => Boolean(triggerWord) && isProjectDatasetPath(item.assetPath) && item.tags !== undefined;
+  const triggerMissingItems = tagEntries.filter(({ item }) => triggerApplies(item) && item.captionTriggerMissing === true).map(({ item }) => item);
   const frequencyMap = new Map<string, WorkspaceImage[]>();
 
   for (const { item, tags } of tagEntries) {
@@ -714,7 +714,7 @@ const buildTagAnalysis = (items: WorkspaceImage[], dataset?: Dataset, overusedTh
     captioned: captionable.length - missingCaptionItems.length,
     missingCaptionItems,
     triggerWord,
-    triggerPresent: triggerWord ? tagEntries.filter(({ tags }) => tags.includes(triggerWord)).length : 0,
+    triggerPresent: tagEntries.filter(({ item }) => triggerApplies(item) && item.captionTriggerMissing !== true).length,
     triggerMissingItems,
     frequencies,
     overused,
@@ -1457,7 +1457,7 @@ export const AnalysisTool = ({
     addNotification('info', 'Asset removed from Dataset');
   };
 
-  const updateTagsForItems = async (targetItems: WorkspaceImage[], updater: (tags: string[]) => string[]) => {
+  const updateTagsForItems = async (targetItems: WorkspaceImage[], updater: (tags: string[]) => string[], repairTrigger = false) => {
     if (targetItems.length === 0) {
       return;
     }
@@ -1468,6 +1468,7 @@ export const AnalysisTool = ({
         resolveTags: (item) => normalizeTags(updater(getCaptionTags(item))),
         directory: projectDirectoryHandle,
         flush: flushProjectSave,
+        repairTrigger,
       });
       addNotification('success', `Updated captions for ${targetItems.length} asset${targetItems.length === 1 ? '' : 's'}`);
     } catch (error) {
@@ -1484,7 +1485,8 @@ export const AnalysisTool = ({
       addNotification('warning', 'Set a Dataset trigger word before applying it');
       return;
     }
-    void updateTagsForItems(tagAnalysis.triggerMissingItems, (tags) => [tagAnalysis.triggerWord, ...tags]);
+    // The TXT is rewritten as `trigger, ...tags`; the in-memory tags stay free of the trigger word.
+    void updateTagsForItems(tagAnalysis.triggerMissingItems, (tags) => tags, true);
   };
 
   const targetTitle =

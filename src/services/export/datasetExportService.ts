@@ -1,35 +1,27 @@
 import JSZip from 'jszip';
-import { getAssetManifestName } from '../project/assetManifestService';
+import { getCaptionFileName } from '../caption/captionFileService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { PROJECT_DATASET_DIRECTORY } from '../project/projectLayoutService';
 import { getProjectAssetExtension, isSupportedProjectAsset, resolveProjectAssetKind } from '../project/assetTypeService';
 import type { OperationLogger } from '../logging/applicationLog';
 
-type DatasetAssetMetadata = {
-  tags?: string[];
-  caption?: string;
-};
-
 export type DatasetExportAsset = {
   file: File;
   sourcePath: string;
   targetDirectory: string;
-  tags: string[];
+  /** Exact content of the caption TXT next to the image (trigger word already in it); null when there is none. */
+  captionRaw: string | null;
 };
 
 const getPathParts = (path: string) => path.split('/').filter(Boolean);
 const joinPath = (...parts: string[]) => parts.flatMap(getPathParts).join('/');
 
-const readOptionalMetadata = async (
-  directory: ProjectDirectoryHandle,
-  fileName: string
-): Promise<DatasetAssetMetadata> => {
-  try {
-    const metadataFile = await (await directory.getFileHandle(getAssetManifestName(fileName))).getFile();
-    const metadata = JSON.parse(await metadataFile.text()) as DatasetAssetMetadata;
-    return metadata;
-  } catch (error) {
-    if (error instanceof Error && error.name === 'NotFoundError') return {};
+const readCaptionRawNextTo = async (directory: ProjectDirectoryHandle, imageName: string): Promise<string | null> => {
+  const captionName = getCaptionFileName(imageName);
+  if (!captionName) return null;
+  try { return await (await directory.getFileHandle(captionName)).getFile().then((file) => file.text()); }
+  catch (error) {
+    if (error instanceof Error && error.name === 'NotFoundError') return null;
     throw error;
   }
 };
@@ -53,34 +45,14 @@ const collectDatasetAssets = async (
       continue;
     }
     const file = await entry.getFile();
-    const metadata = await readOptionalMetadata(directory, name);
-    const tags = metadata.caption
-      ? metadata.caption.split(',').map((tag) => tag.trim()).filter(Boolean)
-      : metadata.tags ?? [];
     assets.push({
       file,
       sourcePath: joinPath(relativeDirectory, name),
       targetDirectory: getExportDirectory(relativeDirectory),
-      tags,
+      captionRaw: await readCaptionRawNextTo(directory, name),
     });
   }
   return assets;
-};
-
-const getCaption = (tags: string[], triggerWord: string, blacklist: string[]) => {
-  const blocked = new Set(blacklist.map((tag) => tag.trim().toLowerCase()));
-  const seen = new Set<string>();
-  const values = [triggerWord, ...tags]
-    .map((tag) => tag.trim())
-    .filter(Boolean)
-    .filter((tag) => !blocked.has(tag.toLowerCase()))
-    .filter((tag) => {
-      const key = tag.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  return values.join(', ') + '\n';
 };
 
 export const getProjectDatasetAssets = async (root: ProjectDirectoryHandle): Promise<DatasetExportAsset[]> => {
@@ -99,9 +71,7 @@ export const syncProjectDatasetManifest = async (root: ProjectDirectoryHandle): 
 
 export const exportProjectDatasetAsZip = async (
   root: ProjectDirectoryHandle,
-  blacklist: string[] = [],
-  logger?: OperationLogger,
-  triggerWord = ''
+  logger?: OperationLogger
 ): Promise<{ blob: Blob; count: number }> => {
   const assets = await getProjectDatasetAssets(root);
   if (assets.length === 0) {
@@ -113,7 +83,8 @@ export const exportProjectDatasetAsZip = async (
     const extension = getProjectAssetExtension(asset.file.name) || 'png';
     const relativePath = asset.targetDirectory ? `${asset.targetDirectory}/${order}` : order;
     zip.file(`${relativePath}.${extension}`, await asset.file.arrayBuffer());
-    zip.file(`${relativePath}.txt`, getCaption(asset.tags, triggerWord, blacklist));
+    // The dataset TXT is the caption as the trainer reads it: trigger word included, blacklist not applied.
+    if (asset.captionRaw !== null) zip.file(`${relativePath}.txt`, asset.captionRaw);
     logger?.progress({ current: index + 1, total: assets.length, label: 'prepared dataset files' });
   }
   logger?.info('compressing dataset ZIP');

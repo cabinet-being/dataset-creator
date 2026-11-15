@@ -40,6 +40,7 @@ import {
   ExplorerRecoveryError,
   type ExplorerClipboardEntry,
 } from '../services/project/explorerFileService';
+import { reconcileTriggerAfterMove } from '../services/caption/captionFileService';
 import { PROJECT_DATASET_DIRECTORY, PROJECT_INBOX_DIRECTORY } from '../services/project/projectLayoutService';
 import { isProjectDatasetPath } from '../services/dataset/datasetFolderService';
 import { EXPLORER_VIEW } from '../lib/workspaceLayout';
@@ -101,6 +102,7 @@ export function useExplorerMutations({
       logger: createOperationLogger('Index'),
       paths,
       existingSourceImages: useProjectStore.getState().sourceImages,
+      triggerWord: useProjectStore.getState().dataset.triggerWord,
       onAssetIndexed: async ({ sourceImage }) => {
         const previousProject = useProjectStore.getState();
         if (sourceImage && !previousProject.sourceImages[sourceImage.id]) {
@@ -234,6 +236,7 @@ export function useExplorerMutations({
           manifestPath,
           fileName,
           originalFileName: fileNameChanged ? fileName : source.originalFileName,
+          ...(isProjectDatasetPath(source.originalFilePath) !== isProjectDatasetPath(originalFilePath) ? { captionTriggerMissing: undefined } : {}),
         });
       }
     }
@@ -247,7 +250,8 @@ export function useExplorerMutations({
         psdDataPath !== item.psdDataPath ||
         manifestPath !== item.manifestPath
       ) {
-        updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath });
+        updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath,
+          ...(isProjectDatasetPath(item.imageDataPath) !== isProjectDatasetPath(imageDataPath) ? { captionTriggerMissing: undefined } : {}) });
       }
     }
 
@@ -355,6 +359,8 @@ export function useExplorerMutations({
       return await moveExplorerEntries(directory, entries, destinationPath, async move => {
         if (move.from === move.to) return;
         completed.push(move);
+        // Moving across dataset/ adds or removes the trigger word in the captions, inside this same exclusive operation.
+        await reconcileTriggerAfterMove(directory, move, useProjectStore.getState().dataset.triggerWord);
         explorerMutationChanges.current?.moves.push(move);
         updateFileTabsForPathMoves([move]);
         await updateWorkspacePathsForPathMoves([move]);

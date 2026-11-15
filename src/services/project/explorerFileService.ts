@@ -6,6 +6,7 @@ import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
 import { sortExplorerNodes } from '../../lib/explorerTreeUpdates';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import { DATASET_MANIFEST_FILE, isInternalProjectEntry } from './projectLayoutService';
+import { getCaptionFileName } from '../caption/captionFileService';
 
 export type ExplorerEntryKind = 'folder' | 'file';
 
@@ -289,12 +290,6 @@ const splitExtension = (name: string): { stem: string; extension: string } => {
   return { stem: name.slice(0, index), extension: name.slice(index) };
 };
 
-const getCaptionSidecarName = (name: string): string | null => {
-  const kind = resolveProjectAssetKind(name);
-  if (kind !== 'image' && kind !== 'psd') return null;
-  return `${splitExtension(name).stem}.txt`;
-};
-
 export const getUniqueExplorerName = async (
   directory: ProjectDirectoryHandle,
   desiredName: string
@@ -304,7 +299,7 @@ export const getUniqueExplorerName = async (
   const canUseName = async (name: string): Promise<boolean> =>
     !(await entryExists(directory, name)) &&
     (isAssetManifestName(name) || !(await entryExists(directory, getAssetManifestName(name)))) &&
-    (!getCaptionSidecarName(name) || !(await entryExists(directory, getCaptionSidecarName(name)!)));
+    (!getCaptionFileName(name) || !(await entryExists(directory, getCaptionFileName(name)!)));
 
   if (await canUseName(trimmed)) {
     return trimmed;
@@ -377,7 +372,7 @@ const moveAssetManifest = async (
 };
 
 const hasOtherCaptionOwner = async (directory: ProjectDirectoryHandle, sourceName: string): Promise<boolean> => {
-  const caption = getCaptionSidecarName(sourceName);
+  const caption = getCaptionFileName(sourceName);
   if (!caption) return false;
   const stem = splitExtension(sourceName).stem.toLowerCase();
   for await (const [name, entry] of directory.entries()) {
@@ -394,15 +389,15 @@ const copyAssetCaption = async (
   sourceName: string,
   targetName: string
 ) => {
-  const sourceCaption = getCaptionSidecarName(sourceName);
-  const targetCaption = getCaptionSidecarName(targetName);
+  const sourceCaption = getCaptionFileName(sourceName);
+  const targetCaption = getCaptionFileName(targetName);
   if (!sourceCaption || !targetCaption) return;
   const caption = await readOptionalTextFile(sourceDirectory, sourceCaption);
   if (caption !== null) await writeFile(destinationDirectory, targetCaption, caption);
 };
 
 const removeMovedAssetCaption = async (sourceDirectory: ProjectDirectoryHandle, sourceName: string) => {
-  const sourceCaption = getCaptionSidecarName(sourceName);
+  const sourceCaption = getCaptionFileName(sourceName);
   if (sourceCaption && !await hasOtherCaptionOwner(sourceDirectory, sourceName)) await removeOptionalFile(sourceDirectory, sourceCaption);
 };
 

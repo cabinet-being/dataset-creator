@@ -19,6 +19,7 @@ import { PROJECT_LAYOUT, type DatasetManifest as GlobalDatasetManifest } from '.
 import { migrateLegacyCaptions } from '../caption/captionMigrationService';
 import type { LegacyDatasetMigrationReport } from './legacyDatasetMigrationService';
 import { normalizeBuildSession } from '../build/buildSessionService';
+import { getCaptionPathForImage } from '../caption/captionFileService';
 
 export const PROJECT_FILE_EXTENSION = 'dcproj';
 export const PROJECT_FILE_MIME_TYPE = 'application/vnd.dataset-creator.project';
@@ -80,7 +81,8 @@ type EditedAssetManifest = {
   createdAt: string;
 };
 
-type ProjectFileTaggingConfig = Omit<TaggingConfig, 'autoTaggingEndpoint'>;
+/** `datasetKeyword` is an old field that duplicated the trigger word; it is no longer written or read. */
+type ProjectFileTaggingConfig = Omit<TaggingConfig, 'autoTaggingEndpoint'> & { datasetKeyword?: string };
 
 type ProjectFileWorkspaceSettings = WorkspaceSettings;
 
@@ -231,7 +233,6 @@ const serializeTaggingConfig = (taggingConfig: TaggingConfig): ProjectFileTaggin
 const deserializeTaggingConfig = (
   taggingConfig: ProjectFileManifest['project']['taggingConfig']
 ): TaggingConfig => ({
-  datasetKeyword: taggingConfig.datasetKeyword,
   threshold: taggingConfig.threshold,
   maxTags: taggingConfig.maxTags,
   insertMode: taggingConfig.insertMode,
@@ -491,11 +492,11 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
     const extension = dot < 0 ? '' : name.slice(dot);
     let candidate = `${PROJECT_LAYOUT.rawDir}/${name}`;
     let index = 2;
-    while (occupiedPaths.has(candidate.toLowerCase()) || occupiedPaths.has(`${candidate}.manifest.json`.toLowerCase()) || occupiedPaths.has(candidate.replace(/\.[^.]+$/,'.txt').toLowerCase())) {
+    while (occupiedPaths.has(candidate.toLowerCase()) || occupiedPaths.has(`${candidate}.manifest.json`.toLowerCase()) || occupiedPaths.has(getCaptionPathForImage(candidate).toLowerCase())) {
       candidate = `${PROJECT_LAYOUT.rawDir}/${stem} ${index++}${extension}`;
     }
     occupiedPaths.add(candidate.toLowerCase());
-    occupiedPaths.add(candidate.replace(/\.[^.]+$/,'.txt').toLowerCase());
+    occupiedPaths.add(getCaptionPathForImage(candidate).toLowerCase());
     return candidate;
   };
   for (const { manifestPath, manifest: source } of sourceManifestEntries) {

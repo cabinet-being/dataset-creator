@@ -2,6 +2,7 @@ import type { MouseEvent, MutableRefObject } from 'react';
 import { WorkspaceTool, type AssetContextMenuHandler, type DatasetToolName } from './WorkspaceTool';
 import { DatasetBoard, type EmptyDatasetSuggestion } from './DatasetBoard';
 import { addDatasetReferences } from '../../lib/assetActions';
+import { changeDatasetTriggerWord } from '../../lib/triggerWordActions';
 import { DATASET_VIEW } from '../../lib/workspaceLayout';
 import type { DatasetToolWorkspaceTab } from '../../lib/workspaceTabs';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
@@ -59,7 +60,7 @@ export function DatasetWorkspaceView({
     onAssemblyRequestHandled={() => setAssemblyRequestToken(0)}
     excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []}
     onTool={tool => openDatasetToolTab(dataset.id, tool)} onBuild={() => navigateToTool('build')} onExport={() => navigateToTool('export')}
-    onUpdate={updates => { void updateDatasetFileBackedState(dataset, updates).catch(error => addNotification('error', `Could not save Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
+    onUpdate={updates => { void (updates.triggerWord !== undefined ? changeDatasetTriggerWord(updates.triggerWord) : updateDatasetFileBackedState(dataset, updates)).catch(error => addNotification('error', `Could not save Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
     onRename={name => { void updateDatasetFileBackedState(dataset, { name }).catch(error => addNotification('error', `Could not rename Dataset: ${error instanceof Error ? error.message : String(error)}`)); }}
     onContextMenu={(item, event) => openDatasetBoardAssetContextMenu(dataset, item, event)}
     onApplySuggestion={suggestion => { void applyEmptyDatasetSuggestion(dataset, suggestion).catch(error => addNotification('error', `Could not add suggested files: ${error instanceof Error ? error.message : String(error)}`)); }}

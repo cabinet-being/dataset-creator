@@ -18,6 +18,7 @@ import {
   resolveProjectAssetKind,
 } from '../project/assetTypeService';
 import { isInternalProjectEntry } from '../project/projectLayoutService';
+import { getCaptionPathForImage, parseCaptionText } from '../caption/captionFileService';
 
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
 export const SUPPORTED_IMPORT_FILE_FORMATS = [
@@ -208,14 +209,6 @@ export const getImportFilesFromDataTransfer = async (
   return files.flat();
 };
 
-export const parseImportedCaptionTags = (caption: string): string[] =>
-  caption
-    .replace(/^\uFEFF/, '')
-    .replace(/\r\n?/g, '\n')
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-
 export const getImportPairKey = (path: string): string =>
   getArchivePathStem(path.replace(/\\/g, '/')).toLocaleLowerCase();
 
@@ -224,7 +217,6 @@ const toProjectRelativePath = (explorerPath: string): string =>
 
 const joinPath = (...parts: string[]): string => parts.filter(Boolean).join('/');
 const getParentPath = (path: string): string => path.split('/').filter(Boolean).slice(0, -1).join('/');
-const getCaptionSidecarPath = (assetPath: string): string => `${getArchivePathStem(assetPath)}.txt`;
 const yieldToUi = async () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
 const normalizeImportInput = (input: ImportInputFile): { file?: File; relativePath?: string; directoryPath?: string } => {
@@ -280,13 +272,13 @@ const resolveImportFileName = async (
     const directory = await getOrCreateDirectoryAtExplorerPath(destination.projectDirectory, explorerDirectoryPath);
     let targetName = getUniqueReservedName(await getUniqueExplorerName(directory, fileName), reservedNames);
     if (options.reserveCaptionSidecar) {
-      while (reservedNames.has(getCaptionSidecarPath(targetName)) || reservedNames.has(getAssetManifestName(getCaptionSidecarPath(targetName))) ||
-        await importEntryExists(directory, getCaptionSidecarPath(targetName)) || await importEntryExists(directory, getAssetManifestName(getCaptionSidecarPath(targetName)))) {
+      while (reservedNames.has(getCaptionPathForImage(targetName)) || reservedNames.has(getAssetManifestName(getCaptionPathForImage(targetName))) ||
+        await importEntryExists(directory, getCaptionPathForImage(targetName)) || await importEntryExists(directory, getAssetManifestName(getCaptionPathForImage(targetName)))) {
         reservedNames.add(targetName);
         targetName = getUniqueReservedName(await getUniqueExplorerName(directory, fileName), reservedNames);
       }
-      reservedNames.add(getCaptionSidecarPath(targetName));
-      reservedNames.add(getAssetManifestName(getCaptionSidecarPath(targetName)));
+      reservedNames.add(getCaptionPathForImage(targetName));
+      reservedNames.add(getAssetManifestName(getCaptionPathForImage(targetName)));
     }
     reservedNames.add(targetName);
     reservedNames.add(getAssetManifestName(targetName));
@@ -294,8 +286,8 @@ const resolveImportFileName = async (
   }
   const targetName = getUniqueReservedName(fileName, reservedNames);
   if (options.reserveCaptionSidecar) {
-    reservedNames.add(getCaptionSidecarPath(targetName));
-    reservedNames.add(getAssetManifestName(getCaptionSidecarPath(targetName)));
+    reservedNames.add(getCaptionPathForImage(targetName));
+    reservedNames.add(getAssetManifestName(getCaptionPathForImage(targetName)));
   }
   reservedNames.add(targetName);
   reservedNames.add(getAssetManifestName(targetName));
@@ -379,8 +371,7 @@ const writeBlobFile = async (directory: ProjectDirectoryHandle, name: string, va
 const writeProjectAsset = async (
   file: File,
   target: { explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string },
-  destination: ImportDestination | undefined,
-  tags: string[] = []
+  destination: ImportDestination | undefined
 ): Promise<ImportedProjectAsset | null> => {
   if (!destination?.projectDirectory || !target.explorerDirectoryPath || !target.assetPath || !target.manifestPath) {
     return null;
@@ -412,7 +403,6 @@ const writeProjectAsset = async (
           assetPath: asset.assetPath,
           mimeType: asset.mimeType,
           size: asset.size,
-          tags: tags.length > 0 ? tags : undefined,
           createdAt: new Date().toISOString(),
         },
         null,
@@ -427,7 +417,7 @@ const writeProjectAsset = async (
 const processImportedFile = async (
   inputFile: File,
   relativePath: string | undefined,
-  tags: string[],
+  tags: string[] | undefined,
   destination: ImportDestination | undefined,
   logger: OperationLogger,
   reservedNamesByDirectory: Map<string, Set<string>>,
@@ -446,7 +436,7 @@ const processImportedFile = async (
   }
 
   const target = await getImportTarget(file.name, relativePath, destination, reservedNamesByDirectory, targetOptions);
-  const asset = await writeProjectAsset(file, target, destination, tags);
+  const asset = await writeProjectAsset(file, target, destination);
 
   if (resolveProjectAssetKind(file.name, file.type) !== 'image') {
     return { sourceImage: null, asset };
@@ -543,7 +533,7 @@ const processArchiveFile = async (
     const imageFile = new File([imageBlob], getArchiveFileName(entry.name), { type: mimeType });
     const captionEntries = captionsByPathStem.get(getImportPairKey(entry.name)) ?? [];
     if (captionEntries.length > 1) logger.warning(`archive ${file.name} has conflicting captions for ${entry.name}; caption was not attached`);
-    const tags = captionEntries.length === 1 ? parseImportedCaptionTags(await captionEntries[0].async('string')) : [];
+    const tags = captionEntries.length === 1 ? parseCaptionText(await captionEntries[0].async('string')).tags : undefined;
     const { sourceImage, asset } = await processImportedFile(
       imageFile,
       entry.name,
@@ -557,7 +547,7 @@ const processArchiveFile = async (
       importedAssets.push(asset);
       captionTargetByPairKey.set(
         getImportPairKey(entry.name),
-        getCaptionSidecarPath(joinPath(getParentPath(entry.name), asset.fileName))
+        getCaptionPathForImage(joinPath(getParentPath(entry.name), asset.fileName))
       );
       await onAssetImported?.(asset);
     }
@@ -648,7 +638,7 @@ export const importImageFiles = async (
         const originalPath = input.relativePath || file.name;
         const captionEntries = kind === 'image' ? directCaptions.get(getImportPairKey(input.relativePath || file.name)) ?? [] : [];
         if (captionEntries.length > 1) logger.warning(`conflicting captions for ${input.relativePath || file.name}; caption was not attached`);
-        const tags = captionEntries.length === 1 ? parseImportedCaptionTags(await captionEntries[0].text()) : [];
+        const tags = captionEntries.length === 1 ? parseCaptionText(await captionEntries[0].text()).tags : undefined;
         const pairedTargetPath = kind === 'text' ? directCaptionTargetByPairKey.get(getImportPairKey(originalPath)) : undefined;
         const importFile = pairedTargetPath
           ? new File([file], getArchiveFileName(pairedTargetPath), { type: file.type || 'text/plain', lastModified: file.lastModified })
@@ -667,7 +657,7 @@ export const importImageFiles = async (
           if (kind === 'image') {
             directCaptionTargetByPairKey.set(
               getImportPairKey(originalPath),
-              getCaptionSidecarPath(joinPath(getParentPath(originalPath), asset.fileName))
+              getCaptionPathForImage(joinPath(getParentPath(originalPath), asset.fileName))
             );
           }
           await options.onAssetImported?.(asset);

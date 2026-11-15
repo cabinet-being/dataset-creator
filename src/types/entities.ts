@@ -39,6 +39,8 @@ export interface SourceImage {
   embedding?: Float32Array;
   hash?: string;
   tags?: string[];
+  /** True when the TXT exists but does not start with the dataset trigger word (never written on read). */
+  captionTriggerMissing?: boolean;
   hidden?: boolean;
   createdAt: Date;
 }
@@ -100,6 +102,8 @@ export interface EditedAsset {
   augmentationConfig?: AugmentationConfig;
   cleanupOverlayId?: string;
   tags?: string[];
+  /** True when the TXT exists but does not start with the dataset trigger word (never written on read). */
+  captionTriggerMissing?: boolean;
   aspectRatio: AspectRatio;
   deleted: boolean;
   deletedAt?: Date;
@@ -110,7 +114,6 @@ export interface EditedAsset {
 // ============ TAGGING ============
 
 export interface TaggingConfig {
-  datasetKeyword: string;
   autoTaggingEndpoint?: string;
   threshold: number;
   maxTags: number;
@@ -391,7 +394,6 @@ export const createProject = (name: string, projectType: ProjectType = 'general'
     export: {},
   },
   taggingConfig: {
-    datasetKeyword: PROJECT_TYPE_PROFILES[projectType].defaults.datasetKeyword,
     threshold: 0.5,
     maxTags: 15,
     insertMode: 'append',

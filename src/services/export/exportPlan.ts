@@ -4,11 +4,13 @@ import type { Dataset } from '../../types';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { getProjectDatasetAssets } from './datasetExportService';
 import { convertPsdToPng } from './exportService';
-import { resolveAssetCaption } from '../caption/captionResolver';
 
 export type ExportScope = 'dataset' | 'workspace' | 'directory';
-export type ExportEntry = { imageName: string; textName: string; caption: string; blob: Blob; source: string; conversion?: 'psd' };
-export type ExportPlan = { scope: ExportScope; entries: ExportEntry[]; skipped: string[]; fingerprint: string };
+/** `textContent` is the exact caption file for dataset exports (null = no .txt is written); other scopes render `caption`. */
+export type ExportEntry = { imageName: string; textName: string; caption: string; blob: Blob; source: string; conversion?: 'psd'; textContent?: string | null };
+export type ExportPlan = { scope: ExportScope; entries: ExportEntry[]; skipped: string[]; fingerprint: string; warnings?: string[] };
+/** What the .txt of an entry contains, or null when the entry has no caption file. */
+export const getExportEntryText = (entry: ExportEntry): string | null => entry.textContent !== undefined ? entry.textContent : `${entry.caption}\n`;
 export type ExportRecoveryJournal = { completedEntryNames: Set<string>; startedEntryNames?: Set<string>; pendingOutputNames?: Set<string>; root?: ProjectDirectoryHandle; fingerprint?: string; onEntryStart?: (imageName: string) => void; onEntryComplete?: (imageName: string) => void };
 export const createExportPlanFingerprint = async (scope: ExportScope, entries: ExportEntry[]): Promise<string> => {
   const hex = (digest: ArrayBuffer) => Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -19,7 +21,7 @@ export const createExportPlanFingerprint = async (scope: ExportScope, entries: E
       const chunk = await entry.blob.slice(offset, offset + 1024 * 1024).arrayBuffer();
       chunkDigests.push(hex(await crypto.subtle.digest('SHA-256', chunk)));
     }
-    const metadata = [entry.imageName, entry.textName, entry.caption, entry.source, entry.blob.type, entry.blob.size, entry.conversion ?? ''];
+    const metadata = [entry.imageName, entry.textName, entry.caption, entry.source, entry.blob.type, entry.blob.size, entry.conversion ?? '', ...(entry.textContent === undefined ? [] : [entry.textContent])];
     compact.push([metadata, hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(chunkDigests))))]);
   }
   return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(compact))));
@@ -38,23 +40,28 @@ const extension = (blob: Blob, name: string) => ({ 'image/png': 'png', 'image/jp
 export async function buildExportPlan({ scope, items, dataset, directory, blacklist }: {
   scope: ExportScope; items: WorkspaceImage[]; dataset: Dataset; directory?: ProjectDirectoryHandle; blacklist: string[];
 }): Promise<ExportPlan> {
-  const plan: ExportPlan = { scope, entries: [], skipped: [], fingerprint: '' };
+  const plan: ExportPlan = { scope, entries: [], skipped: [], warnings: [], fingerprint: '' };
   const used = new Set<string>();
   const ordered: { entry: ExportEntry; key: string }[] = [];
-  const add = (blob: Blob, source: string, tags: string[], key: string, targetFolder = '', conversion?: 'psd') => {
+  const add = (blob: Blob, source: string, tags: string[], key: string, targetFolder = '', conversion?: 'psd', datasetCaption?: string | null) => {
     const stem = source.split('/').pop()!.replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'image';
     let name = stem; let index = 2;
     while (used.has(`${targetFolder}/${name}`.toLowerCase())) name = `${stem}-${index++}`;
     used.add(`${targetFolder}/${name}`.toLowerCase());
     const path = targetFolder ? `${targetFolder}/${name}` : name;
-    ordered.push({ key, entry: { blob, source, conversion, imageName: `${path}.${conversion ? 'png' : extension(blob, source)}`, textName: `${path}.txt`, caption: renderExportCaption(tags, dataset.triggerWord, blacklist) } });
+    const imageName = `${path}.${conversion ? 'png' : extension(blob, source)}`;
+    // A dataset caption file is exported as it is on disk: the trigger word is already in it and the blacklist does not apply.
+    const entry: ExportEntry = datasetCaption === undefined
+      ? { blob, source, conversion, imageName, textName: `${path}.txt`, caption: renderExportCaption(tags, dataset.triggerWord, blacklist) }
+      : { blob, source, conversion, imageName, textName: `${path}.txt`, caption: (datasetCaption ?? '').replace(/\r?\n$/, ''), textContent: datasetCaption };
+    if (datasetCaption === null) plan.warnings!.push(`${source} has no caption file; it is exported without a .txt.`);
+    ordered.push({ key, entry });
   };
   if (scope === 'directory' || scope === 'dataset') {
     if (!directory) throw new Error('Open a project folder first.');
     for (const asset of await getProjectDatasetAssets(directory)) {
       const psd = /\.psd$/i.test(asset.sourcePath);
-      add(asset.file, asset.sourcePath, resolveAssetCaption({ id:`asset:${asset.sourcePath}`, sourceImageId:'', assetPath:asset.sourcePath, tags:asset.tags }, dataset.triggerWord).tags,
-        asset.sourcePath, asset.targetDirectory, psd ? 'psd' : undefined);
+      add(asset.file, asset.sourcePath, [], asset.sourcePath, asset.targetDirectory, psd ? 'psd' : undefined, asset.captionRaw);
     }
   } else {
     const selected = items;
@@ -93,7 +100,8 @@ export async function exportPlanAsZip(plan: ExportPlan, signal?: AbortSignal, pr
   const zip = new JSZip();
   for (const [index, entry] of plan.entries.entries()) {
     zip.file(entry.imageName, await (await exportImage(entry, signal)).arrayBuffer());
-    zip.file(entry.textName, `${entry.caption}\n`);
+    const text = getExportEntryText(entry);
+    if (text !== null) zip.file(entry.textName, text);
     progress?.(index + 1, plan.entries.length);
   }
   const blob = await zip.generateAsync({ type: 'blob' }, () => signal?.throwIfAborted());
@@ -141,10 +149,10 @@ export async function exportPlanToDirectory(
       const actualImage = await existing(entry.imageName);
       if (actualImage && !(recovery?.pendingOutputNames?.has(entry.imageName) && actualImage.size === 0) && !(await blobsEqual(actualImage, expectedImage, signal))) throw new Error(`Recovery output does not match this plan: ${entry.imageName}.`);
       const actualText = await existing(entry.textName);
-      if (actualText && !(recovery?.pendingOutputNames?.has(entry.textName) && actualText.size === 0) && await actualText.text() !== `${entry.caption}\n`) throw new Error(`Recovery output does not match this plan: ${entry.textName}.`);
+      if (actualText && !(recovery?.pendingOutputNames?.has(entry.textName) && actualText.size === 0) && await actualText.text() !== getExportEntryText(entry)) throw new Error(`Recovery output does not match this plan: ${entry.textName}.`);
       continue;
     }
-    for (const path of [entry.imageName, entry.textName]) {
+    for (const path of [entry.imageName, ...(getExportEntryText(entry) === null ? [] : [entry.textName])]) {
     signal?.throwIfAborted();
     try {
       const { directory, name } = await destination(path, false);
@@ -161,7 +169,8 @@ export async function exportPlanToDirectory(
       const currentImage = await existing(entry.imageName);
       if (!currentImage || (recovery?.pendingOutputNames?.has(entry.imageName) && currentImage.size === 0)) await writeOutput(entry.imageName, expectedImage);
       const currentText = await existing(entry.textName);
-      if (!currentText || (recovery?.pendingOutputNames?.has(entry.textName) && currentText.size === 0)) await writeOutput(entry.textName, `${entry.caption}\n`);
+      const text = getExportEntryText(entry);
+      if (text !== null && (!currentText || (recovery?.pendingOutputNames?.has(entry.textName) && currentText.size === 0))) await writeOutput(entry.textName, text);
       recovery?.startedEntryNames?.delete(entry.imageName);
       recovery?.completedEntryNames.add(entry.imageName);
       recovery?.onEntryComplete?.(entry.imageName);
@@ -172,7 +181,8 @@ export async function exportPlanToDirectory(
     recovery?.onEntryStart?.(entry.imageName);
     const image = await exportImage(entry, signal);
     await writeOutput(entry.imageName, image);
-    await writeOutput(entry.textName, `${entry.caption}\n`);
+    const text = getExportEntryText(entry);
+    if (text !== null) await writeOutput(entry.textName, text);
     signal?.throwIfAborted();
     recovery?.startedEntryNames?.delete(entry.imageName);
     recovery?.completedEntryNames.add(entry.imageName);

@@ -5,6 +5,8 @@ export type ResolvedCaption = {
   tags: string[];
   normalized: string;
   source: 'override' | 'metadata' | 'text' | 'missing';
+  /** Whether the TXT caption starts with the trigger word; undefined when there is no saved caption to judge. */
+  triggerPresent?: boolean;
 };
 export type LegacyCaptionDataset = { overwriteCaptions?: boolean; captionOverrides?: Record<string, string[]>; triggerWord?: string };
 
@@ -42,14 +44,14 @@ export const captionKeysForItem = (item: Pick<WorkspaceImage, 'id' | 'sourceImag
   captionKeyGroupsForItem(item).flat();
 
 export const resolveAssetCaption = (
-  item: Pick<WorkspaceImage, 'id' | 'sourceImageId' | 'assetPath' | 'tags'>,
+  item: Pick<WorkspaceImage, 'id' | 'sourceImageId' | 'assetPath' | 'tags'> & Pick<Partial<WorkspaceImage>, 'captionTriggerMissing'>,
   triggerWord = '',
   fallbackText?: string
 ): ResolvedCaption => {
   if (item.tags !== undefined) {
     const tags = item.tags;
     const text = tags.join(', ');
-    return { text, tags, normalized: normalizeCaptionForAnalysis(text, triggerWord), source: 'metadata' };
+    return { text, tags, normalized: normalizeCaptionForAnalysis(text, triggerWord), source: 'metadata', triggerPresent: item.captionTriggerMissing !== true };
   }
   const text = fallbackText?.trim() ?? '';
   return { text, tags: text ? [text] : [], normalized: normalizeCaptionForAnalysis(text, triggerWord), source: text ? 'text' : 'missing' };

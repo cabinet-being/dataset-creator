@@ -4,6 +4,7 @@ import { getImageDimensions } from '../image/imageProcessor';
 import { getAssetManifestName, getAssetManifestPath } from './assetManifestService';
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from './projectDirectoryService';
 import { isInternalProjectFileName, isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
+import { isTriggerMissing, readCaptionFile } from '../caption/captionFileService';
 import { snapshotFile } from './fileSnapshotService';
 import { isInternalProjectEntry } from './projectLayoutService';
 
@@ -22,7 +23,6 @@ type IndexedAssetManifest = {
   size?: number;
   width?: number;
   height?: number;
-  tags?: string[];
   createdAt?: string;
 };
 
@@ -43,6 +43,8 @@ export type IndexProjectAssetsOptions = {
   /** Project-relative files or directories. Undefined indexes the project; an empty array indexes nothing. */
   paths?: string[];
   existingSourceImages?: Record<string, SourceImage>;
+  /** Dataset trigger word, stripped from the captions of files inside dataset/. */
+  triggerWord?: string;
   onAssetIndexed?: (update: ProjectAssetIndexUpdate) => void | Promise<void>;
   onProgress?: (current: number, total: number) => void;
 };
@@ -89,7 +91,6 @@ const writeGenericAssetManifest = async (
     size: file.size,
     width: sourceImage?.width,
     height: sourceImage?.height,
-    tags: sourceImage?.tags,
     createdAt: sourceImage?.createdAt.toISOString() ?? new Date().toISOString(),
   };
   await writeTextFile(directory, getAssetManifestName(file.name), JSON.stringify(manifest, null, 2));
@@ -208,7 +209,9 @@ export const indexProjectAssets = async (
       sourceImage.originalFileName = existingManifest?.originalFileName ?? file.name;
       sourceImage.originalFilePath = assetPath;
       sourceImage.manifestPath = getAssetManifestPath(assetPath);
-      sourceImage.tags = existingManifest?.tags;
+      const caption = await readCaptionFile(root, assetPath, options.triggerWord);
+      sourceImage.tags = caption.tags;
+      sourceImage.captionTriggerMissing = isTriggerMissing(caption);
       sourceImage.createdAt = existingManifest?.createdAt ? new Date(existingManifest.createdAt) : sourceImage.createdAt;
     }
 

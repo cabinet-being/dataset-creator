@@ -12,6 +12,8 @@ import { getAssetManifestPath } from '../services/project/assetManifestService';
 
 import type { ExplorerChanges } from './explorerTreeUpdates';
 import { isInternalProjectEntry } from '../services/project/projectLayoutService';
+import { isCaptionCarrierName, isTriggerMissing, readCaptionFile } from '../services/caption/captionFileService';
+import { useProjectStore } from '../stores/useProjectStore';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
 
@@ -147,19 +149,19 @@ for (const path of assetPaths) {
     if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
     const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
     const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
-    let metadata: {id?:unknown;tags?:unknown;caption?:unknown;createdAt?:unknown} = {};
+    let metadata: {id?:unknown;createdAt?:unknown} = {};
     try {
       const manifestPath = getAssetManifestPath(path);
       const parent = await getExplorerParentDirectory(root, manifestPath);
       metadata = JSON.parse(await (await parent.directory.getFileHandle(parent.name)).getFile().then((manifest) => manifest.text()));
     } catch { /* metadata is optional */ }
-    const tags = Array.isArray(metadata.tags)
-      ? metadata.tags.filter((tag): tag is string => typeof tag === 'string')
-      : typeof metadata.caption === 'string' ? metadata.caption.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined;
+    // The caption lives only in the TXT next to the file; videos cannot carry one.
+    const caption = isCaptionCarrierName(fileName) ? await readCaptionFile(root, path, useProjectStore.getState().dataset.triggerWord) : undefined;
+    const tags = caption?.tags;
     assets.push({ id:createWorkspaceFileAssetId(path), stableId:typeof metadata.id === 'string' ? metadata.id : undefined, path, fileName, kind:kind as WorkspaceFileAssetKind, file,
       previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
       modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
-      tags });
+      tags, captionTriggerMissing: caption ? isTriggerMissing(caption) : undefined });
   } catch (error) {
     issues.push(`${path}: file could not be read`);
     appLog.warning(`Assets: unable to read ${path}`);

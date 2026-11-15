@@ -16,6 +16,17 @@ import {
   isSnapshotExcludedPath,
 } from './projectVersionService';
 import { getUniqueExplorerName } from './explorerFileService';
+import {
+  getCaptionPathForImage,
+  getCaptionTriggerForPath,
+  isCaptionCarrierName,
+  normalizeTriggerWord,
+  parseCaptionText,
+  readCaptionRaw,
+  reconcileCaptionRaw,
+  renderCaptionText,
+  writeCaptionRaw,
+} from '../caption/captionFileService';
 import { resolveProjectAssetKind } from './assetTypeService';
 import { ASSET_MANIFEST_SUFFIX, getAssetManifestName } from './assetManifestService';
 import { applyBuildSessionPathMoves, normalizeBuildSession } from '../build/buildSessionService';
@@ -25,13 +36,13 @@ import {
   LEGACY_CACHE_DIRECTORY,
   LEGACY_SHARED_DIRECTORY,
   LEGACY_SOURCE_DIRECTORY,
-  PROJECT_DATASET_DIRECTORY,
   PROJECT_DATA_DIRECTORY,
   PROJECT_FILE,
   PROJECT_GIT_DIRECTORY,
   PROJECT_LAYOUT,
   PROJECT_MANIFEST_FILE,
   detectProjectLayout,
+  isInternalProjectEntry,
   type ProjectLayoutVersion,
 } from './projectLayoutService';
 
@@ -43,6 +54,8 @@ const LEGACY_DATA_BACKUP = 'legacy-data';
 // Sub-folders that can hold originals/edits an old reader looks up by id; such a folder is never moved.
 const LEGACY_DATA_PAYLOAD_DIRECTORIES = ['source-images', 'generated-images'];
 const GIT_SERVICE_FILES = ['dataset-creator-versions.json'];
+const JOURNAL_KINDS: LayoutJournal['kind'][] = ['layout-v3', 'raw-inbox', 'trigger-rewrite', 'captions-txt'];
+const EXPORTS_DIRECTORY = 'exports';
 
 export type LayoutMigrationProgress = { phase: string; completed: number; total: number };
 export type LayoutMigrationOptions = {
@@ -71,6 +84,8 @@ export type LayoutMigrationReport = {
   keptLegacyData: boolean;
   /** Set when raw materials moved from `src/` to `inbox/` during this run. */
   rawMaterials?: RawMaterialsReport;
+  /** Sidecar tags moved into TXT captions during this run. */
+  captions?: CaptionTxtReport;
 };
 
 export type RawMaterialsReport = {
@@ -95,9 +110,12 @@ export class LayoutMigrationError extends Error {
   }
 }
 
+/** One caption file change: exact content before and after (null = no file). `path` is the project-relative image path. */
+export type CaptionWrite = { path: string; before: string | null; after: string | null };
+
 type JournalStep = {
   id: string;
-  type: 'move' | 'write' | 'delete' | 'raw-move' | 'rewrite-paths';
+  type: 'move' | 'write' | 'delete' | 'raw-move' | 'rewrite-paths' | 'caption-writes' | 'project-trigger' | 'caption-collisions' | 'captions-txt' | 'captions-marker';
   description: string;
   done: boolean;
   /** move: source and destination project-relative paths. */
@@ -115,12 +133,20 @@ type JournalStep = {
   renames?: Array<{ from: string; to: string }>;
   /** raw-move: set when the step began, so a re-run knows it continues an interrupted attempt. */
   started?: boolean;
+  /** caption-writes: caption files to change. */
+  writes?: CaptionWrite[];
+  /** caption-writes: files that changed on disk since the plan was made and were left untouched. */
+  conflicts?: string[];
+  /** project-trigger: the trigger word stored in project.json. */
+  trigger?: string;
+  /** captions-txt: what the conversion did. */
+  stats?: { converted: number; triggersAdded: number; backedUp: number };
 };
 
 export type LayoutJournal = {
   format: typeof JOURNAL_FORMAT;
   version: 1;
-  kind: 'layout-v3' | 'raw-inbox';
+  kind: 'layout-v3' | 'raw-inbox' | 'trigger-rewrite' | 'captions-txt';
   id: string;
   fromVersion: 1 | 2 | 3;
   createdAt: string;
@@ -235,6 +261,11 @@ const executeStep = async (root: ProjectDirectoryHandle, journal: LayoutJournal,
     await rewriteMovedPaths(root, getRawPathMoves(journal));
     return;
   }
+  if (step.type === 'caption-writes') { await applyCaptionWrites(root, step); return; }
+  if (step.type === 'project-trigger') { await setProjectTrigger(root, step.trigger ?? ''); return; }
+  if (step.type === 'caption-collisions') { await resolveStemCollisions(root, journal, step); return; }
+  if (step.type === 'captions-txt') { await convertSidecarCaptions(root, journal, step); return; }
+  if (step.type === 'captions-marker') { await markCaptionsConverted(root, journal.id); return; }
   if (step.type === 'move') {
     if (!step.from || !step.to) throw new Error(`Journal step ${step.id} is incomplete.`);
     if (!await getEntry(root, step.from)) return; // Already moved, or never existed.
@@ -293,7 +324,7 @@ const stampLayoutCompletion = async (root: ProjectDirectoryHandle, journal: Layo
 const parseJournal = (name: string, text: string): LayoutJournal | undefined => {
   let journal: LayoutJournal;
   try { journal = JSON.parse(text) as LayoutJournal; } catch { throw new LayoutMigrationError(`The upgrade journal ${name} is unreadable. Restore the pre-upgrade version from the Versions panel or contact support.`, 'failed'); }
-  if (journal?.format !== JOURNAL_FORMAT || (journal.kind !== 'layout-v3' && journal.kind !== 'raw-inbox') || !Array.isArray(journal.steps) || typeof journal.id !== 'string') return undefined;
+  if (journal?.format !== JOURNAL_FORMAT || (!JOURNAL_KINDS.includes(journal.kind)) || !Array.isArray(journal.steps) || typeof journal.id !== 'string') return undefined;
   return journal;
 };
 
@@ -541,7 +572,7 @@ const RAW_STEP_SOURCES: Array<{ id: string; from: string; to: string }> = [
 /** Moves for the path rewrite: collision renames first (most specific), then the folder prefixes. */
 const getRawPathMoves = (journal: LayoutJournal): ExplorerPathMove[] => {
   const toExplorer = (path: string) => `Project/${path}`;
-  const renames = journal.steps.flatMap((step) => step.type === 'raw-move' ? step.renames ?? [] : []);
+  const renames = journal.steps.flatMap((step) => step.type === 'raw-move' || step.type === 'caption-collisions' ? step.renames ?? [] : []);
   const folders = journal.steps.filter((step) => step.type === 'raw-move' && step.from && step.to).map((step) => ({ from: step.from!, to: step.to! }));
   return [...renames, ...folders].map((move) => ({ from: toExplorer(move.from), to: toExplorer(move.to) }));
 };
@@ -597,8 +628,223 @@ const rewriteMovedPaths = async (root: ProjectDirectoryHandle, moves: ExplorerPa
       if (changed) await writeAt(root, path, JSON.stringify(manifest, null, 2));
     }
   };
-  await rewriteManifests(PROJECT_LAYOUT.rawDir);
-  await rewriteManifests(PROJECT_DATASET_DIRECTORY);
+  for (const [name, child] of await listEntries(root)) {
+    if ('getDirectoryHandle' in child && !isInternalProjectEntry(name) && name !== EXPORTS_DIRECTORY) await rewriteManifests(name);
+  }
+};
+
+const applyCaptionWrites = async (root: ProjectDirectoryHandle, step: JournalStep): Promise<void> => {
+  step.conflicts ??= [];
+  for (const write of step.writes ?? []) {
+    const current = await readCaptionRaw(root, write.path);
+    if (current === write.after) continue;
+    // Never overwrite a file somebody edited after the plan was made.
+    if (current !== write.before) { if (!step.conflicts.includes(write.path)) step.conflicts.push(write.path); continue; }
+    await writeCaptionRaw(root, write.path, write.after);
+  }
+};
+
+/** Sets the trigger word in project.json (a legacy project keeps it in manifest.json, which the normal save writes). */
+const setProjectTrigger = async (root: ProjectDirectoryHandle, trigger: string): Promise<void> => {
+  const text = await readTextAt(root, PROJECT_FILE);
+  if (text === undefined) return;
+  const json = JSON.parse(text) as { project?: { dataset?: { triggerWord?: string } } };
+  if (!json.project?.dataset || json.project.dataset.triggerWord === trigger) return;
+  json.project.dataset.triggerWord = trigger;
+  await writeAt(root, PROJECT_FILE, JSON.stringify(json, null, 2));
+};
+
+const markCaptionsConverted = async (root: ProjectDirectoryHandle, id: string): Promise<void> => {
+  const text = await readTextAt(root, PROJECT_FILE);
+  if (text === undefined) return;
+  const json = JSON.parse(text) as { project?: { migrations?: Record<string, unknown> } };
+  if (!json.project) return;
+  json.project.migrations = { ...json.project.migrations, captionsTxt: { id, completedAt: new Date().toISOString() } };
+  await writeAt(root, PROJECT_FILE, JSON.stringify(json, null, 2));
+};
+
+/**
+ * Applies caption file changes (trigger word rewrite and its undo) through a journal, so an interruption is
+ * finished the next time the project opens. Returns the files that were left alone because they changed meanwhile.
+ */
+export const applyCaptionWritesJournaled = async (
+  root: ProjectDirectoryHandle,
+  options: { kind: 'trigger-rewrite'; writes: CaptionWrite[]; triggerWord: string } & LayoutMigrationOptions
+): Promise<{ conflicts: string[] }> => {
+  const id = newId();
+  const steps: Omit<JournalStep, 'done'>[] = [
+    { id: 'caption-writes', type: 'caption-writes', writes: options.writes, description: 'Rewrite the trigger word in captions' },
+    { id: 'project-trigger', type: 'project-trigger', trigger: options.triggerWord, description: 'Store the trigger word' },
+  ];
+  const journal: LayoutJournal = {
+    format: JOURNAL_FORMAT, version: 1, kind: options.kind, id, fromVersion: 3,
+    createdAt: new Date().toISOString(), steps: steps.map((step) => ({ ...step, done: false })),
+  };
+  await writeJournal(root, journal);
+  await runJournal(root, journal, options, 'Updating the trigger word');
+  const conflicts = journal.steps.flatMap((step) => step.conflicts ?? []);
+  // The batch is complete; its journal only matters while an interrupted run could still need finishing.
+  await removeAt(root, journalPath(id));
+  return { conflicts };
+};
+
+/**
+ * `a.png` and `a.jpg` in one folder would share `a.txt`. The first (by name) keeps it; every other image is
+ * renamed with getUniqueExplorerName together with its sidecar, and the rename is recorded for the path rewrite and the report.
+ */
+const resolveStemCollisions = async (root: ProjectDirectoryHandle, journal: LayoutJournal, step: JournalStep): Promise<void> => {
+  step.renames ??= [];
+  const recorded = (from: string) => step.renames!.find((entry) => entry.from === from)?.to;
+  const move = async (from: string, to: string) => {
+    const entry = await getEntry(root, from);
+    if (entry?.kind !== 'file') return;
+    await writeAt(root, to, await entry.handle.getFile());
+    await removeAt(root, from);
+  };
+  const walk = async (directoryPath: string, directory: ProjectDirectoryHandle): Promise<void> => {
+    const entries = await listEntries(directory);
+    const groups = new Map<string, string[]>();
+    for (const [name, entry] of entries) {
+      if (!('getFile' in entry) || !isOwnerKind(name)) continue;
+      const key = stemOf(name).toLowerCase();
+      groups.set(key, [...(groups.get(key) ?? []), name]);
+    }
+    for (const names of groups.values()) {
+      if (names.length < 2) continue;
+      for (const name of names.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).slice(1)) {
+        const from = join(directoryPath, name);
+        const known = recorded(from);
+        const finalName = known ? nameOf(known) : await getUniqueExplorerName(directory, name);
+        const to = join(directoryPath, finalName);
+        if (!known) {
+          step.renames!.push({ from, to }, { from: getAssetManifestName(from), to: getAssetManifestName(to) });
+          await writeJournal(root, journal);
+        }
+        await move(getAssetManifestName(from), getAssetManifestName(to));
+        await move(from, to);
+      }
+    }
+    for (const [name, entry] of entries) {
+      if ('getDirectoryHandle' in entry && !(directoryPath === '' && name === EXPORTS_DIRECTORY) && !isInternalProjectEntry(name)) {
+        await walk(join(directoryPath, name), entry);
+      }
+    }
+  };
+  await walk('', root);
+};
+
+type SidecarCaption = { tags: string[] | undefined; manifest: Record<string, unknown> };
+
+const readSidecarCaption = async (directory: ProjectDirectoryHandle, imageName: string): Promise<SidecarCaption | undefined> => {
+  let text: string;
+  try { text = await (await directory.getFileHandle(getAssetManifestName(imageName))).getFile().then((file) => file.text()); }
+  catch (error) { if (isMissing(error)) return undefined; throw error; }
+  let manifest: Record<string, unknown>;
+  try { manifest = JSON.parse(text) as Record<string, unknown>; } catch { return undefined; }
+  const tags = Array.isArray(manifest.tags)
+    ? manifest.tags.filter((tag): tag is string => typeof tag === 'string')
+    : typeof manifest.caption === 'string' ? parseCaptionText(manifest.caption).tags : undefined;
+  return { tags, manifest };
+};
+
+/**
+ * Sidecar `tags` become the TXT caption (with the trigger word first inside dataset/); a replaced TXT is kept in
+ * `.datasetcreator/backup/<id>/captions/`. Images without sidecar tags keep their TXT, and inside dataset/ it
+ * gains the trigger word when missing. Safe to run again: every file is compared with what it should become.
+ */
+const convertSidecarCaptions = async (root: ProjectDirectoryHandle, journal: LayoutJournal, step: JournalStep): Promise<void> => {
+  const stats = step.stats ??= { converted: 0, triggersAdded: 0, backedUp: 0 };
+  const projectText = await readTextAt(root, PROJECT_FILE);
+  const trigger = normalizeTriggerWord(projectText ? (JSON.parse(projectText) as { project?: { dataset?: { triggerWord?: string } } }).project?.dataset?.triggerWord ?? '' : '');
+  const backup = async (imagePath: string, previous: string) => {
+    const target = backupPath(journal.id, `captions/${getCaptionPathForImage(imagePath)}`);
+    if (await getEntry(root, target)) return;
+    await writeAt(root, target, previous);
+    stats.backedUp += 1;
+  };
+  const convert = async (directory: ProjectDirectoryHandle, imagePath: string, name: string) => {
+    const sidecar = await readSidecarCaption(directory, name);
+    const current = await readCaptionRaw(root, imagePath);
+    const fileTrigger = getCaptionTriggerForPath(imagePath, trigger);
+    if (sidecar?.tags !== undefined) {
+      const desired = renderCaptionText(sidecar.tags, fileTrigger);
+      const parsed = current === null ? undefined : parseCaptionText(current, fileTrigger ?? '');
+      const equivalent = parsed !== undefined && parsed.triggerPresent && parsed.tags.length === sidecar.tags.length
+        && parsed.tags.every((tag, index) => tag === sidecar.tags![index]);
+      if (current !== desired && !equivalent) {
+        if (current !== null) await backup(imagePath, current);
+        await writeCaptionRaw(root, imagePath, desired);
+        stats.converted += 1;
+      }
+      const { tags: _tags, caption: _caption, ...rest } = sidecar.manifest;
+      await writeAt(root, join(parentOf(imagePath), getAssetManifestName(name)), JSON.stringify(rest, null, 2));
+      return;
+    }
+    if (fileTrigger && current !== null) {
+      const next = reconcileCaptionRaw(current, 'add', fileTrigger);
+      if (next !== null) {
+        await backup(imagePath, current);
+        await writeCaptionRaw(root, imagePath, next);
+        stats.triggersAdded += 1;
+      }
+    }
+  };
+  const walk = async (directoryPath: string, directory: ProjectDirectoryHandle): Promise<void> => {
+    const entries = await listEntries(directory);
+    for (const [name, entry] of entries) {
+      if ('getFile' in entry) {
+        if (isCaptionCarrierName(name)) await convert(directory, join(directoryPath, name), name);
+      } else if (!(directoryPath === '' && name === EXPORTS_DIRECTORY) && !isInternalProjectEntry(name)) {
+        await walk(join(directoryPath, name), entry as ProjectDirectoryHandle);
+      }
+    }
+  };
+  await walk('', root);
+};
+
+export type CaptionTxtReport = {
+  journalId: string;
+  converted: number;
+  triggersAdded: number;
+  backedUp: number;
+  /** Images renamed because another image in the folder shares their file name stem (`a.png`, `a.jpg`). */
+  collisions: Array<{ from: string; to: string }>;
+  pathMoves: Array<{ from: string; to: string }>;
+};
+
+/** v3 project whose sidecar tags have not been moved into TXT captions yet. */
+export const detectPendingCaptionConversion = async (root: ProjectDirectoryHandle): Promise<boolean> => {
+  if (await detectProjectLayout(root) !== 'v3') return false;
+  const text = await readTextAt(root, PROJECT_FILE);
+  if (text === undefined) return false;
+  return !(JSON.parse(text) as { project?: { migrations?: { captionsTxt?: unknown } } }).project?.migrations?.captionsTxt;
+};
+
+/** Moves sidecar tags into TXT captions and adds the trigger word to dataset/ captions. Returns undefined when nothing was pending. */
+export const runCaptionTxtMigration = async (root: ProjectDirectoryHandle, options: LayoutMigrationOptions = {}): Promise<CaptionTxtReport | undefined> => {
+  if (!await detectPendingCaptionConversion(root)) return undefined;
+  throwIfAborted(options.signal);
+  const id = newId();
+  const steps: Omit<JournalStep, 'done'>[] = [
+    { id: 'caption-collisions', type: 'caption-collisions', description: 'Rename images that share a file name' },
+    { id: 'caption-rewrite', type: 'rewrite-paths', description: 'Update references to renamed images' },
+    { id: 'captions-txt', type: 'captions-txt', description: 'Convert sidecar tags to text captions' },
+    { id: 'captions-marker', type: 'captions-marker', description: 'Record the caption conversion' },
+  ];
+  const journal: LayoutJournal = {
+    format: JOURNAL_FORMAT, version: 1, kind: 'captions-txt', id, fromVersion: 3,
+    createdAt: new Date().toISOString(), steps: steps.map((step) => ({ ...step, done: false })),
+  };
+  await writeJournal(root, journal);
+  await runJournal(root, journal, options, 'Converting captions to text files');
+  const collisions = journal.steps.flatMap((step) => step.type === 'caption-collisions' ? step.renames ?? [] : []).filter((entry) => isOwnerKind(nameOf(entry.from)));
+  const stats = journal.steps.find((step) => step.type === 'captions-txt')?.stats ?? { converted: 0, triggersAdded: 0, backedUp: 0 };
+  return {
+    journalId: id,
+    ...stats,
+    collisions,
+    pathMoves: getRawPathMoves(journal).map((move) => ({ from: move.from.replace(/^Project\//, ''), to: move.to.replace(/^Project\//, '') })),
+  };
 };
 
 /** v3 project whose raw materials still sit in `src/shared` / `src/assets`. */
@@ -750,5 +996,6 @@ export const runLayoutMigration = async (root: ProjectDirectoryHandle, options: 
   await writeJournal(root, journal);
   await runJournal(root, journal, options);
   const rawMaterials = await runRawMaterialsMove(root, options);
-  return { journalId: id, snapshotVersionId, fromVersion: plan.fromVersion, resumed, keptLegacyData, rawMaterials };
+  const captions = await runCaptionTxtMigration(root, options);
+  return { journalId: id, snapshotVersionId, fromVersion: plan.fromVersion, resumed, keptLegacyData, rawMaterials, captions };
 };
