@@ -34,8 +34,10 @@ export const mergeBuildItems = (
 ): WorkspaceImage[] => {
   const registered = toWorkspaceImages(sourceImages, datasetItems);
   const byId = new Map(registered.map((item) => [getBuildAssetId(item), item]));
+  // Linear: large projects (thousands of files) recompute this on every relevant store change.
+  const itemIds = new Set(items.map(getBuildAssetId));
   return [...items.map((item) => item.sourceImageId ? byId.get(getBuildAssetId(item)) ?? item : item),
-    ...registered.filter((item) => !items.some((candidate) => getBuildAssetId(candidate) === getBuildAssetId(item)))];
+    ...registered.filter((item) => !itemIds.has(getBuildAssetId(item)))];
 };
 
 /** Source materials Build chooses from: everything except Build's own transformed outputs. */

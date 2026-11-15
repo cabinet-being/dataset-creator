@@ -451,6 +451,21 @@ try {
     assert.equal(none.length,0);
   }
   {
+    // mergeBuildItems: registered images override passed items by Build asset id, extra registered images are
+    // appended, and the merge stays linear (Build recomputes it for projects with thousands of files).
+    {
+      const source = (id) => ({ id, fileName: `${id}.png`, mimeType: 'image/png', originalFilePath: `inbox/${id}.png`, originalFile: new Blob(['x']), width: 1024, height: 1024, createdAt: new Date(0), tags: ['t'] });
+      const merged = stageSummary.mergeBuildItems([{ id: 'source:a', sourceImageId: 'a', kind: 'image', assetPath: 'Project/inbox/stale.png' }, { id: 'asset:Project/inbox/v.mp4', kind: 'video', assetPath: 'Project/inbox/v.mp4' }], [source('a'), source('b')], []);
+      assert.deepEqual(merged.map((entry) => entry.assetPath), ['Project/inbox/a.png', 'Project/inbox/v.mp4', 'Project/inbox/b.png'], 'Registered images win and new ones are appended');
+      const count = 20000;
+      const sources = Array.from({ length: count }, (_, index) => source(`s${index}`));
+      const passed = sources.map((entry) => ({ id: `source:${entry.id}`, sourceImageId: entry.id, kind: 'image', assetPath: `Project/inbox/${entry.id}.png` }));
+      const started = performance.now();
+      const large = stageSummary.mergeBuildItems(passed, sources, []);
+      const elapsed = performance.now() - started;
+      assert.equal(large.length, count, 'No duplicates when every passed item is registered');
+      assert.ok(elapsed < 1500, `Merging ${count} items stays linear (took ${Math.round(elapsed)} ms)`);
+    }
     // Build stages: normalizeBuildSession defaults and getBuildStageSummary counters/states
     const fresh = buildSession.createBuildSession();
     assert.equal(fresh.stage,'add','new session starts in Add');

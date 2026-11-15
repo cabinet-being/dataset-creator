@@ -98,10 +98,14 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const taggerInput = useRef<HTMLInputElement>(null);
   const operation = useOperation('Build review', root, viewId);
 
-  const effectiveItems = useMemo(() => {
-    const state = useProjectStore.getState();
-    return mergeBuildItems(items, Object.values(state.sourceImages), Object.values(state.datasetItems));
-  }, [items, session]);
+  // Depend on the registered images themselves, not on the session: typing a caption draft or deciding
+  // an item changes the session but not these, and merging thousands of items per keystroke is what lagged.
+  const registeredSources = useProjectStore((state) => state.sourceImages);
+  const registeredDatasetItems = useProjectStore((state) => state.datasetItems);
+  const effectiveItems = useMemo(
+    () => mergeBuildItems(items, Object.values(registeredSources), Object.values(registeredDatasetItems)),
+    [items, registeredSources, registeredDatasetItems]
+  );
   const candidates = useMemo(() => selectBuildCandidates(effectiveItems, session), [effectiveItems, session.records]);
   const reconciled = useMemo(() => busy ? session : reconcileBuildSession(session, candidates, undefined, effectiveItems), [busy, candidates, effectiveItems, session]);
   useEffect(() => { if (reconciled !== session) updateSession(reconciled); }, [reconciled, session, updateSession]);
@@ -205,12 +209,26 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const captionSuggestions = useMemo(() => [...new Set([
     ...effectiveItems.flatMap(item => item.tags ?? []), ...(localTagger?.tags ?? []),
   ])].filter(tag => !taggingConfig.blacklist.includes(tag)), [effectiveItems, localTagger, taggingConfig.blacklist]);
+  // The draft shows immediately; it is written to the session (and saved) after a short pause or when the
+  // item changes, so each keystroke does not re-run reconcile, counts, the quality report and saving.
+  const pendingDraft = useRef<{ id: string; value: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const flushDraft = useCallback(() => {
+    const pending = pendingDraft.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingDraft.current = null;
+    patchSession(session => {
+      const record = session.records[pending.id];
+      return record && record.draft !== pending.value ? { ...session, records: { ...session.records, [pending.id]: { ...record, draft: pending.value } } } : session;
+    });
+  }, [patchSession]);
+  useEffect(() => flushDraft, [currentId, flushDraft]);
   const changeDraft = (value: string) => {
     setDraft(value);
-    if (currentId) patchSession(session => {
-      const record = session.records[currentId];
-      return record ? { ...session, records: { ...session.records, [currentId]: { ...record, draft: value } } } : session;
-    });
+    if (!currentId) return;
+    if (pendingDraft.current && pendingDraft.current.id !== currentId) flushDraft();
+    if (pendingDraft.current) clearTimeout(pendingDraft.current.timer);
+    pendingDraft.current = { id: currentId, value, timer: setTimeout(flushDraft, 400) };
   };
   // A newly connected model or changed thresholds must not reuse old predictions.
   useEffect(() => {
@@ -269,6 +287,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     const epoch = captureHistoryEpoch();
     const before = useProjectStore.getState().buildSession;
     const targetIds = targets.map(getBuildAssetId);
+    // A decision consumes the typed draft directly; a pending delayed write must not resurrect it afterwards.
+    const pending = pendingDraft.current;
+    if (pending && targetIds.includes(pending.id)) { clearTimeout(pending.timer); pendingDraft.current = null; }
     const decisionById = new Map(entries.map((entry) => [getBuildAssetId(entry.item), entry.decision]));
     const uniform = entries.every((entry) => entry.decision === entries[0].decision) ? entries[0].decision : undefined;
     patchSession((value) => entries.reduce((next, { item, decision }) => updateBuildDecision(next, getBuildAssetId(item), decision, {
