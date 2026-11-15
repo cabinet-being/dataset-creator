@@ -193,7 +193,7 @@ export const readWorkspaceLayout = (projectId?: string): Partial<WorkspaceLayout
             if (entry.kind === 'dataset-tool' && typeof entry.datasetId === 'string' && datasetTool) {
               return { kind: 'dataset-tool', datasetId: entry.datasetId, tool: datasetTool, pinned };
             }
-            if (entry.kind === 'window' && (entry.window === 'inspector' || entry.window === 'output' || entry.window === 'project' || entry.window === 'dataset')) {
+            if (entry.kind === 'window' && (entry.window === 'inspector' || entry.window === 'output' || entry.window === 'dataset')) {
               return { kind: 'window', window: entry.window, pinned };
             }
             return null;

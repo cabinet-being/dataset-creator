@@ -45,13 +45,11 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import {
   ArrowLeft,
-  FolderOpen,
   GitBranch,
   Layers3,
   PanelBottom,
   PanelLeft,
   PanelRight,
-  Pin,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
 import { useInspectorSelectionStore } from './stores/useInspectorSelectionStore';
@@ -172,12 +170,9 @@ function App() {
   const tabsState = useWorkspaceTabsState(storedWorkspaceLayout);
   const { openTabs, openTabsRef, setOpenTabs, activeTabId, setActiveTabId, closedTabs, setClosedTabs } = tabsState;
   const dock = useDockWorkspace(storedWorkspaceLayout, openTabs.filter((tab) => tab.kind !== 'window').map((tab) => tab.id), activeTabId, openTabs.filter((tab) => tab.pinned).map((tab) => tab.id));
-  const leftPanelOpen = dock.explorerOpen;
   const [activeActivityView, setActiveActivityView] = useState<'explorer' | 'versions'>(
     storedWorkspaceLayout.activeActivityView ?? 'explorer'
   );
-  const [tabMenuOpen, setTabMenuOpen] = useState(false);
-  const [toolMenuPosition, setToolMenuPosition] = useState({ x: 0, y: 0 });
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const { pickLocalTaggerFile, inputs: localTaggerFileInputs } = useLocalTaggerFilePicker();
   const outputLogRef = useRef<HTMLDivElement | null>(null);
@@ -248,9 +243,8 @@ function App() {
     }
   }, [currentTool, setCurrentTool]);
 
-  useEscapeToClose(Boolean(openMenu || tabMenuOpen || workspaceContextMenu), () => {
+  useEscapeToClose(Boolean(openMenu || workspaceContextMenu), () => {
     setOpenMenu(null);
-    setTabMenuOpen(false);
     setWorkspaceContextMenu(null);
   });
 
@@ -285,16 +279,6 @@ function App() {
       activeDatasetSourceImages.map(item => item.id)
     ),
     [globalDataset.assetOrder, activeDatasetSourceImages, datasetItems, workspaceFileAssets]
-  );
-  const globalDatasetTags = useMemo(
-    () => [...new Set(activeDatasetPreviewItems.flatMap((item) => item.tags ?? []))]
-      .sort((left, right) => left.localeCompare(right)),
-    [activeDatasetPreviewItems]
-  );
-  const projectTags = useMemo(
-    () => [...new Set([...sourceImages.flatMap((image) => image.tags ?? []), ...globalDatasetTags])]
-      .sort((left, right) => left.localeCompare(right)),
-    [globalDatasetTags, sourceImages]
   );
   const activeEmptyDatasetSuggestion = useMemo<EmptyDatasetSuggestion | null>(() => {
     const isEmpty = activeDatasetPreviewItems.length === 0;
@@ -376,7 +360,7 @@ function App() {
       tab.kind === 'tool'
         ? toolIcons[tab.tool]
         : tab.kind === 'window'
-          ? tab.window === 'output' ? PanelBottom : tab.window === 'project' ? FolderOpen : tab.window === 'dataset' ? Layers3 : PanelRight
+          ? tab.window === 'output' ? PanelBottom : tab.window === 'dataset' ? Layers3 : PanelRight
         : tab.kind === 'dataset-tool'
           ? DATASET_TOOL_DEFINITIONS[tab.tool].icon
         : tab.kind === 'dataset'
@@ -388,7 +372,7 @@ function App() {
           ? `${TOOL_LABELS[tab.tool]}: ${tab.scope.review.label}`
           : TOOL_LABELS[tab.tool]
         : tab.kind === 'window'
-          ? tab.window === 'output' ? 'Output' : tab.window === 'project' ? 'Project' : tab.window === 'dataset' ? 'Dataset' : 'Inspector'
+          ? tab.window === 'output' ? 'Output' : tab.window === 'dataset' ? 'Dataset' : 'Inspector'
         : tab.kind === 'dataset-tool'
           ? `${DATASET_TOOL_DEFINITIONS[tab.tool].label}: ${datasetsById[tab.datasetId]?.name ?? 'Dataset'}`
         : tab.kind === 'dataset'
@@ -528,7 +512,7 @@ function App() {
 
   const tabActions = useWorkspaceTabActions({
     state: tabsState, dock, storedWorkspaceLayout, persistWorkspaceRef, projectDirectoryHandle, projectId, activeActivityView,
-    setActiveActivityView, setWorkspaceContextMenu, setNavigationRecovery, setCurrentTool, setOpenMenu, setTabMenuOpen, addNotification,
+    setActiveActivityView, setWorkspaceContextMenu, setNavigationRecovery, setCurrentTool, setOpenMenu, addNotification,
   });
   const { activateTab, pushClosedTabs, toggleTabPinned, reopenClosedTab, applyWorkspaceTabsForProject, confirmClosingTabs } = tabActions;
 
@@ -545,7 +529,6 @@ function App() {
     setCurrentTool(tool);
     focusView(nextTab.id);
     setOpenMenu(null);
-    setTabMenuOpen(false);
   };
 
   const isTabDirty = (tab: WorkspaceTab): boolean =>
@@ -1250,6 +1233,7 @@ function App() {
                 </>
               ) : (
                 <div className="min-h-0 flex-1 overflow-auto p-3 text-xs">
+                  <button type="button" onClick={() => setActiveActivityView('explorer')} className="mb-2 flex items-center gap-1 text-muted-foreground hover:text-foreground"><ArrowLeft className="h-3 w-3" />Back to Explorer</button>
                   <p className="mb-1 font-medium">Project versions</p>
                   <p className="mb-3 text-muted-foreground">Versions are tagged snapshots. Restoring replaces current project files.</p>
                   <div className="flex gap-2">
@@ -1271,48 +1255,6 @@ function App() {
       content: <div ref={outputLogRef} className="h-full overflow-auto p-3 font-mono text-[11px]" onScroll={(event) => { const node = event.currentTarget; outputAutoFollowRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24; }}>
         {operationLogs.map((entry) => <p key={entry.id} className={entry.level === 'error' ? 'text-destructive' : entry.level === 'warning' ? 'text-yellow-500' : entry.level === 'success' ? 'text-emerald-500' : 'text-muted-foreground'}>[{entry.timestamp.toLocaleTimeString()}] {entry.level.toUpperCase().padEnd(7, ' ')} {entry.message}</p>)}
       </div> },
-    { id: 'window:project', title: 'Project', icon: FolderOpen, content: <div className="h-full overflow-auto p-3">            <div className="space-y-3 text-xs">
-              <div className="rounded border border-border bg-background p-3">
-                <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Current project</p>
-                <p className="mt-1 truncate font-semibold">{projectName}</p>
-                <p className="mt-1 text-muted-foreground">{profile.label} project</p>
-                <p className="mt-1 truncate text-muted-foreground">{projectDirectoryName ?? 'Unsaved workspace'}</p>
-                <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 text-muted-foreground">
-                  <span>Assets</span><span className="text-right text-foreground">{workspaceImages.length}</span>
-                  <span>Dataset assets</span><span className="text-right text-foreground">{activeDatasetPreviewItems.length}</span>
-                  <span>Tags</span><span className="text-right text-foreground">{projectTags.length}</span>
-                </div>
-              </div>
-              <div>
-                <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Open editors</p>
-                <div className="space-y-1">
-                  {openTabs.length === 0 && (
-                    <p className="rounded border border-border px-2 py-2 text-muted-foreground">No open editors</p>
-                  )}
-                  {openTabs.map((tab) => {
-                    const { Icon, label, target, title } = getWorkspaceTabChrome(tab);
-                    return (
-                      <button
-                        type="button"
-                        key={tab.id}
-                        onClick={() => activateTab(tab)}
-                        title={title}
-                        className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left transition-colors ${
-                          activeTabId === tab.id ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary'
-                        }`}
-                      >
-                        {tab.pinned ? <Pin className="h-3 w-3 shrink-0" /> : null}
-                        <Icon className="h-3.5 w-3.5" />
-                        <span className="min-w-0 flex-1 truncate">{label}</span>
-                        {isTabDirty(tab) ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" /> : null}
-                        <span className="shrink-0 text-[10px] opacity-70">{target}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-</div> },
     { id: DATASET_VIEW, title: 'Dataset', icon: Layers3, content: renderDatasetWorkspace(globalDataset) },
     ...openTabs.filter((tab) => tab.kind !== 'window').map((tab) => {
       const chrome = getWorkspaceTabChrome(tab);
@@ -1321,6 +1263,11 @@ function App() {
     }),
   ].map((view: DockView) => ({ ...view, pinned: view.pinned || dock.layout.pinned?.includes(view.id) }));
 
+  const toggleExplorer = () => {
+    if (dock.isOpen(EXPLORER_VIEW) && activeActivityView === 'explorer') return closeWorkspaceViews([EXPLORER_VIEW]);
+    setActiveActivityView('explorer');
+    dock.show(EXPLORER_VIEW);
+  };
   const focusView = (id: string) => {
     dock.show(id);
     requestAnimationFrame(() => {
@@ -1339,7 +1286,7 @@ function App() {
     explorerPanelRef, findExplorerNodeByPath, focusView, getActiveDirectoryChildren, getSelectedExplorerEntries, globalDataset,
     handleExplorerDelete, handleExplorerDuplicate, handleExplorerPaste, handleExplorerRename, handleNewProject, handleOpenProject,
     handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openDatasetToolTab, openProjectDataset,
-    openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard,
+    openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard, toggleExplorer,
     setIsWorkspaceSettingsOpen, setSelectedExplorerPaths, setSelectionAnchorPath, setTheme, stepTab,
   });
 
@@ -1348,32 +1295,10 @@ function App() {
     setupDialog={projectSetup ? <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} /> : layoutUpgrade ? <ProjectUpgradeDialog name={layoutUpgrade.name} plan={layoutUpgrade.plan} rawPlan={layoutUpgrade.rawPlan} blockedReason={layoutUpgrade.blockedReason} onComplete={layoutUpgrade.complete} /> : null}
     backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
     header={<WorkspaceMenus openMenu={openMenu}
-      onOpenMenuChange={menu => { setOpenMenu(menu); setTabMenuOpen(false); setWorkspaceContextMenu(null); }}
+      onOpenMenuChange={menu => { setOpenMenu(menu); setWorkspaceContextMenu(null); }}
       fileButtonRef={projectMenuButtonRef} enabledTools={profile.enabledTools}
       activeTool={activeTab?.kind === 'tool' ? activeTool : null}
       theme={theme} isWindowOpen={dock.isOpen} onCommands={() => openCommands()} />}
-    activityBar={
-          <nav className="flex w-10 shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2" aria-label="Activity bar">
-            <button
-              type="button"
-              onClick={() => { setActiveActivityView('explorer'); dock.show(EXPLORER_VIEW); }}
-              className={`rounded p-2 transition-colors ${activeActivityView === 'explorer' && leftPanelOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
-              title="Explorer"
-              aria-label="Explorer"
-            >
-              <PanelLeft className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => void openProjectVersions()}
-              className={`rounded p-2 transition-colors ${activeActivityView === 'versions' && leftPanelOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
-              title="Versions"
-              aria-label="Versions"
-            >
-              <GitBranch className="h-4 w-4" />
-            </button>
-          </nav>
-    }
     footer={<WorkspaceStatusBar projectName={projectName} save={projectSave}
       onFocusOperation={id => { const tab = openTabs.find(tab => tab.id === id); if (tab) { activateTab(tab); focusView(id); } else focusView('window:output'); }}
       onOutput={() => focusView('window:output')} onHelp={() => openCommands(true)} />}
@@ -1388,10 +1313,9 @@ function App() {
 
       <WorkspaceTabMenus
         workspaceViews={workspaceViews} dockLayout={dock.layout} setDockLayout={dock.setLayout} openTabs={openTabs} closedTabs={closedTabs}
-        enabledTools={profile.enabledTools} tabMenuOpen={tabMenuOpen} setTabMenuOpen={setTabMenuOpen} toolMenuPosition={toolMenuPosition}
         workspaceContextMenu={workspaceContextMenu} setWorkspaceContextMenu={setWorkspaceContextMenu}
         explorerContextMenu={explorerContextMenu} setExplorerContextMenu={setExplorerContextMenu}
-        closeTopMenus={closeTopMenus} navigateToTool={navigateToTool} reopenClosedTab={reopenClosedTab} toggleTabPinned={toggleTabPinned}
+        closeTopMenus={closeTopMenus} reopenClosedTab={reopenClosedTab} toggleTabPinned={toggleTabPinned}
         closeWorkspaceViews={closeWorkspaceViews} getFileContextActionGroups={getFileContextActionGroups}
         getDirectoryContextActionGroups={getDirectoryContextActionGroups} />
       <WorkspaceNotifications />
@@ -1408,7 +1332,6 @@ function App() {
             onFocus={(id) => { const tab = openTabs.find((entry) => entry.id === id); if (tab && activeTabId !== id) activateTab(tab); }}
             onClose={closeWorkspaceViews}
             onContextMenu={(id, x, y) => setWorkspaceContextMenu({ id, x, y })}
-            onOpenTool={(group, x, y) => { dock.setLayout((layout) => ({ ...layout, focusedGroup: group })); setToolMenuPosition({ x, y }); setTabMenuOpen(true); }}
           />
   </AppShell>;
 

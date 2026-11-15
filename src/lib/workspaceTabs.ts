@@ -38,7 +38,7 @@ export type DatasetWorkspaceTab = {
   datasetId: string;
 } & WorkspaceTabState;
 
-export type WorkspaceWindowId = 'inspector' | 'output' | 'project' | 'dataset';
+export type WorkspaceWindowId = 'inspector' | 'output' | 'dataset';
 export type WindowWorkspaceTab = {
   id: `window:${WorkspaceWindowId}`;
   kind: 'window';

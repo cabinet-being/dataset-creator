@@ -1,18 +1,18 @@
 import { useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { Check, FilePlus, FolderOpen, GitBranch, Layers3, Monitor, Moon, PanelBottom, PanelLeft, PanelRight, Pencil, Sun, type LucideIcon } from 'lucide-react';
+import { Check, FilePlus, FolderOpen, GitBranch, Layers3, Monitor, Moon, PanelBottom, PanelLeft, PanelRight, Pencil, RotateCcw, Sun, type LucideIcon } from 'lucide-react';
 import type { ToolName } from '../../types';
 import { ADVANCED_TOOL_GROUP_LABEL, TOOL_DEFINITIONS } from '../../lib/toolDefinitions';
 import { ADVANCED_TOOLS, PRIMARY_TOOLS } from '../../lib/constants';
 import { MenuSurface } from '../ui/MenuSurface';
 import { useCommandRunner, useCommandState } from './Commands';
 
-export type WorkspaceMenu = 'file' | 'view' | 'tools' | 'windows';
+export type WorkspaceMenu = 'file' | 'view' | 'tools';
 const MENUS: { id: WorkspaceMenu; label: string }[] = [
-  {id:'file',label:'File'}, {id:'view',label:'View'}, {id:'tools',label:'Tools'}, {id:'windows',label:'Windows'},
+  {id:'file',label:'File'}, {id:'view',label:'View'}, {id:'tools',label:'Tools'},
 ];
 export const WORKSPACE_WINDOWS = [
   {id:'explorer',label:'Explorer',icon:PanelLeft}, {id:'inspector',label:'Inspector',icon:PanelRight},
-  {id:'output',label:'Output',icon:PanelBottom}, {id:'project',label:'Project',icon:FolderOpen},
+  {id:'output',label:'Output',icon:PanelBottom},
   {id:'dataset',label:'Dataset',icon:Layers3},
 ] as const;
 
@@ -69,6 +69,9 @@ export function WorkspaceMenus({ openMenu, onOpenMenuChange, fileButtonRef, enab
         {item('project.versions','Versions',GitBranch)}
       </>;
       case 'view': return <>
+        {WORKSPACE_WINDOWS.filter(window => window.id !== 'dataset').map(window => item(`window.${window.id}`,window.label,window.icon,isWindowOpen(`window:${window.id}`)))}
+        {item('layout.reset','Reset layout',RotateCcw)}
+        <div role="separator" className="my-1 border-t border-border" />
         {item('theme.system','System',Monitor,theme === 'system')}
         {item('theme.light','Light',Sun,theme === 'light')}
         {item('theme.dark','Dark',Moon,theme === 'dark')}
@@ -86,7 +89,6 @@ export function WorkspaceMenus({ openMenu, onOpenMenuChange, fileButtonRef, enab
           </div>}
         </>;
       }
-      case 'windows': return WORKSPACE_WINDOWS.map(window => item(`window.${window.id}`,window.label,window.icon,isWindowOpen(`window:${window.id}`)));
     }
   };
   return <header className="relative z-30 flex min-h-9 shrink-0 flex-wrap items-center border-b border-border bg-card px-3 text-sm">

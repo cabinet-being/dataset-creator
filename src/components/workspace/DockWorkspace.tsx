@@ -1,7 +1,7 @@
 import { COMPACT_WORKSPACE_WIDTH, measureResponsiveWorkspace } from '../../lib/responsiveWorkspace';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType, Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from 'react';
-import { Grip, Maximize2, Minimize2, Pin, Plus, X } from 'lucide-react';
+import { Grip, Maximize2, Minimize2, Pin, X } from 'lucide-react';
 import {
   DOCK_GUTTER, DOCK_HEADER_HEIGHT, EXPLORER_VIEW, dockHosts, clampDockRect, dockGroups, dockSourceNode, dockViews,
   floatDockSource, focusDockView, getDockPreview, getDockSide, moveDockSource,
@@ -27,7 +27,6 @@ type Props = {
   onFocus: (id: string) => void;
   onClose: (ids: string[]) => void;
   onContextMenu: (id: string, x: number, y: number) => void;
-  onOpenTool: (group: string, x: number, y: number) => void;
 };
 type Interaction = {
   pointerId: number;
@@ -42,7 +41,7 @@ type Interaction = {
   | { kind: 'resize'; host: string; bounds: DockRect });
 const contains = (rect: DockRect, x: number, y: number) => x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
 
-export const DockWorkspace = ({ activeEditorId = null, emptyContent, layout, onLayout, views, onFocus, onClose, onContextMenu, onOpenTool }: Props) => {
+export const DockWorkspace = ({ activeEditorId = null, emptyContent, layout, onLayout, views, onFocus, onClose, onContextMenu }: Props) => {
   const rootRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [interaction, setInteraction] = useState<Interaction | null>(null);
@@ -255,7 +254,6 @@ export const DockWorkspace = ({ activeEditorId = null, emptyContent, layout, onL
               })}
             </div>
             {entry.host === 'compact-panel' && <button className="dock-button" aria-label="Return to editor" onClick={dismissCompactPanel}><X className="h-4 w-4" /></button>}
-            {entry.host !== 'compact-panel' && <button type="button" className="dock-button" aria-label="Open tool" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); onOpenTool(entry.group.id, bounds.left, bounds.bottom); }}><Plus className="h-3.5 w-3.5" /></button>}
             {!compact && !fixed && tabs.length > 0 && <button type="button" className="dock-button" aria-label={floating ? 'Dock group' : 'Detach group'} title={floating ? 'Dock group' : 'Detach group'}
               onClick={() => onLayout((current) => floating ? pinDockHost(current, floating.id) : floatDockSource(current, { type: 'group', id: entry.group.id }, clampDockRect({ ...entry.rect, width: Math.min(600, entry.rect.width), height: Math.min(450, entry.rect.height) }, size.width, size.height)))}><Pin className="h-3.5 w-3.5" /></button>}
           </div>

@@ -298,14 +298,14 @@ export const migrateDockLayout = (legacy: LegacyDockLayout, editorIds: string[],
   if (legacy.bottomPanelOpen !== false && !legacy.outputWindowOpen) main = dockSplit(main, dockGroup(['window:output']), 'vertical', 1 - (Number(legacy.bottomPanelHeight) || 190) / height);
   if (legacy.rightPanelOpen !== false && !legacy.inspectorWindowOpen) main = dockSplit(main, dockGroup(['window:inspector']), 'horizontal', 1 - (Number(legacy.rightPanelWidth) || 280) / (width * (1 - layout.sidebarRatio)));
   layout.main = main;
-  for (const view of ['project', 'dataset', 'inspector', 'output']) {
+  for (const view of ['dataset', 'inspector', 'output']) {
     if (!legacy[`${view}WindowOpen`]) continue;
     const panel = legacy[`${view}Window`] as Partial<DockRect> & { minimized?: boolean } | undefined;
     layout.floating.push({ id: identity('float'), root: dockGroup([`window:${view}`]), bounds: { x: panel?.x ?? 100, y: panel?.y ?? 100, width: panel?.width ?? 320, height: panel?.height ?? 360 }, minimized: panel?.minimized ?? false });
   }
   const legacyTabs = Array.isArray(legacy.openTabs) ? legacy.openTabs : [];
   for (const tab of legacyTabs) {
-    if (tab?.kind !== 'window' || !['project', 'dataset', 'inspector', 'output'].includes(tab.window)) continue;
+    if (tab?.kind !== 'window' || !['dataset', 'inspector', 'output'].includes(tab.window)) continue;
     const id = `window:${tab.window}`;
     const next = removeDockViews(layout, [id]);
     const target = dockGroups(next.main).find((group) => group.id === 'main-editors') ?? dockGroups(next.main)[0];
@@ -315,6 +315,8 @@ export const migrateDockLayout = (legacy: LegacyDockLayout, editorIds: string[],
   }
   return layout;
 };
+// Windows removed from the UI; saved layouts that still reference them are cleaned up on read.
+const REMOVED_VIEWS = new Set(['window:project']);
 export const parseDockLayout = (value: unknown): DockLayout | null => {
   if (!value || typeof value !== 'object') return null;
   const data = value as DockLayout;
@@ -325,7 +327,8 @@ export const parseDockLayout = (value: unknown): DockLayout | null => {
     if (!input || depth > 40 || typeof input.id !== 'string' || nodes.has(input.id)) return null;
     nodes.add(input.id);
     if (input.type === 'tabs' && Array.isArray(input.tabs)) {
-      const tabs = input.tabs.filter((id): id is string => typeof id === 'string' && !(id === EXPLORER_VIEW && host !== 'left') && !views.has(id) && Boolean(views.add(id)));
+      const tabs = input.tabs.filter((id): id is string => typeof id === 'string' && !REMOVED_VIEWS.has(id) && !(id === EXPLORER_VIEW && host !== 'left') && !views.has(id) && Boolean(views.add(id)));
+      if (!tabs.length && input.tabs.some((id) => REMOVED_VIEWS.has(id))) return null;
       return { type: 'tabs', id: input.id, tabs, active: tabs.includes(input.active ?? '') ? input.active : tabs[0] ?? null };
     }
     if (input.type !== 'split' || !['horizontal', 'vertical'].includes(input.axis)) return null;
@@ -344,7 +347,7 @@ export const parseDockLayout = (value: unknown): DockLayout | null => {
   });
   const locations: Record<string, DockLocation> = {};
   if (data.locations && typeof data.locations === 'object') for (const [id, location] of Object.entries(data.locations)) {
-    if (location && ['left', 'main'].includes(location.host) && typeof location.group === 'string' && ['left', 'right', 'top', 'bottom', 'center'].includes(location.side)) locations[id] = { ...location, index: Number.isFinite(location.index) ? location.index : 0 };
+    if (!REMOVED_VIEWS.has(id) && location && ['left', 'main'].includes(location.host) && typeof location.group === 'string' && ['left', 'right', 'top', 'bottom', 'center'].includes(location.side)) locations[id] = { ...location, index: Number.isFinite(location.index) ? location.index : 0 };
   }
-  return { version: 1, left, main, floating, locations, pinned: Array.isArray(data.pinned) ? data.pinned.filter((id) => typeof id === 'string') : [], sidebarRatio: Number.isFinite(data.sidebarRatio) ? Math.max(0.05, Math.min(0.8, data.sidebarRatio)) : 0.22, focusedGroup: typeof data.focusedGroup === 'string' ? data.focusedGroup : dockGroups(main)[0].id };
+  return { version: 1, left, main, floating, locations, pinned: Array.isArray(data.pinned) ? data.pinned.filter((id) => typeof id === 'string' && !REMOVED_VIEWS.has(id)) : [], sidebarRatio: Number.isFinite(data.sidebarRatio) ? Math.max(0.05, Math.min(0.8, data.sidebarRatio)) : 0.22, focusedGroup: typeof data.focusedGroup === 'string' ? data.focusedGroup : dockGroups(main)[0].id };
 };

@@ -47,13 +47,12 @@ type WorkspaceTabActionsOptions = {
   setNavigationRecovery: (value: boolean) => void;
   setCurrentTool: (tool: ToolName) => void;
   setOpenMenu: (menu: null) => void;
-  setTabMenuOpen: (open: boolean) => void;
   addNotification: (type: 'error', message: string) => void;
 };
 
 export function useWorkspaceTabActions({
   state, dock, storedWorkspaceLayout, persistWorkspaceRef, projectDirectoryHandle, projectId, activeActivityView,
-  setActiveActivityView, setWorkspaceContextMenu, setNavigationRecovery, setCurrentTool, setOpenMenu, setTabMenuOpen, addNotification,
+  setActiveActivityView, setWorkspaceContextMenu, setNavigationRecovery, setCurrentTool, setOpenMenu, addNotification,
 }: WorkspaceTabActionsOptions) {
   const { openTabs, setOpenTabs, activeTabId, setActiveTabId, closedTabs, setClosedTabs } = state;
   useEffect(() => {
@@ -71,7 +70,6 @@ export function useWorkspaceTabActions({
       setCurrentTool(tab.tool);
     }
     setOpenMenu(null);
-    setTabMenuOpen(false);
     setWorkspaceContextMenu(null);
   };
 

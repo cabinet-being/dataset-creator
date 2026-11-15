@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { Pin, RotateCcw } from 'lucide-react';
+import { Pin } from 'lucide-react';
 import { MenuSurface } from '../ui/MenuSurface';
 import { ContextActionGroups, type ContextActionGroup } from '../ui/ContextActions';
 import type { ExplorerTreeNode } from './ExplorerTree';
@@ -7,9 +7,6 @@ import type { DockView } from './DockWorkspace';
 import { isFileBackedTab } from '../../lib/workspaceFileTabs';
 import type { WorkspaceTab } from '../../lib/workspaceTabs';
 import { EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, type DockLayout } from '../../lib/workspaceLayout';
-import { ADVANCED_TOOLS, PRIMARY_TOOLS, TOOL_LABELS } from '../../lib/constants';
-import { ADVANCED_TOOL_GROUP_LABEL } from '../../lib/toolDefinitions';
-import type { ToolName } from '../../types';
 
 export type WorkspaceContextMenuState = { id: string; x: number; y: number };
 export type ExplorerContextMenuState = {
@@ -20,8 +17,8 @@ export type ExplorerContextMenuState = {
 };
 
 export function WorkspaceTabMenus({
-  workspaceViews, dockLayout, setDockLayout, openTabs, closedTabs, enabledTools, tabMenuOpen, setTabMenuOpen, toolMenuPosition,
-  workspaceContextMenu, setWorkspaceContextMenu, explorerContextMenu, setExplorerContextMenu, closeTopMenus, navigateToTool,
+  workspaceViews, dockLayout, setDockLayout, openTabs, closedTabs, 
+  workspaceContextMenu, setWorkspaceContextMenu, explorerContextMenu, setExplorerContextMenu, closeTopMenus,
   reopenClosedTab, toggleTabPinned, closeWorkspaceViews, getFileContextActionGroups, getDirectoryContextActionGroups,
 }: {
   workspaceViews: DockView[];
@@ -29,16 +26,11 @@ export function WorkspaceTabMenus({
   setDockLayout: Dispatch<SetStateAction<DockLayout>>;
   openTabs: WorkspaceTab[];
   closedTabs: WorkspaceTab[];
-  enabledTools: readonly ToolName[];
-  tabMenuOpen: boolean;
-  setTabMenuOpen: (open: boolean) => void;
-  toolMenuPosition: { x: number; y: number };
   workspaceContextMenu: WorkspaceContextMenuState | null;
   setWorkspaceContextMenu: (menu: WorkspaceContextMenuState | null) => void;
   explorerContextMenu: ExplorerContextMenuState | null;
   setExplorerContextMenu: (menu: ExplorerContextMenuState | null) => void;
   closeTopMenus: () => void;
-  navigateToTool: (tool: ToolName) => void;
   reopenClosedTab: () => void;
   toggleTabPinned: (tabId: string) => void;
   closeWorkspaceViews: (ids: string[]) => void | Promise<void>;
@@ -51,22 +43,9 @@ export function WorkspaceTabMenus({
   const sortedGroupIds = [...groupIds.filter((id) => workspaceViews.find((view) => view.id === id)?.pinned), ...groupIds.filter((id) => !workspaceViews.find((view) => view.id === id)?.pinned)];
   const menuClass = 'flex w-full items-center gap-2 rounded px-3 py-2 text-left hover:bg-secondary disabled:opacity-40';
   return <>
-    {tabMenuOpen && <>
-      <button type="button" aria-label="Close tool menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setTabMenuOpen(false)} />
-      <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: toolMenuPosition.x, top: toolMenuPosition.y }}>
-        {PRIMARY_TOOLS.filter((tool) => enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
-        {ADVANCED_TOOLS.some((tool) => enabledTools.includes(tool)) && <div role="group" aria-label={ADVANCED_TOOL_GROUP_LABEL}>
-          <div role="separator" className="my-1 border-t border-border" />
-          <div role="presentation" className="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{ADVANCED_TOOL_GROUP_LABEL}</div>
-          {ADVANCED_TOOLS.filter((tool) => enabledTools.includes(tool)).map((tool) => <button key={tool} className={menuClass} type="button" onClick={() => navigateToTool(tool)}>{TOOL_LABELS[tool]}</button>)}
-        </div>}
-        <div role="separator" className="my-1 border-t border-border" />
-        <button type="button" className={menuClass} onClick={() => { reopenClosedTab(); setTabMenuOpen(false); }} disabled={!closedTabs.length}><RotateCcw className="h-3.5 w-3.5" />Reopen closed tab</button>
-      </MenuSurface>
-    </>}
     {workspaceContextMenu && contextView && <>
       <button type="button" aria-label="Close tab menu" className="fixed inset-0 z-[1800] cursor-default" onClick={() => setWorkspaceContextMenu(null)} />
-      <MenuSurface onDismiss={() => { closeTopMenus(); setTabMenuOpen(false); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: workspaceContextMenu.x, top: workspaceContextMenu.y }}>
+      <MenuSurface onDismiss={() => { closeTopMenus(); setWorkspaceContextMenu(null); }} className="fixed z-[1801] w-52 rounded border border-border bg-popover p-1 text-xs shadow-xl" style={{ left: workspaceContextMenu.x, top: workspaceContextMenu.y }}>
         <button type="button" className={menuClass} onClick={() => {
           if (openTabs.some((tab) => tab.id === contextView.id)) toggleTabPinned(contextView.id);
           else setDockLayout((layout) => ({ ...layout, pinned: contextView.pinned ? layout.pinned?.filter((id) => id !== contextView.id) : [...(layout.pinned ?? []), contextView.id] }));

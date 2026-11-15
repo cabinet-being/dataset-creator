@@ -1,12 +1,11 @@
 import type { ReactNode } from 'react';
 
 /** Owns workspace geometry; project actions and editor lifetimes stay with their owners. */
-export function AppShell({ busy, setupDialog, backgroundTasks, header, activityBar, footer, overlays, children }: {
+export function AppShell({ busy, setupDialog, backgroundTasks, header, footer, overlays, children }: {
   busy: boolean;
   setupDialog?: ReactNode;
   backgroundTasks?: ReactNode;
   header: ReactNode;
-  activityBar: ReactNode;
   footer: ReactNode;
   overlays: ReactNode;
   children: ReactNode;
@@ -18,7 +17,7 @@ export function AppShell({ busy, setupDialog, backgroundTasks, header, activityB
       {backgroundTasks}
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         {header}
-        <div className="flex min-h-0 flex-1">{activityBar}{children}</div>
+        <div className="flex min-h-0 flex-1">{children}</div>
         {footer}
         {overlays}
       </main>

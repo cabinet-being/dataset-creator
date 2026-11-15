@@ -7,7 +7,7 @@ import type { ProjectTypeProfile } from '../lib/projectProfiles';
 import type { Dataset, ToolName } from '../types';
 import { WORKSPACE_WINDOWS } from '../components/workspace/WorkspaceMenus';
 import { TOOLS, TOOL_LABELS } from '../lib/constants';
-import { DATASET_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from '../lib/workspaceLayout';
+import { DATASET_VIEW, EXPLORER_VIEW, findDockGroup, floatDockSource, moveDockSource, migrateDockLayout, pinDockHost, focusDockView } from '../lib/workspaceLayout';
 import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
 import type { useDockWorkspace } from './useDockWorkspace';
 import type { useProjectSave } from './useProjectSave';
@@ -52,6 +52,7 @@ type WorkspaceCommandsOptions = {
   openDatasetToolTab: (datasetId: string, tool: DatasetToolName) => void | Promise<unknown>;
   openProjectDataset: () => void | Promise<unknown>;
   openProjectVersions: () => void | Promise<unknown>;
+  toggleExplorer: () => void;
   openTabs: WorkspaceTab[];
   profile: ProjectTypeProfile;
   projectDirectoryHandle: ProjectDirectoryHandle | undefined;
@@ -70,7 +71,7 @@ export function useWorkspaceCommands({
   explorerPanelRef, findExplorerNodeByPath, focusView, getActiveDirectoryChildren, getSelectedExplorerEntries, globalDataset,
   handleExplorerDelete, handleExplorerDuplicate, handleExplorerPaste, handleExplorerRename, handleNewProject, handleOpenProject,
   handleRenameProject, isProjectDirectoryBusy, navigateToTool, openCommands, openDatasetToolTab, openProjectDataset,
-  openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard,
+  openProjectVersions, openTabs, profile, projectDirectoryHandle, projectSave, reopenClosedTab, setExplorerClipboard, toggleExplorer,
   setIsWorkspaceSettingsOpen, setSelectedExplorerPaths, setSelectionAnchorPath, setTheme, stepTab,
 }: WorkspaceCommandsOptions) {
   const history = useHistoryStore();
@@ -110,6 +111,7 @@ export function useWorkspaceCommands({
     ...(['system', 'light', 'dark'] as const).map(mode => ({ id: `theme.${mode}`, label: `Theme: ${mode}`, run: () => setTheme(mode) })),
     ...WORKSPACE_WINDOWS.map(window => ({ id: `window.${window.id}`, label: `Toggle ${window.label}`, run: () => {
       const id = `window:${window.id}`;
+      if (id === EXPLORER_VIEW) return toggleExplorer();
       if (dock.isOpen(id)) return closeWorkspaceViews([id]);
       if (id === DATASET_VIEW) return openProjectDataset();
       dock.show(id);
@@ -125,7 +127,7 @@ export function useWorkspaceCommands({
     { id: 'tabs.close', label: 'Close editor tab', run: () => { if (activeTab) closeWorkspaceViews([activeTab.id]); }, disabled: !activeTab || activeTab.pinned },
     { id: 'tabs.reopen', label: 'Reopen closed editor', run: reopenClosedTab, disabled: !closedTabs.length },
     { id: 'project.save', label: 'Save project', shortcut: 'Mod+S', shortcutEnabled: !(activeTool === 'clean' || activeTab?.kind === 'file-edit' || (activeTab?.kind === 'file-view' && activeTab.fileKind === 'psd')), allowInInput: true, disabled: !projectDirectoryHandle, run: projectSave.retry },
-    ...(['explorer', 'inspector', 'output', 'project', 'dataset'] as const).map(id => ({ id: `focus.${id}`, label: `Focus ${id[0].toUpperCase() + id.slice(1)}`, run: () => focusView(`window:${id}`) })),
+    ...(['explorer', 'inspector', 'output', 'dataset'] as const).map(id => ({ id: `focus.${id}`, label: `Focus ${id[0].toUpperCase() + id.slice(1)}`, run: () => focusView(`window:${id}`) })),
     ...TOOLS.filter(tool => profile.enabledTools.includes(tool)).map(tool => ({ id: `tool.${tool}`, label: TOOL_LABELS[tool],
       group: TOOL_DEFINITIONS[tool].tier === 'advanced' ? ADVANCED_TOOL_GROUP_LABEL : 'Tools', run: () => navigateToTool(tool) })),
     ...(['right', 'bottom'] as const).map(side => ({ id: `tabs.split.${side}`, label: `Split editor ${side}`, disabled: !activeTab || (findDockGroup(dock.layout, activeTab.id)?.group.tabs.length ?? 0) < 2, run: () => {
