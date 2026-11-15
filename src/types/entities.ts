@@ -221,12 +221,15 @@ export interface BuildPreparationProfile {
   autoPipeline?: boolean;
 }
 
+export type BuildReviewView = 'list' | 'grid' | 'clusters';
 export type BuildStage = 'add' | 'select' | 'caption' | 'check' | 'export';
 
 export interface BuildSession {
   version: 1;
   /** Current Build stage; absent in sessions saved before stages existed (normalized on load). */
   stage?: BuildStage;
+  /** Select-stage view mode; absent means list. */
+  view?: BuildReviewView;
   profile: BuildPreparationProfile;
   cursor: number;
   filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected';

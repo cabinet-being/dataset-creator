@@ -80,6 +80,7 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   return {
     version: 1,
     stage,
+    ...(input.view === 'grid' || input.view === 'clusters' ? { view: input.view } : {}),
     profile: {
       target: Math.max(0, Math.floor(Number(input.profile?.target) || defaults.profile.target)),
       reviewMode,
