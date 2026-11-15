@@ -254,7 +254,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     let reconciledMoves: Array<{ from: string; to: string }> = [];
     const project = await readProjectDirectory(directory, async (name) => {
       const fileCount = await countProjectDirectoryFiles(directory);
-      if (!window.confirm(`This folder is not a DatasetCreator project. Create a project here? ${fileCount} file${fileCount === 1 ? '' : 's'} will be indexed and may get caption sidecar files.`)) {
+      if (!window.confirm(`This folder is not a DatasetCreator project. Create a project here? ${fileCount} file${fileCount === 1 ? '' : 's'} will be indexed. Dataset Creator adds a hidden .datasetcreator folder plus inbox/ and dataset/; your files are not moved.`)) {
         throw new DOMException('Project opening canceled', 'AbortError');
       }
       const setup = await requestProjectSetup(name, true);
