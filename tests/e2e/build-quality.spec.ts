@@ -15,12 +15,11 @@ test.describe('build quality report', () => {
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
   });
 
-  test('toggle opens the report and it reacts to trigger word and Dataset changes', async ({ page }) => {
-    const toggle = page.getByTestId('build-quality-toggle');
-    await expect(toggle).toHaveText(/^Quality: /);
-    await expect(toggle).toHaveAttribute('data-readiness', /^(ok|warn|fail)$/);
+  test('Check stage shows the report and it reacts to trigger word and Dataset changes', async ({ page }) => {
+    const check = page.getByTestId('build-stage-check');
+    await expect(check).toHaveAttribute('data-state', /^(empty|in-progress|done)$/);
     await expect(page.getByTestId('build-quality-panel')).toHaveCount(0);
-    await toggle.click();
+    await check.click();
     await expect(page.getByTestId('build-quality-panel')).toBeVisible();
     for (const id of ['count', 'captions', 'trigger']) await expect(metric(page, id)).toHaveCount(1);
 
@@ -33,30 +32,34 @@ test.describe('build quality report', () => {
     await expect(metric(page, 'captions')).toHaveAttribute('data-status', 'fail'); // fixture images have no captions
     await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'not-evaluated'); // no trigger word yet
 
-    // A trigger word absent from captions makes the trigger check fail.
+    // A trigger word absent from captions makes the trigger check fail (Settings lives on Select).
+    await page.getByTestId('build-stage-select').click();
+    await expect(page.getByTestId('build-quality-panel')).toHaveCount(0);
     await page.locator('[data-build-settings] summary').click();
-    // The trigger word is applied on Enter or blur only, never while typing.
+    // The trigger word is applied on Enter or blur only.
     const triggerInput = page.getByLabel('Trigger word');
     await triggerInput.fill('zxqtrigger');
-    await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'not-evaluated');
     await triggerInput.press('Enter');
+    await page.getByTestId('build-stage-check').click();
     await expect(metric(page, 'trigger')).toHaveAttribute('data-status', 'fail');
-    await expect(toggle).not.toHaveAttribute('data-readiness', 'ok');
+    await expect(check).not.toHaveAttribute('data-state', 'done');
 
     // Accepting a rejected proposal adds a file to the Dataset: count display changes.
     const before = await metric(page, 'count').innerText();
+    await page.getByTestId('build-stage-select').click();
     await page.getByLabel('Queue filter').selectOption('rejected');
     await page.getByLabel('Candidate filmstrip').getByRole('button').first().click();
     await page.getByRole('button', { name: 'Accept · A' }).click();
     await expect.poll(() => datasetCount(page), { timeout: 30_000 }).toBe(4);
+    await page.getByTestId('build-stage-check').click();
     await expect.poll(() => metric(page, 'count').innerText(), { timeout: 15_000 }).not.toBe(before);
     await expect(metric(page, 'count')).toContainText('4');
 
-    await toggle.click();
+    await page.getByTestId('build-stage-select').click();
     await expect(page.getByTestId('build-quality-panel')).toHaveCount(0);
   });
 
-  test('Finish shows the report above Export when export is allowed', async ({ page }) => {
+  test('Finish leads to the Export stage (pinned to the Dataset) and Check holds the report', async ({ page }) => {
     // Confirm the auto-accepted proposals and reject the undecided one so Finish is allowed.
     await page.getByRole('button', { name: 'Reject all 1' }).click();
     await page.getByLabel('Queue filter').selectOption('accepted');
@@ -70,13 +73,15 @@ test.describe('build quality report', () => {
     }
     await expect(page.getByRole('status').filter({ hasText: /Ready 3 \/ target 3/ })).toBeVisible({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Finish', exact: true }).click();
-    const finish = page.getByTestId('build-finish-quality');
-    await expect(finish).toBeVisible();
-    await expect(finish.locator('[data-metric="count"]')).toHaveCount(1);
-    await expect(finish.locator('[data-metric="captions"]')).toHaveCount(1);
+    await expect(page.getByTestId('build-stage-export')).toHaveAttribute('aria-current', 'step');
+    await expect(page.getByTestId('build-finish-quality')).toHaveCount(0);
+    await expect(page.getByTestId('build-quality-panel')).toHaveCount(0);
     // Export is pinned to the Dataset: no Source selector, heading says so.
     await expect(page.getByRole('heading', { name: 'Export Dataset' })).toBeVisible();
     await expect(page.getByLabel('Source', { exact: true })).toHaveCount(0);
+    await page.getByTestId('build-stage-check').click();
+    await expect(metric(page, 'count')).toHaveCount(1);
+    await expect(metric(page, 'captions')).toHaveCount(1);
   });
 
   test('Settings opens and holds the rare controls including Trigger word', async ({ page }) => {
@@ -94,7 +99,7 @@ test.describe('build quality profile coverage', () => {
     await page.getByRole('button', { name: 'Prepare coverage fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => datasetCount(page), { timeout: 30_000 }).toBe(10);
-    await page.getByTestId('build-quality-toggle').click();
+    await page.getByTestId('build-stage-check').click();
     await expect(page.getByTestId('build-quality-panel')).toBeVisible();
   });
   const panel = (page: Page) => page.getByTestId('build-quality-panel');
@@ -123,8 +128,9 @@ test.describe('build quality profile coverage', () => {
 
   test('switching Project type to Style no longer offers common-tag removal', async ({ page }) => {
     await expect(panel(page).locator('[data-hint="common-tags-prune"]')).toBeVisible();
-    await page.locator('[data-build-settings] summary').click();
+    await page.getByTestId('build-stage-add').click();
     await page.getByLabel('Project type', { exact: true }).selectOption('style');
+    await page.getByTestId('build-stage-check').click();
     await expect(panel(page).locator('[data-hint="common-tags-prune"]')).toHaveCount(0);
     await expect(panel(page).locator('[data-hint="trigger-missing"]')).toHaveCount(0);
     await expect(panel(page).locator('[data-metric="axis-framing"]')).toHaveCount(0);

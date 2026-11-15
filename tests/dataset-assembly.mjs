@@ -22,6 +22,7 @@ try {
       'src/services/quality/imageQuality.ts',
       'src/lib/projectProfilePresets.ts',
       'src/services/build/buildTriageService.ts',
+      'src/lib/buildStageSummary.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -38,6 +39,7 @@ try {
   const quality = await import(pathToFileURL(join(temp, 'imageQuality.mjs')));
   const presets = await import(pathToFileURL(join(temp, 'projectProfilePresets.mjs')));
   const triage = await import(pathToFileURL(join(temp, 'buildTriageService.mjs')));
+  const stageSummary = await import(pathToFileURL(join(temp, 'buildStageSummary.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/inbox/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -447,6 +449,52 @@ try {
     const pre = new AbortController(); pre.abort(); const none=[];
     await assert.rejects(assembly.encodeAssemblyInputs(items,{triggerWord:'',signal:pre.signal,encoder:{async encode(i){none.push(i);return {};}}}));
     assert.equal(none.length,0);
+  }
+  {
+    // Build stages: normalizeBuildSession defaults and getBuildStageSummary counters/states
+    const fresh = buildSession.createBuildSession();
+    assert.equal(fresh.stage,'add','new session starts in Add');
+    assert.deepEqual([...buildSession.BUILD_STAGES],['add','select','caption','check','export']);
+    const legacyEmpty = { ...fresh }; delete legacyEmpty.stage;
+    assert.equal(buildSession.normalizeBuildSession(legacyEmpty).stage,'add','legacy empty session -> add');
+    assert.equal(buildSession.normalizeBuildSession(undefined).stage,'add');
+    const record = { assetId:'source:a', decision:'unreviewed', application:'idle', validation:'pending' };
+    assert.equal(buildSession.normalizeBuildSession({ ...legacyEmpty, order:['source:a'], records:{ 'source:a': record } }).stage,'select','legacy session with records -> select');
+    for (const stage of ['caption','check','export']) assert.equal(buildSession.normalizeBuildSession({ ...fresh, stage }).stage,stage,`valid stage ${stage} kept`);
+    assert.equal(buildSession.normalizeBuildSession({ ...fresh, stage:'bogus' }).stage,'add','invalid stage falls back');
+    assert.equal(buildSession.normalizeBuildSession({ ...legacyEmpty, stage:'bogus', records:{ 'source:a': record } }).stage,'select','invalid stage with records falls back to select');
+
+    const img = (id, extra = {}) => ({ id, sourceImageId:id, kind:'image', label:'Image', displayIdentity:id, fileName:`${id}.png`, assetPath:`inbox/${id}.png`, imageData:new Blob(), width:1024, height:1024, aspectRatio:'1:1', ...extra });
+    const summarize = (items, session, readiness) => stageSummary.getBuildStageSummary({ session, effectiveItems:items, candidates:items.filter((i)=>!i.assetPath?.startsWith('dataset/')), readiness });
+    const byId = (summary) => Object.fromEntries(summary.stages.map((entry) => [entry.id, entry]));
+    const empty = summarize([], fresh);
+    assert.deepEqual(empty.stages.map((e)=>e.id),['add','select','caption','check','export']);
+    assert.ok(empty.stages.every((e)=>e.state==='empty'),'nothing -> every stage empty');
+    assert.equal(byId(empty).add.counter,'0 files'); assert.equal(byId(empty).caption.counter,'0/0 captioned');
+    assert.equal(empty.nextIncomplete,'add');
+
+    const inbox = [img('a'), img('b')];
+    const withMaterials = summarize(inbox, buildSession.reconcileBuildSession(fresh, inbox));
+    assert.equal(byId(withMaterials).add.state,'done'); assert.equal(byId(withMaterials).add.counter,'2 files');
+    assert.equal(byId(withMaterials).select.state,'in-progress'); assert.match(byId(withMaterials).select.counter,/0\/60 ready · 2 undecided/);
+    assert.equal(byId(withMaterials).caption.state,'empty');
+    assert.equal(withMaterials.nextIncomplete,'select');
+    assert.equal(byId(summarize([img('a')], buildSession.reconcileBuildSession(fresh, [img('a')]))).add.counter,'1 file','singular file');
+
+    const dataset = [img('d1',{ assetPath:'dataset/d1.png', tags:['x'] }), img('d2',{ assetPath:'dataset/d2.png', tags:[] }), img('d3',{ assetPath:'dataset/d3.png' })];
+    const partial = summarize([...inbox, ...dataset], fresh, 'warn');
+    assert.equal(partial.datasetSize,3); assert.equal(partial.captioned,1,'tags: [] and missing tags are not captioned');
+    assert.equal(byId(partial).caption.counter,'1/3 captioned'); assert.equal(byId(partial).caption.state,'in-progress');
+    assert.equal(byId(partial).check.state,'in-progress'); assert.equal(byId(partial).check.counter,'Needs attention');
+    const captioned = summarize(dataset.map((i)=>({ ...i, tags:['x'] })), fresh, 'ok');
+    assert.equal(byId(captioned).caption.state,'done'); assert.equal(byId(captioned).check.state,'done'); assert.equal(byId(captioned).check.counter,'Ready');
+    assert.equal(byId(summarize(dataset, fresh, 'fail')).check.counter,'Not ready');
+    assert.equal(byId(captioned).export.state,'empty');
+    assert.equal(captioned.nextIncomplete,'add','Add is not done without source materials');
+    const exported = summarize([...inbox, ...dataset.map((i)=>({ ...i, tags:['x'] }))], { ...fresh, lastExport:{ fingerprint:'f', entries:3, completedAt:'2024-01-01T00:00:00.000Z' } }, 'ok');
+    assert.equal(byId(exported).export.state,'done'); assert.equal(byId(exported).export.counter,'3 files exported');
+    assert.equal(byId(exported).caption.state,'done');
+    assert.equal(exported.nextIncomplete,'select','first non-done stage is reported');
   }
   console.log('dataset assembly contracts: ok');
 } finally {

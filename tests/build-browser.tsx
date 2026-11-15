@@ -97,6 +97,16 @@ function Harness() {
     };
     setAuto(true); setReady(true);
   };
+  const prepareEmpty = async () => {
+    const project = createProject('Build empty fixture', 'character');
+    const storage = await navigator.storage.getDirectory();
+    const directory = await storage.getDirectoryHandle(`build-empty-fixture-${crypto.randomUUID()}`, { create:true }) as unknown as ProjectDirectoryHandle;
+    await createProjectDirectory(directory, project);
+    useProjectStore.getState().loadProject(project);
+    useUIStore.setState({ projectDirectoryHandle:directory });
+    (window as unknown as Record<string, unknown>).__buildFixture = { session: () => useProjectStore.getState().buildSession, paths: () => ({}) };
+    setReady(true);
+  };
   const prepareCoverage = async () => {
     // Character project with 10 tagged files already in dataset/: 'solo' is in every file, framing tags are mixed.
     const framing = ['full body', 'full body', 'full body', 'full body', 'full body', 'close-up', 'close-up', 'close-up', 'upper body', 'upper body'];
@@ -125,7 +135,7 @@ function Harness() {
   };
   return <CommandProvider><main className="h-screen">{ready
     ? <BuildWorkspace active viewId="fixture:build" items={items} directory={useUIStore.getState().projectDirectoryHandle} semanticEncoderFactory={auto ? fakeEncoderFactory : undefined} />
-    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button></>}</main></CommandProvider>;
+    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button></>}</main></CommandProvider>;
 }
 
 const root = createRoot(document.getElementById('root')!); root.render(<Harness />);
