@@ -5,10 +5,7 @@ import { generateEmbedding, generateImageHash } from '../image/embeddingService'
 import { createOperationLogger, shouldLogProgress, type OperationLogger } from '../logging/applicationLog';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { snapshotFile } from '../project/fileSnapshotService';
-import {
-  getAssetManifestName,
-  getAssetManifestPath,
-} from '../project/assetManifestService';
+import { statProjectFile, upsertAssetRecords } from '../project/assetRegistryService';
 import { getExplorerFileKind, getUniqueExplorerName } from '../project/explorerFileService';
 import {
   SUPPORTED_PROJECT_ASSET_ACCEPT,
@@ -66,7 +63,6 @@ export type ImportedProjectAsset = {
   kind: ReturnType<typeof getExplorerFileKind>;
   fileName: string;
   assetPath: string;
-  manifestPath: string;
   mimeType: string;
   size: number;
 };
@@ -272,25 +268,20 @@ const resolveImportFileName = async (
     const directory = await getOrCreateDirectoryAtExplorerPath(destination.projectDirectory, explorerDirectoryPath);
     let targetName = getUniqueReservedName(await getUniqueExplorerName(directory, fileName), reservedNames);
     if (options.reserveCaptionSidecar) {
-      while (reservedNames.has(getCaptionPathForImage(targetName)) || reservedNames.has(getAssetManifestName(getCaptionPathForImage(targetName))) ||
-        await importEntryExists(directory, getCaptionPathForImage(targetName)) || await importEntryExists(directory, getAssetManifestName(getCaptionPathForImage(targetName)))) {
+      while (reservedNames.has(getCaptionPathForImage(targetName)) || await importEntryExists(directory, getCaptionPathForImage(targetName))) {
         reservedNames.add(targetName);
         targetName = getUniqueReservedName(await getUniqueExplorerName(directory, fileName), reservedNames);
       }
       reservedNames.add(getCaptionPathForImage(targetName));
-      reservedNames.add(getAssetManifestName(getCaptionPathForImage(targetName)));
     }
     reservedNames.add(targetName);
-    reservedNames.add(getAssetManifestName(targetName));
     return targetName;
   }
   const targetName = getUniqueReservedName(fileName, reservedNames);
   if (options.reserveCaptionSidecar) {
     reservedNames.add(getCaptionPathForImage(targetName));
-    reservedNames.add(getAssetManifestName(getCaptionPathForImage(targetName)));
   }
   reservedNames.add(targetName);
-  reservedNames.add(getAssetManifestName(targetName));
   return targetName;
 };
 
@@ -300,7 +291,7 @@ const getImportTarget = async (
   destination: ImportDestination | undefined,
   reservedNamesByDirectory: Map<string, Set<string>>,
   options: { reserveCaptionSidecar?: boolean; useReservedTarget?: boolean } = {}
-): Promise<{ explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string }> => {
+): Promise<{ explorerDirectoryPath?: string; fileName: string; assetPath?: string }> => {
   const relativeDirectory = relativePath ? getParentPath(relativePath) : '';
   const explorerDirectoryPath = destination?.explorerPath
     ? joinPath(destination.explorerPath, relativeDirectory)
@@ -320,21 +311,19 @@ const getImportTarget = async (
     explorerDirectoryPath,
     fileName: targetFileName,
     assetPath,
-    manifestPath: getAssetManifestPath(assetPath),
   };
 };
 
 const applyImportDestination = (
   sourceImage: SourceImage,
-  target: { fileName: string; assetPath?: string; manifestPath?: string }
+  target: { fileName: string; assetPath?: string }
 ) => {
-  if (!target.assetPath || !target.manifestPath) {
+  if (!target.assetPath) {
     return;
   }
 
   sourceImage.fileName = target.fileName;
   sourceImage.originalFilePath = target.assetPath;
-  sourceImage.manifestPath = target.manifestPath;
 };
 
 const getOrCreateDirectoryAtExplorerPath = async (
@@ -370,10 +359,10 @@ const writeBlobFile = async (directory: ProjectDirectoryHandle, name: string, va
 
 const writeProjectAsset = async (
   file: File,
-  target: { explorerDirectoryPath?: string; fileName: string; assetPath?: string; manifestPath?: string },
+  target: { explorerDirectoryPath?: string; fileName: string; assetPath?: string },
   destination: ImportDestination | undefined
 ): Promise<ImportedProjectAsset | null> => {
-  if (!destination?.projectDirectory || !target.explorerDirectoryPath || !target.assetPath || !target.manifestPath) {
+  if (!destination?.projectDirectory || !target.explorerDirectoryPath || !target.assetPath) {
     return null;
   }
 
@@ -385,31 +374,28 @@ const writeProjectAsset = async (
     kind: getExplorerFileKind(target.fileName, file.type),
     fileName: target.fileName,
     assetPath: target.assetPath,
-    manifestPath: target.manifestPath,
     mimeType: file.type,
     size: file.size,
   };
 
-  await writeBlobFile(
-    directory,
-    getAssetManifestName(target.fileName),
-    new Blob([
-      JSON.stringify(
-        {
-          id: asset.id,
-          kind: asset.kind,
-          fileName: asset.fileName,
-          originalFileName: file.name,
-          assetPath: asset.assetPath,
-          mimeType: asset.mimeType,
-          size: asset.size,
-          createdAt: new Date().toISOString(),
-        },
-        null,
-        2
-      ),
-    ], { type: 'application/json' })
-  );
+  // An image becomes a Source Image whose record the save writes; every other file is registered here.
+  if (resolveProjectAssetKind(target.fileName, file.type) !== 'image') {
+    const stat = await statProjectFile(destination.projectDirectory, target.assetPath);
+    if (stat) {
+      await upsertAssetRecords(destination.projectDirectory, [{
+        id: asset.id,
+        path: target.assetPath,
+        role: 'file',
+        fileKind: resolveProjectAssetKind(target.fileName, file.type),
+        size: stat.size,
+        mtime: stat.mtime,
+        mimeType: file.type || getProjectAssetMimeType(target.fileName),
+        fileName: asset.fileName,
+        originalFileName: file.name,
+        createdAt: new Date().toISOString(),
+      }]);
+    }
+  }
 
   return asset;
 };

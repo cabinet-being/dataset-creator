@@ -27,15 +27,27 @@ import {
   renderCaptionText,
   writeCaptionRaw,
 } from '../caption/captionFileService';
-import { resolveProjectAssetKind } from './assetTypeService';
+import { getProjectAssetMimeType, resolveProjectAssetKind } from './assetTypeService';
 import { ASSET_MANIFEST_SUFFIX, getAssetManifestName } from './assetManifestService';
+import { isLegacyProjectRootPath } from './projectPathFilters';
+import {
+  applyMovesToAssetRecord,
+  createEmptyAssetRegistry,
+  normalizeRegistryPath,
+  parseAssetRegistry,
+  serializeAssetRegistry,
+  statProjectFile,
+  type AssetRecord,
+} from './assetRegistryService';
 import { applyBuildSessionPathMoves, normalizeBuildSession } from '../build/buildSessionService';
 import { applyProjectRelativePathMoves, type ExplorerPathMove } from '../../lib/datasetAssets';
+import type { AspectRatio, AugmentationConfig, CropFrame, ImageType } from '../../types';
 import {
   LEGACY_ASSETS_DIRECTORY,
   LEGACY_CACHE_DIRECTORY,
   LEGACY_SHARED_DIRECTORY,
   LEGACY_SOURCE_DIRECTORY,
+  PROJECT_ASSETS_FILE,
   PROJECT_DATA_DIRECTORY,
   PROJECT_FILE,
   PROJECT_GIT_DIRECTORY,
@@ -54,7 +66,7 @@ const LEGACY_DATA_BACKUP = 'legacy-data';
 // Sub-folders that can hold originals/edits an old reader looks up by id; such a folder is never moved.
 const LEGACY_DATA_PAYLOAD_DIRECTORIES = ['source-images', 'generated-images'];
 const GIT_SERVICE_FILES = ['dataset-creator-versions.json'];
-const JOURNAL_KINDS: LayoutJournal['kind'][] = ['layout-v3', 'raw-inbox', 'trigger-rewrite', 'captions-txt'];
+const JOURNAL_KINDS: LayoutJournal['kind'][] = ['layout-v3', 'raw-inbox', 'trigger-rewrite', 'captions-txt', 'assets-registry'];
 const EXPORTS_DIRECTORY = 'exports';
 
 export type LayoutMigrationProgress = { phase: string; completed: number; total: number };
@@ -86,6 +98,8 @@ export type LayoutMigrationReport = {
   rawMaterials?: RawMaterialsReport;
   /** Sidecar tags moved into TXT captions during this run. */
   captions?: CaptionTxtReport;
+  /** Sidecars folded into the asset registry during this run. */
+  assets?: AssetsRegistryReport;
 };
 
 export type RawMaterialsReport = {
@@ -115,7 +129,7 @@ export type CaptionWrite = { path: string; before: string | null; after: string 
 
 type JournalStep = {
   id: string;
-  type: 'move' | 'write' | 'delete' | 'raw-move' | 'rewrite-paths' | 'caption-writes' | 'project-trigger' | 'caption-collisions' | 'captions-txt' | 'captions-marker';
+  type: 'move' | 'write' | 'delete' | 'raw-move' | 'rewrite-paths' | 'caption-writes' | 'project-trigger' | 'caption-collisions' | 'captions-txt' | 'captions-marker' | 'assets-fold' | 'assets-sidecars' | 'assets-marker';
   description: string;
   done: boolean;
   /** move: source and destination project-relative paths. */
@@ -139,6 +153,10 @@ type JournalStep = {
   conflicts?: string[];
   /** project-trigger: the trigger word stored in project.json. */
   trigger?: string;
+  /** assets-fold: sidecars folded into assets.json; assets-sidecars moves exactly these into the backup. */
+  sidecars?: string[];
+  /** assets-fold: records written to assets.json. */
+  records?: number;
   /** captions-txt: what the conversion did. */
   stats?: { converted: number; triggersAdded: number; backedUp: number };
 };
@@ -146,7 +164,7 @@ type JournalStep = {
 export type LayoutJournal = {
   format: typeof JOURNAL_FORMAT;
   version: 1;
-  kind: 'layout-v3' | 'raw-inbox' | 'trigger-rewrite' | 'captions-txt';
+  kind: 'layout-v3' | 'raw-inbox' | 'trigger-rewrite' | 'captions-txt' | 'assets-registry';
   id: string;
   fromVersion: 1 | 2 | 3;
   createdAt: string;
@@ -266,6 +284,9 @@ const executeStep = async (root: ProjectDirectoryHandle, journal: LayoutJournal,
   if (step.type === 'caption-collisions') { await resolveStemCollisions(root, journal, step); return; }
   if (step.type === 'captions-txt') { await convertSidecarCaptions(root, journal, step); return; }
   if (step.type === 'captions-marker') { await markCaptionsConverted(root, journal.id); return; }
+  if (step.type === 'assets-fold') { await foldSidecarsIntoRegistry(root, step); return; }
+  if (step.type === 'assets-sidecars') { await moveSidecarsToBackup(root, journal); return; }
+  if (step.type === 'assets-marker') { await markAssetsRegistry(root, journal.id); return; }
   if (step.type === 'move') {
     if (!step.from || !step.to) throw new Error(`Journal step ${step.id} is incomplete.`);
     if (!await getEntry(root, step.from)) return; // Already moved, or never existed.
@@ -608,6 +629,16 @@ const rewriteMovedPaths = async (root: ProjectDirectoryHandle, moves: ExplorerPa
       if (next !== text) await writeAt(root, PROJECT_FILE, next);
     }
   }
+  const registryText = await readTextAt(root, PROJECT_ASSETS_FILE);
+  if (registryText !== undefined) {
+    const registry = parseAssetRegistry(registryText);
+    let changed = false;
+    for (const [id, record] of Object.entries(registry.assets)) {
+      const moved = applyMovesToAssetRecord(record, moves);
+      if (moved !== record) { registry.assets[id] = moved; changed = true; }
+    }
+    if (changed) await writeAt(root, PROJECT_ASSETS_FILE, serializeAssetRegistry(registry));
+  }
   const rewriteManifests = async (directoryPath: string) => {
     const entry = await getEntry(root, directoryPath);
     if (entry?.kind !== 'directory') return;
@@ -847,6 +878,210 @@ export const runCaptionTxtMigration = async (root: ProjectDirectoryHandle, optio
   };
 };
 
+// ---------------------------------------------------------------------------------------------------------
+// Sidecars -> .datasetcreator/assets.json
+// ---------------------------------------------------------------------------------------------------------
+
+export type AssetsRegistryReport = { journalId: string; records: number; sidecars: number };
+
+const stripProjectPrefix = (path: string) => normalizeRegistryPath(path);
+
+const asString = (value: unknown): string | undefined => typeof value === 'string' && value ? value : undefined;
+const asNumber = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+/** Every sidecar of the project: `<file>.manifest.json` found in the tree and the manifests listed in project.json. */
+const discoverSidecars = async (root: ProjectDirectoryHandle): Promise<Map<string, 'source' | 'edited' | undefined>> => {
+  const found = new Map<string, 'source' | 'edited' | undefined>();
+  const walk = async (directoryPath: string, directory: ProjectDirectoryHandle) => {
+    for (const [name, entry] of await listEntries(directory)) {
+      if ('getFile' in entry) {
+        if (name.endsWith(ASSET_MANIFEST_SUFFIX)) found.set(join(directoryPath, name), undefined);
+      } else if (!(directoryPath === '' && name === EXPORTS_DIRECTORY) && !isInternalProjectEntry(name)) {
+        await walk(join(directoryPath, name), entry as ProjectDirectoryHandle);
+      }
+    }
+  };
+  await walk('', root);
+  const text = await readTextAt(root, PROJECT_FILE);
+  const project = text ? (JSON.parse(text) as { project?: Record<string, unknown> }).project : undefined;
+  const listed = (value: unknown, role: 'source' | 'edited') => {
+    if (typeof value !== 'object' || value === null) return;
+    for (const path of Object.values(value as Record<string, unknown>)) {
+      if (typeof path !== 'string') continue;
+      const relative = stripProjectPrefix(path);
+      // The oldest layouts (`sources/`, `synthetic/`) were never read by the previous version either.
+      if (!isLegacyProjectRootPath(relative)) found.set(relative, role);
+    }
+  };
+  listed(project?.sourceImageManifests, 'source');
+  listed(project?.editedAssetManifests, 'edited');
+  return found;
+};
+
+const recordFromSidecar = async (
+  root: ProjectDirectoryHandle,
+  sidecarPath: string,
+  hint: 'source' | 'edited' | undefined,
+  manifest: Record<string, unknown>
+): Promise<AssetRecord | undefined> => {
+  const name = nameOf(sidecarPath);
+  const field = (key: string) => { const value = asString(manifest[key]); return value ? stripProjectPrefix(value) : undefined; };
+  const directory = parentOf(sidecarPath);
+  const isEdited = hint === 'edited' || (hint === undefined && asString(manifest.sourceImageId) !== undefined && (manifest.imageFileName !== undefined || manifest.imageDataPath !== undefined));
+  const isSource = !isEdited && (hint === 'source' || asString(manifest.originalFileNameOnDisk) !== undefined);
+  const beside = name.endsWith(ASSET_MANIFEST_SUFFIX) ? join(directory, name.slice(0, -ASSET_MANIFEST_SUFFIX.length)) : undefined;
+  const candidates = isEdited
+    ? [beside, field('imageDataPath'), asString(manifest.imageFileName) ? join(directory, manifest.imageFileName as string) : undefined]
+    : isSource
+      ? [beside, field('originalFilePath'), asString(manifest.originalFileNameOnDisk) ? join(directory, manifest.originalFileNameOnDisk as string) : undefined]
+      : [beside, field('assetPath'), field('originalFilePath')];
+  let path: string | undefined;
+  let stat: Awaited<ReturnType<typeof statProjectFile>>;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    stat = await statProjectFile(root, candidate);
+    if (stat) { path = candidate; break; }
+  }
+  if (!path || !stat) return undefined;
+  const fileName = nameOf(path);
+  const id = asString(manifest.id) ?? newId();
+  const mimeType = asString(manifest.mimeType) ?? (getProjectAssetMimeType(fileName) || stat.type);
+  const createdAt = asString(manifest.createdAt) && !Number.isNaN(Date.parse(manifest.createdAt as string)) ? manifest.createdAt as string : new Date(stat.mtime).toISOString();
+  const legacyTags = path.startsWith(`${PROJECT_DATA_DIRECTORY}/`) && Array.isArray(manifest.tags)
+    ? manifest.tags.filter((tag): tag is string => typeof tag === 'string')
+    : undefined;
+  const base: AssetRecord = {
+    id,
+    path,
+    role: isEdited ? 'edited' : isSource ? 'source' : 'file',
+    fileKind: resolveProjectAssetKind(fileName, mimeType),
+    size: stat.size,
+    mtime: stat.mtime,
+    mimeType,
+    ...(asNumber(manifest.width) !== undefined ? { width: asNumber(manifest.width) } : {}),
+    ...(asNumber(manifest.height) !== undefined ? { height: asNumber(manifest.height) } : {}),
+    fileName: isEdited ? fileName : asString(manifest.fileName) ?? fileName,
+    ...(asString(manifest.originalFileName) ? { originalFileName: asString(manifest.originalFileName) } : {}),
+    createdAt,
+    ...(manifest.hidden === true ? { hidden: true } : {}),
+    ...(legacyTags ? { legacyTags } : {}),
+  };
+  if (!isEdited) return base;
+  const psdPath = field('psdDataPath');
+  const deletedAt = asString(manifest.deletedAt);
+  return {
+    ...base,
+    edited: {
+      sourceImageId: asString(manifest.sourceImageId) ?? '',
+      ...(psdPath ? { psdPath } : {}),
+      type: (asString(manifest.type) as ImageType | undefined) ?? 'cleaned',
+      ...(manifest.cropFrame ? { cropFrame: manifest.cropFrame as CropFrame } : {}),
+      ...(manifest.augmentationConfig ? { augmentationConfig: manifest.augmentationConfig as AugmentationConfig } : {}),
+      ...(asString(manifest.cleanupOverlayId) ? { cleanupOverlayId: asString(manifest.cleanupOverlayId) } : {}),
+      aspectRatio: (asString(manifest.aspectRatio) as AspectRatio | undefined) ?? '1:1',
+      deleted: manifest.deleted === true,
+      ...(deletedAt ? { deletedAt } : {}),
+      ...(asNumber(manifest.exportOrder) !== undefined ? { exportOrder: asNumber(manifest.exportOrder) } : {}),
+    },
+  };
+};
+
+/**
+ * Builds assets.json from every sidecar. Records already in assets.json (an interrupted earlier run) win by id, so
+ * a repeat never changes ids. The sidecars themselves stay where they are until this registry is written.
+ */
+const foldSidecarsIntoRegistry = async (root: ProjectDirectoryHandle, step: JournalStep): Promise<void> => {
+  const sidecars = await discoverSidecars(root);
+  const existingText = await readTextAt(root, PROJECT_ASSETS_FILE);
+  const registry = existingText !== undefined ? parseAssetRegistry(existingText) : createEmptyAssetRegistry();
+  const paths = new Set(Object.values(registry.assets).map((record) => record.path));
+  for (const [sidecarPath, hint] of [...sidecars].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const text = await readTextAt(root, sidecarPath);
+    if (text === undefined) continue;
+    let manifest: Record<string, unknown>;
+    try { manifest = JSON.parse(text) as Record<string, unknown>; } catch { continue; }
+    const record = await recordFromSidecar(root, sidecarPath, hint, manifest);
+    if (!record) continue;
+    // A record already registered for this id or path (an interrupted earlier run, or a copied sidecar) is kept as it is;
+    // a file left without a record is registered with a new id when the project opens.
+    if (registry.assets[record.id] || paths.has(record.path)) continue;
+    paths.add(record.path);
+    registry.assets[record.id] = record;
+  }
+  // The PSD of an edited asset is a file of its own.
+  for (const record of Object.values({ ...registry.assets })) {
+    const psdPath = record.edited?.psdPath;
+    if (!psdPath || paths.has(psdPath)) continue;
+    const stat = await statProjectFile(root, psdPath);
+    if (!stat) continue;
+    const id = newId();
+    paths.add(psdPath);
+    registry.assets[id] = {
+      id, path: psdPath, role: 'file', fileKind: 'psd', size: stat.size, mtime: stat.mtime,
+      mimeType: 'image/vnd.adobe.photoshop', fileName: nameOf(psdPath), createdAt: record.createdAt,
+    };
+  }
+  const text = serializeAssetRegistry(registry);
+  if (existingText === undefined || serializeAssetRegistry(parseAssetRegistry(existingText)) !== text) await writeAt(root, PROJECT_ASSETS_FILE, text);
+  step.sidecars = [...sidecars.keys()];
+  step.records = Object.keys(registry.assets).length;
+};
+
+/** Moves the folded sidecars out of the working folders (into the journal backup) after assets.json was written. */
+const moveSidecarsToBackup = async (root: ProjectDirectoryHandle, journal: LayoutJournal): Promise<void> => {
+  const fold = journal.steps.find((step) => step.type === 'assets-fold');
+  if (!fold?.done) throw new Error('The asset registry was not written; the sidecars were left in place.');
+  for (const path of fold.sidecars ?? []) {
+    if (!await getEntry(root, path)) continue;
+    await mergeCopy(root, path, backupPath(journal.id, `sidecars/${path}`), conflictsPath(journal.id, path));
+    await removeAt(root, path);
+    if (await getEntry(root, path)) throw new Error(`Could not remove ${path} after backing it up.`);
+  }
+};
+
+/** Drops the sidecar path maps from project.json and records that the registry owns the per-file data. */
+const markAssetsRegistry = async (root: ProjectDirectoryHandle, id: string): Promise<void> => {
+  const text = await readTextAt(root, PROJECT_FILE);
+  if (text === undefined) return;
+  const json = JSON.parse(text) as { project?: Record<string, unknown> & { migrations?: Record<string, unknown> } };
+  if (!json.project) return;
+  for (const key of ['sourceImageManifests', 'editedAssetManifests', 'datasetItemManifests']) delete json.project[key];
+  json.project.migrations = { ...json.project.migrations, assetsRegistry: { id, completedAt: new Date().toISOString() } };
+  await writeAt(root, PROJECT_FILE, JSON.stringify(json, null, 2));
+};
+
+/** v3 project whose per-file data still sits in sidecars (no `migrations.assetsRegistry` marker). */
+export const detectPendingAssetsRegistryMigration = async (root: ProjectDirectoryHandle): Promise<boolean> => {
+  if (await detectProjectLayout(root) !== 'v3') return false;
+  const text = await readTextAt(root, PROJECT_FILE);
+  if (text === undefined) return false;
+  return !(JSON.parse(text) as { project?: { migrations?: { assetsRegistry?: unknown } } }).project?.migrations?.assetsRegistry;
+};
+
+/**
+ * Folds every `*.manifest.json` (and the manifest lists of project.json) into `.datasetcreator/assets.json`, then moves
+ * the sidecars into `.datasetcreator/backup/<id>/sidecars/` and removes the lists. The sidecars leave the working folders
+ * only after assets.json was written; every step is journaled and safe to repeat. Returns undefined when nothing was pending.
+ */
+export const runAssetsRegistryMigration = async (root: ProjectDirectoryHandle, options: LayoutMigrationOptions = {}): Promise<AssetsRegistryReport | undefined> => {
+  if (!await detectPendingAssetsRegistryMigration(root)) return undefined;
+  throwIfAborted(options.signal);
+  const id = newId();
+  const steps: Omit<JournalStep, 'done'>[] = [
+    { id: 'assets-fold', type: 'assets-fold', description: 'Collect file records into the asset registry' },
+    { id: 'assets-sidecars', type: 'assets-sidecars', description: 'Move the old per-file metadata files into the backup' },
+    { id: 'assets-marker', type: 'assets-marker', description: 'Record the asset registry conversion' },
+  ];
+  const journal: LayoutJournal = {
+    format: JOURNAL_FORMAT, version: 1, kind: 'assets-registry', id, fromVersion: 3,
+    createdAt: new Date().toISOString(), steps: steps.map((step) => ({ ...step, done: false })),
+  };
+  await writeJournal(root, journal);
+  await runJournal(root, journal, options, 'Moving file metadata into the asset registry');
+  const fold = journal.steps.find((step) => step.type === 'assets-fold');
+  return { journalId: id, records: fold?.records ?? 0, sidecars: fold?.sidecars?.length ?? 0 };
+};
+
 /** v3 project whose raw materials still sit in `src/shared` / `src/assets`. */
 export const detectLegacyRawLayout = async (root: ProjectDirectoryHandle): Promise<boolean> => {
   if (await detectProjectLayout(root) !== 'v3') return false;
@@ -958,7 +1193,7 @@ export const runLayoutMigration = async (root: ProjectDirectoryHandle, options: 
   const id = newId();
   const layoutV3: LayoutV3Migration = { id, fromVersion: plan.fromVersion };
   const steps: Omit<JournalStep, 'done'>[] = [
-    // C6 moves the *Manifests maps into assets.json; until then they stay in project.json.
+    // project.json still lists the sidecars; the asset registry migration that follows folds them into assets.json.
     { id: 'project-json', type: 'write', path: PROJECT_FILE, content: JSON.stringify(createLayoutV3ProjectJson(manifest, project, layoutV3), null, 2), description: `Write ${PROJECT_FILE}` },
     { id: 'manifest-json', type: 'delete', path: PROJECT_MANIFEST_FILE, backup: true, description: `Retire ${PROJECT_MANIFEST_FILE}` },
   ];
@@ -978,8 +1213,8 @@ export const runLayoutMigration = async (root: ProjectDirectoryHandle, options: 
   let keptLegacyData = false;
   if (dataEntry) {
     const stillUsed = await hasLegacyPayload(root) || referencesLegacyData([
-      ...Object.values(project.sourceImages).flatMap((source) => [source.originalFilePath, source.manifestPath]),
-      ...Object.values(project.datasetItems).flatMap((item) => [item.imageDataPath, item.psdDataPath, item.manifestPath]),
+      ...Object.values(project.sourceImages).map((source) => source.originalFilePath),
+      ...Object.values(project.datasetItems).flatMap((item) => [item.imageDataPath, item.psdDataPath]),
       ...Object.values(manifest.project.sourceImageManifests ?? {}),
       ...Object.values(manifest.project.editedAssetManifests ?? {}),
     ]);
@@ -997,5 +1232,6 @@ export const runLayoutMigration = async (root: ProjectDirectoryHandle, options: 
   await runJournal(root, journal, options);
   const rawMaterials = await runRawMaterialsMove(root, options);
   const captions = await runCaptionTxtMigration(root, options);
-  return { journalId: id, snapshotVersionId, fromVersion: plan.fromVersion, resumed, keptLegacyData, rawMaterials, captions };
+  const assets = await runAssetsRegistryMigration(root, options);
+  return { journalId: id, snapshotVersionId, fromVersion: plan.fromVersion, resumed, keptLegacyData, rawMaterials, captions, assets };
 };

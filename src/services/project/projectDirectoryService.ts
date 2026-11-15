@@ -12,7 +12,7 @@ import {
   type WorkspaceSettings,
 } from '../../types';
 import { createThumbnail } from '../image/imageProcessor';
-import { getAssetManifestName } from './assetManifestService';
+import { getAssetManifestName, getAssetManifestPath } from './assetManifestService';
 import { snapshotFileIfNeeded } from './fileSnapshotService';
 import { isTriggerMissing, readCaptionFile, readCaptionRaw, writeCaptionFile } from '../caption/captionFileService';
 import { migrateLegacyCaptions, type PathCaptionAsset } from '../caption/captionMigrationService';
@@ -34,8 +34,19 @@ import {
   ensureProjectLayout,
   isProjectWorkspacePath,
 } from './projectLayoutService';
-import { applyProjectRelativePathMoves } from '../../lib/datasetAssets';
-import { normalizeBuildSession } from '../build/buildSessionService';
+import { applyFileAssetOrderPathMoves, applyProjectRelativePathMoves, type ExplorerPathMove } from '../../lib/datasetAssets';
+import { getImageDimensions } from '../image/imageProcessor';
+import { hashAssetBlob, reconcileProjectAssets, type AssetReconcileReport } from './assetIndexService';
+import {
+  commitAssetRegistry,
+  getActiveAssetRegistry,
+  loadAssetRegistry,
+  statProjectFile,
+  updateAssetRegistry,
+  type AssetRecord,
+} from './assetRegistryService';
+import { createOperationLogger } from '../logging/applicationLog';
+import { applyBuildSessionPathMoves, normalizeBuildSession } from '../build/buildSessionService';
 import {
   createLegacyDatasetMigration,
   getLegacyDatasetPathMoves,
@@ -83,18 +94,19 @@ export type LayoutV3Migration = { id: string; completedAt?: string; fromVersion:
 /** Sidecar tags were turned into TXT captions; its presence means no further scan is needed. */
 export type CaptionsTxtMigration = { id: string; completedAt: string };
 
-/**
- * `.datasetcreator/project.json` (v3). Until C6 moves per-asset data into assets.json, the
- * *Manifests path maps stay here so the current sidecar-based reader keeps working.
- */
+/** The asset registry was folded out of the sidecars; its presence means no *.manifest.json is read any more. */
+export type AssetsRegistryMigration = { id: string; completedAt: string };
+
+/** `.datasetcreator/project.json` (v3). Per-file data lives in `.datasetcreator/assets.json`. */
 export type ProjectJsonV3 = {
   format: typeof PROJECT_PROJECT_FORMAT;
   version: 3;
-  project: Omit<DirectoryProjectManifest['project'], 'taggingConfig' | 'datasetMigration' | 'captionMigration' | 'datasetItemManifests' | 'datasetFilePath'> & {
+  project: Omit<DirectoryProjectManifest['project'], 'taggingConfig' | 'datasetMigration' | 'captionMigration' | 'datasetItemManifests' | 'datasetFilePath' | 'sourceImageManifests' | 'editedAssetManifests'> & {
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     migrations?: {
       layoutV3?: LayoutV3Migration;
       captionsTxt?: CaptionsTxtMigration;
+      assetsRegistry?: AssetsRegistryMigration;
       legacy?: { datasetMigration?: LegacyDatasetMigrationReport; captionMigration?: ProjectState['captionMigration'] };
     };
   };
@@ -130,6 +142,10 @@ type DirectoryProjectManifest = {
     createdAt: string;
   };
 };
+
+/** Entities read from an unmigrated layout remember their sidecar until the reader moves it into the legacy map. */
+type LegacySource = SourceImage & { manifestPath?: string };
+type LegacyEdited = EditedAsset & { manifestPath?: string };
 
 type SourceManifest = {
   id: string;
@@ -418,14 +434,15 @@ type ManifestPaths = {
 
 const serializeProjectJson = (
   project: ProjectState,
-  paths: ManifestPaths,
   migrations: NonNullable<ProjectJsonV3['project']['migrations']> | undefined
 ): ProjectJsonV3 => {
-  const { taggingConfig, datasetMigration, captionMigration, datasetItemManifests: _items, datasetFilePath: _file, ...rest } =
-    getProjectManifest(project, paths).project;
+  const {
+    taggingConfig, datasetMigration, captionMigration, datasetItemManifests: _items, datasetFilePath: _file,
+    sourceImageManifests: _sources, editedAssetManifests: _edited, ...rest
+  } = getProjectManifest(project).project;
   const legacy = datasetMigration || captionMigration ? { datasetMigration, captionMigration } : migrations?.legacy;
-  const nextMigrations = migrations?.layoutV3 || migrations?.captionsTxt || legacy
-    ? { layoutV3: migrations?.layoutV3, captionsTxt: migrations?.captionsTxt, legacy }
+  const nextMigrations = migrations?.layoutV3 || migrations?.captionsTxt || migrations?.assetsRegistry || legacy
+    ? { layoutV3: migrations?.layoutV3, captionsTxt: migrations?.captionsTxt, assetsRegistry: migrations?.assetsRegistry, legacy }
     : undefined;
   return {
     format: PROJECT_PROJECT_FORMAT,
@@ -439,17 +456,26 @@ export type LegacyProjectManifest = DirectoryProjectManifest;
 export const readLegacyProjectManifest = (directory: ProjectDirectoryHandle): Promise<LegacyProjectManifest> =>
   readJsonFile<DirectoryProjectManifest>(directory, PROJECT_DIRECTORY_MANIFEST, 'the project manifest');
 
+/**
+ * project.json written by the v2 upgrade still lists the sidecars of every asset; the asset registry
+ * migration that follows folds them into assets.json and removes these maps.
+ */
+export type PendingProjectJsonV3 = ProjectJsonV3 & {
+  project: { sourceImageManifests?: Record<string, string>; editedAssetManifests?: Record<string, string> };
+};
+
 /** Builds project.json from a (legacy-migrated) manifest.json and the project read from it. */
 export const createLayoutV3ProjectJson = (
   manifest: LegacyProjectManifest,
   project: ProjectState,
   layoutV3: LayoutV3Migration
-): ProjectJsonV3 => {
+): PendingProjectJsonV3 => {
   const record = manifest.project as Record<string, unknown>;
   const editedAssetManifests = manifest.project.editedAssetManifests
     ?? (record[`syn${'thetic'}ImageManifests`] as Record<string, string> | undefined)
     ?? manifest.project.datasetItemManifests;
-  return serializeProjectJson(project, { sourceImageManifests: manifest.project.sourceImageManifests, editedAssetManifests }, { layoutV3 });
+  const json = serializeProjectJson(project, { layoutV3 });
+  return { ...json, project: { ...json.project, sourceImageManifests: manifest.project.sourceImageManifests, editedAssetManifests } };
 };
 
 /** Maps a v3 project.json to the in-memory shape shared with the legacy manifest reader. */
@@ -479,17 +505,18 @@ const readProjectJsonMigrations = async (directory: ProjectDirectoryHandle): Pro
 const writeProjectManifest = async (
   directory: ProjectDirectoryHandle,
   project: ProjectState,
-  paths: ManifestPaths
+  paths: ManifestPaths = {}
 ) => {
   if (await detectProjectLayout(directory) === 'v2') {
     await writeTextFile(directory, PROJECT_DIRECTORY_MANIFEST, JSON.stringify(getProjectManifest(project, paths), null, 2));
     return;
   }
-  // A brand-new project has no sidecar tags to convert, so it starts with the caption conversion marked complete.
+  // A brand-new project has no sidecars or sidecar tags to convert, so it starts with those conversions marked complete.
+  const completedAt = new Date().toISOString();
   const migrations = await detectProjectLayout(directory) === 'v3'
     ? await readProjectJsonMigrations(directory)
-    : { captionsTxt: { id: 'new-project', completedAt: new Date().toISOString() } };
-  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(serializeProjectJson(project, paths, migrations), null, 2));
+    : { captionsTxt: { id: 'new-project', completedAt }, assetsRegistry: { id: 'new-project', completedAt } };
+  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(serializeProjectJson(project, migrations), null, 2));
 };
 
 const getDefaultSourceManifestPath = (source: SourceImage): string => {
@@ -615,7 +642,6 @@ const getReusableProjectPath = (path: string | undefined): string | undefined =>
 
 /** Settings the asset writers need for captions: the TXT is the caption; sidecars keep tags only in an unmigrated legacy layout. */
 type CaptionWriteContext = { trigger: string; legacy: boolean };
-const NEW_PROJECT_CAPTIONS: CaptionWriteContext = { trigger: '', legacy: false };
 
 /** A newly saved asset that carries tags in memory gets its TXT unless one already exists. */
 const writeNewCaption = async (root: ProjectDirectoryHandle, imagePath: string | undefined, tags: string[] | undefined, trigger: string) => {
@@ -624,49 +650,48 @@ const writeNewCaption = async (root: ProjectDirectoryHandle, imagePath: string |
   await writeCaptionFile(root, imagePath, tags, trigger);
 };
 
-const writeSource = async (root: ProjectDirectoryHandle, source: SourceImage, captions: CaptionWriteContext = NEW_PROJECT_CAPTIONS): Promise<string> => {
-  const defaultOriginalFileName = `original.${getFileExtension(source.fileName, source.mimeType)}`;
-  const manifestPath = getNormalizedAssetManifestPath(
-    source.manifestPath,
-    defaultOriginalFileName,
-    getDefaultSourceManifestPath(source)
-  );
-  const originalFilePath = source.originalFilePath
-    ? toProjectRelativePath(source.originalFilePath)
-    : joinPath(getParentPath(manifestPath), `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`);
-  const originalFileNameOnDisk = getFileName(originalFilePath);
-  await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
-  await writeProjectPreview(root, 'source', source.id, source.originalFile);
-  await writeNewCaption(root, originalFilePath, source.tags, captions.trigger);
-  await writeTextFileAtPath(
-    root,
-    manifestPath,
-    JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath, captions.legacy), null, 2)
-  );
-  if (source.manifestPath && toProjectRelativePath(source.manifestPath) !== manifestPath) {
-    await removeProjectFileAtPath(root, source.manifestPath);
+// ---------------------------------------------------------------------------------------------------------
+// Legacy (unmigrated, manifest.json) layout: sidecars. Entities do not carry a manifest path; the reader
+// remembers where each sidecar lives and the writers derive the rest from the asset path.
+// ---------------------------------------------------------------------------------------------------------
+
+const legacyManifestPaths = new WeakMap<ProjectDirectoryHandle, Map<string, string>>();
+
+const getLegacyManifests = (root: ProjectDirectoryHandle): Map<string, string> => {
+  let manifests = legacyManifestPaths.get(root);
+  if (!manifests) {
+    manifests = new Map();
+    legacyManifestPaths.set(root, manifests);
   }
-  return manifestPath;
+  return manifests;
 };
 
-const writeSourceChanges = async (
+/** A `<file>.manifest.json` sidecar follows its file; a legacy `manifest.json` in a payload folder stays where it is. */
+const resolveLegacyManifestPath = (root: ProjectDirectoryHandle, id: string, assetPath: string | undefined): string | undefined => {
+  const known = getLegacyManifests(root).get(id);
+  if (assetPath && (!known || known.endsWith('.manifest.json') && getFileName(known) !== PROJECT_DIRECTORY_MANIFEST)) {
+    return getAssetManifestPath(toProjectRelativePath(assetPath));
+  }
+  return known;
+};
+
+const writeLegacySource = async (
   root: ProjectDirectoryHandle,
   source: SourceImage,
   previousSource: SourceImage | undefined,
   captions: CaptionWriteContext
 ): Promise<string> => {
   const defaultOriginalFileName = `original.${getFileExtension(source.fileName, source.mimeType)}`;
+  const assetPath = source.originalFilePath ?? previousSource?.originalFilePath;
+  const previousManifestPath = getLegacyManifests(root).get(source.id);
   const manifestPath = getNormalizedAssetManifestPath(
-    source.manifestPath ?? previousSource?.manifestPath,
+    resolveLegacyManifestPath(root, source.id, assetPath),
     defaultOriginalFileName,
     getDefaultSourceManifestPath(source)
   );
-  const originalFilePath =
-    source.originalFilePath
-      ? toProjectRelativePath(source.originalFilePath)
-      : previousSource?.originalFilePath
-        ? toProjectRelativePath(previousSource.originalFilePath)
-        : joinPath(getParentPath(manifestPath), `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`);
+  const originalFilePath = assetPath
+    ? toProjectRelativePath(assetPath)
+    : joinPath(getParentPath(manifestPath), `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`);
   const originalFileNameOnDisk = getFileName(originalFilePath);
   if (!previousSource || source.originalFile !== previousSource.originalFile) {
     await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
@@ -678,48 +703,24 @@ const writeSourceChanges = async (
     manifestPath,
     JSON.stringify(serializeSourceManifest(source, originalFileNameOnDisk, originalFilePath, captions.legacy), null, 2)
   );
-  const previousManifestPath = source.manifestPath ?? previousSource?.manifestPath;
   if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
     await removeProjectFileAtPath(root, previousManifestPath);
   }
+  getLegacyManifests(root).set(source.id, manifestPath);
   return manifestPath;
 };
 
-const writeEditedAsset = async (root: ProjectDirectoryHandle, item: EditedAsset, captions: CaptionWriteContext = NEW_PROJECT_CAPTIONS): Promise<string> => {
-  const defaultImageFileName = 'image.png';
-  const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, defaultImageFileName, getDefaultEditedAssetManifestPath(item));
-  const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), `${item.id}.png`);
-  const imageFileName = getFileName(imageDataPath);
-  const psdDataPath = item.psdData
-    ? getReusableProjectPath(item.psdDataPath) ?? joinPath(getParentPath(manifestPath), 'image.psd')
-    : undefined;
-  const psdFileName = psdDataPath ? getFileName(psdDataPath) : undefined;
-  await writeBlobFileAtPath(root, imageDataPath, item.imageData);
-  await writeProjectPreview(root, 'edited', item.id, item.imageData);
-  await writeNewCaption(root, imageDataPath, item.tags, captions.trigger);
-  if (item.psdData && psdFileName) {
-    await writeBlobFileAtPath(root, psdDataPath ?? joinPath(getParentPath(manifestPath), psdFileName), item.psdData);
-  }
-  await writeTextFileAtPath(
-    root,
-    manifestPath,
-    JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath, captions.legacy), null, 2)
-  );
-  if (item.manifestPath && toProjectRelativePath(item.manifestPath) !== manifestPath) {
-    await removeProjectFileAtPath(root, item.manifestPath);
-  }
-  return manifestPath;
-};
-
-const writeEditedAssetChanges = async (
+const writeLegacyEditedAsset = async (
   root: ProjectDirectoryHandle,
   item: EditedAsset,
   previousItem: EditedAsset | undefined,
   captions: CaptionWriteContext
 ): Promise<string> => {
   const defaultImageFileName = 'image.png';
+  const assetPath = item.imageDataPath ?? previousItem?.imageDataPath;
+  const previousManifestPath = getLegacyManifests(root).get(item.id);
   const manifestPath = getNormalizedAssetManifestPath(
-    item.manifestPath ?? previousItem?.manifestPath,
+    resolveLegacyManifestPath(root, item.id, assetPath),
     defaultImageFileName,
     getDefaultEditedAssetManifestPath(item)
   );
@@ -754,10 +755,10 @@ const writeEditedAssetChanges = async (
     manifestPath,
     JSON.stringify(serializeEditedAssetManifest(item, imageFileName, imageDataPath, psdFileName, psdDataPath, captions.legacy), null, 2)
   );
-  const previousManifestPath = item.manifestPath ?? previousItem?.manifestPath;
   if (previousManifestPath && toProjectRelativePath(previousManifestPath) !== manifestPath) {
     await removeProjectFileAtPath(root, previousManifestPath);
   }
+  getLegacyManifests(root).set(item.id, manifestPath);
   return manifestPath;
 };
 
@@ -790,6 +791,193 @@ const removeProjectFileAtPath = async (root: ProjectDirectoryHandle, path: strin
   }
 };
 
+// ---------------------------------------------------------------------------------------------------------
+// v3 layout: the asset registry (.datasetcreator/assets.json) replaces the sidecars.
+// ---------------------------------------------------------------------------------------------------------
+
+const PSD_MIME_TYPE = 'image/vnd.adobe.photoshop';
+
+/** Changes one save makes to the registry; applied in a single differential write after every file was written. */
+type RegistryChanges = { upserts: AssetRecord[]; removeIds: Set<string>; removePaths: Set<string> };
+
+const createRegistryChanges = (): RegistryChanges => ({ upserts: [], removeIds: new Set(), removePaths: new Set() });
+
+const getLiveRecordById = (root: ProjectDirectoryHandle, id: string): AssetRecord | undefined =>
+  getActiveAssetRegistry(root)?.assets[id];
+
+const getLiveRecordByPath = (root: ProjectDirectoryHandle, path: string): AssetRecord | undefined => {
+  const registry = getActiveAssetRegistry(root);
+  return registry ? Object.values(registry.assets).find((record) => record.path === path) : undefined;
+};
+
+const writeSourceV3 = async (
+  root: ProjectDirectoryHandle,
+  source: SourceImage,
+  previousSource: SourceImage | undefined,
+  captions: CaptionWriteContext,
+  changes: RegistryChanges
+): Promise<void> => {
+  const record = getLiveRecordById(root, source.id);
+  const originalFilePath = source.originalFilePath
+    ? toProjectRelativePath(source.originalFilePath)
+    : previousSource?.originalFilePath
+      ? toProjectRelativePath(previousSource.originalFilePath)
+      : record?.path ?? joinPath(PROJECT_INBOX_DIRECTORY, `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`);
+  const contentChanged = !previousSource || source.originalFile !== previousSource.originalFile;
+  if (contentChanged) {
+    await writeBlobFileAtPath(root, originalFilePath, source.originalFile);
+    await writeProjectPreview(root, 'source', source.id, source.originalFile);
+  }
+  if (!previousSource) await writeNewCaption(root, originalFilePath, source.tags, captions.trigger);
+  const stat = await statProjectFile(root, originalFilePath);
+  if (!stat) return;
+  const keepHash = !contentChanged && record?.path === originalFilePath && record.size === stat.size && record.mtime === stat.mtime;
+  // New content is fingerprinted while it is still in memory; unchanged content keeps its stored hash.
+  const sha256 = keepHash ? record?.sha256 : contentChanged ? await hashAssetBlob(source.originalFile) : undefined;
+  changes.upserts.push({
+    id: source.id,
+    path: originalFilePath,
+    role: 'source',
+    fileKind: 'image',
+    size: stat.size,
+    mtime: stat.mtime,
+    ...(sha256 ? { sha256 } : {}),
+    mimeType: source.mimeType,
+    width: source.width,
+    height: source.height,
+    fileName: source.fileName,
+    ...(source.originalFileName !== undefined ? { originalFileName: source.originalFileName } : {}),
+    createdAt: toIsoString(source.createdAt),
+    ...(source.hidden !== undefined ? { hidden: source.hidden } : {}),
+    ...(source.modifiedAt !== undefined ? { modifiedAt: source.modifiedAt } : {}),
+    ...(record?.legacyTags ? { legacyTags: record.legacyTags } : {}),
+  });
+};
+
+const writeEditedAssetV3 = async (
+  root: ProjectDirectoryHandle,
+  item: EditedAsset,
+  previousItem: EditedAsset | undefined,
+  captions: CaptionWriteContext,
+  changes: RegistryChanges
+): Promise<void> => {
+  const record = getLiveRecordById(root, item.id);
+  const imageDataPath =
+    getReusableProjectPath(item.imageDataPath) ??
+    getReusableProjectPath(previousItem?.imageDataPath) ??
+    record?.path ??
+    joinPath(PROJECT_DATASET_DIRECTORY, `${item.id}.png`);
+  const psdDataPath = item.psdData
+    ? getReusableProjectPath(item.psdDataPath) ??
+      getReusableProjectPath(previousItem?.psdDataPath) ??
+      record?.edited?.psdPath ??
+      joinPath(getParentPath(imageDataPath), 'image.psd')
+    : undefined;
+  const imageChanged = !previousItem || item.imageData !== previousItem.imageData;
+  if (imageChanged) {
+    await writeBlobFileAtPath(root, imageDataPath, item.imageData);
+    await writeProjectPreview(root, 'edited', item.id, item.imageData);
+  }
+  if (!previousItem) await writeNewCaption(root, imageDataPath, item.tags, captions.trigger);
+  const psdChanged = Boolean(item.psdData) && (!previousItem || item.psdData !== previousItem.psdData);
+  if (item.psdData && psdDataPath && psdChanged) {
+    await writeBlobFileAtPath(root, psdDataPath, item.psdData);
+  } else if (!item.psdData && previousItem?.psdData) {
+    const previousPsdPath = getReusableProjectPath(previousItem.psdDataPath) ?? record?.edited?.psdPath;
+    if (previousPsdPath) {
+      await removeProjectFileAtPath(root, previousPsdPath);
+      changes.removePaths.add(previousPsdPath);
+    }
+  }
+  const stat = await statProjectFile(root, imageDataPath);
+  if (stat) {
+    const keepHash = !imageChanged && record?.path === imageDataPath && record.size === stat.size && record.mtime === stat.mtime;
+    const sha256 = keepHash ? record?.sha256 : imageChanged ? await hashAssetBlob(item.imageData) : undefined;
+    changes.upserts.push({
+      id: item.id,
+      path: imageDataPath,
+      role: 'edited',
+      fileKind: 'image',
+      size: stat.size,
+      mtime: stat.mtime,
+      ...(sha256 ? { sha256 } : {}),
+      mimeType: 'image/png',
+      width: item.width,
+      height: item.height,
+      fileName: getFileName(imageDataPath),
+      createdAt: toIsoString(item.createdAt),
+      ...(item.modifiedAt !== undefined ? { modifiedAt: item.modifiedAt } : {}),
+      edited: {
+        sourceImageId: item.sourceImageId,
+        ...(psdDataPath ? { psdPath: psdDataPath } : {}),
+        type: item.type,
+        ...(item.cropFrame ? { cropFrame: item.cropFrame } : {}),
+        ...(item.augmentationConfig ? { augmentationConfig: item.augmentationConfig } : {}),
+        ...(item.cleanupOverlayId ? { cleanupOverlayId: item.cleanupOverlayId } : {}),
+        aspectRatio: item.aspectRatio,
+        deleted: item.deleted,
+        ...(item.deletedAt ? { deletedAt: toIsoString(item.deletedAt) } : {}),
+        ...(item.exportOrder !== undefined ? { exportOrder: item.exportOrder } : {}),
+      },
+    });
+  }
+  if (psdDataPath) {
+    const psdStat = await statProjectFile(root, psdDataPath);
+    if (psdStat) {
+      const existing = getLiveRecordByPath(root, psdDataPath);
+      const keepHash = !psdChanged && existing?.size === psdStat.size && existing.mtime === psdStat.mtime;
+      const sha256 = keepHash ? existing?.sha256 : psdChanged && item.psdData ? await hashAssetBlob(item.psdData) : undefined;
+      changes.upserts.push({
+        id: existing?.id ?? crypto.randomUUID(),
+        path: psdDataPath,
+        role: 'file',
+        fileKind: 'psd',
+        size: psdStat.size,
+        mtime: psdStat.mtime,
+        ...(sha256 ? { sha256 } : {}),
+        mimeType: PSD_MIME_TYPE,
+        fileName: getFileName(psdDataPath),
+        createdAt: existing?.createdAt ?? toIsoString(item.createdAt),
+      });
+    }
+  }
+};
+
+const removeSourceV3 = async (root: ProjectDirectoryHandle, id: string, previous: SourceImage, changes: RegistryChanges) => {
+  await removeProjectPreview(root, 'source', id);
+  const path = getReusableProjectPath(previous.originalFilePath) ?? getLiveRecordById(root, id)?.path;
+  if (path) await removeProjectFileAtPath(root, path);
+  changes.removeIds.add(id);
+};
+
+const removeEditedAssetV3 = async (root: ProjectDirectoryHandle, id: string, previous: EditedAsset, changes: RegistryChanges) => {
+  await removeProjectPreview(root, 'edited', id);
+  const record = getLiveRecordById(root, id);
+  const imagePath = getReusableProjectPath(previous.imageDataPath) ?? record?.path;
+  const psdPath = getReusableProjectPath(previous.psdDataPath) ?? record?.edited?.psdPath;
+  if (imagePath) await removeProjectFileAtPath(root, imagePath);
+  if (psdPath) {
+    await removeProjectFileAtPath(root, psdPath);
+    changes.removePaths.add(psdPath);
+  }
+  changes.removeIds.add(id);
+};
+
+const applyRegistryChanges = (root: ProjectDirectoryHandle, changes: RegistryChanges) =>
+  updateAssetRegistry(root, (assets) => {
+    for (const id of changes.removeIds) delete assets[id];
+    for (const [id, record] of Object.entries(assets)) {
+      if (changes.removePaths.has(record.path) && record.role === 'file') delete assets[id];
+    }
+    for (const record of changes.upserts) {
+      // A plain-file record sitting at this path (made by indexing) gives way to the entity record.
+      for (const [id, other] of Object.entries(assets)) {
+        if (id !== record.id && other.path === record.path && other.role === 'file' && record.role !== 'file') delete assets[id];
+      }
+      assets[record.id] = record;
+    }
+  });
+
 export const pickProjectDirectory = async (): Promise<ProjectDirectoryHandle> => {
   const picker = requireDirectoryPicker();
   return picker.call(window, { mode: 'readwrite' });
@@ -800,18 +988,17 @@ export const createProjectDirectory = async (
   project: ProjectState
 ) => {
   await ensureProjectLayout(directory, project);
-  const sourceImageManifests: Record<string, string> = {};
-  const editedAssetManifests: Record<string, string> = {};
+  // A new project has no registry yet; the saved assets become its first records.
+  await loadAssetRegistry(directory);
+  const captions: CaptionWriteContext = { trigger: project.dataset.triggerWord, legacy: false };
+  const changes = createRegistryChanges();
 
   await Promise.all([
-    ...Object.values(project.sourceImages).map(async (source) => {
-      sourceImageManifests[source.id] = await writeSource(directory, source, { trigger: project.dataset.triggerWord, legacy: false });
-    }),
-    ...Object.values(project.datasetItems).map(async (item) => {
-      editedAssetManifests[item.id] = await writeEditedAsset(directory, item, { trigger: project.dataset.triggerWord, legacy: false });
-    }),
+    ...Object.values(project.sourceImages).map((source) => writeSourceV3(directory, source, undefined, captions, changes)),
+    ...Object.values(project.datasetItems).map((item) => writeEditedAssetV3(directory, item, undefined, captions, changes)),
   ]);
-  await writeProjectManifest(directory, project, { sourceImageManifests, editedAssetManifests });
+  await applyRegistryChanges(directory, changes);
+  await writeProjectManifest(directory, project);
 };
 
 export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHandle): Promise<boolean> =>
@@ -883,46 +1070,48 @@ export const clearProjectDirectory = async (directory: ProjectDirectoryHandle) =
   );
 };
 
-export const writeProjectDirectoryChanges = async (
+const writeLegacyProjectDirectoryChanges = async (
   project: ProjectState,
   previousProject: ProjectState | undefined,
   directory: ProjectDirectoryHandle
 ) => {
-  await ensureProjectLayout(directory, project);
   const previousSources = previousProject?.sourceImages ?? {};
   const previousEditedAssets = previousProject?.datasetItems ?? {};
-  const captions: CaptionWriteContext = { trigger: project.dataset.triggerWord, legacy: await detectProjectLayout(directory) === 'v2' };
-  const sourceImageManifests: Record<string, string> = {};
-  const editedAssetManifests: Record<string, string> = {};
+  const captions: CaptionWriteContext = { trigger: project.dataset.triggerWord, legacy: true };
+  const manifests = getLegacyManifests(directory);
 
   const assetWrites = await Promise.allSettled([
     ...Object.entries(project.sourceImages)
       .filter(([id, source]) => source !== previousSources[id])
       .map(async ([id, source]) => {
-        sourceImageManifests[id] = await writeSourceChanges(directory, source, previousSources[id], captions);
+        await writeLegacySource(directory, source, previousSources[id], captions);
       }),
     ...Object.keys(previousSources)
       .filter((id) => !project.sourceImages[id])
       .map(async (id) => {
         await removeProjectPreview(directory, 'source', id);
-        if (previousSources[id]?.manifestPath) {
-          await removeProjectEntryAtPath(directory, previousSources[id].manifestPath, [previousSources[id].originalFilePath]);
+        const manifestPath = manifests.get(id);
+        if (manifestPath) {
+          await removeProjectEntryAtPath(directory, manifestPath, [previousSources[id].originalFilePath]);
+          manifests.delete(id);
         }
       }),
     ...Object.entries(project.datasetItems)
       .filter(([id, item]) => item !== previousEditedAssets[id])
       .map(async ([id, item]) => {
-        editedAssetManifests[id] = await writeEditedAssetChanges(directory, item, previousEditedAssets[id], captions);
+        await writeLegacyEditedAsset(directory, item, previousEditedAssets[id], captions);
       }),
     ...Object.keys(previousEditedAssets)
       .filter((id) => !project.datasetItems[id])
       .map(async (id) => {
         await removeProjectPreview(directory, 'edited', id);
-        if (previousEditedAssets[id]?.manifestPath) {
-          await removeProjectEntryAtPath(directory, previousEditedAssets[id].manifestPath, [
+        const manifestPath = manifests.get(id);
+        if (manifestPath) {
+          await removeProjectEntryAtPath(directory, manifestPath, [
             previousEditedAssets[id].imageDataPath,
             previousEditedAssets[id].psdDataPath,
           ]);
+          manifests.delete(id);
         }
       }),
   ]);
@@ -932,18 +1121,62 @@ export const writeProjectDirectoryChanges = async (
   const failedWrite = assetWrites.find((result) => result.status === 'rejected');
   if (failedWrite?.status === 'rejected') throw failedWrite.reason;
 
+  const sourceImageManifests: Record<string, string> = {};
+  const editedAssetManifests: Record<string, string> = {};
   for (const source of Object.values(project.sourceImages)) {
-    sourceImageManifests[source.id] = source.manifestPath
-      ? toProjectRelativePath(source.manifestPath)
-      : sourceImageManifests[source.id] ?? getDefaultSourceManifestPath(source);
+    sourceImageManifests[source.id] = toProjectRelativePath(manifests.get(source.id) ?? getDefaultSourceManifestPath(source));
   }
   for (const item of Object.values(project.datasetItems)) {
-    const reusableManifestPath = getReusableProjectPath(item.manifestPath);
-    editedAssetManifests[item.id] = reusableManifestPath
-      ? reusableManifestPath
-      : editedAssetManifests[item.id] ?? getDefaultEditedAssetManifestPath(item);
+    editedAssetManifests[item.id] = toProjectRelativePath(manifests.get(item.id) ?? getDefaultEditedAssetManifestPath(item));
   }
   await writeProjectManifest(directory, project, { sourceImageManifests, editedAssetManifests });
+};
+
+const writeV3ProjectDirectoryChanges = async (
+  project: ProjectState,
+  previousProject: ProjectState | undefined,
+  directory: ProjectDirectoryHandle
+) => {
+  // The registry is the live one of this root; a save that finds it unloaded reads it first instead of starting an empty one.
+  if (!getActiveAssetRegistry(directory)) await loadAssetRegistry(directory);
+  const previousSources = previousProject?.sourceImages ?? {};
+  const previousEditedAssets = previousProject?.datasetItems ?? {};
+  const captions: CaptionWriteContext = { trigger: project.dataset.triggerWord, legacy: false };
+  const changes = createRegistryChanges();
+
+  const assetWrites = await Promise.allSettled([
+    ...Object.entries(project.sourceImages)
+      .filter(([id, source]) => source !== previousSources[id])
+      .map(([id, source]) => writeSourceV3(directory, source, previousSources[id], captions, changes)),
+    ...Object.keys(previousSources)
+      .filter((id) => !project.sourceImages[id])
+      .map((id) => removeSourceV3(directory, id, previousSources[id], changes)),
+    ...Object.entries(project.datasetItems)
+      .filter(([id, item]) => item !== previousEditedAssets[id])
+      .map(([id, item]) => writeEditedAssetV3(directory, item, previousEditedAssets[id], captions, changes)),
+    ...Object.keys(previousEditedAssets)
+      .filter((id) => !project.datasetItems[id])
+      .map((id) => removeEditedAssetV3(directory, id, previousEditedAssets[id], changes)),
+  ]);
+
+  // Keep the save lane occupied until every started writer finishes, even if
+  // another failed. A retry must not race an unfinished previous snapshot.
+  const failedWrite = assetWrites.find((result) => result.status === 'rejected');
+  if (failedWrite?.status === 'rejected') throw failedWrite.reason;
+
+  // The registry is written only after every file was; a failed save leaves the saved state untouched.
+  await applyRegistryChanges(directory, changes);
+  await writeProjectManifest(directory, project);
+};
+
+export const writeProjectDirectoryChanges = async (
+  project: ProjectState,
+  previousProject: ProjectState | undefined,
+  directory: ProjectDirectoryHandle
+) => {
+  await ensureProjectLayout(directory, project);
+  if (await detectProjectLayout(directory) === 'v2') await writeLegacyProjectDirectoryChanges(project, previousProject, directory);
+  else await writeV3ProjectDirectoryChanges(project, previousProject, directory);
 };
 
 /**
@@ -969,7 +1202,7 @@ const readSource = async (
   root?: ProjectDirectoryHandle,
   paths?: { manifestPath?: string; originalFilePath?: string },
   captions?: CaptionReadContext
-): Promise<SourceImage> => {
+): Promise<LegacySource> => {
   const manifest = await readJsonFile<SourceManifest>(
     directory,
     paths?.manifestPath ? getFileName(paths.manifestPath) : PROJECT_DIRECTORY_MANIFEST,
@@ -1019,7 +1252,7 @@ const readEditedAsset = async (
   root?: ProjectDirectoryHandle,
   paths?: { manifestPath?: string; imageDataPath?: string; psdDataPath?: string },
   captions?: CaptionReadContext
-): Promise<EditedAsset> => {
+): Promise<LegacyEdited> => {
   const manifest = await readJsonFile<EditedAssetDirectoryManifest>(
     directory,
     paths?.manifestPath ? getFileName(paths.manifestPath) : PROJECT_DIRECTORY_MANIFEST,
@@ -1076,6 +1309,120 @@ const readEditedAsset = async (
     deletedAt: manifest.deletedAt ? toDate(manifest.deletedAt, new Date()) : undefined,
     createdAt: toDate(manifest.createdAt, new Date()),
     exportOrder: manifest.exportOrder,
+  };
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// v3 reading: entities come from the asset registry, the files from the paths it holds.
+// ---------------------------------------------------------------------------------------------------------
+
+type RegistryReadResult = {
+  sources: SourceImage[];
+  edited: EditedAsset[];
+  /** Records whose dimensions were measured again because the file changed. */
+  measured: Map<string, { width: number; height: number }>;
+};
+
+const readImageRecord = async (root: ProjectDirectoryHandle, record: AssetRecord, refreshDimensions: boolean) => {
+  const blob = await readBlobFileAtPath(root, record.path);
+  let { width, height } = record;
+  if (refreshDimensions || !width || !height) {
+    const measured = await getImageDimensions(blob);
+    width = measured.width;
+    height = measured.height;
+  }
+  return { blob, width: width ?? 0, height: height ?? 0 };
+};
+
+const readSourceFromRecord = async (
+  root: ProjectDirectoryHandle,
+  record: AssetRecord,
+  captions: CaptionReadContext,
+  refreshDimensions: boolean,
+  measured: RegistryReadResult['measured']
+): Promise<SourceImage> => {
+  const { blob, width, height } = await readImageRecord(root, record, refreshDimensions);
+  if (width !== record.width || height !== record.height) measured.set(record.id, { width, height });
+  return {
+    id: record.id,
+    fileName: record.fileName,
+    originalFileName: record.originalFileName,
+    originalFile: blob,
+    width,
+    height,
+    mimeType: record.mimeType || blob.type,
+    previewUrl: await getOrCreateProjectPreviewUrl(root, 'source', record.id, blob),
+    originalFilePath: record.path,
+    ...await readAssetTags(root, record.path, record.legacyTags, captions),
+    hidden: record.hidden,
+    modifiedAt: record.modifiedAt,
+    createdAt: toDate(record.createdAt, new Date()),
+  };
+};
+
+const readEditedFromRecord = async (
+  root: ProjectDirectoryHandle,
+  record: AssetRecord,
+  captions: CaptionReadContext,
+  refreshDimensions: boolean,
+  measured: RegistryReadResult['measured']
+): Promise<EditedAsset> => {
+  const edited = record.edited;
+  if (!edited) throw new Error(`Edited asset "${record.id}" has no edit data.`);
+  const { blob, width, height } = await readImageRecord(root, record, refreshDimensions);
+  if (width !== record.width || height !== record.height) measured.set(record.id, { width, height });
+  const psdDataPath = edited.psdPath;
+  const psdData = psdDataPath ? await readBlobFileAtPath(root, psdDataPath).catch(() => undefined) : undefined;
+  return {
+    id: record.id,
+    sourceImageId: edited.sourceImageId,
+    imageData: blob,
+    psdData,
+    previewUrl: await getOrCreateProjectPreviewUrl(root, 'edited', record.id, blob),
+    imageDataPath: record.path,
+    psdDataPath: psdData ? psdDataPath : undefined,
+    width,
+    height,
+    type: edited.type,
+    cropFrame: edited.cropFrame,
+    augmentationConfig: edited.augmentationConfig,
+    cleanupOverlayId: edited.cleanupOverlayId,
+    ...await readAssetTags(root, record.path, record.legacyTags, captions),
+    aspectRatio: edited.aspectRatio,
+    deleted: edited.deleted,
+    deletedAt: edited.deletedAt ? toDate(edited.deletedAt, new Date()) : undefined,
+    createdAt: toDate(record.createdAt, new Date()),
+    exportOrder: edited.exportOrder,
+    modifiedAt: record.modifiedAt,
+  };
+};
+
+/** Preview cache entry of a record (the PSD preview of a plain file is keyed by its Explorer path). */
+const removeRecordPreview = (root: ProjectDirectoryHandle, record: AssetRecord) => {
+  if (record.role === 'source') return removeProjectPreview(root, 'source', record.id);
+  if (record.role === 'edited') return removeProjectPreview(root, 'edited', record.id);
+  return record.fileKind === 'psd' ? removeProjectPreview(root, 'psd', `Project/${record.path}`) : Promise.resolve();
+};
+
+const readRegistryEntities = async (
+  root: ProjectDirectoryHandle,
+  records: AssetRecord[],
+  captions: CaptionReadContext,
+  modifiedIds: Set<string>
+): Promise<RegistryReadResult> => {
+  const measured: RegistryReadResult['measured'] = new Map();
+  const [sources, edited] = await Promise.all([
+    Promise.all(records.filter((record) => record.role === 'source' && record.fileKind === 'image').map(async (record) => {
+      try { return await readSourceFromRecord(root, record, captions, modifiedIds.has(record.id), measured); } catch { return null; }
+    })),
+    Promise.all(records.filter((record) => record.role === 'edited' && record.edited).map(async (record) => {
+      try { return await readEditedFromRecord(root, record, captions, modifiedIds.has(record.id), measured); } catch { return null; }
+    })),
+  ]);
+  return {
+    sources: sources.filter((source): source is SourceImage => Boolean(source)),
+    edited: edited.filter((item): item is EditedAsset => Boolean(item)),
+    measured,
   };
 };
 
@@ -1139,9 +1486,50 @@ const writeMigratedPathCaptions = async (root: ProjectDirectoryHandle, captions:
   }
 };
 
+const MAX_LOGGED_REGISTRY_CHANGES = 25;
+
+/**
+ * Persists the outcome of the registry reconciliation and reports it. project.json goes first when files were rebound
+ * (it holds the moved Build session and Dataset order); assets.json is written last and only when it changed.
+ */
+const finishRegistryReconcile = async (
+  directory: ProjectDirectoryHandle,
+  project: ProjectState,
+  reconciled: { report: AssetReconcileReport; measured: RegistryReadResult['measured'] },
+  options: ReadProjectDirectoryOptions
+) => {
+  const { report, measured } = reconciled;
+  if (report.pathMoves.length) await writeProjectManifest(directory, project);
+  const assets = { ...report.registry.assets };
+  for (const [id, size] of measured) if (assets[id]) assets[id] = { ...assets[id], ...size };
+  const registry = { ...report.registry, assets };
+  try {
+    await commitAssetRegistry(directory, registry);
+  } catch (error) {
+    // The project opens from the reconciled registry; the next save retries the write.
+    createOperationLogger('Project').warning(`Could not update .datasetcreator/assets.json: ${getErrorMessage(error)}`);
+  }
+  const logger = createOperationLogger('Project');
+  const logLimited = <T,>(items: T[], log: (item: T) => void, summary: (rest: number) => string) => {
+    items.slice(0, MAX_LOGGED_REGISTRY_CHANGES).forEach(log);
+    if (items.length > MAX_LOGGED_REGISTRY_CHANGES) logger.warning(summary(items.length - MAX_LOGGED_REGISTRY_CHANGES));
+  };
+  logLimited(report.removed, (record) => logger.warning(`${record.path} is no longer in the project folder; its record was removed.`), (rest) => `${rest} more missing files were removed from the project.`);
+  logLimited(report.rebound, (entry) => logger.info(`${entry.from} was moved to ${entry.to} outside the app; the file kept its identity.`), (rest) => `${rest} more moved files were recognised.`);
+  logLimited(report.orphaned, (record) => logger.warning(`${record.path} lost its source image and is kept as a plain file.`), (rest) => `${rest} more edited files lost their source image.`);
+  if (report.modified.length) logger.info(`${report.modified.length} file${report.modified.length === 1 ? '' : 's'} changed outside the app; cached previews were dropped.`);
+  options.onAssetsReconciled?.(report);
+};
+
+export type ReadProjectDirectoryOptions = {
+  /** Called with what reconciling the asset registry with the folder changed (moves that must reach tabs and the Explorer). */
+  onAssetsReconciled?: (report: AssetReconcileReport) => void;
+};
+
 export const readProjectDirectory = async (
   directory: ProjectDirectoryHandle,
-  selectProjectType?: ProjectTypeResolver
+  selectProjectType?: ProjectTypeResolver,
+  readOptions: ReadProjectDirectoryOptions = {}
 ): Promise<ProjectState> => {
   const layout = await detectProjectLayout(directory);
   // Legacy (v2) projects are read by this same reader only while the layout migration runs; legacy writes go to manifest.json.
@@ -1154,6 +1542,8 @@ export const readProjectDirectory = async (
     return project;
   }
   let manifest: DirectoryProjectManifest;
+  // A v3 project whose sidecars have not been folded into assets.json yet is still read through them; the migration runs before it is used.
+  let registryReady = false;
   if (layout === 'v3') {
     const json = await readJsonFile<ProjectJsonV3>(
       await getDirectoryAtPath(directory, PROJECT_INTERNAL_DIRECTORY),
@@ -1163,6 +1553,7 @@ export const readProjectDirectory = async (
     if (json.format !== PROJECT_PROJECT_FORMAT || json.version !== 3) {
       throw new Error('The selected directory is not a supported Dataset Creator project.');
     }
+    registryReady = Boolean(json.project?.migrations?.assetsRegistry);
     manifest = projectJsonToManifest(json);
   } else {
     manifest = await readJsonFile<DirectoryProjectManifest>(directory, manifestName, 'the project manifest');
@@ -1206,90 +1597,117 @@ export const readProjectDirectory = async (
     trigger: manifest.project.dataset?.triggerWord ?? legacyDatasetManifest?.triggerWord ?? '',
     legacy: legacyMode,
   };
-  const sourceManifestPaths = manifest.project.sourceImageManifests;
-  const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
-    `syn${'thetic'}ImageManifests`
-  ] as Record<string, string> | undefined;
-  const editedAssetManifestPaths =
-    manifest.project.editedAssetManifests ?? legacyEditedAssetManifestPaths ?? manifest.project.datasetItemManifests;
-  const supportedEditedAssetManifestPaths = editedAssetManifestPaths
-    ? Object.values(editedAssetManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
-    : undefined;
-  const [sourceResults, editedAssetResults] = await Promise.all([
-    sourceManifestPaths
-      ? Promise.all(
-          Object.values(sourceManifestPaths).map(async (manifestPath) => {
-            try {
-              return await readSource(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath }, captionContext);
-            } catch {
-              return null;
-            }
-          })
-        )
-      : readOptionalProjectChildren(directory, 'sources', (entry) => readSource(entry)),
-    supportedEditedAssetManifestPaths
-      ? Promise.all(
-          supportedEditedAssetManifestPaths.map(async (manifestPath) => {
-            try {
-              return await readEditedAsset(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath }, captionContext);
-            } catch {
-              return null;
-            }
-          })
-        )
-      : readOptionalProjectChildren(directory, 'generated', (entry) => readEditedAsset(entry)),
-  ]);
-  let sources = sourceResults
-    .filter((source): source is SourceImage => Boolean(source))
-    // Explicitly registered sources retain their identity after an Explorer move.
-    // Discovery of new sources remains limited to shared in assetIndexService.
-    .filter((source) => sourceManifestPaths
-      ? !isLegacyProjectRootPath(source.originalFilePath ?? '')
-      : isProjectWorkspacePath(source.originalFilePath ?? '', legacyMode ? 'legacy-shared' : 'shared'));
-  let edited = editedAssetResults.filter((item): item is EditedAsset => Boolean(item));
-
   const datasetSettings = manifest.project.dataset;
   let datasetMigration = manifest.project.datasetMigration;
-  if (manifest.version === 1 && legacyDatasetManifest && datasetMigration?.status !== 'complete') {
-    const resolvedAssetPaths = (legacyDatasetManifest.assetIds ?? [])
-      .map((id) => sources.find((source) => source.id === id)?.originalFilePath)
-      .filter((path): path is string => Boolean(path));
-    const pending = datasetMigration ?? createLegacyDatasetMigration({
-      datasetFilePath,
-      assetIds: legacyDatasetManifest.assetIds,
-      assetPaths: legacyDatasetManifest.assetPaths,
-      psdAssetPaths: legacyDatasetManifest.psdAssetPaths,
-    }, resolvedAssetPaths);
-    datasetMigration = await migrateLegacyDatasetMembership(directory, pending, async (report) => {
-      manifest.project.datasetMigration = report;
-      await writeTextFile(directory, manifestName, JSON.stringify(manifest, null, 2));
+  let sources: LegacySource[] = [];
+  let edited: LegacyEdited[] = [];
+  let reconciled: { report: AssetReconcileReport; measured: RegistryReadResult['measured'] } | undefined;
+  if (!registryReady) {
+    const sourceManifestPaths = manifest.project.sourceImageManifests;
+    const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
+      `syn${'thetic'}ImageManifests`
+    ] as Record<string, string> | undefined;
+    const editedAssetManifestPaths =
+      manifest.project.editedAssetManifests ?? legacyEditedAssetManifestPaths ?? manifest.project.datasetItemManifests;
+    const supportedEditedAssetManifestPaths = editedAssetManifestPaths
+      ? Object.values(editedAssetManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
+      : undefined;
+    const [sourceResults, editedAssetResults] = await Promise.all([
+      sourceManifestPaths
+        ? Promise.all(
+            Object.values(sourceManifestPaths).map(async (manifestPath) => {
+              try {
+                return await readSource(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath }, captionContext);
+              } catch {
+                return null;
+              }
+            })
+          )
+        : readOptionalProjectChildren(directory, 'sources', (entry) => readSource(entry)),
+      supportedEditedAssetManifestPaths
+        ? Promise.all(
+            supportedEditedAssetManifestPaths.map(async (manifestPath) => {
+              try {
+                return await readEditedAsset(await getDirectoryForFilePath(directory, manifestPath), directory, { manifestPath }, captionContext);
+              } catch {
+                return null;
+              }
+            })
+          )
+        : readOptionalProjectChildren(directory, 'generated', (entry) => readEditedAsset(entry)),
+    ]);
+    sources = sourceResults
+      .filter((source): source is LegacySource => Boolean(source))
+      // Explicitly registered sources retain their identity after an Explorer move.
+      // Discovery of new sources remains limited to shared in assetIndexService.
+      .filter((source) => sourceManifestPaths
+        ? !isLegacyProjectRootPath(source.originalFilePath ?? '')
+        : isProjectWorkspacePath(source.originalFilePath ?? '', legacyMode ? 'legacy-shared' : 'shared'));
+    edited = editedAssetResults.filter((item): item is LegacyEdited => Boolean(item));
+
+    if (manifest.version === 1 && legacyDatasetManifest && datasetMigration?.status !== 'complete') {
+      const resolvedAssetPaths = (legacyDatasetManifest.assetIds ?? [])
+        .map((id) => sources.find((source) => source.id === id)?.originalFilePath)
+        .filter((path): path is string => Boolean(path));
+      const pending = datasetMigration ?? createLegacyDatasetMigration({
+        datasetFilePath,
+        assetIds: legacyDatasetManifest.assetIds,
+        assetPaths: legacyDatasetManifest.assetPaths,
+        psdAssetPaths: legacyDatasetManifest.psdAssetPaths,
+      }, resolvedAssetPaths);
+      datasetMigration = await migrateLegacyDatasetMembership(directory, pending, async (report) => {
+        manifest.project.datasetMigration = report;
+        await writeTextFile(directory, manifestName, JSON.stringify(manifest, null, 2));
+      });
+      const moves = getLegacyDatasetPathMoves(datasetMigration);
+      sources = sources.map((source) => ({
+        ...source,
+        originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
+        manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
+      }));
+      edited = edited.map((item) => ({
+        ...item,
+        imageDataPath: applyProjectRelativePathMoves(item.imageDataPath, moves),
+        psdDataPath: applyProjectRelativePathMoves(item.psdDataPath, moves),
+        manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
+      }));
+    }
+
+    if (legacyMode) await migrateLegacyDatasetExclusions(directory, async moves => {
+      sources = sources.map(source => ({ ...source,
+        originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
+        manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
+      }));
+      edited = edited.map(item => ({ ...item,
+        imageDataPath: applyProjectRelativePathMoves(item.imageDataPath, moves),
+        psdDataPath: applyProjectRelativePathMoves(item.psdDataPath, moves),
+        manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
+      }));
+      await checkpointExclusionPaths(moves);
     });
-    const moves = getLegacyDatasetPathMoves(datasetMigration);
-    sources = sources.map((source) => ({
-      ...source,
-      originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
-      manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
-    }));
-    edited = edited.map((item) => ({
-      ...item,
-      imageDataPath: applyProjectRelativePathMoves(item.imageDataPath, moves),
-      psdDataPath: applyProjectRelativePathMoves(item.psdDataPath, moves),
-      manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
-    }));
+  } else {
+    // v3 with an asset registry: it says which files are tracked; the folder says what changed since the last session.
+    const registry = await loadAssetRegistry(directory);
+    const report = await reconcileProjectAssets(directory, registry);
+    await Promise.all([...report.modified, ...report.removed].map((record) => removeRecordPreview(directory, record)));
+    const registryRead = await readRegistryEntities(
+      directory,
+      Object.values(report.registry.assets),
+      captionContext,
+      new Set(report.modified.map((record) => record.id))
+    );
+    sources = registryRead.sources;
+    edited = registryRead.edited;
+    reconciled = { report, measured: registryRead.measured };
   }
 
-  if (legacyMode) await migrateLegacyDatasetExclusions(directory, async moves => {
-    sources = sources.map(source => ({ ...source,
-      originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
-      manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
-    }));
-    edited = edited.map(item => ({ ...item,
-      imageDataPath: applyProjectRelativePathMoves(item.imageDataPath, moves),
-      psdDataPath: applyProjectRelativePathMoves(item.psdDataPath, moves),
-      manifestPath: applyProjectRelativePathMoves(item.manifestPath, moves, true),
-    }));
-    await checkpointExclusionPaths(moves);
-  });
+  // Rebound files moved outside the app: every stored reference follows, like after an Explorer move.
+  const explorerMoves: ExplorerPathMove[] = (reconciled?.report.pathMoves ?? []).map((move) => ({ from: `Project/${move.from}`, to: `Project/${move.to}` }));
+  const moveStoredPath = (path: string): string => {
+    const prefixed = path.startsWith('Project/');
+    const moved = applyProjectRelativePathMoves(path, explorerMoves) ?? path;
+    return prefixed ? `Project/${moved}` : moved;
+  };
 
   const sourceIds = new Set(sources.map((source) => source.id));
   const orphanEditedAsset = edited.find((item) => !sourceIds.has(item.sourceImageId));
@@ -1308,13 +1726,13 @@ export const readProjectDirectory = async (
     id: manifest.project.id,
     name: manifest.project.name,
     currentTool,
-    sourceImages: Object.fromEntries(sources.map((source) => [source.id, source])),
-    datasetItems: Object.fromEntries(edited.map((item) => [item.id, item])),
+    sourceImages: Object.fromEntries(sources.map(({ manifestPath: _manifest, ...source }) => [source.id, source as SourceImage])),
+    datasetItems: Object.fromEntries(edited.map(({ manifestPath: _manifest, ...item }) => [item.id, item as EditedAsset])),
     dataset: {
       ...defaults.dataset,
       name: datasetSettings?.name || legacyDatasetManifest?.name || defaults.dataset.name,
       triggerWord: datasetSettings?.triggerWord ?? legacyDatasetManifest?.triggerWord ?? defaults.dataset.triggerWord,
-      assetOrder: datasetSettings?.assetOrder ?? legacyDatasetManifest?.assetOrder ?? [],
+      assetOrder: applyFileAssetOrderPathMoves(datasetSettings?.assetOrder ?? legacyDatasetManifest?.assetOrder ?? [], explorerMoves),
       createdAt: datasetSettings?.createdAt ? toDate(datasetSettings.createdAt, defaults.dataset.createdAt) : legacyDatasetManifest?.createdAt ? toDate(legacyDatasetManifest.createdAt, defaults.dataset.createdAt) : defaults.dataset.createdAt,
       updatedAt: datasetSettings?.updatedAt ? toDate(datasetSettings.updatedAt, defaults.dataset.updatedAt) : legacyDatasetManifest ? toDate(legacyDatasetManifest.updatedAt, defaults.dataset.updatedAt) : defaults.dataset.updatedAt,
     },
@@ -1325,13 +1743,22 @@ export const readProjectDirectory = async (
     workspaceSettings: {
       ...defaults.workspaceSettings,
       ...manifest.project.workspaceSettings,
+      ...(explorerMoves.length ? {
+        excludedProjectCategories: (manifest.project.workspaceSettings?.excludedProjectCategories ?? defaults.workspaceSettings.excludedProjectCategories ?? []).map(moveStoredPath),
+        includedProjectCategories: (manifest.project.workspaceSettings?.includedProjectCategories ?? defaults.workspaceSettings.includedProjectCategories ?? []).map(moveStoredPath),
+      } : {}),
     },
-    buildSession: normalizeBuildSession(manifest.project.buildSession),
+    buildSession: applyBuildSessionPathMoves(normalizeBuildSession(manifest.project.buildSession), explorerMoves),
     captionMigration: manifest.project.captionMigration,
     datasetMigration,
     lastModified: toDate(manifest.project.lastModified, new Date()),
     createdAt: toDate(manifest.project.createdAt, new Date()),
   };
+  if (legacyMode) {
+    const manifests = getLegacyManifests(directory);
+    manifests.clear();
+    for (const entity of [...sources, ...edited]) if (entity.manifestPath) manifests.set(entity.id, entity.manifestPath);
+  }
   if (manifest.version === 1 && datasetMigration?.status === 'complete') {
     await writeTextFile(directory, manifestName, JSON.stringify(getProjectManifest(loadedProject, {
       sourceImageManifests: Object.fromEntries(sources.flatMap((source) => source.manifestPath ? [[source.id, toProjectRelativePath(source.manifestPath)]] : [])),
@@ -1341,6 +1768,7 @@ export const readProjectDirectory = async (
     if (datasetFilePath) await removeProjectFileAtPath(directory, datasetFilePath);
     await removeLegacyDatasetDocuments(directory);
   }
+  if (reconciled) await finishRegistryReconcile(directory, loadedProject, reconciled, readOptions);
   const previousMigration = manifest.project.captionMigration;
   const legacyOverrides = previousMigration?.status === 'pending'
     ? Object.fromEntries(Object.entries(previousMigration.legacyOverrides).filter(([key]) => previousMigration.unresolved.includes(key)))

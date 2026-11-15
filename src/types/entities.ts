@@ -30,7 +30,6 @@ export interface SourceImage {
   fileName: string;
   originalFileName?: string;
   originalFilePath?: string;
-  manifestPath?: string;
   width: number;
   height: number;
   mimeType: string;
@@ -42,6 +41,8 @@ export interface SourceImage {
   /** True when the TXT exists but does not start with the dataset trigger word (never written on read). */
   captionTriggerMissing?: boolean;
   hidden?: boolean;
+  /** Set when the file changed outside the app; replaces createdAt as the content timestamp of the Build revision. */
+  modifiedAt?: number;
   createdAt: Date;
 }
 
@@ -94,7 +95,6 @@ export interface EditedAsset {
   previewUrl?: string;
   imageDataPath?: string;
   psdDataPath?: string;
-  manifestPath?: string;
   width: number;
   height: number;
   type: ImageType;
@@ -107,6 +107,7 @@ export interface EditedAsset {
   aspectRatio: AspectRatio;
   deleted: boolean;
   deletedAt?: Date;
+  modifiedAt?: number;
   createdAt: Date;
   exportOrder?: number;
 }

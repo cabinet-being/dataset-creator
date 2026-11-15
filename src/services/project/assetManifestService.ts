@@ -1,3 +1,7 @@
+/**
+ * Sidecars (`<file>.manifest.json`, legacy `manifest.json`) belong to the pre-v3 layout. Only the layout migration
+ * and the legacy (unmigrated) reader still use them; a v3 project keeps this data in `.datasetcreator/assets.json`.
+ */
 export const ASSET_MANIFEST_SUFFIX = '.manifest.json';
 export const PROJECT_MANIFEST_NAME = 'manifest.json';
 
@@ -15,3 +19,4 @@ export const isProjectManifestName = (name: string): boolean =>
 
 export const isHiddenExplorerManifestName = (name: string): boolean =>
   isProjectManifestName(name) || isAssetManifestName(name);
+

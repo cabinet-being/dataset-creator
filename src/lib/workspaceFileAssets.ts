@@ -8,7 +8,7 @@ import {
 import { requestPhotopeaPsdPreview } from '../services/psd/photopeaPreviewQueue';
 import { createPsdPreview } from '../services/psd/psdPreviewService';
 import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspaceImages';
-import { getAssetManifestPath } from '../services/project/assetManifestService';
+import { getActiveAssetRegistry, getAssetPathIndex, normalizeRegistryPath } from '../services/project/assetRegistryService';
 
 import type { ExplorerChanges } from './explorerTreeUpdates';
 import { isInternalProjectEntry } from '../services/project/projectLayoutService';
@@ -149,18 +149,15 @@ for (const path of assetPaths) {
     if (!REVIEW_FILE_KINDS.has(kind as WorkspaceFileAssetKind)) continue;
     const previewUrl = kind === 'psd' ? await readProjectPreviewUrl(root, 'psd', path) : undefined;
     const previewDimensions = previewUrl ? await readImageDimensions(previewUrl) : undefined;
-    let metadata: {id?:unknown;createdAt?:unknown} = {};
-    try {
-      const manifestPath = getAssetManifestPath(path);
-      const parent = await getExplorerParentDirectory(root, manifestPath);
-      metadata = JSON.parse(await (await parent.directory.getFileHandle(parent.name)).getFile().then((manifest) => manifest.text()));
-    } catch { /* metadata is optional */ }
+    // The stable id and creation time come from the asset registry; a file it does not know yet has none.
+    const registry = getActiveAssetRegistry(root);
+    const metadata = registry ? getAssetPathIndex(registry).get(normalizeRegistryPath(path)) : undefined;
     // The caption lives only in the TXT next to the file; videos cannot carry one.
     const caption = isCaptionCarrierName(fileName) ? await readCaptionFile(root, path, useProjectStore.getState().dataset.triggerWord) : undefined;
     const tags = caption?.tags;
-    assets.push({ id:createWorkspaceFileAssetId(path), stableId:typeof metadata.id === 'string' ? metadata.id : undefined, path, fileName, kind:kind as WorkspaceFileAssetKind, file,
+    assets.push({ id:createWorkspaceFileAssetId(path), stableId:metadata?.id, path, fileName, kind:kind as WorkspaceFileAssetKind, file,
       previewUrl, width:previewDimensions?.width, height:previewDimensions?.height, byteSize:file.size,
-      modifiedAt:'lastModified' in file ? file.lastModified : typeof metadata.createdAt === 'string' ? Date.parse(metadata.createdAt) : undefined,
+      modifiedAt:'lastModified' in file ? file.lastModified : metadata?.createdAt ? Date.parse(metadata.createdAt) : undefined,
       tags, captionTriggerMissing: caption ? isTriggerMissing(caption) : undefined });
   } catch (error) {
     issues.push(`${path}: file could not be read`);

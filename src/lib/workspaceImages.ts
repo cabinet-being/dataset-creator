@@ -204,7 +204,7 @@ export const toWorkspaceImages = (
       captionTriggerMissing: image.captionTriggerMissing,
       hidden: image.hidden,
       byteSize: image.originalFile.size,
-      modifiedAt: image.createdAt.getTime(),
+      modifiedAt: image.modifiedAt ?? image.createdAt.getTime(),
       dimensionsKnown: true,
       aspectRatio: inferWorkspaceAspectRatio(workingEdit?.width ?? image.width, workingEdit?.height ?? image.height),
     };
@@ -241,7 +241,7 @@ export const toWorkspaceImages = (
         exportOrder: image.exportOrder,
         deleted: image.deleted,
         byteSize: image.imageData.size,
-        modifiedAt: image.createdAt.getTime(),
+        modifiedAt: image.modifiedAt ?? image.createdAt.getTime(),
         dimensionsKnown: true,
       };
     });

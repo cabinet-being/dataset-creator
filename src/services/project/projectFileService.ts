@@ -282,7 +282,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   for (const source of Object.values(project.sourceImages)) {
     const originalFileNameOnDisk = `original.${getProjectDataFileExtension(source.fileName, source.mimeType)}`;
     const manifestPath = getNormalizedAssetManifestPath(
-      source.manifestPath,
+      source.originalFilePath ? getAssetManifestName(source.originalFilePath) : undefined,
       originalFileNameOnDisk,
       getDefaultSourceManifestPath(source)
     );
@@ -308,7 +308,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
   }
 
   for (const item of Object.values(project.datasetItems).filter((entry) => !entry.deleted)) {
-    const manifestPath = getNormalizedAssetManifestPath(item.manifestPath, 'image.png', getDefaultEditedAssetManifestPath(item));
+    const manifestPath = getNormalizedAssetManifestPath(item.imageDataPath ? getAssetManifestName(item.imageDataPath) : undefined, 'image.png', getDefaultEditedAssetManifestPath(item));
     const imageDataPath = getReusableProjectPath(item.imageDataPath) ?? joinPath(getParentPath(manifestPath), 'image.png');
     const psdDataPath = item.psdData
       ? getReusableProjectPath(item.psdDataPath) ?? joinPath(getParentPath(manifestPath), 'image.psd')
@@ -448,13 +448,11 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
   const targetModel = resolveTargetModel(manifest.project.targetModel, manifest.project.buildSession?.profile?.minShortSide);
 
   const sourceManifestEntries: Array<{
-    manifestPath?: string;
     manifest: SourceImageManifest | LegacySourceImageManifest;
   }> = manifest.project.sourceImageManifests
     ? await Promise.all(
         Object.values(manifest.project.sourceImageManifests).map(
           async (path) => ({
-            manifestPath: path,
             manifest: await readJsonFile<SourceImageManifest | LegacySourceImageManifest>(zip, path),
           })
         )
@@ -469,13 +467,11 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
     ? Object.values(editedAssetManifestPaths).filter((manifestPath) => !isLegacyProjectRootPath(manifestPath))
     : undefined;
   const editedAssetManifestEntries: Array<{
-    manifestPath?: string;
     manifest: EditedAssetManifest | LegacyEditedAssetManifest;
   }> = supportedEditedAssetManifestPaths
     ? await Promise.all(
         supportedEditedAssetManifestPaths.map(
           async (path) => ({
-            manifestPath: path,
             manifest: await readJsonFile<EditedAssetManifest | LegacyEditedAssetManifest>(zip, path),
           })
         )
@@ -499,7 +495,7 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
     occupiedPaths.add(getCaptionPathForImage(candidate).toLowerCase());
     return candidate;
   };
-  for (const { manifestPath, manifest: source } of sourceManifestEntries) {
+  for (const { manifest: source } of sourceManifestEntries) {
     const originalFileBuffer = await zip.file(source.originalFilePath)?.async('arraybuffer');
     if (!originalFileBuffer) {
       throw new Error(`Project file is missing Source data for ${source.id}`);
@@ -528,7 +524,6 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
       height: source.height,
       mimeType: source.mimeType,
       originalFilePath,
-      manifestPath: originalFilePath === source.originalFilePath ? manifestPath : `${originalFilePath}.manifest.json`,
       tags: source.tags,
       hidden: sourceHidden,
       originalFile,
@@ -540,7 +535,7 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
   }
 
   const datasetItems: Record<string, EditedAsset> = {};
-  for (const { manifestPath, manifest: item } of editedAssetManifestEntries) {
+  for (const { manifest: item } of editedAssetManifestEntries) {
     if ('deleted' in item && item.deleted) {
       continue;
     }
@@ -577,7 +572,6 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
       psdData,
       imageDataPath,
       psdDataPath,
-      manifestPath: imageDataPath === item.imageDataPath ? manifestPath : `${imageDataPath}.manifest.json`,
       createdAt: new Date(item.createdAt),
       deletedAt: deletedAt ? new Date(deletedAt) : undefined,
     };

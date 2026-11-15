@@ -44,6 +44,36 @@ export async function migrateLegacyDatasetExclusions(root: ProjectDirectoryHandl
     try { const {directory,name}=await getExplorerParentDirectory(root,path); await directory.getFileHandle(name); return true; }
     catch (error) { if (missing(error)) return false; throw error; }
   };
+  // The Explorer no longer carries sidecars; this unmigrated-layout journal moves its own. Safe to repeat.
+  const moveSidecar = async (from: string, to: string) => {
+    const source = await getExplorerParentDirectory(root, from);
+    const target = await getExplorerParentDirectory(root, to);
+    let text: string;
+    try { text = await (await (await source.directory.getFileHandle(getAssetManifestName(source.name))).getFile()).text(); }
+    catch (error) { if (missing(error)) return; throw error; }
+    let existing = true;
+    try { await target.directory.getFileHandle(getAssetManifestName(target.name)); }
+    catch (error) { if (!missing(error)) throw error; existing = false; }
+    if (!existing) {
+      let next = text;
+      try {
+        const metadata = JSON.parse(text) as Record<string, unknown>;
+        const bare = (path: string) => path.replace(/^Project\//, '');
+        for (const key of ['assetPath', 'originalFilePath', 'imageDataPath', 'psdDataPath']) {
+          if (typeof metadata[key] === 'string' && bare(metadata[key] as string) === bare(from)) metadata[key] = bare(to);
+        }
+        for (const key of ['fileName', 'originalFileName', 'originalFileNameOnDisk', 'imageFileName', 'psdFileName']) {
+          if (metadata[key] === source.name) metadata[key] = target.name;
+        }
+        next = JSON.stringify(metadata, null, 2);
+      } catch { /* A sidecar that is not JSON is moved as it is. */ }
+      const writer = await (await target.directory.getFileHandle(getAssetManifestName(target.name), { create: true })).createWritable();
+      try { await writer.write(next); await writer.close(); }
+      catch (error) { await writer.abort?.(); throw error; }
+    }
+    try { await source.directory.removeEntry(getAssetManifestName(source.name)); }
+    catch (error) { if (!missing(error)) throw error; }
+  };
   const resume = async (entry: Entry) => {
     if (!entry.completed) {
       const sourceExists = await exists(entry.from);
@@ -60,6 +90,7 @@ export async function migrateLegacyDatasetExclusions(root: ProjectDirectoryHandl
       entry.completed=true;
       await writeJournal();
     }
+    await moveSidecar(entry.from, entry.to);
     await checkpoint([entry]);
     const {directory,name}=await getExplorerParentDirectory(root,entry.to);
     const metadataHandle=await directory.getFileHandle(getAssetManifestName(name));

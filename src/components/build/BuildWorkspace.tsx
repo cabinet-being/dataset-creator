@@ -253,7 +253,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       type: 'crop',
       tags: item.tags,
       imageDataPath: `${PROJECT_EDITS_DIRECTORY}/${outputId}.png`,
-      manifestPath: `${PROJECT_EDITS_DIRECTORY}/${outputId}.png.manifest.json`,
       deleted: false,
       createdAt: new Date(),
     };

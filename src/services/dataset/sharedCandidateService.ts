@@ -2,7 +2,7 @@ import { inferWorkspaceAspectRatio, type WorkspaceImage } from '../../lib/worksp
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { getDirectoryAtPath, PROJECT_LAYOUT } from '../project/projectLayoutService';
 import { readCaptionFile } from '../caption/captionFileService';
-import { getAssetManifestName } from '../project/assetManifestService';
+import { getActiveAssetRegistry, getAssetPathIndex } from '../project/assetRegistryService';
 import { isSupportedProjectAsset, resolveProjectAssetKind } from '../project/assetTypeService';
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from '../project/projectDirectoryService';
 
@@ -12,19 +12,17 @@ export type SharedCandidateScan = {
   sharedAvailable: boolean;
 };
 
-type SharedManifest = { id?: string; sourceImageId?: string; width?: number; height?: number; hidden?: boolean; deleted?: boolean };
+type SharedMetadata = { id: string; sourceImageId?: string; width?: number; height?: number; hidden?: boolean; deleted?: boolean };
 
 const isNotFound = (error: unknown) => error instanceof Error && error.name === 'NotFoundError';
-const readOptionalFile = async (directory: ProjectDirectoryHandle, name: string): Promise<File | null> => {
-  try { return await (await directory.getFileHandle(name)).getFile(); }
-  catch (error) { if (isNotFound(error)) return null; throw error; }
+/** Registry record of a file, as the metadata the picker needs (a file the registry does not know yet has none). */
+const readMetadata = (root: ProjectDirectoryHandle, path: string): SharedMetadata | null => {
+  const registry = getActiveAssetRegistry(root);
+  const record = registry ? getAssetPathIndex(registry).get(path) : undefined;
+  if (!record) return null;
+  return { id: record.id, sourceImageId: record.edited?.sourceImageId, width: record.width, height: record.height, hidden: record.hidden, deleted: record.edited?.deleted };
 };
-const readManifest = async (directory: ProjectDirectoryHandle, fileName: string): Promise<SharedManifest | null> => {
-  const file = await readOptionalFile(directory, getAssetManifestName(fileName));
-  if (!file) return null;
-  try { return JSON.parse(await file.text()) as SharedManifest; } catch { return null; }
-};
-const dimensions = async (file: File, manifest: SharedManifest | null) => {
+const dimensions = async (file: File, manifest: SharedMetadata | null) => {
   if (manifest?.width && manifest.height) return { width: manifest.width, height: manifest.height };
   if (!file.type.startsWith('image/') || /\.psd$/i.test(file.name)) return { width: 1, height: 1 };
   const bitmap = await createImageBitmap(file);
@@ -62,7 +60,7 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
     if (kind !== 'image' && kind !== 'psd') { skipped.push({ path, reason: 'unsupported' }); continue; }
     if (!isProjectPathIncluded(path, options.excludedCategories ?? [], options.includedCategories ?? [])) { skipped.push({ path, reason: 'category excluded' }); continue; }
     const file = await entry.handle.getFile();
-    const manifest = await readManifest(entry.directory, file.name);
+    const manifest = readMetadata(root, `${PROJECT_LAYOUT.rawDir}/${entry.path}`);
     if (manifest?.hidden || manifest?.deleted) { skipped.push({ path, reason: 'excluded' }); continue; }
     const size = await dimensions(file, manifest);
     const { tags } = await readCaptionFile(root, path);

@@ -4,6 +4,7 @@ import { applyProjectRelativePathMoves } from '../../lib/datasetAssets';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { indexProjectAssets } from '../project/assetIndexService';
+import { moveAssetRegistryPaths } from '../project/assetRegistryService';
 import {
   getDirectoryAtExplorerPath,
   getExplorerParentDirectory,
@@ -37,15 +38,13 @@ export type DatasetFolderOperationResult = {
   failed: Array<{ path: string; message: string }>;
 };
 
-const updateRegisteredPaths = (moves: ExplorerPathChange[]) => {
+const updateRegisteredPaths = async (root: ProjectDirectoryHandle, moves: ExplorerPathChange[]) => {
   const store = useProjectStore.getState();
   for (const source of Object.values(store.sourceImages)) {
     const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
-    const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves, true);
-    if (originalFilePath !== source.originalFilePath || manifestPath !== source.manifestPath) {
+    if (originalFilePath !== source.originalFilePath) {
       store.updateSourceImage(source.id, {
         originalFilePath,
-        manifestPath,
         fileName: originalFilePath?.split('/').pop() ?? source.fileName,
         // Crossing dataset/ adds or removes the trigger word in the TXT, so an old "trigger missing" mark is stale.
         ...(isProjectDatasetPath(source.originalFilePath) !== isProjectDatasetPath(originalFilePath) ? { captionTriggerMissing: undefined } : {}),
@@ -55,13 +54,13 @@ const updateRegisteredPaths = (moves: ExplorerPathChange[]) => {
   for (const item of Object.values(store.datasetItems)) {
     const imageDataPath = applyProjectRelativePathMoves(item.imageDataPath, moves);
     const psdDataPath = applyProjectRelativePathMoves(item.psdDataPath, moves);
-    const manifestPath = applyProjectRelativePathMoves(item.manifestPath, moves, true);
-    if (imageDataPath !== item.imageDataPath || psdDataPath !== item.psdDataPath || manifestPath !== item.manifestPath) {
-      store.updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath,
+    if (imageDataPath !== item.imageDataPath || psdDataPath !== item.psdDataPath) {
+      store.updateDatasetItem(item.id, { imageDataPath, psdDataPath,
         ...(isProjectDatasetPath(item.imageDataPath) !== isProjectDatasetPath(imageDataPath) ? { captionTriggerMissing: undefined } : {}) });
     }
   }
   store.updateBuildSession((session) => applyBuildSessionPathMoves(session, moves));
+  await moveAssetRegistryPaths(root, moves);
 };
 
 const notifyPathMoves = (moves: ExplorerPathChange[]) => {
@@ -117,7 +116,7 @@ const moveItems = async (
     result.completed.push(change);
     // Same exclusive operation as the move: the caption gains or loses the trigger word as the file crosses dataset/.
     await reconcileTriggerAfterMove(root, change, useProjectStore.getState().dataset.triggerWord);
-    updateRegisteredPaths([change]);
+    await updateRegisteredPaths(root, [change]);
     await clearLegacyExclusionAtPath(root,change.to);
   };
   for (const item of items) {
@@ -158,7 +157,7 @@ export const reverseDatasetFolderChanges = async (root: ProjectDirectoryHandle, 
     const [reversed] = await moveExplorerEntries(root, [{ path:sourcePath, name:change.from.split('/').pop()!, kind:'file' }], destination);
     completed.push(reversed);
     await reconcileTriggerAfterMove(root, reversed, useProjectStore.getState().dataset.triggerWord);
-    updateRegisteredPaths([reversed]);
+    await updateRegisteredPaths(root, [reversed]);
   }
   await indexChanges(root, completed);
   notifyPathMoves(completed);

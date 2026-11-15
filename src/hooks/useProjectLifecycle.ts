@@ -18,8 +18,8 @@ import {
   type ProjectDirectoryHandle,
 } from '../services/project/projectDirectoryService';
 import { createProjectVersion, getProjectVersionLayout, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from '../services/project/projectVersionService';
-import { LayoutMigrationError, detectLegacyRawLayout, detectProjectLayout, planLayoutMigration, planRawMaterialsMove, resumePendingJournals, runCaptionTxtMigration, runLayoutMigration, runRawMaterialsMove, type CaptionTxtReport, type LayoutMigrationPlan, type RawMaterialsPlan, type RawMaterialsReport } from '../services/project/layoutMigrationService';
-import { indexProjectAssets } from '../services/project/assetIndexService';
+import { LayoutMigrationError, detectLegacyRawLayout, detectProjectLayout, planLayoutMigration, planRawMaterialsMove, resumePendingJournals, runAssetsRegistryMigration, runCaptionTxtMigration, runLayoutMigration, runRawMaterialsMove, type CaptionTxtReport, type LayoutMigrationPlan, type RawMaterialsPlan, type RawMaterialsReport } from '../services/project/layoutMigrationService';
+import { fillAssetHashes, indexProjectAssets } from '../services/project/assetIndexService';
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { createProject, type ProjectState, type ProjectType, type TargetModelId } from '../types';
 import { isOperationRunning, useOperationStore } from '../stores/useOperationStore';
@@ -130,6 +130,10 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       operations.finish(operationId,'failed',error instanceof Error ? error.message : String(error));
       throw error;
     }
+    // File fingerprints (SHA-256) are filled in the background so a large project is usable immediately.
+    void fillAssetHashes(directory, {
+      isCancelled: () => useProjectStore.getState().id !== expectedProjectId || useUIStore.getState().projectDirectoryHandle !== directory,
+    }).catch((error) => createOperationLogger('Index').warning(`File fingerprints were not completed: ${error instanceof Error ? error.message : String(error)}`));
   };
 
   const canSwitchProject = async () => {
@@ -222,6 +226,9 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       }
       // Sidecar tags become TXT captions (once per project); files that are replaced are kept in the service folder's backup.
       captions = await runCaptionTxtMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
+      // Per-file metadata moves from *.manifest.json sidecars into .datasetcreator/assets.json (once per project).
+      const assets = await runAssetsRegistryMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
+      if (assets) logger.info(`file metadata: ${assets.records} records in ${PROJECT_LAYOUT.assetsFile}; ${assets.sidecars} old metadata files are kept in ${PROJECT_LAYOUT.backupDir}/${assets.journalId}/sidecars`);
     } else if (layout === 'v2') {
       const plan = await planLayoutMigration(directory);
       if (!await requestLayoutUpgrade(directory.name, plan)) {
@@ -232,6 +239,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         const report = await runLayoutMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
         rawMaterials = report.rawMaterials;
         captions = report.captions;
+        if (report.assets) logger.info(`file metadata: ${report.assets.records} records in ${PROJECT_LAYOUT.assetsFile}; ${report.assets.sidecars} old metadata files are kept in ${PROJECT_LAYOUT.backupDir}/${report.assets.journalId}/sidecars`);
         logger.success(`upgraded project layout of ${directory.name}`);
       } catch (error) {
         if (!(error instanceof LayoutMigrationError) || error.kind !== 'blocked') throw error;
@@ -243,6 +251,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         logger.warning(`opening ${directory.name} without upgrading`);
       }
     }
+    let reconciledMoves: Array<{ from: string; to: string }> = [];
     const project = await readProjectDirectory(directory, async (name) => {
       const fileCount = await countProjectDirectoryFiles(directory);
       if (!window.confirm(`This folder is not a DatasetCreator project. Create a project here? ${fileCount} file${fileCount === 1 ? '' : 's'} will be indexed and may get caption sidecar files.`)) {
@@ -251,10 +260,12 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       const setup = await requestProjectSetup(name, true);
       if (!setup) throw new DOMException('Project opening canceled', 'AbortError');
       return setup.projectType;
-    });
+    }, { onAssetsReconciled: (report) => { reconciledMoves = report.pathMoves; } });
     if (useProjectStore.getState() !== previousProject) {
       throw new Error('The current project changed while opening the folder. Open it again after your changes are saved.');
     }
+    // Files moved outside the app and recognised by content keep their identity; saved tabs follow them like after an Explorer move.
+    if (reconciledMoves.length) rewriteWorkspaceTabPaths(project.id, reconciledMoves);
     if (rawMaterials) {
       rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
       if (rawMaterials.collisions.length) {
@@ -360,29 +371,33 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     try {
       await runProjectFileOperation(async () => {
         let restoredOnDisk = false;
+        const restoredMoves: Array<{ from: string; to: string }> = [];
+        const readRestored = () => readProjectDirectory(directory, undefined, { onAssetsReconciled: (report) => { restoredMoves.push(...report.pathMoves); } });
         try {
           let project!: ProjectState;
-          await restoreProjectVersion(directory, version.id, async () => { project = await readProjectDirectory(directory); });
+          await restoreProjectVersion(directory, version.id, async () => { project = await readRestored(); });
           restoredOnDisk = true;
           if (await detectProjectLayout(directory) === 'v2') {
             const report = await runLayoutMigration(directory);
-            project = await readProjectDirectory(directory);
+            project = await readRestored();
             if (report.rawMaterials) rewriteWorkspaceTabPaths(project.id, report.rawMaterials.pathMoves);
             if (report.captions?.pathMoves.length) rewriteWorkspaceTabPaths(project.id, report.captions.pathMoves);
             const refreshed = await listProjectVersions(directory);
             setProjectVersions(refreshed.versions);
           } else if (await detectLegacyRawLayout(directory)) {
             const rawMaterials = await runRawMaterialsMove(directory);
-            project = await readProjectDirectory(directory);
+            project = await readRestored();
             if (rawMaterials) rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
           }
           if (await detectProjectLayout(directory) === 'v3') {
             const captions = await runCaptionTxtMigration(directory);
-            if (captions) {
-              project = await readProjectDirectory(directory);
-              if (captions.pathMoves.length) rewriteWorkspaceTabPaths(project.id, captions.pathMoves);
+            const assets = await runAssetsRegistryMigration(directory);
+            if (captions || assets) {
+              project = await readRestored();
+              if (captions?.pathMoves.length) rewriteWorkspaceTabPaths(project.id, captions.pathMoves);
             }
           }
+          if (restoredMoves.length) rewriteWorkspaceTabPaths(project.id, restoredMoves);
           activateProjectDirectory(directory, project);
         } catch (error) {
           // Stop the old queue before its finally block can write over a partial restore.

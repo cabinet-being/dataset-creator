@@ -1,5 +1,5 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
-import { getAssetManifestName, isAssetManifestName, isHiddenExplorerManifestName, isProjectManifestName } from './assetManifestService';
+import { isAssetManifestName, isHiddenExplorerManifestName, isProjectManifestName } from './assetManifestService';
 import { isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
 import { snapshotFile } from './fileSnapshotService';
 import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
@@ -230,42 +230,6 @@ const removeOptionalFile = async (
   }
 };
 
-const rewriteAssetManifest = (
-  value: string,
-  previousName: string,
-  nextName: string,
-  previousPath?: string,
-  nextPath?: string,
-  options: { preserveAssetIdentity?: boolean } = {}
-): string => {
-  try {
-    const manifest = JSON.parse(value) as Record<string, unknown>;
-    if (!options.preserveAssetIdentity && typeof manifest.id === 'string') {
-      manifest.id = crypto.randomUUID();
-    }
-    for (const key of ['fileName', 'originalFileName', 'originalFileNameOnDisk', 'imageFileName', 'psdFileName']) {
-      if (manifest[key] === previousName) {
-        manifest[key] = nextName;
-      }
-    }
-    const normalizedPreviousPath = previousPath?.replace(/^Project\//, '');
-    const normalizedNextPath = nextPath?.replace(/^Project\//, '');
-    for (const key of ['assetPath', 'originalFilePath', 'manifestPath', 'imageDataPath', 'psdDataPath']) {
-      if (typeof manifest[key] === 'string') {
-        const current = (manifest[key] as string).replace(/^Project\//, '');
-        manifest[key] = normalizedPreviousPath && normalizedNextPath && current === normalizedPreviousPath
-          ? normalizedNextPath
-          : current.replace(new RegExp(`${escapeRegExp(previousName)}$`), nextName);
-      }
-    }
-    return JSON.stringify(manifest, null, 2);
-  } catch {
-    return value;
-  }
-};
-
-const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 const assertValidName = (name: string) => {
   const trimmed = name.trim();
   if (!trimmed || trimmed.includes('/') || trimmed.includes('\\')) {
@@ -298,7 +262,6 @@ export const getUniqueExplorerName = async (
   assertValidName(trimmed);
   const canUseName = async (name: string): Promise<boolean> =>
     !(await entryExists(directory, name)) &&
-    (isAssetManifestName(name) || !(await entryExists(directory, getAssetManifestName(name)))) &&
     (!getCaptionFileName(name) || !(await entryExists(directory, getCaptionFileName(name)!)));
 
   if (await canUseName(trimmed)) {
@@ -335,40 +298,6 @@ const writeFile = async (directory: ProjectDirectoryHandle, name: string, file: 
     try { await writable.abort?.(); } catch { /* Keep the original write failure. */ }
     throw error;
   }
-};
-
-const copyAssetManifest = async (
-  sourceDirectory: ProjectDirectoryHandle,
-  destinationDirectory: ProjectDirectoryHandle,
-  sourceName: string,
-  targetName: string,
-  sourcePath?: string,
-  targetPath?: string,
-  options: { preserveAssetIdentity?: boolean } = {}
-) => {
-  const manifest = await readOptionalTextFile(sourceDirectory, getAssetManifestName(sourceName));
-  if (manifest === null) {
-    return;
-  }
-  await writeFile(
-    destinationDirectory,
-    getAssetManifestName(targetName),
-    rewriteAssetManifest(manifest, sourceName, targetName, sourcePath, targetPath, options)
-  );
-};
-
-const moveAssetManifest = async (
-  sourceDirectory: ProjectDirectoryHandle,
-  destinationDirectory: ProjectDirectoryHandle,
-  sourceName: string,
-  targetName: string,
-  sourcePath: string,
-  targetPath: string
-) => {
-  await copyAssetManifest(sourceDirectory, destinationDirectory, sourceName, targetName, sourcePath, targetPath, {
-    preserveAssetIdentity: true,
-  });
-  await removeOptionalFile(sourceDirectory, getAssetManifestName(sourceName));
 };
 
 const hasOtherCaptionOwner = async (directory: ProjectDirectoryHandle, sourceName: string): Promise<boolean> => {
@@ -423,7 +352,7 @@ const discardFailedCopy = async (
   kind: ExplorerEntryKind,
   cause: unknown
 ): Promise<never> => {
-  const names = kind === 'file' ? [name, getAssetManifestName(name)] : [name];
+  const names = [name];
   const cleanup = await Promise.allSettled(names.map(async entry => {
     try { await destination.removeEntry(entry, {recursive: kind === 'folder'}); }
     catch (error) { if (!isNotFoundError(error)) throw error; }
@@ -440,8 +369,7 @@ export const copyExplorerEntry = async (
   root: ProjectDirectoryHandle,
   source: ExplorerClipboardEntry,
   destinationPath: string,
-  requestedName?: string,
-  options: { preserveAssetIdentity?: boolean } = {}
+  requestedName?: string
 ): Promise<string> => {
   if (source.kind === 'file' && (isProjectManifestName(source.name) || isAssetManifestName(source.name))) {
     throw new Error('Project metadata files cannot be copied from Explorer.');
@@ -471,7 +399,6 @@ export const copyExplorerEntry = async (
   const targetPath = `${destinationPath}/${targetName}`;
   try {
     await writeFile(destination, targetName, file);
-    await copyAssetManifest(sourceDirectory, destination, sourceName, targetName, source.path, targetPath, options);
     await copyAssetCaption(sourceDirectory, destination, sourceName, targetName);
   } catch (error) {
     return discardFailedCopy(destination, destinationPath, targetName, source.kind, error);
@@ -520,14 +447,7 @@ export const deleteExplorerEntry = async (
     throw new Error('Project metadata files cannot be deleted from Explorer.');
   }
   await directory.removeEntry(name, { recursive });
-  try {
-    await removeOptionalFile(directory, getAssetManifestName(name));
-  } catch (error) {
-    throw new Error(`Entry deleted, but metadata cleanup failed for "${path}": ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    // The main entry is already gone even if its metadata cleanup fails.
-    await onDeleted?.();
-  }
+  await onDeleted?.();
 };
 
 const relocateExplorerEntry = async (
@@ -551,14 +471,11 @@ const relocateExplorerEntry = async (
       await movable.move(destination, targetName);
       moved = true;
       if (source.kind === 'file') {
-        await moveAssetManifest(directory, destination, name, targetName, source.path, change.to);
         await copyAssetCaption(directory, destination, name, targetName);
         await removeMovedAssetCaption(directory, name);
       }
     } else {
-      await copyExplorerEntry(root, source, destinationPath, targetName, {
-        preserveAssetIdentity: true,
-      });
+      await copyExplorerEntry(root, source, destinationPath, targetName);
       try {
         await directory.removeEntry(name, { recursive: source.kind === 'folder' });
       } catch (error) {
@@ -581,7 +498,6 @@ const relocateExplorerEntry = async (
       }
       moved = true;
       if (source.kind === 'file') {
-        await removeOptionalFile(directory, getAssetManifestName(name));
         await removeMovedAssetCaption(directory, name);
       }
     }
@@ -607,9 +523,6 @@ export const renameExplorerEntry = async (
   const trimmedName = nextName.trim();
   if (trimmedName === name) return path;
   await assertAvailableName(directory, trimmedName);
-  if (entryKind === 'file' && await entryExists(directory, getAssetManifestName(trimmedName))) {
-    throw new Error(`Metadata for "${trimmedName}" already exists. Choose another name.`);
-  }
   const results = await runExplorerBatch('Rename', [{path,name,kind:entryKind}],
     source => relocateExplorerEntry(root, source, getParentPath(path), trimmedName), onRenamed);
   return results[0].to;

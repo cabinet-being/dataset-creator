@@ -20,6 +20,7 @@ import { getImportFilesFromDataTransfer, importImageFiles, pickImportDirectory, 
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { applyBuildSessionPathMoves } from '../services/build/buildSessionService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
+import { moveAssetRegistryPaths, removeAssetRegistryPaths } from '../services/project/assetRegistryService';
 import {
   applyExplorerPathMoves,
   applyProjectRelativePathMoves,
@@ -227,13 +228,11 @@ export function useExplorerMutations({
   const updateWorkspacePathsForPathMoves = async (moves: ExplorerPathMove[]) => {
     for (const source of Object.values(useProjectStore.getState().sourceImages)) {
       const originalFilePath = applyProjectRelativePathMoves(source.originalFilePath, moves);
-      const manifestPath = applyProjectRelativePathMoves(source.manifestPath, moves, true);
-      if (originalFilePath !== source.originalFilePath || manifestPath !== source.manifestPath) {
+      if (originalFilePath !== source.originalFilePath) {
         const fileNameChanged = originalFilePath && originalFilePath !== source.originalFilePath;
         const fileName = fileNameChanged ? originalFilePath.split('/').pop() ?? source.fileName : source.fileName;
         updateSourceImage(source.id, {
           originalFilePath,
-          manifestPath,
           fileName,
           originalFileName: fileNameChanged ? fileName : source.originalFileName,
           ...(isProjectDatasetPath(source.originalFilePath) !== isProjectDatasetPath(originalFilePath) ? { captionTriggerMissing: undefined } : {}),
@@ -244,13 +243,8 @@ export function useExplorerMutations({
     for (const item of Object.values(useProjectStore.getState().datasetItems)) {
       const imageDataPath = applyProjectRelativePathMoves(item.imageDataPath, moves);
       const psdDataPath = applyProjectRelativePathMoves(item.psdDataPath, moves);
-      const manifestPath = applyProjectRelativePathMoves(item.manifestPath, moves, true);
-      if (
-        imageDataPath !== item.imageDataPath ||
-        psdDataPath !== item.psdDataPath ||
-        manifestPath !== item.manifestPath
-      ) {
-        updateDatasetItem(item.id, { imageDataPath, psdDataPath, manifestPath,
+      if (imageDataPath !== item.imageDataPath || psdDataPath !== item.psdDataPath) {
+        updateDatasetItem(item.id, { imageDataPath, psdDataPath,
           ...(isProjectDatasetPath(item.imageDataPath) !== isProjectDatasetPath(imageDataPath) ? { captionTriggerMissing: undefined } : {}) });
       }
     }
@@ -261,6 +255,8 @@ export function useExplorerMutations({
       updateProjectDataset(dataset.id, { assetOrder });
     }
     updateBuildSession((session) => applyBuildSessionPathMoves(session, moves));
+    // The registry keeps every file's id across the move, like the references above.
+    if (projectDirectoryHandle) await moveAssetRegistryPaths(projectDirectoryHandle, moves);
   };
 
   useEffect(() => {
@@ -310,6 +306,7 @@ export function useExplorerMutations({
   };
 
   const removeWorkspaceReferencesForDeletedEntries = async (entries: ExplorerClipboardEntry[]) => {
+    if (projectDirectoryHandle) await removeAssetRegistryPaths(projectDirectoryHandle, entries.map((entry) => entry.path));
     const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
     const previousEdited = Object.values(useProjectStore.getState().datasetItems);
     const removedSourceIds: string[] = [];

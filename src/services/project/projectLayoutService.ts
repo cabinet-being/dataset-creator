@@ -21,6 +21,11 @@ export const PROJECT_DATA_DIRECTORY = '.dataset-creator-data';
 export const PROJECT_INTERNAL_DIRECTORY = '.datasetcreator';
 export const PROJECT_FILE = `${PROJECT_INTERNAL_DIRECTORY}/project.json`;
 export const PROJECT_PROJECT_FORMAT = 'dataset-creator-project';
+/** Per-file registry of a v3 project: stable ids, size/mtime fingerprint and optional SHA-256. */
+export const PROJECT_ASSETS_FILE = `${PROJECT_INTERNAL_DIRECTORY}/assets.json`;
+export const PROJECT_ASSETS_FORMAT = 'dataset-creator-assets';
+/** Output folder of exports; never scanned for project assets. */
+export const PROJECT_EXPORTS_DIRECTORY = 'exports';
 
 export const PROJECT_LAYOUT = {
   rawDir: PROJECT_INBOX_DIRECTORY,
@@ -28,6 +33,7 @@ export const PROJECT_LAYOUT = {
   datasetDir: PROJECT_DATASET_DIRECTORY,
   internalDir: PROJECT_INTERNAL_DIRECTORY,
   projectFile: PROJECT_FILE,
+  assetsFile: PROJECT_ASSETS_FILE,
   cacheDir: `${PROJECT_INTERNAL_DIRECTORY}/cache`,
   versionsDir: `${PROJECT_INTERNAL_DIRECTORY}/versions`,
   journalDir: `${PROJECT_INTERNAL_DIRECTORY}/journal`,

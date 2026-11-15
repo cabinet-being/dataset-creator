@@ -5,7 +5,6 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { flushProjectSave } from '../../hooks/useProjectSave';
 import { getImageDimensions } from '../image/imageProcessor';
 import { readExplorerFile } from '../project/explorerFileService';
-import { getAssetManifestPath } from '../project/assetManifestService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 
 /** Link existing saved PNGs; never copy them or automatically add other directory files. */
@@ -22,7 +21,6 @@ export async function addSavedFramesToDataset(directory: ProjectDirectoryHandle,
         signal?.throwIfAborted();
         source = createSourceImage(file, file.name, size.width, size.height);
         source.originalFilePath = path.replace(/^Project\//, '');
-        source.manifestPath = getAssetManifestPath(source.originalFilePath);
         useProjectStore.getState().addSourceImage(source);
       }
       sources.push(source);
