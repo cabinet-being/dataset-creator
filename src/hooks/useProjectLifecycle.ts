@@ -15,7 +15,8 @@ import {
   readProjectDirectory,
   type ProjectDirectoryHandle,
 } from '../services/project/projectDirectoryService';
-import { createProjectVersion, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from '../services/project/projectVersionService';
+import { createProjectVersion, getProjectVersionLayout, listProjectVersions, restoreProjectVersion, ProjectVersionRestoreError, type ProjectVersion } from '../services/project/projectVersionService';
+import { LayoutMigrationError, detectProjectLayout, planLayoutMigration, resumePendingJournals, runLayoutMigration, type LayoutMigrationPlan } from '../services/project/layoutMigrationService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { createProject, type ProjectState, type ProjectType, type TargetModelId } from '../types';
@@ -69,6 +70,10 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   const [projectSetup, setProjectSetup] = useState<{ name: string; migration: boolean; complete: (value: { name: string; projectType: ProjectType; targetModel: TargetModelId } | null) => void } | null>(null);
   const requestProjectSetup = (name: string, migration: boolean) => new Promise<{ name: string; projectType: ProjectType; targetModel: TargetModelId } | null>((resolve) => {
     setProjectSetup({ name, migration, complete: (value) => { setProjectSetup(null); resolve(value); } });
+  });
+  const [layoutUpgrade, setLayoutUpgrade] = useState<{ name: string; plan: LayoutMigrationPlan; blockedReason?: string; complete: (proceed: boolean) => void } | null>(null);
+  const requestLayoutUpgrade = (name: string, plan: LayoutMigrationPlan, blockedReason?: string) => new Promise<boolean>((resolve) => {
+    setLayoutUpgrade({ name, plan, blockedReason, complete: (upgrade) => { setLayoutUpgrade(null); resolve(upgrade); } });
   });
   const [projectVersions, setProjectVersions] = useState<ProjectVersion[]>([]);
   const [currentProjectVersionId, setCurrentProjectVersionId] = useState<string | undefined>();
@@ -193,6 +198,30 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     logger.info(`opening project directory ${directory.name}`);
     await flushProjectSave();
     const previousProject = useProjectStore.getState();
+    // The upgrade is confirmed before anything is read or written, and it runs outside runProjectFileOperation
+    // (the caller already holds projectOperationBusyRef; no project is active for this directory yet).
+    const layout = await detectProjectLayout(directory);
+    if (layout === 'v3') {
+      await resumePendingJournals(directory);
+    } else if (layout === 'v2') {
+      const plan = await planLayoutMigration(directory);
+      if (!await requestLayoutUpgrade(directory.name, plan)) {
+        logger.warning(`project upgrade canceled for ${directory.name}`);
+        throw new DOMException('Project opening canceled', 'AbortError');
+      }
+      try {
+        await runLayoutMigration(directory, { onProgress: ({ phase }) => logger.info(phase) });
+        logger.success(`upgraded project layout of ${directory.name}`);
+      } catch (error) {
+        if (!(error instanceof LayoutMigrationError) || error.kind !== 'blocked') throw error;
+        // No v3 step ran: opening continues through the legacy (manifest.json v2) reader so the conflicts can be resolved.
+        if (!await requestLayoutUpgrade(directory.name, plan, error.message)) {
+          logger.warning(`project opening canceled for ${directory.name}`);
+          throw new DOMException('Project opening canceled', 'AbortError');
+        }
+        logger.warning(`opening ${directory.name} without upgrading`);
+      }
+    }
     const project = await readProjectDirectory(directory, async (name) => {
       const fileCount = await countProjectDirectoryFiles(directory);
       if (!window.confirm(`This folder is not a DatasetCreator project. Create a project here? ${fileCount} file${fileCount === 1 ? '' : 's'} will be indexed and may get caption sidecar files.`)) {
@@ -281,7 +310,10 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
 
   const handleRestoreProjectVersion = async (version: ProjectVersion) => {
     if (!projectDirectoryHandle || projectOperationBusyRef.current || !await canSwitchProject()) return;
-    if (!window.confirm(`Restore project version "${version.name}"? Current changes will be replaced.`)) return;
+    let needsUpgrade = false;
+    try { needsUpgrade = await getProjectVersionLayout(projectDirectoryHandle, version.id) === 'legacy'; }
+    catch (error) { addNotification('error', error instanceof Error ? error.message : 'Failed to read the project version'); return; }
+    if (!window.confirm(`Restore project version "${version.name}"? Current changes will be replaced.${needsUpgrade ? ' This version uses the previous project layout, so the project will be upgraded to the current layout right after restoring (a new safety snapshot is saved first).' : ''}`)) return;
     const directory = projectDirectoryHandle;
     const operations = useOperationStore.getState();
     const operationId = `project-restore:${crypto.randomUUID()}`;
@@ -296,6 +328,12 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
           let project!: ProjectState;
           await restoreProjectVersion(directory, version.id, async () => { project = await readProjectDirectory(directory); });
           restoredOnDisk = true;
+          if (await detectProjectLayout(directory) === 'v2') {
+            await runLayoutMigration(directory);
+            project = await readProjectDirectory(directory);
+            const refreshed = await listProjectVersions(directory);
+            setProjectVersions(refreshed.versions);
+          }
           activateProjectDirectory(directory, project);
         } catch (error) {
           // Stop the old queue before its finally block can write over a partial restore.
@@ -320,7 +358,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   };
 
   return {
-    projectSetup, projectVersions, currentProjectVersionId, newVersionName, setNewVersionName,
+    projectSetup, layoutUpgrade, projectVersions, currentProjectVersionId, newVersionName, setNewVersionName,
     handleNewProject, handleOpenProject, handleRenameProject, openProjectVersions,
     handleCreateProjectVersion, handleRestoreProjectVersion,
   };

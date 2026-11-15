@@ -39,6 +39,7 @@ import { useWorkspaceCommands, type ExplorerItemEntry } from './hooks/useWorkspa
 import { useCommandPalette } from './components/workspace/Commands';
 import { flushProjectSave, runProjectFileOperation, useProjectSave } from './hooks/useProjectSave';
 import { ProjectSetupDialog } from './components/ProjectSetupDialog';
+import { ProjectUpgradeDialog } from './components/ProjectUpgradeDialog';
 import { PROJECT_TYPE_PROFILES } from './lib/projectProfiles';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
@@ -578,7 +579,7 @@ function App() {
     projectOperationBusyRef,
   });
   const {
-    projectSetup, projectVersions, currentProjectVersionId, newVersionName, setNewVersionName,
+    projectSetup, layoutUpgrade, projectVersions, currentProjectVersionId, newVersionName, setNewVersionName,
     handleNewProject, handleOpenProject, handleRenameProject, openProjectVersions,
     handleCreateProjectVersion, handleRestoreProjectVersion,
   } = useProjectLifecycle({
@@ -1344,7 +1345,7 @@ function App() {
 
   return <AppShell
     busy={isProjectDirectoryBusy}
-    setupDialog={projectSetup ? <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} /> : null}
+    setupDialog={projectSetup ? <ProjectSetupDialog name={projectSetup.name} migration={projectSetup.migration} onComplete={projectSetup.complete} /> : layoutUpgrade ? <ProjectUpgradeDialog name={layoutUpgrade.name} plan={layoutUpgrade.plan} blockedReason={layoutUpgrade.blockedReason} onComplete={layoutUpgrade.complete} /> : null}
     backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
     header={<WorkspaceMenus openMenu={openMenu}
       onOpenMenuChange={menu => { setOpenMenu(menu); setTabMenuOpen(false); setWorkspaceContextMenu(null); }}

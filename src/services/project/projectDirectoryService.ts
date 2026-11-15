@@ -20,10 +20,15 @@ import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import { migrateLegacyDatasetExclusions } from './legacyDatasetExclusionService';
 import {
   DATASET_MANIFEST_FILE,
-  PROJECT_CACHE_DIRECTORY,
+  LEGACY_CACHE_DIRECTORY,
   PROJECT_DATASET_DIRECTORY,
+  PROJECT_FILE,
   PROJECT_GIT_DIRECTORY,
+  PROJECT_INTERNAL_DIRECTORY,
+  PROJECT_LAYOUT,
+  PROJECT_PROJECT_FORMAT,
   PROJECT_SHARED_DIRECTORY,
+  detectProjectLayout,
   ensureProjectLayout,
   isProjectWorkspacePath,
 } from './projectLayoutService';
@@ -40,8 +45,8 @@ import {
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
 export const PROJECT_DIRECTORY_DESCRIPTION = 'Dataset Creator project directory';
-export const PROJECT_DIRECTORY_CACHE = PROJECT_CACHE_DIRECTORY;
-const PROJECT_PREVIEW_CACHE_DIRECTORY = `${PROJECT_DIRECTORY_CACHE}/previews`;
+export const PROJECT_DIRECTORY_CACHE = PROJECT_LAYOUT.cacheDir;
+const PROJECT_PREVIEW_CACHE_DIRECTORY = `${PROJECT_LAYOUT.cacheDir}/previews`;
 const PROJECT_PREVIEW_CACHE_SIZE = 512;
 type ProjectPreviewKind = 'source' | 'edited' | 'psd';
 
@@ -70,6 +75,25 @@ type DirectoryPickerWindow = Window &
   typeof globalThis & {
     showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<ProjectDirectoryHandle>;
   };
+
+/** `completedAt` is set when the migration journal finishes; until then only id and fromVersion are stored. */
+export type LayoutV3Migration = { id: string; completedAt?: string; fromVersion: 1 | 2 };
+
+/**
+ * `.datasetcreator/project.json` (v3). Until C6 moves per-asset data into assets.json, the
+ * *Manifests path maps stay here so the current sidecar-based reader keeps working.
+ */
+export type ProjectJsonV3 = {
+  format: typeof PROJECT_PROJECT_FORMAT;
+  version: 3;
+  project: Omit<DirectoryProjectManifest['project'], 'taggingConfig' | 'datasetMigration' | 'captionMigration' | 'datasetItemManifests' | 'datasetFilePath'> & {
+    taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint' | 'datasetKeyword'>;
+    migrations?: {
+      layoutV3?: LayoutV3Migration;
+      legacy?: { datasetMigration?: LegacyDatasetMigrationReport; captionMigration?: ProjectState['captionMigration'] };
+    };
+  };
+};
 
 type DirectoryProjectManifest = {
   format: typeof PROJECT_DIRECTORY_FORMAT;
@@ -201,21 +225,6 @@ const getDirectoryForFilePath = async (
   path: string,
   create = false
 ): Promise<ProjectDirectoryHandle> => getDirectoryAtPath(root, getParentPath(path), create);
-
-const getExistingManifestName = async (directory: ProjectDirectoryHandle): Promise<string> => {
-  try {
-    await getProjectFile(directory, PROJECT_DIRECTORY_MANIFEST);
-    return PROJECT_DIRECTORY_MANIFEST;
-  } catch (error) {
-    if (!isNotFoundError(error)) {
-      throw new Error(`Unable to access the project manifest: ${getErrorMessage(error)}`);
-    }
-    throw new DOMException(
-      'The selected directory does not contain a supported Dataset Creator project.',
-      'NotFoundError'
-    );
-  }
-};
 
 const writeTextFile = async (
   directory: ProjectDirectoryHandle,
@@ -395,6 +404,82 @@ const getProjectManifest = (
     createdAt: toIsoString(project.createdAt),
   },
 });
+
+type ManifestPaths = {
+  sourceImageManifests?: Record<string, string>;
+  editedAssetManifests?: Record<string, string>;
+};
+
+const serializeProjectJson = (
+  project: ProjectState,
+  paths: ManifestPaths,
+  migrations: NonNullable<ProjectJsonV3['project']['migrations']> | undefined
+): ProjectJsonV3 => {
+  const { taggingConfig, datasetMigration, captionMigration, datasetItemManifests: _items, datasetFilePath: _file, ...rest } =
+    getProjectManifest(project, paths).project;
+  const { datasetKeyword: _keyword, ...tagging } = taggingConfig;
+  const legacy = datasetMigration || captionMigration ? { datasetMigration, captionMigration } : migrations?.legacy;
+  const nextMigrations = migrations?.layoutV3 || legacy ? { layoutV3: migrations?.layoutV3, legacy } : undefined;
+  return {
+    format: PROJECT_PROJECT_FORMAT,
+    version: 3,
+    project: { ...rest, taggingConfig: tagging, ...(nextMigrations ? { migrations: nextMigrations } : {}) },
+  };
+};
+
+export type LegacyProjectManifest = DirectoryProjectManifest;
+
+export const readLegacyProjectManifest = (directory: ProjectDirectoryHandle): Promise<LegacyProjectManifest> =>
+  readJsonFile<DirectoryProjectManifest>(directory, PROJECT_DIRECTORY_MANIFEST, 'the project manifest');
+
+/** Builds project.json from a (legacy-migrated) manifest.json and the project read from it. */
+export const createLayoutV3ProjectJson = (
+  manifest: LegacyProjectManifest,
+  project: ProjectState,
+  layoutV3: LayoutV3Migration
+): ProjectJsonV3 => {
+  const record = manifest.project as Record<string, unknown>;
+  const editedAssetManifests = manifest.project.editedAssetManifests
+    ?? (record[`syn${'thetic'}ImageManifests`] as Record<string, string> | undefined)
+    ?? manifest.project.datasetItemManifests;
+  return serializeProjectJson(project, { sourceImageManifests: manifest.project.sourceImageManifests, editedAssetManifests }, { layoutV3 });
+};
+
+/** Maps a v3 project.json to the in-memory shape shared with the legacy manifest reader. */
+export const projectJsonToManifest = (json: ProjectJsonV3): DirectoryProjectManifest => {
+  const { migrations, taggingConfig, ...rest } = json.project;
+  return {
+    format: PROJECT_DIRECTORY_FORMAT,
+    version: 2,
+    project: {
+      ...rest,
+      taggingConfig: { datasetKeyword: json.project.dataset?.triggerWord ?? '', ...taggingConfig } as DirectoryProjectManifest['project']['taggingConfig'],
+      datasetMigration: migrations?.legacy?.datasetMigration,
+      captionMigration: migrations?.legacy?.captionMigration,
+    },
+  };
+};
+
+const readProjectJsonMigrations = async (directory: ProjectDirectoryHandle): Promise<ProjectJsonV3['project']['migrations']> => {
+  try {
+    return (JSON.parse(await readTextFile(await getDirectoryAtPath(directory, PROJECT_INTERNAL_DIRECTORY), 'project.json')) as ProjectJsonV3).project?.migrations;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Writes the project manifest where the project lives: project.json for v3 (and new projects), manifest.json for an unmigrated legacy project. */
+const writeProjectManifest = async (
+  directory: ProjectDirectoryHandle,
+  project: ProjectState,
+  paths: ManifestPaths
+) => {
+  if (await detectProjectLayout(directory) === 'v2') {
+    await writeTextFile(directory, PROJECT_DIRECTORY_MANIFEST, JSON.stringify(getProjectManifest(project, paths), null, 2));
+    return;
+  }
+  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(serializeProjectJson(project, paths, await readProjectJsonMigrations(directory)), null, 2));
+};
 
 const getDefaultSourceManifestPath = (source: SourceImage): string => {
   const fileName = `${source.id}.${getFileExtension(source.fileName, source.mimeType)}`;
@@ -699,25 +784,16 @@ export const createProjectDirectory = async (
       editedAssetManifests[item.id] = await writeEditedAsset(directory, item);
     }),
   ]);
-  await writeTextFile(
-    directory,
-    PROJECT_DIRECTORY_MANIFEST,
-    JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
-  );
+  await writeProjectManifest(directory, project, { sourceImageManifests, editedAssetManifests });
 };
 
-export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
-  try {
-    await getExistingManifestName(directory);
-    return true;
-  } catch {
-    return false;
-  }
-};
+export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHandle): Promise<boolean> =>
+  await detectProjectLayout(directory).catch(() => 'none' as const) !== 'none';
 
 const CLEARED_PROJECT_ENTRIES = [
+  PROJECT_INTERNAL_DIRECTORY,
   '.dataset-creator-data',
-  PROJECT_DIRECTORY_CACHE,
+  LEGACY_CACHE_DIRECTORY,
   'sources',
   'edited',
   PROJECT_DIRECTORY_MANIFEST,
@@ -838,11 +914,7 @@ export const writeProjectDirectoryChanges = async (
       ? reusableManifestPath
       : editedAssetManifests[item.id] ?? getDefaultEditedAssetManifestPath(item);
   }
-  await writeTextFile(
-    directory,
-    PROJECT_DIRECTORY_MANIFEST,
-    JSON.stringify(getProjectManifest(project, { sourceImageManifests, editedAssetManifests }), null, 2)
-  );
+  await writeProjectManifest(directory, project, { sourceImageManifests, editedAssetManifests });
 };
 
 const readSource = async (
@@ -1022,23 +1094,30 @@ export const readProjectDirectory = async (
   directory: ProjectDirectoryHandle,
   selectProjectType?: ProjectTypeResolver
 ): Promise<ProjectState> => {
-  let manifestName: string;
-  try {
-    manifestName = await getExistingManifestName(directory);
-  } catch (error) {
-    if (!isNotFoundError(error)) {
-      throw error;
-    }
+  const layout = await detectProjectLayout(directory);
+  // Legacy (v2) projects are read by this same reader only while the layout migration runs; legacy writes go to manifest.json.
+  const legacyMode = layout === 'v2';
+  const manifestName = PROJECT_DIRECTORY_MANIFEST;
+  if (layout === 'none') {
     const projectType = await resolveProjectType(undefined, directory.name, selectProjectType);
     const project = createProject(directory.name, projectType);
     await createProjectDirectory(directory, project);
     return project;
   }
-  const manifest = await readJsonFile<DirectoryProjectManifest>(
-    directory,
-    manifestName,
-    'the project manifest'
-  );
+  let manifest: DirectoryProjectManifest;
+  if (layout === 'v3') {
+    const json = await readJsonFile<ProjectJsonV3>(
+      await getDirectoryAtPath(directory, PROJECT_INTERNAL_DIRECTORY),
+      PROJECT_FILE.split('/').pop()!,
+      'the project manifest'
+    );
+    if (json.format !== PROJECT_PROJECT_FORMAT || json.version !== 3) {
+      throw new Error('The selected directory is not a supported Dataset Creator project.');
+    }
+    manifest = projectJsonToManifest(json);
+  } else {
+    manifest = await readJsonFile<DirectoryProjectManifest>(directory, manifestName, 'the project manifest');
+  }
   if (manifest.format !== PROJECT_DIRECTORY_FORMAT || (manifest.version !== 1 && manifest.version !== 2)) {
     throw new Error('The selected directory is not a supported Dataset Creator project.');
   }
@@ -1073,7 +1152,7 @@ export const readProjectDirectory = async (
     }
     await writeTextFile(directory,manifestName,JSON.stringify(manifest,null,2));
   };
-  await migrateLegacyDatasetExclusions(directory, checkpointExclusionPaths, true);
+  if (legacyMode) await migrateLegacyDatasetExclusions(directory, checkpointExclusionPaths, true);
   const sourceManifestPaths = manifest.project.sourceImageManifests;
   const legacyEditedAssetManifestPaths = (manifest.project as Record<string, unknown>)[
     `syn${'thetic'}ImageManifests`
@@ -1146,7 +1225,7 @@ export const readProjectDirectory = async (
     }));
   }
 
-  await migrateLegacyDatasetExclusions(directory, async moves => {
+  if (legacyMode) await migrateLegacyDatasetExclusions(directory, async moves => {
     sources = sources.map(source => ({ ...source,
       originalFilePath: applyProjectRelativePathMoves(source.originalFilePath, moves),
       manifestPath: applyProjectRelativePathMoves(source.manifestPath, moves, true),
@@ -1216,7 +1295,8 @@ export const readProjectDirectory = async (
     : legacyDatasetManifest?.captionOverrides ?? {};
   const legacyOverwriteEnabled = previousMigration?.overwriteEnabled ?? legacyDatasetManifest?.overwriteCaptions === true;
   const migrationNeeded = manifest.project.captionMigration?.status !== 'complete' && (legacyOverwriteEnabled || Object.keys(legacyOverrides).length > 0);
-  if (!migrationNeeded) return loadedProject;
+  // A v3 project has no legacy caption data; a pending report blocks the layout upgrade instead.
+  if (!legacyMode || !migrationNeeded) return loadedProject;
   const legacyDatasetForCaption = {
     ...loadedProject.dataset,
     assetIds: legacyDatasetManifest?.assetIds ?? [],

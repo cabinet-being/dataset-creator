@@ -7,19 +7,33 @@ export const PROJECT_DATASET_DIRECTORY = 'dataset';
 export const PROJECT_SOURCE_DIRECTORY = 'src';
 export const PROJECT_SHARED_DIRECTORY = 'src/shared';
 export const PROJECT_ASSETS_DIRECTORY = 'src/assets';
-export const PROJECT_CACHE_DIRECTORY = '.cache';
+/** Pre-v3 preview cache folder; moved into the service folder by the layout migration. */
+export const LEGACY_CACHE_DIRECTORY = '.cache';
 export const PROJECT_GIT_DIRECTORY = '.git';
 
 export const PROJECT_DATA_DIRECTORY = '.dataset-creator-data';
+
+/** Service folder of a v3 project: settings, cache, versions, migration journals and backups. */
+export const PROJECT_INTERNAL_DIRECTORY = '.datasetcreator';
+export const PROJECT_FILE = `${PROJECT_INTERNAL_DIRECTORY}/project.json`;
+export const PROJECT_PROJECT_FORMAT = 'dataset-creator-project';
 
 export const PROJECT_LAYOUT = {
   rawDir: PROJECT_SHARED_DIRECTORY,
   generatedDir: PROJECT_ASSETS_DIRECTORY,
   datasetDir: PROJECT_DATASET_DIRECTORY,
-  cacheDir: PROJECT_CACHE_DIRECTORY,
-  versionsDir: PROJECT_GIT_DIRECTORY,
-  internalRootNames: [PROJECT_CACHE_DIRECTORY, PROJECT_DATA_DIRECTORY, PROJECT_GIT_DIRECTORY],
+  internalDir: PROJECT_INTERNAL_DIRECTORY,
+  projectFile: PROJECT_FILE,
+  cacheDir: `${PROJECT_INTERNAL_DIRECTORY}/cache`,
+  versionsDir: `${PROJECT_INTERNAL_DIRECTORY}/versions`,
+  journalDir: `${PROJECT_INTERNAL_DIRECTORY}/journal`,
+  backupDir: `${PROJECT_INTERNAL_DIRECTORY}/backup`,
+  // Pre-v3 service names stay hidden until the layout migration moves them.
+  internalRootNames: [PROJECT_INTERNAL_DIRECTORY, LEGACY_CACHE_DIRECTORY, PROJECT_DATA_DIRECTORY, PROJECT_GIT_DIRECTORY],
 } as const;
+
+/** Folders inside the service folder that are never snapshotted and never removed by a version restore. */
+export const PROJECT_INTERNAL_PRESERVED_DIRECTORIES = ['cache', 'journal', 'versions', 'backup'] as const;
 
 const INTERNAL_ENTRY_NAMES = new Set<string>(PROJECT_LAYOUT.internalRootNames);
 
@@ -27,8 +41,8 @@ const INTERNAL_ENTRY_NAMES = new Set<string>(PROJECT_LAYOUT.internalRootNames);
 export const isInternalProjectEntry = (name: string, _depth = 0): boolean => INTERNAL_ENTRY_NAMES.has(name);
 
 export const REQUIRED_PROJECT_DIRECTORIES = [
-  PROJECT_GIT_DIRECTORY,
-  PROJECT_CACHE_DIRECTORY,
+  PROJECT_INTERNAL_DIRECTORY,
+  PROJECT_LAYOUT.cacheDir,
   PROJECT_DATASET_DIRECTORY,
   PROJECT_SOURCE_DIRECTORY,
   PROJECT_SHARED_DIRECTORY,
@@ -112,16 +126,30 @@ export const ensureProjectLayout = async (
   root: ProjectDirectoryHandle,
   _project?: Pick<ProjectState, 'name' | 'projectType' | 'taggingConfig' | 'dataset'>
 ): Promise<DatasetManifest | null> => {
-  await Promise.all(REQUIRED_PROJECT_DIRECTORIES.map(async (path) => {
-    try {
-      await getDirectoryAtPath(root, path, true);
-    } catch (error) {
-      // A .git file (worktree/submodule gitfile) is kept untouched; project versions are unavailable then.
-      if (path === PROJECT_GIT_DIRECTORY && await isGitFile(root)) return;
-      throw error;
-    }
-  }));
+  // A real .git folder or gitfile is never created, changed or required.
+  await Promise.all(REQUIRED_PROJECT_DIRECTORIES.map((path) => getDirectoryAtPath(root, path, true)));
   return readDatasetManifest(root);
+};
+
+export type ProjectLayoutVersion = 'v3' | 'v2' | 'none';
+
+const hasFile = async (root: ProjectDirectoryHandle, path: string): Promise<boolean> => {
+  try {
+    const parts = pathParts(path);
+    const directory = await getDirectoryAtPath(root, parts.slice(0, -1).join('/'));
+    await directory.getFileHandle(parts[parts.length - 1]);
+    return true;
+  } catch (error) {
+    if ((error as { name?: string })?.name === 'NotFoundError' || (error as { name?: string })?.name === 'TypeMismatchError') return false;
+    throw error;
+  }
+};
+
+/** v3: `.datasetcreator/project.json`; v2: legacy `manifest.json` (v1 and v2 formats); none: not a project. */
+export const detectProjectLayout = async (root: ProjectDirectoryHandle): Promise<ProjectLayoutVersion> => {
+  if (await hasFile(root, PROJECT_FILE)) return 'v3';
+  if (await hasFile(root, PROJECT_MANIFEST_FILE)) return 'v2';
+  return 'none';
 };
 
 export const isProjectWorkspacePath = (path: string, workspace: 'dataset' | 'shared' | 'assets'): boolean => {

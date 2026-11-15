@@ -1,10 +1,21 @@
 import JSZip from 'jszip';
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
-import { PROJECT_CACHE_DIRECTORY, PROJECT_GIT_DIRECTORY, REQUIRED_PROJECT_DIRECTORIES, isGitFile } from './projectLayoutService';
+import {
+  LEGACY_CACHE_DIRECTORY,
+  PROJECT_GIT_DIRECTORY,
+  PROJECT_INTERNAL_DIRECTORY,
+  PROJECT_INTERNAL_PRESERVED_DIRECTORIES,
+  PROJECT_FILE,
+  PROJECT_LAYOUT,
+  PROJECT_PROJECT_FORMAT,
+  REQUIRED_PROJECT_DIRECTORIES,
+} from './projectLayoutService';
 
-const VERSION_INDEX_PATH = `${PROJECT_GIT_DIRECTORY}/dataset-creator-versions.json`;
-const VERSION_SNAPSHOT_DIRECTORY = `${PROJECT_GIT_DIRECTORY}/snapshots`;
-const RESTORE_BACKUP_DIRECTORY = `${PROJECT_GIT_DIRECTORY}/restore-backups`;
+export const VERSION_INDEX_PATH = `${PROJECT_LAYOUT.versionsDir}/index.json`;
+export const VERSION_SNAPSHOT_DIRECTORY = `${PROJECT_LAYOUT.versionsDir}/snapshots`;
+export const RESTORE_BACKUP_DIRECTORY = `${PROJECT_LAYOUT.backupDir}/restore`;
+// Pre-v3 location of version data inside .git; read as a fallback until the layout migration moves it.
+export const LEGACY_VERSION_INDEX_PATH = `${PROJECT_GIT_DIRECTORY}/dataset-creator-versions.json`;
 
 export class ProjectVersionRestoreError extends Error {
   constructor(message: string, readonly previousRestored: boolean, readonly recoveryPath?: string) {
@@ -13,6 +24,8 @@ export class ProjectVersionRestoreError extends Error {
   }
 }
 
+export type ProjectVersionLayout = 'v3' | 'legacy';
+
 export type ProjectVersion = {
   id: string;
   name: string;
@@ -20,15 +33,22 @@ export type ProjectVersion = {
   createdAt: string;
 };
 
-type VersionIndex = {
+export type VersionIndex = {
   format: 'dataset-creator-versions';
   version: 1;
   currentId?: string;
   versions: ProjectVersion[];
 };
 
-// Root entries that are never snapshotted nor removed by restore: Git/version storage and the reproducible cache.
-const PRESERVED_ROOT_ENTRIES = new Set([PROJECT_GIT_DIRECTORY, PROJECT_CACHE_DIRECTORY]);
+// Root entries that are never snapshotted nor removed by restore: a real Git repository and the old reproducible cache.
+const PRESERVED_ROOT_ENTRIES = new Set([PROJECT_GIT_DIRECTORY, LEGACY_CACHE_DIRECTORY]);
+// Service folders inside .datasetcreator are never snapshotted, applied from a ZIP or removed by restore.
+const PRESERVED_INTERNAL_PATHS = PROJECT_INTERNAL_PRESERVED_DIRECTORIES.map((name) => `${PROJECT_INTERNAL_DIRECTORY}/${name}`);
+/** True for paths that snapshots never contain and restore never touches. */
+export const isSnapshotExcludedPath = (path: string) =>
+  PRESERVED_ROOT_ENTRIES.has(path.split('/')[0]) || PRESERVED_INTERNAL_PATHS.some((entry) => path === entry || path.startsWith(`${entry}/`));
+const isRejectedSnapshotPath = (path: string) =>
+  path.split('/')[0] === PROJECT_GIT_DIRECTORY || PRESERVED_INTERNAL_PATHS.some((entry) => path === entry || path.startsWith(`${entry}/`));
 
 const getPathParts = (path: string): string[] => path.split('/').filter(Boolean);
 
@@ -62,34 +82,32 @@ const writeFileAtPath = async (root: ProjectDirectoryHandle, path: string, value
 const readFileAtPath = async (root: ProjectDirectoryHandle, path: string) =>
   readFile(await getDirectoryAtPath(root, getParentPath(path)), getFileName(path));
 
-const assertVersionsAvailable = async (root: ProjectDirectoryHandle) => {
-  if (await isGitFile(root)) {
-    throw new Error('Project versions are unavailable: .git in this folder is a Git file (worktree or submodule), not a folder.');
-  }
+const parseVersionIndex = (text: string): VersionIndex | undefined => {
+  const index = JSON.parse(text) as VersionIndex;
+  return index.format === 'dataset-creator-versions' && index.version === 1 && Array.isArray(index.versions) ? index : undefined;
 };
 
-const readVersionIndex = async (root: ProjectDirectoryHandle): Promise<VersionIndex> => {
-  try {
-    const file = await readFileAtPath(root, VERSION_INDEX_PATH);
-    const index = JSON.parse(await file.text()) as VersionIndex;
-    if (index.format === 'dataset-creator-versions' && index.version === 1 && Array.isArray(index.versions)) {
-      return index;
+export const readVersionIndex = async (root: ProjectDirectoryHandle): Promise<VersionIndex> => {
+  for (const path of [VERSION_INDEX_PATH, LEGACY_VERSION_INDEX_PATH]) {
+    try {
+      const index = parseVersionIndex(await (await readFileAtPath(root, path)).text());
+      if (index) return index;
+    } catch {
+      // A missing or unreadable index falls through to the legacy location, then to an empty version graph.
     }
-  } catch {
-    // A project without version tags starts with an empty version graph.
   }
   return { format: 'dataset-creator-versions', version: 1, versions: [] };
 };
 
-const writeVersionIndex = async (root: ProjectDirectoryHandle, index: VersionIndex) =>
+export const writeVersionIndex = async (root: ProjectDirectoryHandle, index: VersionIndex) =>
   writeFileAtPath(root, VERSION_INDEX_PATH, JSON.stringify(index, null, 2));
 
 const addDirectoryToZip = async (zip: JSZip, directory: ProjectDirectoryHandle, prefix = ''): Promise<void> => {
   for await (const [name, entry] of directory.entries()) {
-    if (!prefix && PRESERVED_ROOT_ENTRIES.has(name)) {
+    const path = prefix ? `${prefix}/${name}` : name;
+    if (isSnapshotExcludedPath(path)) {
       continue;
     }
-    const path = prefix ? `${prefix}/${name}` : name;
     if ('entries' in entry) {
       zip.folder(path);
       await addDirectoryToZip(zip, entry, path);
@@ -99,27 +117,52 @@ const addDirectoryToZip = async (zip: JSZip, directory: ProjectDirectoryHandle, 
   }
 };
 
-const clearProjectContents = async (root: ProjectDirectoryHandle) => {
-  const entries: string[] = [];
-  for await (const [name] of root.entries()) {
-    if (!PRESERVED_ROOT_ENTRIES.has(name)) {
-      entries.push(name);
-    }
+const clearDirectoryContents = async (directory: ProjectDirectoryHandle, prefix: string) => {
+  const entries: Array<[string, boolean]> = [];
+  for await (const [name, entry] of directory.entries()) {
+    const path = prefix ? `${prefix}/${name}` : name;
+    if (isSnapshotExcludedPath(path)) continue;
+    // The service folder is emptied entry by entry so its preserved folders survive.
+    entries.push([name, path === PROJECT_INTERNAL_DIRECTORY && 'entries' in entry]);
   }
-  const results = await Promise.allSettled(entries.map((name) => root.removeEntry(name, { recursive: true })));
+  const results = await Promise.allSettled(entries.map(async ([name, partial]) => {
+    if (!partial) return directory.removeEntry(name, { recursive: true });
+    await clearDirectoryContents(await directory.getDirectoryHandle(name), name);
+  }));
   const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failed) throw failed.reason;
 };
 
+const clearProjectContents = async (root: ProjectDirectoryHandle) => clearDirectoryContents(root, '');
+
 const applySnapshot = async (root: ProjectDirectoryHandle, zip: JSZip) => {
   await clearProjectContents(root);
   for (const entry of Object.values(zip.files)) {
-    // Preserved root names (.git, .cache) are never applied from an old snapshot.
-    if (PRESERVED_ROOT_ENTRIES.has(entry.name.split('/')[0])) continue;
+    // Preserved entries (.git, .cache, service folders) are never applied from an old snapshot.
+    if (isSnapshotExcludedPath(entry.name.replace(/\/$/, ''))) continue;
     if (entry.dir) await getDirectoryAtPath(root, entry.name, true);
     else await writeFileAtPath(root, entry.name, await entry.async('blob'));
   }
   for (const path of REQUIRED_PROJECT_DIRECTORIES) await getDirectoryAtPath(root, path, true);
+};
+
+// A snapshot holds either a v3 `.datasetcreator/project.json` or a legacy `manifest.json` (format v1/v2).
+const readSnapshotLayout = async (zip: JSZip): Promise<ProjectVersionLayout> => {
+  const readManifest = async (path: string) => {
+    const text = await zip.file(path)?.async('string');
+    try { return text ? JSON.parse(text) : null; } catch { return null; }
+  };
+  const v3 = await readManifest(PROJECT_FILE);
+  if (v3?.format === PROJECT_PROJECT_FORMAT && v3.version === 3 && v3.project?.id && v3.project?.name) return 'v3';
+  const legacy = await readManifest('manifest.json');
+  if (legacy?.format === 'dataset-creator-directory' && [1, 2].includes(legacy.version) && legacy.project?.id && legacy.project?.name) return 'legacy';
+  throw new Error('The version has no valid project manifest.');
+};
+
+/** Reports whether restoring this version needs a layout upgrade afterwards (legacy snapshot). */
+export const getProjectVersionLayout = async (root: ProjectDirectoryHandle, id: string): Promise<ProjectVersionLayout> => {
+  const snapshot = await readFile(await getDirectoryAtPath(root, VERSION_SNAPSHOT_DIRECTORY), `${id}.zip`);
+  return readSnapshotLayout(await JSZip.loadAsync(await snapshot.arrayBuffer()));
 };
 
 export const listProjectVersions = async (root: ProjectDirectoryHandle): Promise<{ currentId?: string; versions: ProjectVersion[] }> => {
@@ -128,7 +171,6 @@ export const listProjectVersions = async (root: ProjectDirectoryHandle): Promise
 };
 
 export const createProjectVersion = async (root: ProjectDirectoryHandle, name: string): Promise<ProjectVersion> => {
-  await assertVersionsAvailable(root);
   const label = name.trim();
   if (!label) {
     throw new Error('Version name is required.');
@@ -159,7 +201,6 @@ export const restoreProjectVersion = async (
   id: string,
   validate?: () => Promise<void>
 ): Promise<ProjectVersion> => {
-  await assertVersionsAvailable(root);
   const index = await readVersionIndex(root);
   const version = index.versions.find((entry) => entry.id === id);
   if (!version) {
@@ -170,15 +211,11 @@ export const restoreProjectVersion = async (
   for (const entry of Object.values(zip.files)) {
     const path = entry.dir ? entry.name.replace(/\/$/, '') : entry.name;
     const originalName = (entry as typeof entry & {unsafeOriginalName?: string}).unsafeOriginalName;
-    if (path.split('/').some(part => !part || part === '.' || part === '..') || path.includes('\\') || path.split('/')[0] === PROJECT_GIT_DIRECTORY || (originalName && originalName !== entry.name)) {
+    if (path.split('/').some(part => !part || part === '.' || part === '..') || path.includes('\\') || isRejectedSnapshotPath(path) || (originalName && originalName !== entry.name)) {
       throw new Error('The version contains an invalid project path.');
     }
   }
-  const manifestText = await zip.file('manifest.json')?.async('string');
-  const manifest = manifestText ? JSON.parse(manifestText) : null;
-  if (manifest?.format !== 'dataset-creator-directory' || ![1, 2].includes(manifest.version) || !manifest.project?.id || !manifest.project?.name) {
-    throw new Error('The version has no valid project manifest.');
-  }
+  await readSnapshotLayout(zip);
   const backup = new JSZip();
   await addDirectoryToZip(backup, root);
   const recoveryPath = `${RESTORE_BACKUP_DIRECTORY}/${crypto.randomUUID()}.zip`;
