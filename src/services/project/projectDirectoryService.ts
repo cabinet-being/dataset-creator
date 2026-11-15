@@ -20,7 +20,9 @@ import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import { migrateLegacyDatasetExclusions } from './legacyDatasetExclusionService';
 import {
   DATASET_MANIFEST_FILE,
+  PROJECT_CACHE_DIRECTORY,
   PROJECT_DATASET_DIRECTORY,
+  PROJECT_GIT_DIRECTORY,
   PROJECT_SHARED_DIRECTORY,
   ensureProjectLayout,
   isProjectWorkspacePath,
@@ -38,7 +40,7 @@ import {
 export const PROJECT_DIRECTORY_MANIFEST = 'manifest.json';
 export const PROJECT_DIRECTORY_FORMAT = 'dataset-creator-directory';
 export const PROJECT_DIRECTORY_DESCRIPTION = 'Dataset Creator project directory';
-export const PROJECT_DIRECTORY_CACHE = '.cache';
+export const PROJECT_DIRECTORY_CACHE = PROJECT_CACHE_DIRECTORY;
 const PROJECT_PREVIEW_CACHE_DIRECTORY = `${PROJECT_DIRECTORY_CACHE}/previews`;
 const PROJECT_PREVIEW_CACHE_SIZE = 512;
 type ProjectPreviewKind = 'source' | 'edited' | 'psd';
@@ -729,7 +731,7 @@ const GIT_SERVICE_ENTRIES = new Set(['dataset-creator-versions.json', 'snapshots
 // A .git file (worktree/submodule gitfile) or an unreadable .git is treated as a real repository too.
 const hasRealGitRepository = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
   try {
-    const git = await directory.getDirectoryHandle('.git');
+    const git = await directory.getDirectoryHandle(PROJECT_GIT_DIRECTORY);
     for await (const [name] of git.entries()) {
       if (!GIT_SERVICE_ENTRIES.has(name)) return true;
     }
@@ -745,7 +747,7 @@ export const listProjectDirectoryClearTargets = async (directory: ProjectDirecto
   const names = new Set<string>();
   for await (const [name] of directory.entries()) names.add(name);
   const targets = CLEARED_PROJECT_ENTRIES.filter((name) => names.has(name));
-  if (names.has('.git') && !(await hasRealGitRepository(directory))) targets.push('.git');
+  if (names.has(PROJECT_GIT_DIRECTORY) && !(await hasRealGitRepository(directory))) targets.push(PROJECT_GIT_DIRECTORY);
   return targets;
 };
 
@@ -754,7 +756,7 @@ export const countProjectDirectoryFiles = async (directory: ProjectDirectoryHand
   let count = 0;
   const walk = async (current: ProjectDirectoryHandle, isRoot: boolean) => {
     for await (const [name, entry] of current.entries()) {
-      if (isRoot && name === '.git') continue;
+      if (isRoot && name === PROJECT_GIT_DIRECTORY) continue;
       if ('entries' in entry) await walk(entry as ProjectDirectoryHandle, false);
       else count += 1;
     }
@@ -765,7 +767,7 @@ export const countProjectDirectoryFiles = async (directory: ProjectDirectoryHand
 
 export const clearProjectDirectory = async (directory: ProjectDirectoryHandle) => {
   const entries = [...CLEARED_PROJECT_ENTRIES];
-  if (!(await hasRealGitRepository(directory))) entries.push('.git');
+  if (!(await hasRealGitRepository(directory))) entries.push(PROJECT_GIT_DIRECTORY);
   await Promise.all(
     entries.map(async (entry) => {
       try {

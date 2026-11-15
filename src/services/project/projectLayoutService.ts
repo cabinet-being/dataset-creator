@@ -10,6 +10,22 @@ export const PROJECT_ASSETS_DIRECTORY = 'src/assets';
 export const PROJECT_CACHE_DIRECTORY = '.cache';
 export const PROJECT_GIT_DIRECTORY = '.git';
 
+export const PROJECT_DATA_DIRECTORY = '.dataset-creator-data';
+
+export const PROJECT_LAYOUT = {
+  rawDir: PROJECT_SHARED_DIRECTORY,
+  generatedDir: PROJECT_ASSETS_DIRECTORY,
+  datasetDir: PROJECT_DATASET_DIRECTORY,
+  cacheDir: PROJECT_CACHE_DIRECTORY,
+  versionsDir: PROJECT_GIT_DIRECTORY,
+  internalRootNames: [PROJECT_CACHE_DIRECTORY, PROJECT_DATA_DIRECTORY, PROJECT_GIT_DIRECTORY],
+} as const;
+
+const INTERNAL_ENTRY_NAMES = new Set<string>(PROJECT_LAYOUT.internalRootNames);
+
+/** True for service entries (cache, recovery data, versions) that are not user project content; applied at any depth. */
+export const isInternalProjectEntry = (name: string, _depth = 0): boolean => INTERNAL_ENTRY_NAMES.has(name);
+
 export const REQUIRED_PROJECT_DIRECTORIES = [
   PROJECT_GIT_DIRECTORY,
   PROJECT_CACHE_DIRECTORY,

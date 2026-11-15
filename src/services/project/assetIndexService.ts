@@ -5,6 +5,7 @@ import { getAssetManifestName, getAssetManifestPath } from './assetManifestServi
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from './projectDirectoryService';
 import { isInternalProjectFileName, isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
 import { snapshotFile } from './fileSnapshotService';
+import { isInternalProjectEntry } from './projectLayoutService';
 
 type IndexedAssetManifest = {
   id?: string;
@@ -46,7 +47,6 @@ export type IndexProjectAssetsOptions = {
   onProgress?: (current: number, total: number) => void;
 };
 
-const INTERNAL_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data', '.git']);
 
 const yieldToUi = async () => new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
@@ -106,7 +106,7 @@ const collectAssetFiles = async (
       continue;
     }
     if ('entries' in entry) {
-      if (!INTERNAL_DIRECTORY_NAMES.has(entryName)) {
+      if (!isInternalProjectEntry(entryName)) {
         assets.push(...await collectAssetFiles(entry, joinPath(relativeDirectory, entryName)));
       }
       continue;

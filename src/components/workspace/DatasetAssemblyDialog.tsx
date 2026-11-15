@@ -11,6 +11,7 @@ import { assembleDataset, createAssemblyFingerprint, encodeAssemblyInputs, type 
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
 import { scanSharedCandidates } from '../../services/dataset/sharedCandidateService';
 import { useUIStore } from '../../stores/useUIStore';
+import { PROJECT_LAYOUT } from '../../services/project/projectLayoutService';
 
 type Props = {
   open: boolean;
@@ -69,16 +70,16 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
         : { kind:'auto' };
 
   const run = async (constraints = { excluded, pinned }) => {
-    if (!directory) { setError('Reconnect the project folder to read src/shared.'); return; }
+    if (!directory) { setError(`Reconnect the project folder to read ${PROJECT_LAYOUT.rawDir}.`); return; }
     abortRef.current?.abort();
     const controller = new AbortController(); abortRef.current = controller;
-    setError(''); setResult(null); setPhase('Scanning src/shared'); setProgress({ completed: 0, total: 0 });
+    setError(''); setResult(null); setPhase(`Scanning ${PROJECT_LAYOUT.rawDir}`); setProgress({ completed: 0, total: 0 });
     try {
       const scan = await scanSharedCandidates(directory, { excludedCategories, includedCategories, signal: controller.signal, onProgress: (completed, total) => setProgress({ completed, total }) });
-      if (!scan.sharedAvailable) throw new Error('Project/src/shared was not found. Create the folder or restore access.');
+      if (!scan.sharedAvailable) throw new Error(`Project/${PROJECT_LAYOUT.rawDir} was not found. Create the folder or restore access.`);
       const memberPaths = new Set(membership.members.flatMap((item) => item.assetPath ? [item.assetPath.replace(/^Project\//, '')] : []));
       const candidates = scan.candidates.filter((item) => !memberPaths.has((item.assetPath ?? '').replace(/^Project\//, '')));
-      if (!candidates.length) throw new Error('No eligible new images were found in src/shared.');
+      if (!candidates.length) throw new Error(`No eligible new images were found in ${PROJECT_LAYOUT.rawDir}.`);
       setPhase('Loading semantic model');
       const encoder = await createSemanticFeatureEncoder(controller.signal, setPhase);
       try {
@@ -127,12 +128,12 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, dire
       <Dialog.Content className="fixed left-1/2 top-1/2 z-[2201] flex max-h-[90vh] w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
         <div className="flex items-start gap-3 border-b border-border p-5">
           <Sparkles className="mt-0.5 h-5 w-5 text-primary" />
-          <div className="min-w-0 flex-1"><Dialog.Title className="font-semibold">Automatic Dataset assembly</Dialog.Title><Dialog.Description className="mt-1 text-sm text-muted-foreground">Maximize relevant visual and caption coverage using images from Project/src/shared only.</Dialog.Description></div>
+          <div className="min-w-0 flex-1"><Dialog.Title className="font-semibold">Automatic Dataset assembly</Dialog.Title><Dialog.Description className="mt-1 text-sm text-muted-foreground">Maximize relevant visual and caption coverage using images from Project/{PROJECT_LAYOUT.rawDir} only.</Dialog.Description></div>
           <Dialog.Close className="rounded p-1 text-muted-foreground hover:bg-secondary" aria-label="Close"><X className="h-4 w-4" /></Dialog.Close>
         </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-auto p-5">
           <div className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-2">
-            <p className="text-sm"><span className="font-medium">Source</span><br /><span className="text-muted-foreground">Project/src/shared · fixed</span></p>
+            <p className="text-sm"><span className="font-medium">Source</span><br /><span className="text-muted-foreground">Project/{PROJECT_LAYOUT.rawDir} · fixed</span></p>
             <p className="text-sm"><span className="font-medium">Baseline</span><br /><span className="text-muted-foreground">Existing {existingCount} {existingCount === 1 ? 'image will' : 'images will'} be preserved</span></p>
             <label className="text-sm"><span className="font-medium">Selection mode</span><select value={mode} onChange={(event) => setMode(event.target.value as AssemblyMode['kind'])} className="mt-1 w-full rounded border border-border bg-background px-2 py-2"><option value="auto">Auto · stop at saturation</option><option value="total">Total Dataset size</option><option value="range">Inclusive total range</option><option value="max-new">Maximum new images</option></select></label>
             {mode === 'total' && <label className="text-sm"><span className="font-medium">Total images</span><input type="number" min={0} max={100000} value={totalTarget} onChange={(event) => setTotalTarget(Math.max(0,Number(event.target.value)||0))} className="mt-1 w-full rounded border border-border bg-background px-2 py-2" /></label>}

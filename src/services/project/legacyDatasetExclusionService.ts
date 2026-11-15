@@ -1,4 +1,5 @@
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
+import { PROJECT_DATA_DIRECTORY, PROJECT_LAYOUT } from './projectLayoutService';
 import { getAssetManifestName } from './assetManifestService';
 import { getDirectoryAtExplorerPath, getExplorerFileKind, getExplorerParentDirectory, getUniqueExplorerName, moveExplorerEntries, type ExplorerPathChange } from './explorerFileService';
 
@@ -30,7 +31,7 @@ export async function clearLegacyExclusionAtPath(root: ProjectDirectoryHandle, p
 // Old exclusion flags are converted once into actual moves. The inert journal
 // survives a crash between the filesystem move and the project manifest update.
 export async function migrateLegacyDatasetExclusions(root: ProjectDirectoryHandle, checkpoint: (moves: ExplorerPathChange[]) => Promise<void>, resumeOnly = false): Promise<void> {
-  const recovery = await root.getDirectoryHandle('.dataset-creator-data', {create:true});
+  const recovery = await root.getDirectoryHandle(PROJECT_DATA_DIRECTORY, {create:true});
   let entries: Entry[] = [];
   try { entries = JSON.parse(await (await (await recovery.getFileHandle(JOURNAL)).getFile()).text()); }
   catch (error) { if (!missing(error)) throw error; }
@@ -82,11 +83,11 @@ export async function migrateLegacyDatasetExclusions(root: ProjectDirectoryHandl
       try { metadata=JSON.parse(await (await (await directory.getFileHandle(getAssetManifestName(name))).getFile()).text()); }
       catch (error) { if (missing(error)) continue; throw error; }
       if (!metadata.excludedFromDataset) continue;
-      const shared=await getDirectoryAtExplorerPath(root,'Project/src/shared');
-      const to=`Project/src/shared/${await getUniqueExplorerName(shared,name)}`;
+      const shared=await getDirectoryAtExplorerPath(root,`Project/${PROJECT_LAYOUT.rawDir}`);
+      const to=`Project/${PROJECT_LAYOUT.rawDir}/${await getUniqueExplorerName(shared,name)}`;
       const entry={from:`${path}/${name}`,to,completed:false};
       entries.push(entry); await writeJournal(); await resume(entry);
     }
   };
-  await scan(await root.getDirectoryHandle('dataset'),'Project/dataset');
+  await scan(await root.getDirectoryHandle(PROJECT_LAYOUT.datasetDir),`Project/${PROJECT_LAYOUT.datasetDir}`);
 }

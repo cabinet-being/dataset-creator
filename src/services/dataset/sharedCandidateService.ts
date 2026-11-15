@@ -1,5 +1,6 @@
 import { inferWorkspaceAspectRatio, type WorkspaceImage } from '../../lib/workspaceImages';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
+import { getDirectoryAtPath, PROJECT_LAYOUT } from '../project/projectLayoutService';
 import { getAssetManifestName } from '../project/assetManifestService';
 import { isSupportedProjectAsset, resolveProjectAssetKind } from '../project/assetTypeService';
 import type { ProjectDirectoryFileHandle, ProjectDirectoryHandle } from '../project/projectDirectoryService';
@@ -44,7 +45,7 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
   onProgress?: (completed: number, total: number) => void;
 } = {}): Promise<SharedCandidateScan> {
   let shared: ProjectDirectoryHandle;
-  try { shared = await (await root.getDirectoryHandle('src')).getDirectoryHandle('shared'); }
+  try { shared = await getDirectoryAtPath(root, PROJECT_LAYOUT.rawDir); }
   catch (error) { if (isNotFound(error)) return { candidates: [], skipped: [], sharedAvailable: false }; throw error; }
   const files = (await collect(shared)).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
   const candidates: WorkspaceImage[] = [];
@@ -52,7 +53,7 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
   for (let index = 0; index < files.length; index += 1) {
     options.signal?.throwIfAborted();
     const entry = files[index];
-    const path = `Project/src/shared/${entry.path}`;
+    const path = `Project/${PROJECT_LAYOUT.rawDir}/${entry.path}`;
     if (!isSupportedProjectAsset(entry.handle.name)) { skipped.push({ path, reason: 'unsupported' }); continue; }
     const kind = resolveProjectAssetKind(entry.handle.name, '');
     if (kind === 'video') { skipped.push({ path, reason: 'video' }); continue; }

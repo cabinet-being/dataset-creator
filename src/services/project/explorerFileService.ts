@@ -6,7 +6,7 @@ import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
 import { sortExplorerNodes } from '../../lib/explorerTreeUpdates';
 import { LEGACY_PROJECT_ROOT_DIRECTORY_NAMES } from './projectPathFilters';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
-import { DATASET_MANIFEST_FILE, PROJECT_GIT_DIRECTORY } from './projectLayoutService';
+import { DATASET_MANIFEST_FILE, isInternalProjectEntry } from './projectLayoutService';
 
 export type ExplorerEntryKind = 'folder' | 'file';
 
@@ -664,9 +664,7 @@ export const readExplorerDirectory = async (
       continue;
     }
     if (
-      entryName === '.cache' ||
-      entryName === '.dataset-creator-data' ||
-      entryName === PROJECT_GIT_DIRECTORY ||
+      isInternalProjectEntry(entryName) ||
       isLegacyDatasetFileName(entryName) ||
       (path === 'Project' && entryName === DATASET_MANIFEST_FILE)
     ) {

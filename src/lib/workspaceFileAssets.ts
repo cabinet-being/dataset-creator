@@ -11,11 +11,11 @@ import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspace
 import { getAssetManifestPath } from '../services/project/assetManifestService';
 
 import type { ExplorerChanges } from './explorerTreeUpdates';
+import { isInternalProjectEntry } from '../services/project/projectLayoutService';
 
 type WorkspaceFileAssetKind = WorkspaceFileAsset['kind'];
 
 const REVIEW_FILE_KINDS = new Set<WorkspaceFileAssetKind>(['video', 'psd']);
-const INTERNAL_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data', '.git']);
 const PSD_PREVIEW_CONCURRENCY = 3;
 type PsdPreviewUpdate = Pick<WorkspaceFileAsset, 'previewUrl' | 'previewStatus' | 'width' | 'height'>;
 const pendingPsdPreviewByRoot = new WeakMap<ProjectDirectoryHandle, Map<string, Promise<PsdPreviewUpdate>>>();
@@ -116,7 +116,7 @@ const collectAssetPaths = async (
   const paths: string[] = [];
 
   for await (const [entryName, entry] of directory.entries()) {
-    if (INTERNAL_DIRECTORY_NAMES.has(entryName)) {
+    if (isInternalProjectEntry(entryName)) {
       continue;
     }
 

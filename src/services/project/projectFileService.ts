@@ -15,7 +15,7 @@ import type {
 } from '../../types';
 import { getAssetManifestName, PROJECT_MANIFEST_NAME } from './assetManifestService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
-import type { DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
+import { PROJECT_LAYOUT, type DatasetManifest as GlobalDatasetManifest } from './projectLayoutService';
 import { migrateLegacyCaptions } from '../caption/captionMigrationService';
 import type { LegacyDatasetMigrationReport } from './legacyDatasetMigrationService';
 import { normalizeBuildSession } from '../build/buildSessionService';
@@ -484,15 +484,15 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
   const sourceImages: Record<string, SourceImage> = {};
   const occupiedPaths = new Set(Object.keys(zip.files).map(path => path.toLowerCase()));
   const restoreExcludedPath = (path: string | undefined, excluded: boolean): string | undefined => {
-    if (!path || !excluded || !path.replace(/^Project\//,'').startsWith('dataset/')) return path;
+    if (!path || !excluded || !path.replace(/^Project\//,'').startsWith(`${PROJECT_LAYOUT.datasetDir}/`)) return path;
     const name = path.split('/').pop()!;
     const dot = name.lastIndexOf('.');
     const stem = dot < 0 ? name : name.slice(0,dot);
     const extension = dot < 0 ? '' : name.slice(dot);
-    let candidate = `src/shared/${name}`;
+    let candidate = `${PROJECT_LAYOUT.rawDir}/${name}`;
     let index = 2;
     while (occupiedPaths.has(candidate.toLowerCase()) || occupiedPaths.has(`${candidate}.manifest.json`.toLowerCase()) || occupiedPaths.has(candidate.replace(/\.[^.]+$/,'.txt').toLowerCase())) {
-      candidate = `src/shared/${stem} ${index++}${extension}`;
+      candidate = `${PROJECT_LAYOUT.rawDir}/${stem} ${index++}${extension}`;
     }
     occupiedPaths.add(candidate.toLowerCase());
     occupiedPaths.add(candidate.replace(/\.[^.]+$/,'.txt').toLowerCase());

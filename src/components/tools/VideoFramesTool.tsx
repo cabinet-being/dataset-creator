@@ -14,6 +14,7 @@ import { inspectVideo, readVideoFrame, findFrameIndex } from '../../services/vid
 import { clearVideoCache, hasVideoModel, getVideoThumbnail } from '../../services/video/videoCache';
 import { listFrameDirectories, saveVideoFrame } from '../../services/video/frameExport';
 import { DEFAULT_FRAME_SELECTION, frameTimecode, type FrameReference, type FrameSelectionOptions, type VideoInfo, type VideoProgress } from '../../services/video/types';
+import { PROJECT_LAYOUT } from '../../services/project/projectLayoutService';
 
 type Props = {
   active?: boolean;
@@ -69,7 +70,7 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
   const [savedPaths, setSavedPaths] = useState<string[]>([]);
   const [directories, setDirectories] = useState<string[]>([]);
   const [projectVideos, setProjectVideos] = useState<Array<{ path:string; name:string; file:Blob }>>([]);
-  const [destination, setDestination] = useState('Project/src/shared');
+  const [destination, setDestination] = useState(`Project/${PROJECT_LAYOUT.rawDir}`);
   const [replacement, setReplacement] = useState<number>();
   const commandRoot = useRef<HTMLDivElement>(null);
   const task = useOperation('Video Frames', commandRoot, tabId);

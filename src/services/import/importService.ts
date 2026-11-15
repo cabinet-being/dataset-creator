@@ -18,6 +18,7 @@ import {
   resolveProjectAssetKind,
 } from '../project/assetTypeService';
 import { isLegacyProjectRootPath } from '../project/projectPathFilters';
+import { isInternalProjectEntry } from '../project/projectLayoutService';
 
 export const SUPPORTED_IMPORT_ARCHIVE_FORMATS = ['application/zip', 'application/x-zip-compressed'];
 export const SUPPORTED_IMPORT_FILE_FORMATS = [
@@ -137,9 +138,8 @@ const isUnsafeArchivePath = (path: string): boolean => {
   const normalized = path.replace(/\\/g, '/');
   return normalized.startsWith('/') || /^[a-z]:\//i.test(normalized) || normalized.split('/').includes('..');
 };
-const INTERNAL_IMPORT_DIRECTORY_NAMES = new Set(['.cache', '.dataset-creator-data', '.git']);
 const isInternalImportPath = (path: string): boolean =>
-  path.split('/').some((part) => INTERNAL_IMPORT_DIRECTORY_NAMES.has(part)) || isLegacyProjectRootPath(path);
+  path.split('/').some((part) => isInternalProjectEntry(part)) || isLegacyProjectRootPath(path);
 
 export const isImportArchiveFile = (file: File): boolean =>
   SUPPORTED_IMPORT_ARCHIVE_FORMATS.includes(file.type) || file.name.toLowerCase().endsWith('.zip');
