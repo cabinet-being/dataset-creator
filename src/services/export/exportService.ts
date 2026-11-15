@@ -6,6 +6,8 @@
 import JSZip from 'jszip';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { OperationLogger } from '../logging/applicationLog';
+import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
+import { PROJECT_EXPORTS_DIRECTORY } from '../project/projectLayoutService';
 import { shouldLogProgress } from '../logging/applicationLog';
 
 interface ExportConfig {
@@ -369,4 +371,28 @@ export const downloadZipFile = (blob: Blob, filename: string): void => {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+};
+
+const pad = (value: number) => String(value).padStart(2, '0');
+
+/** `exports/<dataset-name>-<yyyyMMdd-HHmmss>.zip`; the name part is made filesystem-safe. */
+export const createProjectExportZipName = (datasetName: string, now = new Date()): string => {
+  const safeName = datasetName.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'dataset';
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `${safeName}-${stamp}.zip`;
+};
+
+/** Writes the ZIP into the project `exports/` folder without overwriting an existing archive; returns its project-relative path. */
+export const saveZipToProjectExports = async (root: ProjectDirectoryHandle, blob: Blob, datasetName: string): Promise<string> => {
+  const directory = await root.getDirectoryHandle(PROJECT_EXPORTS_DIRECTORY, { create: true });
+  const fileName = createProjectExportZipName(datasetName);
+  let name = fileName; let index = 2;
+  for (;;) {
+    try { await directory.getFileHandle(name); name = fileName.replace(/\.zip$/, `-${index++}.zip`); }
+    catch (error) { if (error instanceof Error && error.name === 'NotFoundError') break; throw error; }
+  }
+  const writer = await (await directory.getFileHandle(name, { create: true })).createWritable();
+  try { await writer.write(blob); await writer.close(); }
+  catch (error) { try { await (writer as typeof writer & { abort?: () => Promise<void> }).abort?.(); } catch { /* keep original error */ } throw error; }
+  return `${PROJECT_EXPORTS_DIRECTORY}/${name}`;
 };

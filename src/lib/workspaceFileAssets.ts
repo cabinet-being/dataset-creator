@@ -11,7 +11,7 @@ import { createWorkspaceFileAssetId, type WorkspaceFileAsset } from './workspace
 import { getActiveAssetRegistry, getAssetPathIndex, normalizeRegistryPath } from '../services/project/assetRegistryService';
 
 import type { ExplorerChanges } from './explorerTreeUpdates';
-import { isInternalProjectEntry } from '../services/project/projectLayoutService';
+import { PROJECT_EXPORTS_DIRECTORY, isInternalProjectEntry } from '../services/project/projectLayoutService';
 import { isCaptionCarrierName, isTriggerMissing, readCaptionFile } from '../services/caption/captionFileService';
 import { useProjectStore } from '../stores/useProjectStore';
 
@@ -118,7 +118,7 @@ const collectAssetPaths = async (
   const paths: string[] = [];
 
   for await (const [entryName, entry] of directory.entries()) {
-    if (isInternalProjectEntry(entryName)) {
+    if (isInternalProjectEntry(entryName) || (parentPath === 'Project' && entryName === PROJECT_EXPORTS_DIRECTORY)) {
       continue;
     }
 

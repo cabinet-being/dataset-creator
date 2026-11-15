@@ -61,6 +61,7 @@ export function useExplorerTree({ openFile }: UseExplorerTreeOptions) {
   const draggedExplorerEntriesRef = useRef<ExplorerItemEntry[] | null>(null);
   const [activeExplorerDirectoryPath, setActiveExplorerDirectoryPath] = useState('Project');
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
+  const externalExplorerRevision = useUIStore((state) => state.explorerRevision);
 
   useEffect(() => {
     let canceled = false;
@@ -100,7 +101,7 @@ export function useExplorerTree({ openFile }: UseExplorerTreeOptions) {
     return () => {
       canceled = true;
     };
-  }, [explorerRefreshKey, projectDirectoryHandle, projectDirectoryName, projectName]);
+  }, [explorerRefreshKey, externalExplorerRevision, projectDirectoryHandle, projectDirectoryName, projectName]);
 
   const toggleExplorerPath = (path: string) => {
     setExpandedExplorerPaths((paths) => {

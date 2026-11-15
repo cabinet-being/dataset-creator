@@ -5,7 +5,7 @@ import { snapshotFile } from './fileSnapshotService';
 import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
 import { sortExplorerNodes } from '../../lib/explorerTreeUpdates';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
-import { DATASET_MANIFEST_FILE, isInternalProjectEntry } from './projectLayoutService';
+import { DATASET_MANIFEST_FILE, PROJECT_EXPORTS_DIRECTORY, isInternalProjectEntry } from './projectLayoutService';
 import { getCaptionFileName } from '../caption/captionFileService';
 
 export type ExplorerEntryKind = 'folder' | 'file';
@@ -580,7 +580,8 @@ export const readExplorerDirectory = async (
     const childPath = `${path}/${entryName}`;
     if ('entries' in entry) {
       children.push(await readExplorerDirectory(entry, entryName, childPath));
-    } else if (isSupportedProjectAsset(entryName)) {
+    } else if (isSupportedProjectAsset(entryName) || path === `Project/${PROJECT_EXPORTS_DIRECTORY}`) {
+      // Export archives are not project assets, but the user must see them in the exports folder.
       children.push({ name: entryName, path: childPath, kind: 'file' });
     }
   }

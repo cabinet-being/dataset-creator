@@ -19,6 +19,8 @@ interface UIState {
   projectDirectoryHandle?: ProjectDirectoryHandle;
   projectDirectoryName?: string;
   assetPreviewRefreshKey: number;
+  /** Bumped when files appear outside Explorer actions (for example a saved export ZIP). */
+  explorerRevision: number;
 
   // Caption tool header actions
   taggingToolbar: {
@@ -66,6 +68,7 @@ interface UIActions {
   // Project directory session
   setProjectDirectory: (directory?: { handle?: ProjectDirectoryHandle; name?: string }) => void;
   refreshAssetPreviews: () => void;
+  requestExplorerRefresh: () => void;
 
   // Edit tool header actions
   setTaggingToolbar: (toolbar: Partial<UIState['taggingToolbar']>) => void;
@@ -91,6 +94,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
   projectDirectoryHandle: undefined,
   projectDirectoryName: undefined,
   assetPreviewRefreshKey: 0,
+  explorerRevision: 0,
 
   taggingToolbar: {
     visible: false,
@@ -161,6 +165,7 @@ export const useUIStore = create<UIState & UIActions>((set, get) => ({
       projectDirectoryName: directory?.name,
     }),
 
+  requestExplorerRefresh: () => set((state) => ({ explorerRevision: state.explorerRevision + 1 })),
   refreshAssetPreviews: () =>
     set((state) => ({ assetPreviewRefreshKey: state.assetPreviewRefreshKey + 1 })),
 

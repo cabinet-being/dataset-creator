@@ -3,6 +3,7 @@ import type { ProjectDirectoryHandle } from './projectDirectoryService';
 import {
   LEGACY_CACHE_DIRECTORY,
   PROJECT_GIT_DIRECTORY,
+  PROJECT_EXPORTS_DIRECTORY,
   PROJECT_INTERNAL_DIRECTORY,
   PROJECT_INTERNAL_PRESERVED_DIRECTORIES,
   PROJECT_FILE,
@@ -41,7 +42,7 @@ export type VersionIndex = {
 };
 
 // Root entries that are never snapshotted nor removed by restore: a real Git repository and the old reproducible cache.
-const PRESERVED_ROOT_ENTRIES = new Set([PROJECT_GIT_DIRECTORY, LEGACY_CACHE_DIRECTORY]);
+const PRESERVED_ROOT_ENTRIES = new Set([PROJECT_GIT_DIRECTORY, LEGACY_CACHE_DIRECTORY, PROJECT_EXPORTS_DIRECTORY]);
 // Service folders inside .datasetcreator are never snapshotted, applied from a ZIP or removed by restore.
 const PRESERVED_INTERNAL_PATHS = PROJECT_INTERNAL_PRESERVED_DIRECTORIES.map((name) => `${PROJECT_INTERNAL_DIRECTORY}/${name}`);
 /** True for paths that snapshots never contain and restore never touches. */

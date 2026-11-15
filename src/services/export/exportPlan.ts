@@ -49,7 +49,8 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
     while (used.has(`${targetFolder}/${name}`.toLowerCase())) name = `${stem}-${index++}`;
     used.add(`${targetFolder}/${name}`.toLowerCase());
     const path = targetFolder ? `${targetFolder}/${name}` : name;
-    const imageName = `${path}.${conversion ? 'png' : extension(blob, source)}`;
+    // Dataset files keep their on-disk extension: the export is a byte copy of dataset/.
+    const imageName = `${path}.${conversion ? 'png' : datasetCaption === undefined ? extension(blob, source) : source.split('.').pop()!}`;
     // A dataset caption file is exported as it is on disk: the trigger word is already in it and the blacklist does not apply.
     const entry: ExportEntry = datasetCaption === undefined
       ? { blob, source, conversion, imageName, textName: `${path}.txt`, caption: renderExportCaption(tags, dataset.triggerWord, blacklist) }
