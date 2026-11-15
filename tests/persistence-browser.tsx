@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { createProject, createSourceImage, type ProjectState } from '../src/types';
 import { readProjectDirectory, writeProjectDirectoryChanges, type ProjectDirectoryHandle } from '../src/services/project/projectDirectoryService';
 import { applyProjectRelativePathMoves } from '../src/lib/datasetAssets';
+import { moveAssetRegistryPaths } from '../src/services/project/assetRegistryService';
 import { renameExplorerEntry } from '../src/services/project/explorerFileService';
 import { createSaveQueue } from '../src/services/project/saveQueue';
 import { createSaveSession } from '../src/services/project/saveSession';
@@ -90,8 +91,8 @@ function Harness() {
     const first = createSourceImage(await imageBlob('#edac40'),'amber.png',32,24);
     const second = createSourceImage(await imageBlob('#476c94','image/jpeg'),'blue.jpg',32,24);
     first.tags = ['original']; second.tags = ['override'];
-    first.originalFilePath = 'dataset/amber.png'; first.manifestPath = 'dataset/amber.png.manifest.json';
-    second.originalFilePath = 'dataset/blue.jpg'; second.manifestPath = 'dataset/blue.jpg.manifest.json';
+    first.originalFilePath = 'dataset/amber.png';
+    second.originalFilePath = 'dataset/blue.jpg';
     const initial: ProjectState = {...createProject('Persistence fixture','character'), sourceImages:{[first.id]:first,[second.id]:second}};
     await writeProjectDirectoryChanges(initial, undefined, directory);
     // The TXT next to each image is the caption: inside dataset/ it starts with the trigger word saved below.
@@ -116,26 +117,24 @@ function Harness() {
     add(await verify(directory));
     const beforeImageRename = await readProjectDirectory(directory);
     const imageToRename = Object.values(beforeImageRename.sourceImages).find(source => source.mimeType === 'image/png')!;
-    assert(imageToRename?.originalFilePath && imageToRename.manifestPath, 'Fixture needs persisted image paths');
+    assert(imageToRename?.originalFilePath, 'Fixture needs persisted image paths');
     const imageQueue = createSaveQueue(beforeImageRename, (snapshot, previous) => writeProjectDirectoryChanges(snapshot, previous, directory), () => {});
     await imageQueue.runExclusive(() => renameExplorerEntry(directory, `Project/${imageToRename.originalFilePath}`, 'file', 'renamed-source.png', change => {
       const moved = {...imageToRename, fileName:'renamed-source.png', originalFileName:'renamed-source.png',
-        originalFilePath:applyProjectRelativePathMoves(imageToRename.originalFilePath,[change]),
-        manifestPath:applyProjectRelativePathMoves(imageToRename.manifestPath,[change],true)};
+        originalFilePath:applyProjectRelativePathMoves(imageToRename.originalFilePath,[change])};
       imageQueue.enqueue({...beforeImageRename,sourceImages:{...beforeImageRename.sourceImages,[moved.id]:moved}});
     }));
+    await moveAssetRegistryPaths(directory, [{from:`Project/${imageToRename.originalFilePath}`,to:'Project/dataset/renamed-source.png'}]);
     const afterImageRename = await readProjectDirectory(directory);
     const renamedImage = afterImageRename.sourceImages[imageToRename.id];
     assert(renamedImage.originalFilePath?.endsWith('/renamed-source.png'), 'Image path was not retained');
-    assert(renamedImage.manifestPath?.endsWith('/renamed-source.png.manifest.json'), 'Sidecar path did not follow image rename');
     const datasetDirectory = await directory.getDirectoryHandle('dataset');
-    const oldSidecar = imageToRename.manifestPath!.split('/').pop()!;
-    assert(await datasetDirectory.getFileHandle(oldSidecar).then(()=>false, error=>{if(error.name==='NotFoundError') return true; throw error;}), 'Saving recreated the old image metadata');
+    for await (const [name] of datasetDirectory.entries()) assert(!name.endsWith('.manifest.json'), `A sidecar appeared in dataset/: ${name}`);
     const renamedCaption = await readCaptionFile(directory, 'dataset/renamed-source.png', 'fixture-trigger');
     assert(renamedCaption.raw === 'fixture-trigger, original\n' && renamedCaption.triggerPresent, 'The TXT did not follow the image rename');
     assert((await readCaptionFile(directory, 'dataset/amber.png')).raw === null, 'Renaming left the old TXT behind');
     imageQueue.stop();
-    add('PASS: image rename retained source identity and the new sidecar path without recreating old metadata');
+    add('PASS: image rename retained source identity through the registry without any sidecar');
     add(await verify(directory));
     add('Reload this page, then use Reopen saved fixture');
   };

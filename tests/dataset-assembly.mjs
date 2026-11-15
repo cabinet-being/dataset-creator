@@ -12,6 +12,7 @@ try {
       'src/services/caption/captionResolver.ts',
       'src/services/dataset/datasetMembershipResolver.ts',
       'src/services/dataset/sharedCandidateService.ts',
+      'src/services/project/assetRegistryService.ts',
       'src/services/dataset/coverageService.ts',
       'src/services/dataset/datasetAssemblyService.ts',
       'src/services/analysis/semanticFeatureService.ts',
@@ -28,6 +29,7 @@ try {
   const caption = await import(pathToFileURL(join(temp, 'captionResolver.mjs')));
   const membership = await import(pathToFileURL(join(temp, 'datasetMembershipResolver.mjs')));
   const shared = await import(pathToFileURL(join(temp, 'sharedCandidateService.mjs')));
+  const registryService = await import(pathToFileURL(join(temp, 'assetRegistryService.mjs')));
   const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
   const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
   const migration = await import(pathToFileURL(join(temp, 'captionMigrationService.mjs')));
@@ -117,19 +119,21 @@ try {
   });
   const sharedDir = directory([
     ['scene.png', file('scene.png', 'image', 'image/png')],
-    ['scene.png.manifest.json', file('scene.png.manifest.json', JSON.stringify({ id: 'scene-id', width: 640, height: 480, caption: 'ignored sidecar caption' }), 'application/json')],
     ['scene.txt', file('scene.txt', 'back view\n', 'text/plain')],
     ['clip.mp4', file('clip.mp4', 'video', 'video/mp4')],
     ['nocaption.png', file('nocaption.png', 'image', 'image/png')],
-    ['nocaption.png.manifest.json', file('nocaption.png.manifest.json', JSON.stringify({ id: 'n', width: 8, height: 8, tags: ['sidecar only'] }), 'application/json')],
   ]);
-  const root = directory([['inbox', sharedDir]]);
+  const record = (id, name, width, height, extra = {}) => ({ id, path: `inbox/${name}`, role: 'file', fileKind: 'image', size: 5, mtime: 7, mimeType: 'image/png', width, height, fileName: name, createdAt: '2025-01-01T00:00:00.000Z', ...extra });
+  const registry = { format: 'dataset-creator-assets', version: 1, assets: { 'scene-id': record('scene-id', 'scene.png', 640, 480), n: record('n', 'nocaption.png', 8, 8) } };
+  const registryDir = directory([['assets.json', file('assets.json', JSON.stringify(registry), 'application/json')]]);
+  const root = directory([['inbox', sharedDir], ['.datasetcreator', registryDir]]);
+  await registryService.loadAssetRegistry(root); // Dimensions come from the registry, so no image decoder is needed.
   const scan = await shared.scanSharedCandidates(root);
   assert.equal(scan.sharedAvailable, true);
   assert.equal(scan.candidates.length, 2, 'Caption .txt files are not listed as candidates');
   const sceneCandidate = scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/scene.png');
-  assert.deepEqual(sceneCandidate.tags, ['back view'], 'The caption comes from the TXT next to the image, not from the sidecar');
-  assert.equal(scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/nocaption.png').tags, undefined, 'An image without a TXT has no caption even if its sidecar holds tags');
+  assert.deepEqual(sceneCandidate.tags, ['back view'], 'The caption comes from the TXT next to the image');
+  assert.equal(scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/nocaption.png').tags, undefined, 'An image without a TXT has no caption');
   assert.equal(scan.skipped.some((entry) => entry.reason === 'video'), true);
 
   const vector = (...values) => new Float32Array(values);

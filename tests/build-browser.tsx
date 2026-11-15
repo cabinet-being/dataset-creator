@@ -104,7 +104,7 @@ function Harness() {
     const sourceImages = Object.fromEntries(framing.map((shot, index) => {
       const name = `cov-${index}.png`;
       const source = createSourceImage(blob, name, 64, 96);
-      source.tags = ['solo', shot, `extra${index}`]; source.originalFilePath = `dataset/${name}`; source.manifestPath = `dataset/${name}.manifest.json`;
+      source.tags = ['solo', shot, `extra${index}`]; source.originalFilePath = `dataset/${name}`;
       return [source.id, source];
     }));
     const project = createProject('Build coverage fixture', 'character'); project.sourceImages = sourceImages;

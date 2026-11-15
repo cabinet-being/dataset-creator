@@ -17,7 +17,7 @@ export async function checkDatasetFolder(): Promise<string> {
   const canvas=document.createElement('canvas'); canvas.width=2; canvas.height=2;
   canvas.getContext('2d')!.fillRect(0,0,2,2);
   const image=await new Promise<Blob>(resolve=>canvas.toBlob(blob=>resolve(blob!),'image/png'));
-  const source={...createSourceImage(image,'sample.png',2,2),originalFilePath:'inbox/sample.png',manifestPath:'inbox/sample.png.manifest.json',tags:['test caption']};
+  const source={...createSourceImage(image,'sample.png',2,2),originalFilePath:'inbox/sample.png',tags:['test caption']};
   const project={...createProject('Dataset checks','character'),sourceImages:{[source.id]:source}};
   await createProjectDirectory(directory,project);
   useProjectStore.getState().loadProject(project);

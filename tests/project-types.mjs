@@ -14,7 +14,7 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/project/assetRegistryService.ts', 'src/lib/workspaceImages.ts', 'src/services/build/buildSessionService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
@@ -25,10 +25,13 @@ try {
   const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
   const { DATASET_MANIFEST_FILE, REQUIRED_PROJECT_DIRECTORIES, readDatasetManifest } = await import(pathToFileURL(join(temp, 'projectLayoutService.mjs')));
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
-  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError, detectLegacyRawLayout, planRawMaterialsMove, runRawMaterialsMove, runCaptionTxtMigration } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
+  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError, detectLegacyRawLayout, planRawMaterialsMove, runRawMaterialsMove, runCaptionTxtMigration, runAssetsRegistryMigration, detectPendingAssetsRegistryMigration } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
   const { getProjectVersionLayout } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
-  const { indexProjectAssets } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
+  const { indexProjectAssets, fillAssetHashes } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
+  const { toWorkspaceImages } = await import(pathToFileURL(join(temp, 'workspaceImages.mjs')));
+  const { getBuildAssetRevision } = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
+  const { loadAssetRegistry, commitAssetRegistry, moveAssetRegistryPaths, removeAssetRegistryPaths, createEmptyAssetRegistry } = await import(pathToFileURL(join(temp, 'assetRegistryService.mjs')));
   const { sortExplorerNodes, sanitizeExplorerTree, buildEmptyExplorerTree } = await import(pathToFileURL(join(temp, 'explorerTreeUpdates.mjs')));
   const { orderDatasetBoardItems, datasetBoardItems } = await import(pathToFileURL(join(temp, 'datasetBoard.mjs')));
   const { collectWorkspaceFileAssets, updateWorkspaceFileAssetCache } = await import(pathToFileURL(join(temp, 'workspaceFileAssets.mjs')));
@@ -46,7 +49,10 @@ try {
       async getFileHandle(name, options) {
         if (!entries.has(name) && options?.create) {
           let contents = '';
-          entries.set(name, { name, getFile: async () => new File([contents], name), createWritable: async () => ({ write: async (data) => { contents = data; }, close: async () => {} }) });
+          let modified = Date.now();
+          // The modification time is stable between reads and moves forward only when the file is written (or touched by a test).
+          entries.set(name, { name, getFile: async () => new File([contents], name, { lastModified: modified }), setLastModified: (value) => { modified = value; },
+            createWritable: async () => ({ write: async (data) => { contents = data; modified = Math.max(modified + 1, Date.now()); }, close: async () => {} }) });
         }
         if (!entries.has(name)) throw new DOMException('Missing', 'NotFoundError');
         if ('entries' in entries.get(name)) throw new DOMException('Not a file', 'TypeMismatchError');
@@ -77,8 +83,9 @@ try {
     const to=await root.getDirectoryHandle('to',{create:true});
     const unrelated=await root.getDirectoryHandle('unrelated',{create:true});
     await from.getFileHandle('clip.webm',{create:true});
-    const clipManifest=await (await from.getFileHandle('clip.webm.manifest.json',{create:true})).createWritable();
-    await clipManifest.write(JSON.stringify({id:'stable-video-id'})); await clipManifest.close();
+    const clipRecord={id:'stable-video-id',path:'from/clip.webm',role:'file',fileKind:'video',size:0,mtime:0,mimeType:'video/webm',fileName:'clip.webm',createdAt:'2025-01-01T00:00:00.000Z'};
+    await commitAssetRegistry(root,{...createEmptyAssetRegistry(),assets:{[clipRecord.id]:clipRecord}});
+    await loadAssetRegistry(root);
     const other=await unrelated.getFileHandle('large.webm',{create:true});
     let unrelatedReads=0; let unrelatedListings=0;
     const read=other.getFile; other.getFile=async()=>{unrelatedReads++;return read();};
@@ -86,11 +93,12 @@ try {
     const before=await collectWorkspaceFileAssets(root);
     await moveExplorerEntries(root,[{path:'Project/from/clip.webm',name:'clip.webm',kind:'file'}],'Project/to');
     unrelatedReads=0; unrelatedListings=0;
+    await moveAssetRegistryPaths(root,[{from:'Project/from/clip.webm',to:'Project/to/clip.webm'}]);
     await updateWorkspaceFileAssetCache(root,{moves:[{from:'Project/from/clip.webm',to:'Project/to/clip.webm'}],paths:[]});
     const after=await collectWorkspaceFileAssets(root);
     assert.equal(after.find(asset=>asset.path==='Project/to/clip.webm').file,before.find(asset=>asset.path==='Project/from/clip.webm').file,'Moves preserve cached file snapshots');
     assert.equal(before.find(asset=>asset.path==='Project/from/clip.webm').stableId,'stable-video-id');
-    assert.equal(after.find(asset=>asset.path==='Project/to/clip.webm').stableId,'stable-video-id','File-only manifest identity survives path moves');
+    assert.equal(after.find(asset=>asset.path==='Project/to/clip.webm').stableId,'stable-video-id','Registry identity survives path moves');
     await to.getFileHandle('new.webm',{create:true});
     await updateWorkspaceFileAssetCache(root,{moves:[],paths:['Project/to/new.webm']});
     assert.equal((await collectWorkspaceFileAssets(root)).length,3);
@@ -110,11 +118,10 @@ try {
     };
     assert.equal(await getUniqueExplorerName(root,'existing'),'existing 2','Native directory collisions are existing entries, not access failures');
   }
-  // Committed deletion still updates the UI when sidecar cleanup is denied.
-  for (const failedName of ['photo.png', 'photo.png.manifest.json', null]) {
+  // Deleting a file leaves no sidecar behind to clean up; a failed removal is not reported as a deletion.
+  for (const failedName of ['photo.png', null]) {
     const root = directory();
     await root.getFileHandle('photo.png',{create:true});
-    await root.getFileHandle('photo.png.manifest.json',{create:true});
     const remove = root.removeEntry;
     root.removeEntry = async name => {
       if (name === failedName) throw new Error('permission denied');
@@ -122,10 +129,10 @@ try {
     };
     let notified = 0;
     const deletion = deleteExplorerEntry(root,'Project/photo.png',false,() => {notified++;});
-    if (failedName) await assert.rejects(deletion,failedName.endsWith('manifest.json') ? /Entry deleted, but metadata cleanup failed/ : /permission denied/);
+    if (failedName) await assert.rejects(deletion,/permission denied/);
     else await deletion;
-    assert.equal(notified,failedName === 'photo.png' ? 0 : 1);
-    if (failedName === 'photo.png') assert.ok(await root.getFileHandle('photo.png'));
+    assert.equal(notified,failedName ? 0 : 1);
+    if (failedName) assert.ok(await root.getFileHandle('photo.png'));
     else await assert.rejects(root.getFileHandle('photo.png'),{name:'NotFoundError'});
   }
   // A batch failure retains completed files and exposes exactly which paths changed.
@@ -162,89 +169,39 @@ try {
       assert.equal(await (await copied.getFile()).text(),'keep these bytes');
     }
   }
+  // A move or rename is a plain file operation: no sidecar is copied, rewritten or required.
   for (const nativeMove of [false,true]) {
     const root = directory();
     const source = await root.getDirectoryHandle('from', {create:true});
     const target = await root.getDirectoryHandle('to', {create:true});
     const file = await source.getFileHandle('photo.png', {create:true});
     const writer = await file.createWritable(); await writer.write('original pixels'); await writer.close();
-    const sidecar = await source.getFileHandle('photo.png.manifest.json',{create:true});
-    const metadataWriter = await sidecar.createWritable();
-    await metadataWriter.write(JSON.stringify({id:'keep-id',originalFileName:'photo.png'})); await metadataWriter.close();
-    const remove = source.removeEntry;
-    source.removeEntry = async name => {
-      if (name.endsWith('.manifest.json')) throw new DOMException('Metadata removal denied','NotAllowedError');
-      return remove(name);
-    };
     if (nativeMove) file.move = async (destination,name) => {
       const stream = await (await destination.getFileHandle(name,{create:true})).createWritable();
       await stream.write(await file.getFile()); await stream.close(); await source.removeEntry('photo.png');
     };
     const updates = [];
-    await assert.rejects(moveExplorerEntries(root,[{kind:'file',name:'photo.png',path:'Project/from/photo.png'}],'Project/to',change => {updates.push(change);}), error => {
-      assert.ok(error instanceof ExplorerBatchError);
-      assert.match(error.message,/File moved.*metadata could not be updated/);
-      assert.deepEqual(error.completed,[{from:'Project/from/photo.png',to:'Project/to/photo.png'}]);
-      assert.deepEqual(updates,error.completed,'A moved file updates references even when its metadata cleanup fails');
-      return true;
-    });
+    await moveExplorerEntries(root,[{kind:'file',name:'photo.png',path:'Project/from/photo.png'}],'Project/to',change => {updates.push(change);});
+    assert.deepEqual(updates,[{from:'Project/from/photo.png',to:'Project/to/photo.png'}]);
     assert.equal(await (await (await target.getFileHandle('photo.png')).getFile()).text(),'original pixels');
     await assert.rejects(source.getFileHandle('photo.png'),{name:'NotFoundError'});
-    assert.equal(JSON.parse(await (await (await target.getFileHandle('photo.png.manifest.json')).getFile()).text()).id,'keep-id');
+    await assert.rejects(target.getFileHandle('photo.png.manifest.json'),{name:'NotFoundError'},'No sidecar appears next to a moved file');
   }
-  // Rename must report a committed file change even if sidecar handling fails.
   for (const nativeMove of [false,true]) {
-    for (const failureStage of ['write','cleanup']) {
-      const root = directory();
-      const original = await root.getFileHandle('old.png',{create:true});
-      const imageWriter = await original.createWritable(); await imageWriter.write('rename pixels'); await imageWriter.close();
-      const manifestWriter = await (await root.getFileHandle('old.png.manifest.json',{create:true})).createWritable();
-      await manifestWriter.write(JSON.stringify({id:'stable-id',originalFileName:'old.png'})); await manifestWriter.close();
-      const getFile = root.getFileHandle;
-      const remove = root.removeEntry;
-      let aborted = false;
-      if (nativeMove) original.move = async (destination,name) => {
-        const stream = await (await destination.getFileHandle(name,{create:true})).createWritable();
-        await stream.write(await original.getFile()); await stream.close(); await remove('old.png');
-      };
-      if (failureStage === 'write') root.getFileHandle = async (name,options) => {
-        const handle = await getFile(name,options);
-        if (name === 'new.png.manifest.json') handle.createWritable = async () => ({
-          write: async () => {throw new Error('sidecar write denied');},
-          close: async () => {}, abort: async () => {aborted=true;}
-        });
-        return handle;
-      };
-      else root.removeEntry = async name => {
-        if (name === 'old.png.manifest.json') throw new Error('sidecar cleanup denied');
-        return remove(name);
-      };
-      const updates = [];
-      const committed = nativeMove || failureStage === 'cleanup';
-      await assert.rejects(renameExplorerEntry(root,'Project/old.png','file','new.png',change => {updates.push(change);}),error => {
-        assert.ok(error instanceof ExplorerBatchError);
-        assert.equal(error.completed.length,committed ? 1 : 0);
-        assert.equal(updates.length,committed ? 1 : 0);
-        if (committed) assert.deepEqual(updates,[{from:'Project/old.png',to:'Project/new.png'}]);
-        return true;
-      });
-      assert.equal(await (await (await getFile(committed ? 'new.png' : 'old.png')).getFile()).text(),'rename pixels');
-      await assert.rejects(getFile(committed ? 'old.png' : 'new.png'),{name:'NotFoundError'});
-      if (failureStage === 'write') assert.ok(aborted,'Failed streams are aborted before cleanup');
-      if (!committed) await assert.rejects(getFile('new.png.manifest.json'),{name:'NotFoundError'});
-    }
-  }
-  {
     const root = directory();
-    const writer = await (await root.getFileHandle('old.txt',{create:true})).createWritable();
-    await writer.write('original'); await writer.close();
-    const metadataWriter = await (await root.getFileHandle('new.txt.manifest.json',{create:true})).createWritable();
-    await metadataWriter.write('existing metadata'); await metadataWriter.close();
-    await assert.rejects(renameExplorerEntry(root,'Project/old.txt','file','new.txt'),/Metadata.*already exists/);
-    assert.equal(await (await (await root.getFileHandle('new.txt.manifest.json')).getFile()).text(),'existing metadata');
-    assert.equal(await (await (await root.getFileHandle('old.txt')).getFile()).text(),'original');
-    assert.equal(await renameExplorerEntry(root,'Project/old.txt','file','fresh.txt'),'Project/fresh.txt');
-    assert.equal(await (await (await root.getFileHandle('fresh.txt')).getFile()).text(),'original');
+    const original = await root.getFileHandle('old.png',{create:true});
+    const imageWriter = await original.createWritable(); await imageWriter.write('rename pixels'); await imageWriter.close();
+    const remove = root.removeEntry;
+    if (nativeMove) original.move = async (destination,name) => {
+      const stream = await (await destination.getFileHandle(name,{create:true})).createWritable();
+      await stream.write(await original.getFile()); await stream.close(); await remove('old.png');
+    };
+    const updates = [];
+    assert.equal(await renameExplorerEntry(root,'Project/old.png','file','new.png',change => {updates.push(change);}),'Project/new.png');
+    assert.deepEqual(updates,[{from:'Project/old.png',to:'Project/new.png'}]);
+    assert.equal(await (await (await root.getFileHandle('new.png')).getFile()).text(),'rename pixels');
+    await assert.rejects(root.getFileHandle('old.png'),{name:'NotFoundError'});
+    await assert.rejects(root.getFileHandle('new.png.manifest.json'),{name:'NotFoundError'});
   }
   // A failed recursive copy cleans only its own destination; cleanup denial is actionable.
   for (const cleanupDenied of [false,true]) {
@@ -307,9 +264,9 @@ try {
     const { applyProjectRelativePathMoves } = await import(pathToFileURL(join(temp,'datasetAssets.mjs')));
     const root = directory();
     const source = {...createSourceImage(new Blob(['source pixels'],{type:'image/png'}),'original.png',32,24),
-      originalFilePath:'inbox/original.png',manifestPath:'inbox/original.png.manifest.json',tags:['source tag']};
+      originalFilePath:'inbox/original.png',tags:['source tag']};
     const edited = {...createEditedAsset(source.id,new Blob(['edited pixels'],{type:'image/png'}),32,24),
-      imageDataPath:'inbox/edits/edited.png',manifestPath:'inbox/edits/edited.png.manifest.json',
+      imageDataPath:'inbox/edits/edited.png',
       psdData:new Blob(['PSD layers']),psdDataPath:'inbox/edits/edited.psd'};
     const base = createProject('Move original','character');
     const before = {...base,sourceImages:{[source.id]:source},datasetItems:{[edited.id]:edited},
@@ -318,13 +275,14 @@ try {
     await root.getDirectoryHandle('Archive',{create:true});
     let moved;
     await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/inbox/original.png'}],'Project/Archive',change => {
-      moved = {...source,originalFilePath:applyProjectRelativePathMoves(source.originalFilePath,[change]),manifestPath:applyProjectRelativePathMoves(source.manifestPath,[change],true)};
+      moved = {...source,originalFilePath:applyProjectRelativePathMoves(source.originalFilePath,[change])};
     });
+    await moveAssetRegistryPaths(root,[{from:'Project/inbox/original.png',to:'Project/Archive/original.png'}]);
     const after = {...before,sourceImages:{[source.id]:moved}};
     await writeProjectDirectoryChanges(after,before,root);
     const reopened = await readProjectDirectory(root);
     assert.equal(reopened.sourceImages[source.id].originalFilePath,'Archive/original.png');
-    assert.equal(reopened.sourceImages[source.id].manifestPath,'Archive/original.png.manifest.json');
+    assert.equal(reopened.sourceImages[source.id].manifestPath,undefined,'Entities no longer carry a sidecar path');
     assert.equal(await reopened.sourceImages[source.id].originalFile.text(),'source pixels');
     assert.deepEqual(reopened.sourceImages[source.id].tags,['source tag']);
     assert.equal('assetIds' in reopened.dataset,false);
@@ -337,8 +295,9 @@ try {
     assert.ok(projectIndex.discoveredCount >= 1,'The project index includes registered assets outside shared');
     let returned;
     await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/Archive/original.png'}],'Project/inbox',change => {
-      returned = {...reopened.sourceImages[source.id],originalFilePath:applyProjectRelativePathMoves(moved.originalFilePath,[change]),manifestPath:applyProjectRelativePathMoves(moved.manifestPath,[change],true)};
+      returned = {...reopened.sourceImages[source.id],originalFilePath:applyProjectRelativePathMoves(moved.originalFilePath,[change])};
     });
+    await moveAssetRegistryPaths(root,[{from:'Project/Archive/original.png',to:'Project/inbox/original.png'}]);
     const restored = {...reopened,sourceImages:{[source.id]:returned}};
     await writeProjectDirectoryChanges(restored,reopened,root);
     const final = await readProjectDirectory(root);
@@ -352,37 +311,40 @@ try {
     const root = directory();
     const sources = ['first', 'second'].map(name => ({
       ...createSourceImage(new Blob([name], {type:'image/png'}), `${name}.png`, 32, 24),
-      originalFilePath:`Archive/${name}.png`, manifestPath:`Archive/${name}.png.manifest.json`, tags:['before'],
+      originalFilePath:`Archive/${name}.png`, tags:['before'],
     }));
     const before = {...createProject('Before failure','character'),sourceImages:Object.fromEntries(sources.map(source => [source.id,source]))};
     await createProjectDirectory(root,before);
     const manifest = await (await root.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json');
     const originalManifest = await (await manifest.getFile()).text();
     const archive = await root.getDirectoryHandle('Archive');
-    const first = await archive.getFileHandle('first.png.manifest.json');
-    const second = await archive.getFileHandle('second.png.manifest.json');
+    const first = await archive.getFileHandle('first.png');
+    const second = await archive.getFileHandle('second.png');
+    const registryHandle = await (await root.getDirectoryHandle('.datasetcreator')).getFileHandle('assets.json');
+    const originalRegistry = await (await registryHandle.getFile()).text();
     const firstWritable = first.createWritable;
     const secondWritable = second.createWritable;
     let release, started;
     const held = new Promise(resolve => {release = resolve;});
     const pendingWriter = new Promise(resolve => {started = resolve;});
-    first.createWritable = async () => {throw new Error('metadata write denied');};
+    first.createWritable = async () => {throw new Error('file write denied');};
     second.createWritable = async () => {
       started();
       await held;
       return secondWritable();
     };
-    const after = {...before,name:'After retry',lastModified:new Date(),sourceImages:Object.fromEntries(sources.map(source => [source.id,{...source,tags:['after']}]))};
+    const after = {...before,name:'After retry',lastModified:new Date(),sourceImages:Object.fromEntries(sources.map(source => [source.id,{...source,originalFile:new Blob([`${source.fileName} edited`],{type:'image/png'}),tags:['after']}]))};
     let settled = false;
     const attempt = writeProjectDirectoryChanges(after,before,root);
     const outcome = attempt.then(() => {settled = true;}, error => {settled = true; return error;});
     await pendingWriter;
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(settled,false,'The failed save still owns the lane while another writer is pending');
-    assert.equal(await (await manifest.getFile()).text(),originalManifest,'Do not publish metadata without its asset index');
+    assert.equal(await (await manifest.getFile()).text(),originalManifest,'Do not publish project.json before the files are written');
     release();
-    assert.match((await outcome).message,/metadata write denied/);
+    assert.match((await outcome).message,/file write denied/);
     assert.equal(await (await manifest.getFile()).text(),originalManifest);
+    assert.equal(await (await registryHandle.getFile()).text(),originalRegistry,'A failed save leaves assets.json untouched');
     const recovered = await readProjectDirectory(root);
     assert.deepEqual(Object.keys(recovered.sourceImages).sort(),sources.map(source => source.id).sort(),'Registered files outside shared remain discoverable after failure');
     first.createWritable = firstWritable;
@@ -393,7 +355,7 @@ try {
     for (const source of sources) {
       // The TXT next to the image is the caption; saving the project never rewrites it from in-memory tags.
       assert.deepEqual(reopened.sourceImages[source.id].tags,['before']);
-      assert.equal(await reopened.sourceImages[source.id].originalFile.text(),await source.originalFile.text());
+      assert.equal(await reopened.sourceImages[source.id].originalFile.text(),`${source.fileName} edited`);
     }
   }
   const projectJsonHandle = async (dir) => (await dir.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json');
@@ -407,9 +369,47 @@ try {
     await stream.write(JSON.stringify(manifest)); await stream.close();
   };
   // Turns a v3 project into the previous layout (manifest.json v1/v2) so legacy conversions and migration can be exercised.
+  // --- Fixtures that model the OLD per-file *.manifest.json sidecars (input of the migrations) ---
+  const dirAt = async (dir, parts, create = false) => { let current = dir; for (const part of parts) current = await current.getDirectoryHandle(part, { create }); return current; };
+  const writeAt = async (dir, path, data, mtime) => {
+    const parts = path.split('/'); const name = parts.pop();
+    const handle = await (await dirAt(dir, parts, true)).getFileHandle(name, { create: true });
+    const writer = await handle.createWritable(); await writer.write(data); await writer.close();
+    if (mtime !== undefined) handle.setLastModified(mtime);
+    return handle;
+  };
+  const readAt = async (dir, path) => {
+    const parts = path.split('/'); const name = parts.pop();
+    try { return await (await (await dirAt(dir, parts)).getFileHandle(name)).getFile().then(file => file.text()); }
+    catch (error) { if (error?.name === 'NotFoundError') return undefined; throw error; }
+  };
+  const handleAt = async (dir, path) => { const parts = path.split('/'); const name = parts.pop(); return (await dirAt(dir, parts)).getFileHandle(name); };
+  const removeAt = async (dir, path) => { const parts = path.split('/'); const name = parts.pop(); await (await dirAt(dir, parts)).removeEntry(name, { recursive: true }); };
+  const existsAt = async (dir, path) => (await readAt(dir, path)) !== undefined;
+  const readRegistry = async (dir) => { const text = await readAt(dir, '.datasetcreator/assets.json'); return text === undefined ? undefined : JSON.parse(text); };
+  const sidecarOf = (record) => {
+    const name = record.path.split('/').pop();
+    if (record.role === 'source') return { id: record.id, fileName: record.fileName, originalFileName: record.originalFileName, width: record.width, height: record.height, mimeType: record.mimeType, originalFilePath: record.path, originalFileNameOnDisk: name, hidden: record.hidden, createdAt: record.createdAt };
+    if (record.role === 'edited') return { id: record.id, sourceImageId: record.edited.sourceImageId, imageFileName: name, imageDataPath: record.path, psdFileName: record.edited.psdPath?.split('/').pop(), psdDataPath: record.edited.psdPath, width: record.width, height: record.height, type: record.edited.type, aspectRatio: record.edited.aspectRatio, deleted: record.edited.deleted, createdAt: record.createdAt };
+    return { id: record.id, kind: record.fileKind, fileName: record.fileName, originalFileName: record.originalFileName, assetPath: record.path, mimeType: record.mimeType, size: record.size, createdAt: record.createdAt };
+  };
+  // Turns the v3 registry of a directory back into sidecars + the project.json path maps (assets.json removed, no marker).
+  const registryToSidecars = async (dir) => {
+    const registry = await readRegistry(dir);
+    const maps = { sourceImageManifests: {}, editedAssetManifests: {} };
+    if (!registry) return maps;
+    for (const record of Object.values(registry.assets)) {
+      if (record.role === 'file') continue;
+      const path = `${record.path}.manifest.json`;
+      await writeAt(dir, path, JSON.stringify(sidecarOf(record)));
+      (record.role === 'source' ? maps.sourceImageManifests : maps.editedAssetManifests)[record.id] = path;
+    }
+    await removeAt(dir, '.datasetcreator/assets.json');
+    return maps;
+  };
   const toLegacyLayout = async (dir, version = 2, mutate = () => {}) => {
     const json = await readManifest(dir);
-    const legacy = { format: 'dataset-creator-directory', version, project: json.project };
+    const legacy = { format: 'dataset-creator-directory', version, project: { ...json.project, ...await registryToSidecars(dir) } };
     delete legacy.project.migrations;
     mutate(legacy);
     const stream = await (await dir.getFileHandle('manifest.json', { create: true })).createWritable();
@@ -469,7 +469,7 @@ try {
   assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.dataset.triggerWord, 'trigger');
   const migrationDirectory = directory();
   const legacySource = {...createSourceImage(new Blob(['legacy source'], { type:'image/png' }), 'legacy.png', 32, 24),
-    originalFilePath:'src/shared/legacy.png', manifestPath:'src/shared/legacy.png.manifest.json'};
+    originalFilePath:'src/shared/legacy.png'};
   const legacyProject = {...createProject('Dataset migration', 'character'), sourceImages:{[legacySource.id]:legacySource}};
   await createProjectDirectory(migrationDirectory, legacyProject);
   await toLegacyLayout(migrationDirectory, 1, legacy => { delete legacy.project.dataset; });
@@ -535,16 +535,17 @@ try {
   }
   // Migrate old flags into physical moves, preserving identity/captions even
   // if the project-manifest checkpoint fails after the file has moved.
+  // The legacy path carries its own sidecar now that Explorer moves no longer do.
   for (const interrupt of [false,true]) {
     const root=directory();
     const source={...createSourceImage(new Blob(['legacy pixels'],{type:'image/png'}),'legacy.png',32,24),
-      originalFilePath:'dataset/legacy.png',manifestPath:'dataset/legacy.png.manifest.json',tags:['legacy caption']};
+      originalFilePath:'dataset/legacy.png',tags:['legacy caption']};
     const project={...createProject('Legacy exclusions','character'),sourceImages:{[source.id]:source}};
     await createProjectDirectory(root,project);
     await toLegacyLayout(root);
     const archive=await JSZip.loadAsync(await (await createProjectFileBlob({...project,sourceImages:{[source.id]:{...source,originalFile:await source.originalFile.arrayBuffer()}}})).arrayBuffer());
-    const archiveMetadata=JSON.parse(await archive.file(source.manifestPath).async('string'));
-    archive.file(source.manifestPath,JSON.stringify({...archiveMetadata,excludedFromDataset:true}));
+    const archiveMetadata=JSON.parse(await archive.file('dataset/legacy.png.manifest.json').async('string'));
+    archive.file('dataset/legacy.png.manifest.json',JSON.stringify({...archiveMetadata,excludedFromDataset:true}));
     archive.file('inbox/legacy.png','unrelated archive file');
     const restoredArchive=await readProjectFile(await archive.generateAsync({type:'nodebuffer'}));
     assert.equal(restoredArchive.sourceImages[source.id].originalFilePath,'inbox/legacy 2.png','Old ZIP exclusions are materialized as shared paths too');
@@ -989,10 +990,16 @@ try {
       if (abortAt < layoutStepCount && await exists(interrupted, '.datasetcreator/project.json')) {
         assert.equal((await readJsonAt(interrupted, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt, undefined, `completedAt is absent after abort at step ${abortAt}`);
       }
+      let pendingJournals = 0;
+      try { for await (const [name, entry] of (await dirAt(interrupted, ['.datasetcreator', 'journal'])).entries()) if (name.endsWith('.json') && !JSON.parse(await (await entry.getFile()).text()).completedAt) pendingJournals++; }
+      catch (error) { if (error?.name !== 'NotFoundError') throw error; }
       const resumedIds = await resumePendingJournals(interrupted);
-      // Aborting right after the last layout step leaves no journal: the caption conversion has not started yet and simply runs next.
-      assert.equal(resumedIds.length, abortAt === layoutStepCount ? 0 : 1, `journal is resumed after abort at step ${abortAt}`);
+      // Aborting right after the last step of a journal leaves none pending: the next conversion has not started yet and simply runs next.
+      assert.ok(pendingJournals <= 1);
+      if (abortAt === layoutStepCount) assert.equal(pendingJournals, 0);
+      assert.equal(resumedIds.length, pendingJournals, `journal is resumed after abort at step ${abortAt}`);
       await runCaptionTxtMigration(interrupted); // Opening a v3 project resumes journals, then converts captions that are still pending.
+      await runAssetsRegistryMigration(interrupted); // ...and folds sidecars that are still pending into the registry.
       assert.deepEqual(normalized(await files(interrupted)), referenceTree, `resume after abort at step ${abortAt} reaches the same layout`);
       assert.ok((await readJsonAt(interrupted, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt, 'completedAt appears after the resumed run');
       assert.deepEqual(await resumePendingJournals(interrupted), [], 'A finished journal is not resumed again');
@@ -1006,6 +1013,7 @@ try {
     const viaResult = await runLayoutMigration(viaRun);
     assert.equal(viaResult.resumed.length, 1);
     await runCaptionTxtMigration(viaRun);
+    await runAssetsRegistryMigration(viaRun);
     assert.deepEqual(normalized(await files(viaRun)), referenceTree);
 
     // 6. A failed safety snapshot leaves the project untouched.
@@ -1213,6 +1221,321 @@ try {
     assert.equal(await exists(legacyFull, 'src'), false, 'No src folder remains after the v2 upgrade');
     assert.equal(await readAt(legacyFull, 'dataset/b.txt'), 'trg, x');
     assert.equal(await detectLegacyRawLayout(legacyFull), false);
+  }
+
+  // ===== Asset registry (.datasetcreator/assets.json replaces the *.manifest.json sidecars) =====
+  {
+    const REGISTRY = '.datasetcreator/assets.json';
+    const snapshotTree = async (dir, prefix = '') => {
+      const out = {};
+      for await (const [name, entry] of dir.entries()) {
+        const path = prefix ? `${prefix}/${name}` : name;
+        if ('getFile' in entry) out[path] = await (await entry.getFile()).text();
+        else { out[`${path}/`] = ''; Object.assign(out, await snapshotTree(entry, path)); }
+      }
+      return out;
+    };
+    const sidecarPaths = async (dir) => Object.keys(await snapshotTree(dir)).filter(path => path.endsWith('.manifest.json'));
+    const byPath = (registry, path) => Object.values(registry.assets).find(record => record.path === path);
+    const open = async (root) => {
+      const reports = [];
+      const project = await readProjectDirectory(root, undefined, { onAssetsReconciled: report => reports.push(report) });
+      return { project, report: reports.at(-1) };
+    };
+    const registryStamp = async (root) => { const file = await (await handleAt(root, REGISTRY)).getFile(); return `${file.lastModified}:${await file.text()}`; };
+    const makeProject = async ({ hiddenB = false, extra = () => ({}) } = {}) => {
+      const root = directory();
+      const a = { ...createSourceImage(new Blob(['AAAA pixels of a'], { type: 'image/png' }), 'a.png', 32, 24), originalFilePath: 'inbox/a.png', tags: ['x'], createdAt: new Date('2025-01-01T00:00:00Z') };
+      const b = { ...createSourceImage(new Blob(['BBBBBBBB pixels of b'], { type: 'image/png' }), 'b.png', 40, 30), originalFilePath: 'dataset/b.png', createdAt: new Date('2025-01-02T00:00:00Z'), ...(hiddenB ? { hidden: true } : {}) };
+      const e = { ...createEditedAsset(a.id, new Blob(['EDITED png'], { type: 'image/png' }), 32, 24), imageDataPath: 'inbox/edits/e.png', psdData: new Blob(['PSD layers']), psdDataPath: 'inbox/edits/e.psd' };
+      const base = createProject('Registry project', 'character');
+      const project = { ...base, sourceImages: { [a.id]: a, [b.id]: b }, datasetItems: { [e.id]: e },
+        dataset: { ...base.dataset, assetOrder: ['file:Project/inbox/a.png', 'file:Project/dataset/b.png'] },
+        buildSession: { ...base.buildSession, order: [`source:${a.id}`], records: { [`source:${a.id}`]: { assetId: `source:${a.id}`, locator: 'Project/inbox/a.png', decision: 'accepted', application: 'applied', validation: 'valid', revision: 'r1', acceptedRevision: 'r1', provenance: 'manual', updatedAt: '2026-10-21T00:00:00.000Z' } } },
+        ...extra() };
+      await createProjectDirectory(root, project);
+      return { root, a, b, e, project };
+    };
+    const revisionOf = (project, id) => {
+      const image = toWorkspaceImages([project.sourceImages[id]], []).find(item => item.id.includes(id) || item.sourceImageId === id);
+      return getBuildAssetRevision(image);
+    };
+
+    // 1. A new project has no sidecars; assets.json holds every file with its role.
+    {
+      const { root, a, b, e } = await makeProject();
+      assert.deepEqual(await sidecarPaths(root), [], 'A new project writes no *.manifest.json');
+      const registry = await readRegistry(root);
+      assert.equal(registry.format, 'dataset-creator-assets'); assert.equal(registry.version, 1);
+      assert.equal(registry.assets[a.id].role, 'source'); assert.equal(registry.assets[a.id].path, 'inbox/a.png');
+      assert.equal(registry.assets[b.id].role, 'source'); assert.equal(registry.assets[b.id].path, 'dataset/b.png');
+      assert.equal(registry.assets[e.id].role, 'edited'); assert.equal(registry.assets[e.id].edited.sourceImageId, a.id);
+      assert.equal(registry.assets[e.id].edited.psdPath, 'inbox/edits/e.psd');
+      const psd = byPath(registry, 'inbox/edits/e.psd');
+      assert.equal(psd.role, 'file'); assert.equal(psd.fileKind, 'psd'); assert.notEqual(psd.id, e.id, 'The PSD has a record of its own');
+      assert.ok(registry.assets[a.id].sha256, 'Content written by the app is fingerprinted');
+      assert.deepEqual(Object.keys(registry.assets), Object.keys(registry.assets).slice().sort(), 'Records are sorted by id');
+      const { project } = await open(root);
+      assert.equal(project.sourceImages[a.id].originalFilePath, 'inbox/a.png');
+      assert.equal(await project.datasetItems[e.id].psdData.text(), 'PSD layers');
+      assert.deepEqual(await sidecarPaths(root), [], 'Opening never creates sidecars');
+    }
+
+    // 2. Opening without changes rewrites nothing and keeps the Build revision.
+    {
+      const { root, a } = await makeProject();
+      const before = await registryStamp(root);
+      const first = await open(root);
+      assert.equal(await registryStamp(root), before, 'assets.json keeps its bytes and modification time');
+      assert.equal(first.report.changed, false);
+      assert.deepEqual([first.report.added.length, first.report.rebound.length, first.report.removed.length, first.report.modified.length], [0, 0, 0, 0]);
+      const second = await open(root);
+      assert.equal(await registryStamp(root), before);
+      assert.equal(revisionOf(first.project, a.id), revisionOf(second.project, a.id), 'An unchanged file keeps its Build revision');
+      assert.equal(first.project.sourceImages[a.id].modifiedAt, undefined);
+    }
+
+    // 3. A file renamed outside the app is recognised by its hash: same id, moves reach the stored references.
+    {
+      const { root, a, e } = await makeProject();
+      const before = await open(root);
+      const beforeRegistry = await readRegistry(root);
+      const content = await readAt(root, 'inbox/a.png');
+      await writeAt(root, 'inbox/renamed/a-new.png', content);
+      await removeAt(root, 'inbox/a.png');
+      const { project, report } = await open(root);
+      assert.deepEqual(report.rebound, [{ id: a.id, from: 'inbox/a.png', to: 'inbox/renamed/a-new.png' }]);
+      assert.deepEqual(report.pathMoves, [{ from: 'inbox/a.png', to: 'inbox/renamed/a-new.png' }], 'Tabs and the Explorer receive the move');
+      assert.deepEqual([report.added.length, report.removed.length], [0, 0]);
+      assert.equal(project.sourceImages[a.id].originalFilePath, 'inbox/renamed/a-new.png', 'The id survives the move');
+      assert.equal(await project.sourceImages[a.id].originalFile.text(), content);
+      assert.equal(project.datasetItems[e.id].sourceImageId, a.id, 'Edited assets keep pointing at their source');
+      assert.equal(project.buildSession.records[`source:${a.id}`].locator, 'Project/inbox/renamed/a-new.png', 'The Build session follows the move');
+      assert.equal(project.buildSession.records[`source:${a.id}`].acceptedRevision, 'r1');
+      assert.deepEqual(project.dataset.assetOrder, ['file:Project/inbox/renamed/a-new.png', 'file:Project/dataset/b.png'], 'Dataset order follows the move');
+      const stored = JSON.parse(await readAt(root, '.datasetcreator/project.json')).project;
+      assert.equal(stored.buildSession.records[`source:${a.id}`].locator, 'Project/inbox/renamed/a-new.png', 'project.json was written with the moved references');
+      assert.equal(stored.dataset.assetOrder[0], 'file:Project/inbox/renamed/a-new.png');
+      const registry = await readRegistry(root);
+      assert.equal(registry.assets[a.id].path, 'inbox/renamed/a-new.png');
+      assert.equal(registry.assets[a.id].fileName, beforeRegistry.assets[a.id].fileName, 'The display name of a source is not the file name on disk');
+      assert.equal(registry.assets[a.id].sha256, beforeRegistry.assets[a.id].sha256, 'The hash is kept');
+      assert.equal(Object.keys(registry.assets).length, Object.keys(beforeRegistry.assets).length, 'No record was added or lost');
+      assert.deepEqual(await sidecarPaths(root), []);
+      // Opening again changes nothing.
+      const stamp = await registryStamp(root);
+      assert.deepEqual((await open(root)).report.pathMoves, []);
+      assert.equal(await registryStamp(root), stamp);
+      assert.equal(before.project.sourceImages[a.id].id, a.id);
+    }
+
+    // 4. A file changed outside the app keeps its id but loses the hash; the Build revision changes.
+    {
+      const { root, a } = await makeProject();
+      const before = await open(root);
+      const revisionBefore = revisionOf(before.project, a.id);
+      const registryBefore = await readRegistry(root);
+      assert.ok(registryBefore.assets[a.id].sha256);
+      await writeAt(root, 'inbox/a.png', 'AAAA completely different pixels', 4_102_444_800_000);
+      const after = await open(root);
+      assert.deepEqual(after.report.modified.map(record => record.id), [a.id]);
+      assert.deepEqual([after.report.added.length, after.report.rebound.length, after.report.removed.length], [0, 0, 0]);
+      const registry = await readRegistry(root);
+      assert.equal(registry.assets[a.id].path, 'inbox/a.png', 'The id stays on its path');
+      assert.equal(registry.assets[a.id].sha256, undefined, 'The stale hash is dropped');
+      assert.equal(registry.assets[a.id].modifiedAt, 4_102_444_800_000, 'modifiedAt becomes the new modification time');
+      assert.equal(registry.assets[a.id].size, 'AAAA completely different pixels'.length);
+      assert.equal(await after.project.sourceImages[a.id].originalFile.text(), 'AAAA completely different pixels');
+      assert.equal(after.project.sourceImages[a.id].modifiedAt, 4_102_444_800_000);
+      assert.notEqual(revisionOf(after.project, a.id), revisionBefore, 'The Build revision changes with the file');
+      // The new state is the baseline: another open reports no change and keeps the revision.
+      const stamp = await registryStamp(root);
+      const again = await open(root);
+      assert.equal(again.report.modified.length, 0);
+      assert.equal(await registryStamp(root), stamp);
+      assert.equal(revisionOf(again.project, a.id), revisionOf(after.project, a.id));
+      // The background hasher then fills the hash of the changed file.
+      assert.ok(await fillAssetHashes(root, { hash: async () => 'filled-hash' }) >= 1);
+      assert.equal((await readRegistry(root)).assets[a.id].sha256, 'filled-hash');
+    }
+
+    // 5. Renamed and changed at once cannot be recognised: the old record goes, the new file is a new record.
+    {
+      const { root, a } = await makeProject();
+      await writeAt(root, 'inbox/other.png', 'AAAA pixels of X');
+      await removeAt(root, 'inbox/a.png');
+      const { project, report } = await open(root);
+      assert.deepEqual(report.rebound, []);
+      assert.deepEqual(report.removed.map(record => record.id), [a.id]);
+      assert.equal(report.added.length, 1); assert.equal(report.added[0].path, 'inbox/other.png'); assert.notEqual(report.added[0].id, a.id);
+      assert.equal(project.sourceImages[a.id], undefined);
+    }
+
+    // 6. Without a stored hash a moved file is a new id; a deleted file is removed.
+    {
+      const { root, a, b } = await makeProject();
+      const registry = await readRegistry(root);
+      delete registry.assets[a.id].sha256;
+      await writeAt(root, REGISTRY, JSON.stringify(registry, null, 2));
+      const content = await readAt(root, 'inbox/a.png');
+      await writeAt(root, 'inbox/moved.png', content);
+      await removeAt(root, 'inbox/a.png');
+      await removeAt(root, 'dataset/b.png');
+      const { project, report } = await open(root);
+      assert.deepEqual(report.rebound, [], 'A record without a hash is never rebound');
+      assert.deepEqual(report.pathMoves, []);
+      assert.deepEqual(report.removed.map(record => record.id).sort(), [a.id, b.id].sort());
+      assert.deepEqual(report.added.map(record => record.path), ['inbox/moved.png']);
+      assert.notEqual(report.added[0].id, a.id);
+      const next = await readRegistry(root);
+      assert.equal(next.assets[a.id], undefined); assert.equal(next.assets[b.id], undefined);
+      assert.equal(next.assets[report.added[0].id].role, 'file');
+      assert.equal(project.sourceImages[a.id], undefined); assert.equal(project.sourceImages[b.id], undefined);
+    }
+
+    // 7. Identical files: each moved file is bound to the record with the same file name first.
+    {
+      const root = directory();
+      const content = new Blob(['IDENTICAL BYTES'], { type: 'image/png' });
+      const x = { ...createSourceImage(content, 'x.png', 8, 8), originalFilePath: 'inbox/x.png', createdAt: new Date('2025-01-01T00:00:00Z') };
+      const y = { ...createSourceImage(content, 'y.png', 8, 8), originalFilePath: 'inbox/y.png', createdAt: new Date('2025-01-02T00:00:00Z') };
+      await createProjectDirectory(root, { ...createProject('Duplicates', 'character'), sourceImages: { [x.id]: x, [y.id]: y } });
+      await writeAt(root, 'moved/a/y.png', 'IDENTICAL BYTES'); // sorts first but belongs to the later record
+      await writeAt(root, 'moved/b/x.png', 'IDENTICAL BYTES');
+      await removeAt(root, 'inbox/x.png'); await removeAt(root, 'inbox/y.png');
+      const { project, report } = await open(root);
+      assert.equal(report.rebound.length, 2);
+      assert.equal(report.rebound.find(entry => entry.id === y.id).to, 'moved/a/y.png');
+      assert.equal(report.rebound.find(entry => entry.id === x.id).to, 'moved/b/x.png');
+      assert.deepEqual([report.added.length, report.removed.length], [0, 0]);
+      assert.equal(project.sourceImages[x.id].originalFilePath, 'moved/b/x.png');
+      assert.equal(project.sourceImages[y.id].originalFilePath, 'moved/a/y.png');
+    }
+
+    // 8. Explorer operations keep ids and write no sidecars.
+    {
+      const { root, a, e } = await makeProject();
+      const sha = (await readRegistry(root)).assets[a.id].sha256;
+      await renameExplorerEntry(root, 'Project/inbox/a.png', 'file', 'renamed.png');
+      await moveAssetRegistryPaths(root, [{ from: 'Project/inbox/a.png', to: 'Project/inbox/renamed.png' }]);
+      let registry = await readRegistry(root);
+      assert.equal(registry.assets[a.id].path, 'inbox/renamed.png'); assert.equal(registry.assets[a.id].fileName, a.fileName, 'The display name is not the file name on disk');
+      assert.equal(registry.assets[a.id].sha256, sha, 'A rename keeps the hash');
+      await root.getDirectoryHandle('Archive', { create: true });
+      await moveExplorerEntries(root, [{ kind: 'folder', name: 'edits', path: 'Project/inbox/edits' }], 'Project/Archive');
+      await moveAssetRegistryPaths(root, [{ from: 'Project/inbox/edits', to: 'Project/Archive/edits' }]);
+      registry = await readRegistry(root);
+      assert.equal(registry.assets[e.id].path, 'Archive/edits/e.png', 'Folder moves update every record below it');
+      assert.equal(registry.assets[e.id].edited.psdPath, 'Archive/edits/e.psd', 'and the PSD an edited record points at');
+      assert.equal(byPath(registry, 'Archive/edits/e.psd').fileKind, 'psd');
+      assert.deepEqual(await sidecarPaths(root), [], 'Moving and renaming write no sidecars');
+      await deleteExplorerEntry(root, 'Project/Archive/edits', true);
+      await removeAssetRegistryPaths(root, ['Project/Archive/edits']);
+      registry = await readRegistry(root);
+      assert.equal(registry.assets[e.id], undefined); assert.equal(byPath(registry, 'Archive/edits/e.psd'), undefined);
+      assert.ok(registry.assets[a.id], 'Unrelated records stay');
+      assert.deepEqual(await sidecarPaths(root), []);
+      // The loaded registry matches the file, so the next open is a no-op.
+      const stamp = await registryStamp(root);
+      assert.equal((await open(root)).report.changed, false);
+      assert.equal(await registryStamp(root), stamp);
+    }
+
+    // 9. Moving a source into the Dataset folder keeps its id (datasetFolderService updates the registry).
+    {
+      const { root, a, project } = await makeProject();
+      useProjectStore.getState().loadProject(project);
+      // Node filesystem tests isolate IndexedDB (same stand-in as the Dataset exclusion test above).
+      const updateSource = useProjectStore.getState().updateSourceImage;
+      useProjectStore.setState({ updateSourceImage: (id, updates) => useProjectStore.setState(state => ({ sourceImages: { ...state.sourceImages, [id]: { ...state.sourceImages[id], ...updates } } })) });
+      useUIStore.getState().setProjectDirectory({ handle: root, name: project.name });
+      const item = { id: `source:${a.id}`, sourceImageId: a.id, kind: 'image', fileName: 'a.png', assetPath: 'Project/inbox/a.png', imageData: a.originalFile, width: 32, height: 24, tags: a.tags, aspectRatio: '1:1' };
+      const added = await addItemsToDatasetFolder(root, [item]);
+      assert.equal(added.completed.length, 1);
+      let registry = await readRegistry(root);
+      assert.ok(registry.assets[a.id].path.startsWith('dataset/'), 'The record follows the file into dataset/');
+      const removed = await removeItemsFromDatasetFolder(root, [{ ...item, assetPath: `Project/${registry.assets[a.id].path}` }]);
+      assert.equal(removed.completed.length, 1);
+      registry = await readRegistry(root);
+      assert.ok(registry.assets[a.id].path.startsWith('inbox/'), 'and back out again');
+      assert.deepEqual(await sidecarPaths(root), []);
+      useProjectStore.setState({ updateSourceImage: updateSource });
+    }
+
+    // 10. v3 with sidecars -> assets.json.
+    const toV3WithSidecars = async (dir) => {
+      const maps = await registryToSidecars(dir);
+      const json = JSON.parse(await readAt(dir, '.datasetcreator/project.json'));
+      json.project = { ...json.project, ...maps };
+      delete json.project.migrations.assetsRegistry;
+      await writeAt(dir, '.datasetcreator/project.json', JSON.stringify(json, null, 2));
+      return maps;
+    };
+    {
+      const { root, a, b, e } = await makeProject({ hiddenB: true });
+      const maps = await toV3WithSidecars(root);
+      assert.equal(Object.keys(maps.sourceImageManifests).length, 2); assert.equal(Object.keys(maps.editedAssetManifests).length, 1);
+      assert.equal((await sidecarPaths(root)).length, 3);
+      assert.equal(await readRegistry(root), undefined);
+      assert.equal(await detectPendingAssetsRegistryMigration(root), true);
+      const report = await runAssetsRegistryMigration(root);
+      assert.equal(report.sidecars, 3);
+      assert.equal(report.records, 4, 'Two sources, one edited asset and the PSD');
+      const registry = await readRegistry(root);
+      assert.equal(registry.assets[a.id].role, 'source'); assert.equal(registry.assets[a.id].path, 'inbox/a.png');
+      assert.equal(registry.assets[b.id].hidden, true, 'hidden is kept');
+      assert.equal(registry.assets[a.id].hidden, undefined);
+      assert.equal(registry.assets[e.id].role, 'edited'); assert.equal(registry.assets[e.id].edited.sourceImageId, a.id);
+      const psd = byPath(registry, 'inbox/edits/e.psd');
+      assert.equal(psd.role, 'file'); assert.equal(psd.fileKind, 'psd'); assert.notEqual(psd.id, e.id, 'The PSD has a record of its own');
+      assert.deepEqual(await sidecarPaths(root).then(paths => paths.filter(path => !path.startsWith('.datasetcreator/'))), [], 'No sidecar remains in the working folders');
+      for (const path of ['inbox/a.png', 'dataset/b.png', 'inbox/edits/e.png']) {
+        assert.ok(await existsAt(root, `.datasetcreator/backup/${report.journalId}/sidecars/${path}.manifest.json`), `${path} sidecar is in the backup`);
+        assert.ok(await existsAt(root, path), 'The file itself stays');
+      }
+      const json = JSON.parse(await readAt(root, '.datasetcreator/project.json')).project;
+      assert.ok(json.migrations.assetsRegistry.completedAt); assert.equal(json.migrations.assetsRegistry.id, report.journalId);
+      assert.equal(json.sourceImageManifests, undefined); assert.equal(json.editedAssetManifests, undefined);
+      assert.equal(await detectPendingAssetsRegistryMigration(root), false);
+      // A repeat changes nothing.
+      const tree = await snapshotTree(root);
+      assert.equal(await runAssetsRegistryMigration(root), undefined);
+      assert.deepEqual(await snapshotTree(root), tree, 'Re-running the migration leaves every byte as it was');
+      assert.deepEqual(await resumePendingJournals(root), []);
+      // The migrated project opens through the registry without rewriting it.
+      const stamp = await registryStamp(root);
+      const { project, report: openReport } = await open(root);
+      assert.equal(project.sourceImages[b.id].hidden, true);
+      assert.equal(await project.datasetItems[e.id].psdData.text(), 'PSD layers');
+      assert.equal(openReport.changed, false);
+      assert.equal(await registryStamp(root), stamp);
+    }
+
+    // 11. Abort after any step, resume, and the end state is complete and not duplicated.
+    for (const abortAt of [1, 2]) {
+      const { root, a, b, e } = await makeProject({ hiddenB: true });
+      await toV3WithSidecars(root);
+      const controller = new AbortController(); let steps = 0;
+      await assert.rejects(runAssetsRegistryMigration(root, { signal: controller.signal, onProgress: progress => {
+        if (progress.completed >= progress.total) return;
+        steps += 1; if (steps === abortAt) controller.abort();
+      } }), { name: 'AbortError' }, `abort after step ${abortAt}`);
+      const pending = await detectPendingAssetsRegistryMigration(root);
+      assert.equal(pending, true, 'The marker is written last');
+      if (abortAt === 1) assert.ok((await sidecarPaths(root)).length >= 3, 'Sidecars stay until assets.json is written and the move step runs');
+      const resumed = await resumePendingJournals(root);
+      assert.equal(resumed.length, 1, `the journal resumes after abort ${abortAt}`);
+      assert.equal(await detectPendingAssetsRegistryMigration(root), false);
+      const registry = await readRegistry(root);
+      assert.equal(Object.keys(registry.assets).length, 4, 'Resuming adds no duplicate records');
+      assert.deepEqual([a.id, b.id, e.id].every(id => registry.assets[id]), true, 'Ids are the ones from the sidecars');
+      assert.equal(Object.values(registry.assets).filter(record => record.fileKind === 'psd').length, 1);
+      assert.equal(registry.assets[b.id].hidden, true);
+      assert.deepEqual((await sidecarPaths(root)).filter(path => !path.startsWith('.datasetcreator/')), []);
+      assert.equal(Object.values(await snapshotTree(root)).filter(Boolean).length > 0, true);
+      assert.deepEqual(await resumePendingJournals(root), [], 'A finished journal is not resumed again');
+      assert.equal(await runAssetsRegistryMigration(root), undefined);
+    }
   }
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }
