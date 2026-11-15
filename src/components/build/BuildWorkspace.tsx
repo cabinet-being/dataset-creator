@@ -560,7 +560,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     {!canExport && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
     <DatasetAssemblyDialog open={showAssembly} onOpenChange={setShowAssembly} dataset={dataset} items={items} directory={directory ?? undefined} projectId={projectId} projectType={projectType} defaultMode="total" defaultTotal={reconciled.profile.target} excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []} onApply={async (paths) => {
       const selectedItems = candidates.filter((item) => item.assetPath && paths.some((path) => item.assetPath!.replace(/^Project\//, '') === path.replace(/^Project\//, '')));
-      if (selectedItems.length !== paths.length) throw new Error('Some proposed files changed before the selection was applied. Run automatic selection again.');
+      if (selectedItems.length !== paths.length) throw new Error('Some proposed files changed before the selection was applied. Run Auto-select again.');
       await commitDecision('accepted', selectedItems, 'auto', true);
     }} />
   </div>;

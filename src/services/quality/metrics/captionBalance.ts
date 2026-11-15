@@ -1,5 +1,5 @@
 import { QUALITY_THRESHOLDS as T } from './thresholds';
-import { captionText, countCaptionTokens, countFiles, hasCaption, normalizeTag, percent, resolveItemTags } from './text';
+import { captionText, countCaptionTokens, countFiles, hasCaption, normalizeTag, percent, plural, resolveItemTags } from './text';
 import type { QualityItemInput, QualityMetric } from './types';
 import type { TagPolicy } from '../../../lib/projectProfilePresets';
 import { median } from './vectorMath';
@@ -16,73 +16,73 @@ export const countTagFrequencies = (items: readonly QualityItemInput[], triggerW
 };
 
 export const measureCommonTags = (items: readonly QualityItemInput[], triggerWord = '', policy?: TagPolicy): QualityMetric => {
-  const title = 'Теги майже в усіх файлах';
+  const title = 'Tags in almost every file';
   if (items.length < 3) {
-    return { id: 'common-tags', title, value: null, display: 'замало файлів', status: 'ok', evaluated: false, explanation: 'Потрібно щонайменше 3 файли.' };
+    return { id: 'common-tags', title, value: null, display: 'too few files', status: 'ok', evaluated: false, explanation: 'At least 3 files are required.' };
   }
   const common = countTagFrequencies(items, triggerWord).filter((entry) => entry.fraction >= T.tags.commonFraction);
   const mode = policy?.constantTags ?? 'review';
   const base = {
     id: 'common-tags', title, value: common.length,
-    display: common.length ? common.slice(0, 5).map((entry) => entry.tag).join(', ') : 'немає', evaluated: true,
+    display: common.length ? common.slice(0, 5).map((entry) => entry.tag).join(', ') : 'none', evaluated: true,
   } as const;
-  if (!common.length) return { ...base, status: 'ok', explanation: 'Немає тегів, що повторюються майже всюди.' };
-  const source = `${common.length} тегів є щонайменше в ${percent(T.tags.commonFraction)} із ${countFiles(items.length)} (≥ ${Math.ceil(T.tags.commonFraction * items.length)} файлів).`;
+  if (!common.length) return { ...base, status: 'ok', explanation: 'No tags repeat almost everywhere.' };
+  const source = `${plural(common.length, 'tag')} appear in at least ${percent(T.tags.commonFraction)} of ${countFiles(items.length)} (≥ ${countFiles(Math.ceil(T.tags.commonFraction * items.length))}).`;
   const tags = common.map((entry) => entry.tag);
   if (mode === 'keep') {
-    return { ...base, status: 'ok', explanation: `${source} Для стилю такі теги не прибирайте: спільні ознаки описують сам стиль.` };
+    return { ...base, status: 'ok', explanation: `${source} For a style, keep such tags: the shared traits describe the style itself.` };
   }
   if (mode === 'prune') {
     return {
       ...base, status: 'warn',
-      explanation: `${source} Це незмінні ознаки: якщо їх лишити в підписах, модель не прив'яже їх до тригера. Приберіть їх із підписів.`,
-      action: { kind: 'remove', label: 'Прибрати з підписів', tags },
+      explanation: `${source} These are constant traits: if left in the captions, the model will not bind them to the trigger. Remove them from the captions.`,
+      action: { kind: 'remove', label: 'Remove from captions', tags },
     };
   }
   return {
     ...base, status: 'warn',
-    explanation: `${source} Якщо це незмінна ознака, яку LoRA має прив'язати до тригера, приберіть тег із підписів; якщо ні — тег нічого не розрізняє.`,
-    action: { kind: 'review', label: 'Переглянути теги', tags },
+    explanation: `${source} If this is a constant trait the LoRA should bind to the trigger, remove the tag from the captions; otherwise the tag distinguishes nothing.`,
+    action: { kind: 'review', label: 'Review tags', tags },
   };
 };
 
 export const measureRareTags = (items: readonly QualityItemInput[], triggerWord = ''): QualityMetric => {
-  const title = 'Поодинокі теги';
+  const title = 'Single-use tags';
   if (items.length < T.tags.rareMinDataset) {
-    return { id: 'rare-tags', title, value: null, display: 'замало файлів', status: 'ok', evaluated: false, explanation: `Оцінюється від ${T.tags.rareMinDataset} файлів.` };
+    return { id: 'rare-tags', title, value: null, display: 'too few files', status: 'ok', evaluated: false, explanation: `Evaluated from ${T.tags.rareMinDataset} files.` };
   }
   const all = countTagFrequencies(items, triggerWord);
   const rare = all.filter((entry) => entry.files <= T.tags.rareMaxFiles);
   const fraction = all.length ? rare.length / all.length : 0;
   return {
     id: 'rare-tags', title, value: fraction,
-    display: `${rare.length} з ${all.length} тегів`,
+    display: `${rare.length} of ${plural(all.length, 'tag')}`,
     status: fraction > T.tags.rareWarnFraction ? 'warn' : 'ok', evaluated: true,
     explanation: rare.length
-      ? `${percent(fraction)} тегів трапляються лише в одному файлі: модель не встигне їх вивчити. Уніфікуйте синоніми або приберіть шум.`
-      : 'Поодиноких тегів немає.',
-    action: rare.length ? { kind: 'review', label: 'Уніфікувати або прибрати', tags: rare.slice(0, 40).map((entry) => entry.tag) } : undefined,
+      ? `${percent(fraction)} of tags appear in only one file: the model will not have time to learn them. Unify synonyms or remove the noise.`
+      : 'No single-use tags.',
+    action: rare.length ? { kind: 'review', label: 'Unify or remove', tags: rare.slice(0, 40).map((entry) => entry.tag) } : undefined,
   };
 };
 
 export const measureCaptionLength = (items: readonly QualityItemInput[]): QualityMetric => {
-  const title = 'Довжина підписів';
+  const title = 'Caption length';
   const captioned = items.filter(hasCaption).map((item) => ({ id: item.id, tokens: countCaptionTokens(captionText(item)) }));
   if (!captioned.length) {
-    return { id: 'caption-length', title, value: null, display: 'немає підписів', status: 'warn', evaluated: false, explanation: 'Жоден файл не має підпису.' };
+    return { id: 'caption-length', title, value: null, display: 'no captions', status: 'warn', evaluated: false, explanation: 'No file has a caption.' };
   }
   const middle = median(captioned.map((entry) => entry.tokens));
   const longest = Math.max(...captioned.map((entry) => entry.tokens));
   const tooLong = captioned.filter((entry) => entry.tokens > T.captionLength.maxTokens);
   const tooShort = middle < T.captionLength.minMedianTokens;
   const parts: string[] = [];
-  if (tooShort) parts.push(`Медіана ${middle} слів: підписи надто короткі, модель не відокремить концепт від фону й деталей.`);
-  if (tooLong.length) parts.push(`${countFiles(tooLong.length)} довші за ${T.captionLength.maxTokens} слів: текстовий енкодер обріже кінець.`);
+  if (tooShort) parts.push(`Median ${middle} words: captions are too short, the model will not separate the concept from background and details.`);
+  if (tooLong.length) parts.push(`${countFiles(tooLong.length)} longer than ${T.captionLength.maxTokens} words: the text encoder will truncate the end.`);
   return {
     id: 'caption-length', title, value: middle,
-    display: `медіана ${middle}, макс ${longest} слів`,
+    display: `median ${middle}, max ${longest} words`,
     status: tooShort || tooLong.length ? 'warn' : 'ok', evaluated: true,
-    explanation: parts.length ? parts.join(' ') : 'Довжина підписів у нормі.',
-    action: tooLong.length ? { kind: 'caption', label: 'Скоротити підписи', ids: tooLong.map((entry) => entry.id) } : undefined,
+    explanation: parts.length ? parts.join(' ') : 'Caption length is fine.',
+    action: tooLong.length ? { kind: 'caption', label: 'Shorten captions', ids: tooLong.map((entry) => entry.id) } : undefined,
   };
 };

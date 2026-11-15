@@ -4,36 +4,36 @@ import type { ImageQualityVerdict, QualityItemInput, QualityMetric, ResolutionPr
 import { dot, normalizeVector } from './vectorMath';
 
 export const checkCount = (count: number, target: { min: number; max: number } = T.count.defaultTarget): QualityMetric => {
-  const base = { id: 'count', title: 'Кількість файлів', value: count, display: `${countFiles(count)} (ціль ${target.min}–${target.max})`, evaluated: true } as const;
+  const base = { id: 'count', title: 'File count', value: count, display: `${countFiles(count)} (target ${target.min}–${target.max})`, evaluated: true } as const;
   if (count < target.min) {
     const status = count < target.min * T.count.failRatio ? 'fail' : 'warn';
-    return { ...base, status, explanation: `Бракує ${target.min - count} до мінімуму цілі: замало прикладів, LoRA може не засвоїти концепт.` };
+    return { ...base, status, explanation: `${target.min - count} short of the target minimum: too few examples, the LoRA may not learn the concept.` };
   }
   if (count > target.max) {
-    return { ...base, status: 'warn', explanation: `На ${count - target.max} більше за ціль: довше навчання і ризик повторів. Приберіть найсхожіші файли.` };
+    return { ...base, status: 'warn', explanation: `${count - target.max} over the target: longer training and a risk of repetition. Remove the most similar files.` };
   }
-  return { ...base, status: 'ok', explanation: 'Кількість у межах цілі.' };
+  return { ...base, status: 'ok', explanation: 'Count is within the target.' };
 };
 
 export const checkResolution = (items: readonly QualityItemInput[], preset: ResolutionPreset = 'sdxl', override?: number): QualityMetric => {
   const minSide = resolveMinShortSide(preset, override);
   const known = items.filter((item) => (item.width ?? 0) > 0 && (item.height ?? 0) > 0);
-  const title = `Роздільність (коротша сторона ≥ ${minSide}px)`;
+  const title = `Resolution (shorter side ≥ ${minSide}px)`;
   if (!known.length) {
-    return { id: 'resolution', title, value: null, display: 'немає даних', status: 'warn', evaluated: false, explanation: 'Розміри зображень невідомі, перевірку не виконано.' };
+    return { id: 'resolution', title, value: null, display: 'no data', status: 'warn', evaluated: false, explanation: 'Image sizes are unknown, so the check was skipped.' };
   }
   const below = known.filter((item) => Math.min(item.width!, item.height!) < minSide);
   const fraction = below.length / known.length;
   const unknown = items.length - known.length;
   const status = unknown && !below.length ? 'warn' : statusForBadFraction(fraction, T.resolution.warnFraction);
   const parts = [below.length
-    ? `${countFiles(below.length)} (${percent(fraction)}) мають коротшу сторону менше ${minSide}px: модель вчитиметься на розмитих деталях.`
-    : `Усі файли мають коротшу сторону щонайменше ${minSide}px.`];
-  if (unknown) parts.push(`Розмір ${countFiles(unknown)} невідомий.`);
+    ? `${countFiles(below.length)} (${percent(fraction)}) have a shorter side under ${minSide}px: the model will learn from blurry detail.`
+    : `All files have a shorter side of at least ${minSide}px.`];
+  if (unknown) parts.push(`Size of ${countFiles(unknown)} is unknown.`);
   return {
-    id: 'resolution', title, value: fraction, display: below.length ? `${below.length} з ${known.length} замалі` : 'усі достатні',
+    id: 'resolution', title, value: fraction, display: below.length ? `${below.length} of ${known.length} too small` : 'all large enough',
     status, evaluated: true, explanation: parts.join(' '),
-    action: below.length ? { kind: 'review', label: 'Замінити якіснішими або прибрати', ids: below.map((item) => item.id) } : undefined,
+    action: below.length ? { kind: 'review', label: 'Replace with sharper images or remove', ids: below.map((item) => item.id) } : undefined,
   };
 };
 
@@ -78,23 +78,23 @@ export const groupNearDuplicates = (pairs: readonly NearDuplicatePair[]): NearDu
 };
 
 export const checkNearDuplicates = (items: readonly QualityItemInput[]): QualityMetric => {
-  const title = 'Майже-дублікати';
+  const title = 'Near-duplicates';
   const withSignal = items.filter((item) => normalizeVector(item.embedding) || item.imageHash);
   if (!withSignal.length) {
-    return { id: 'near-duplicates', title, value: null, display: 'немає векторів', status: 'warn', evaluated: false, explanation: 'Для файлів ще немає DINOv2-векторів, дублікати не перевірено.' };
+    return { id: 'near-duplicates', title, value: null, display: 'no vectors', status: 'warn', evaluated: false, explanation: 'Files have no DINOv2 vectors yet, so duplicates were not checked.' };
   }
   const pairs = findNearDuplicates(items);
   const fraction = pairs.length / items.length;
   const missing = items.length - withSignal.length;
   const status = missing && !pairs.length ? 'warn' : statusForBadFraction(fraction, T.nearDuplicates.warnFraction);
   const parts = [pairs.length
-    ? `${countFiles(pairs.length)} майже повторюють інші (схожість ≥ ${T.nearDuplicates.similarity}): вони підсилюють перенавчання на конкретних кадрах.`
-    : 'Майже-дублікатів не знайдено.'];
-  if (missing) parts.push(`${countFiles(missing)} без вектора не перевірено.`);
+    ? `${countFiles(pairs.length)} nearly repeat others (similarity ≥ ${T.nearDuplicates.similarity}): they push the model to overfit to specific shots.`
+    : 'No near-duplicates found.'];
+  if (missing) parts.push(`${countFiles(missing)} without a vector not checked.`);
   return {
-    id: 'near-duplicates', title, value: pairs.length, display: pairs.length ? `${pairs.length} зайвих` : 'немає',
+    id: 'near-duplicates', title, value: pairs.length, display: pairs.length ? `${pairs.length} redundant` : 'none',
     status, evaluated: true, explanation: parts.join(' '),
-    action: pairs.length ? { kind: 'remove', label: 'Прибрати повтори', ids: pairs.map((pair) => pair.removed) } : undefined,
+    action: pairs.length ? { kind: 'remove', label: 'Remove repeats', ids: pairs.map((pair) => pair.removed) } : undefined,
   };
 };
 
@@ -102,38 +102,38 @@ export const checkCaptions = (items: readonly QualityItemInput[]): QualityMetric
   const missing = items.filter((item) => !hasCaption(item));
   const fraction = items.length ? missing.length / items.length : 0;
   return {
-    id: 'captions', title: 'Підписи', value: fraction,
-    display: missing.length ? `${missing.length} без підпису` : 'усі підписані',
+    id: 'captions', title: 'Captions', value: fraction,
+    display: missing.length ? `${missing.length} without caption` : 'all captioned',
     status: statusForBadFraction(fraction, T.captions.warnFraction), evaluated: true,
     explanation: missing.length
-      ? `${countFiles(missing.length)} без підпису: тренер побачить лише тригер або порожній текст.`
-      : 'Кожен файл має підпис.',
-    action: missing.length ? { kind: 'caption', label: 'Додати підписи', ids: missing.map((item) => item.id) } : undefined,
+      ? `${countFiles(missing.length)} without a caption: the trainer will see only the trigger or empty text.`
+      : 'Every file has a caption.',
+    action: missing.length ? { kind: 'caption', label: 'Add captions', ids: missing.map((item) => item.id) } : undefined,
   };
 };
 
 export const checkTrigger = (items: readonly QualityItemInput[], triggerWord = ''): QualityMetric => {
   const trigger = triggerWord.trim();
   if (!trigger) {
-    return { id: 'trigger', title: 'Тригер-слово', value: null, display: 'не задано', status: 'ok', evaluated: false, explanation: 'Тригер-слово не задано, перевірку пропущено.' };
+    return { id: 'trigger', title: 'Trigger word', value: null, display: 'not set', status: 'ok', evaluated: false, explanation: 'No trigger word is set, so the check was skipped.' };
   }
   const missing = items.filter((item) => !containsTrigger(captionText(item), trigger));
   const fraction = items.length ? missing.length / items.length : 0;
   return {
-    id: 'trigger', title: `Тригер «${trigger}»`, value: 1 - fraction,
-    display: `${percent(1 - fraction)} підписів`,
+    id: 'trigger', title: `Trigger “${trigger}”`, value: 1 - fraction,
+    display: `${percent(1 - fraction)} of captions`,
     status: statusForBadFraction(fraction, T.trigger.warnFraction), evaluated: true,
     explanation: missing.length
-      ? `У ${countFiles(missing.length)} немає тригер-слова: концепт не прив'яжеться до нього надійно.`
-      : 'Тригер-слово є в кожному підписі.',
-    action: missing.length ? { kind: 'caption', label: 'Додати тригер', ids: missing.map((item) => item.id) } : undefined,
+      ? `${countFiles(missing.length)} lack the trigger word: the concept will not bind to it reliably.`
+      : 'The trigger word is in every caption.',
+    action: missing.length ? { kind: 'caption', label: 'Add trigger', ids: missing.map((item) => item.id) } : undefined,
   };
 };
 
 export const checkTechnical = (items: readonly QualityItemInput[], verdicts?: readonly ImageQualityVerdict[]): QualityMetric => {
-  const title = 'Технічна якість';
+  const title = 'Technical quality';
   if (!verdicts) {
-    return { id: 'technical', title, value: null, display: 'не перевірено', status: 'warn', evaluated: false, explanation: 'Технічну перевірку (розмиття, шум, артефакти) ще не запускали.' };
+    return { id: 'technical', title, value: null, display: 'not checked', status: 'warn', evaluated: false, explanation: 'The technical check (blur, noise, artifacts) has not been run yet.' };
   }
   const byId = new Map(verdicts.map((verdict) => [verdict.id, verdict]));
   const bad = items.filter((item) => byId.get(item.id)?.verdict === 'bad');
@@ -144,13 +144,13 @@ export const checkTechnical = (items: readonly QualityItemInput[], verdicts?: re
   const status = base === 'ok' && unchecked.length ? 'warn' : base;
   const reasons = [...new Set(bad.flatMap((item) => byId.get(item.id)?.reasons ?? []))].slice(0, 4);
   const parts = [bad.length
-    ? `${countFiles(bad.length)} (${percent(fraction)}) технічно погані${reasons.length ? `: ${reasons.join(', ')}` : ''}.`
-    : 'Технічно поганих файлів немає.'];
-  if (doubtful.length) parts.push(`Ще ${countFiles(doubtful.length)} під сумнівом.`);
-  if (unchecked.length) parts.push(`${countFiles(unchecked.length)} не перевірено.`);
+    ? `${countFiles(bad.length)} (${percent(fraction)}) technically poor${reasons.length ? `: ${reasons.join(', ')}` : ''}.`
+    : 'No technically poor files.'];
+  if (doubtful.length) parts.push(`${countFiles(doubtful.length)} more are doubtful.`);
+  if (unchecked.length) parts.push(`${countFiles(unchecked.length)} not checked.`);
   return {
-    id: 'technical', title, value: fraction, display: bad.length ? `${percent(fraction)} поганих` : 'без проблем',
+    id: 'technical', title, value: fraction, display: bad.length ? `${percent(fraction)} poor` : 'no problems',
     status, evaluated: true, explanation: parts.join(' '),
-    action: bad.length ? { kind: 'remove', label: 'Прибрати погані', ids: bad.map((item) => item.id) } : undefined,
+    action: bad.length ? { kind: 'remove', label: 'Remove poor files', ids: bad.map((item) => item.id) } : undefined,
   };
 };

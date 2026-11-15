@@ -43,7 +43,7 @@ export type QualityMetric = {
   title: string;
   /** Raw value used for the status; null when the metric could not be evaluated. */
   value: number | null;
-  /** Short human-readable value, e.g. "42 файли ≈ 17 ефективно різних". */
+  /** Short human-readable value, e.g. "42 files ≈ 17 effectively distinct". */
   display: string;
   status: QualityStatus;
   /** False when inputs were missing or the check does not apply. */

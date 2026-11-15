@@ -65,7 +65,7 @@ export function useBuildAutoPipeline(input: Input) {
   const attempted = useRef(new Set<string>());
   const didWork = useRef(false);
   const triageOperation = useOperation('Build triage', input.root, input.viewId);
-  const assemblyOperation = useOperation('Build automatic selection', input.root, input.viewId);
+  const assemblyOperation = useOperation('Build auto-select', input.root, input.viewId);
   const taggingOperation = useOperation('Build caption suggestions', input.root, input.viewId);
   const projectId = useProjectStore((state) => state.id);
 
@@ -214,7 +214,7 @@ export function useBuildAutoPipeline(input: Input) {
     const failWith = (message: string, severity: 'warning' | 'error') => {
       if (!ctx.isCurrent()) return;
       latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: message } }));
-      latest.current.notify(severity, `Automatic selection failed: ${message}. Proposals stay for manual review.`);
+      latest.current.notify(severity, `Auto-select failed: ${message}. Proposals stay for manual review.`);
     };
     let selectedIds: string[] = [];
     try {
@@ -262,7 +262,7 @@ export function useBuildAutoPipeline(input: Input) {
     if (!ctx.isCurrent()) throw abortError();
     try {
       await latest.current.commitDecision('accepted', targets, 'auto', true);
-      latest.current.notify('success', `Automatic selection added ${targets.length} image${targets.length === 1 ? '' : 's'} to the Dataset.`);
+      latest.current.notify('success', `Auto-select added ${targets.length} image${targets.length === 1 ? '' : 's'} to the Dataset.`);
     } catch (error) {
       if (!ctx.isCurrent()) return;
       latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: error instanceof Error ? error.message : 'Could not apply the selection.' } }));
