@@ -18,7 +18,7 @@ try {
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
-  const { createProjectDirectory, readProjectDirectory, writeProjectDirectoryChanges } = await import(pathToFileURL(join(temp, 'projectDirectoryService.mjs')));
+  const { createProjectDirectory, readProjectDirectory, writeProjectDirectoryChanges, clearProjectDirectory, listProjectDirectoryClearTargets, countProjectDirectoryFiles } = await import(pathToFileURL(join(temp, 'projectDirectoryService.mjs')));
   const { createProjectFileBlob, readProjectFile } = await import(pathToFileURL(join(temp, 'projectFileService.mjs')));
   const { useProjectStore } = await import(pathToFileURL(join(temp, 'useProjectStore.mjs')));
   const { useUIStore } = await import(pathToFileURL(join(temp, 'useUIStore.mjs')));
@@ -767,6 +767,60 @@ try {
     assert.deepEqual(names('captioned'), ['i2', 'i10', 'asset:v.mp4'], 'Most tags first');
     assert.deepEqual(names('aspect'), ['i2', 'asset:v.mp4', 'i10'], 'Aspect sort is ascending width/height');
     assert.deepEqual(sortable.map((entry) => entry.id), ['i10', 'i2', 'asset:v.mp4'], 'datasetBoardItems does not mutate its input');
+  }
+  {
+    // Folder takeover safety: real Git repositories survive clearing; version snapshots skip .git/.cache.
+    const put = async (root, path, text = 'x') => {
+      const parts = path.split('/'); let dir = root;
+      for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(parts.at(-1), { create: true })).createWritable();
+      await writable.write(text); await writable.close();
+    };
+    const names = async (root) => { const out = []; for await (const [name] of root.entries()) out.push(name); return out.sort(); };
+
+    const gitRoot = directory();
+    await put(gitRoot, '.git/HEAD', 'ref: refs/heads/main'); await put(gitRoot, '.git/objects/ab/cd', 'o');
+    await put(gitRoot, 'manifest.json'); await put(gitRoot, 'dataset/a.png'); await put(gitRoot, 'keep.txt');
+    assert.deepEqual(await listProjectDirectoryClearTargets(gitRoot), ['manifest.json', 'dataset'], 'A real .git is never listed for deletion');
+    await clearProjectDirectory(gitRoot);
+    assert.deepEqual(await names(gitRoot), ['.git', 'keep.txt'], 'Clearing keeps a real .git and unrelated files');
+    const keptGit = await gitRoot.getDirectoryHandle('.git');
+    await keptGit.getFileHandle('HEAD'); await (await keptGit.getDirectoryHandle('objects')).getDirectoryHandle('ab');
+
+    const serviceGit = directory();
+    await put(serviceGit, '.git/dataset-creator-versions.json'); await put(serviceGit, '.git/snapshots/v.zip'); await put(serviceGit, '.git/restore-backups/b.zip');
+    await put(serviceGit, 'manifest.json');
+    assert.deepEqual(await listProjectDirectoryClearTargets(serviceGit), ['manifest.json', '.git'], 'A .git with only version files is listed');
+    await clearProjectDirectory(serviceGit);
+    assert.deepEqual(await names(serviceGit), [], 'A .git holding only Dataset Creator version files is removed');
+
+    const mixedGit = directory();
+    await put(mixedGit, '.git/dataset-creator-versions.json'); await put(mixedGit, '.git/config');
+    await clearProjectDirectory(mixedGit);
+    assert.deepEqual(await names(mixedGit), ['.git'], 'Any foreign entry makes .git a real repository');
+
+    const countRoot = directory();
+    await put(countRoot, '.git/HEAD'); await put(countRoot, 'a.txt'); await put(countRoot, 'sub/b.txt'); await put(countRoot, 'sub/deep/c.txt'); await put(countRoot, 'sub/.git/d.txt');
+    assert.equal(await countProjectDirectoryFiles(countRoot), 4, 'Counting skips only the root .git');
+    assert.equal(await countProjectDirectoryFiles(directory()), 0);
+
+    const verRoot = directory();
+    await put(verRoot, 'manifest.json', JSON.stringify({ format: 'dataset-creator-directory', version: 2, project: { id: 'p', name: 'P' } }));
+    await put(verRoot, '.dataset-creator-data/index.json', 'idx1'); await put(verRoot, '.cache/thumb.bin', 'cache'); await put(verRoot, '.git/HEAD', 'ref');
+    const snap = await createProjectVersion(verRoot, 'snap');
+    const zipFile = await (await (await verRoot.getDirectoryHandle('.git')).getDirectoryHandle('snapshots')).getFileHandle(`${snap.id}.zip`);
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(await (await zipFile.getFile()).arrayBuffer());
+    const zipNames = Object.keys(zip.files);
+    assert.ok(zipNames.includes('.dataset-creator-data/index.json'), 'Snapshot contains .dataset-creator-data');
+    assert.ok(!zipNames.some((n) => n.startsWith('.cache') || n.startsWith('.git')), 'Snapshot excludes .cache and .git');
+    await put(verRoot, '.dataset-creator-data/index.json', 'idx2'); await put(verRoot, '.cache/other.bin', 'c2'); await put(verRoot, 'extra.txt');
+    await restoreProjectVersion(verRoot, snap.id);
+    const cacheDir = await verRoot.getDirectoryHandle('.cache');
+    await cacheDir.getFileHandle('thumb.bin'); await cacheDir.getFileHandle('other.bin');
+    await (await verRoot.getDirectoryHandle('.git')).getFileHandle('HEAD');
+    assert.equal(await (await (await (await verRoot.getDirectoryHandle('.dataset-creator-data')).getFileHandle('index.json')).getFile()).text(), 'idx1', 'Restore recovers .dataset-creator-data');
+    await assert.rejects(verRoot.getFileHandle('extra.txt'), 'Restore removes files absent from the snapshot');
   }
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }
