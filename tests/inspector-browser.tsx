@@ -32,9 +32,9 @@ function InspectorFixture() {
       return await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), 'image/png'));
     };
     const first = createSourceImage(await makeImage('#6750a4'), 'first.png', 96, 64);
-    first.originalFilePath = 'src/shared/first.png'; first.tags = ['portrait', 'fixture'];
+    first.originalFilePath = 'inbox/first.png'; first.tags = ['portrait', 'fixture'];
     const second = createSourceImage(await makeImage('#229977'), 'second.png', 96, 64);
-    second.originalFilePath = 'src/shared/second.png'; second.tags = ['landscape'];
+    second.originalFilePath = 'inbox/second.png'; second.tags = ['landscape'];
     const project = createProject('Inspector fixture', 'character');
     project.sourceImages = { [first.id]: first, [second.id]: second };
     useProjectStore.getState().loadProject(project);
@@ -61,7 +61,7 @@ function InspectorFixture() {
           active
           viewId="fixture:analysis"
           fileTarget={selectedAsset ? {
-            path: selectedAsset.assetPath ?? 'Project/src/shared/first.png',
+            path: selectedAsset.assetPath ?? 'Project/inbox/first.png',
             name: selectedAsset.fileName,
             fileKind: 'image',
             file: selectedAsset.imageData,

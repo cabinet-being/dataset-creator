@@ -60,8 +60,8 @@ function Harness() {
     const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 64;
     const context = canvas.getContext('2d')!; context.fillStyle = '#6750a4'; context.fillRect(0, 0, 96, 64);
     const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), 'image/png'));
-    const first = createSourceImage(blob, 'first.png', 96, 64); first.tags = ['portrait']; first.originalFilePath = 'src/shared/first.png';
-    const second = createSourceImage(blob, 'second.png', 96, 64); second.originalFilePath = 'src/shared/second.png';
+    const first = createSourceImage(blob, 'first.png', 96, 64); first.tags = ['portrait']; first.originalFilePath = 'inbox/first.png';
+    const second = createSourceImage(blob, 'second.png', 96, 64); second.originalFilePath = 'inbox/second.png';
     const project = createProject('Build fixture', 'character'); project.sourceImages = { [first.id]: first, [second.id]: second };
     const storage = await navigator.storage.getDirectory();
     const directory = await storage.getDirectoryHandle(`build-fixture-${crypto.randomUUID()}`, { create:true }) as unknown as ProjectDirectoryHandle;
@@ -78,7 +78,7 @@ function Harness() {
       ['tiny.png', await detailed(200, 200, 6)], ['flat.png', await flat(1100, 1100)], ['below.png', await detailed(900, 1000, 7)]);
     const sourceImages = Object.fromEntries(files.map(([name, blob]) => {
       const source = createSourceImage(blob, name, name === 'tiny.png' ? 200 : name === 'below.png' ? 900 : 1100, name === 'tiny.png' ? 200 : name === 'below.png' ? 1000 : 1100);
-      source.originalFilePath = `src/shared/${name}`;
+      source.originalFilePath = `inbox/${name}`;
       return [source.id, source];
     }));
     const project = createProject('Build auto fixture', 'character'); project.sourceImages = sourceImages;

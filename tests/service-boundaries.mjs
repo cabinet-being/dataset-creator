@@ -299,7 +299,7 @@ test('asset classification handles uppercase extensions, MIME-only files and int
 test('legacy filtering affects root folders only, including Windows paths', async () => {
   const { getProjectPathParts, isLegacyProjectRootPath, filterLegacyProjectAssetPaths } = await load('projectPathFilters');
   assert.deepEqual(getProjectPathParts('PROJECT\\src\\shared\\a.png'), ['src', 'shared', 'a.png']);
-  const paths = ['Project/SOURCES/a.png', 'synthetic/a.png', 'Project/src/sources/a.png', 'Project/src/shared/a.png'];
+  const paths = ['Project/SOURCES/a.png', 'synthetic/a.png', 'Project/src/sources/a.png', 'Project/inbox/a.png'];
   assert.deepEqual(filterLegacyProjectAssetPaths(paths), paths.slice(2));
   assert.equal(isLegacyProjectRootPath('Project'), false);
   assert.equal(isLegacyProjectRootPath(''), false);

@@ -25,7 +25,7 @@ try {
   const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
   const { DATASET_MANIFEST_FILE, REQUIRED_PROJECT_DIRECTORIES, readDatasetManifest } = await import(pathToFileURL(join(temp, 'projectLayoutService.mjs')));
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
-  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
+  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError, detectLegacyRawLayout, planRawMaterialsMove, runRawMaterialsMove } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
   const { getProjectVersionLayout } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
   const { indexProjectAssets } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
@@ -307,17 +307,17 @@ try {
     const { applyProjectRelativePathMoves } = await import(pathToFileURL(join(temp,'datasetAssets.mjs')));
     const root = directory();
     const source = {...createSourceImage(new Blob(['source pixels'],{type:'image/png'}),'original.png',32,24),
-      originalFilePath:'src/shared/original.png',manifestPath:'src/shared/original.png.manifest.json',tags:['source tag']};
+      originalFilePath:'inbox/original.png',manifestPath:'inbox/original.png.manifest.json',tags:['source tag']};
     const edited = {...createEditedAsset(source.id,new Blob(['edited pixels'],{type:'image/png'}),32,24),
-      imageDataPath:'src/assets/edited.png',manifestPath:'src/assets/edited.png.manifest.json',
-      psdData:new Blob(['PSD layers']),psdDataPath:'src/assets/edited.psd'};
+      imageDataPath:'inbox/edits/edited.png',manifestPath:'inbox/edits/edited.png.manifest.json',
+      psdData:new Blob(['PSD layers']),psdDataPath:'inbox/edits/edited.psd'};
     const base = createProject('Move original','character');
     const before = {...base,sourceImages:{[source.id]:source},datasetItems:{[edited.id]:edited},
       dataset:{...base.dataset,assetIds:[source.id],assetOrder:[`image:${source.id}`]}};
     await createProjectDirectory(root,before);
     await root.getDirectoryHandle('Archive',{create:true});
     let moved;
-    await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/src/shared/original.png'}],'Project/Archive',change => {
+    await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/inbox/original.png'}],'Project/Archive',change => {
       moved = {...source,originalFilePath:applyProjectRelativePathMoves(source.originalFilePath,[change]),manifestPath:applyProjectRelativePathMoves(source.manifestPath,[change],true)};
     });
     const after = {...before,sourceImages:{[source.id]:moved}};
@@ -336,7 +336,7 @@ try {
     const projectIndex = await indexProjectAssets(root,{existingSourceImages:{[source.id]:moved}});
     assert.ok(projectIndex.discoveredCount >= 1,'The project index includes registered assets outside shared');
     let returned;
-    await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/Archive/original.png'}],'Project/src/shared',change => {
+    await moveExplorerEntries(root,[{kind:'file',name:'original.png',path:'Project/Archive/original.png'}],'Project/inbox',change => {
       returned = {...reopened.sourceImages[source.id],originalFilePath:applyProjectRelativePathMoves(moved.originalFilePath,[change]),manifestPath:applyProjectRelativePathMoves(moved.manifestPath,[change],true)};
     });
     const restored = {...reopened,sourceImages:{[source.id]:returned}};
@@ -434,7 +434,7 @@ try {
       ...project.buildSession,
       profile:{...project.buildSession.profile,target:42,reviewMode:'uncertain-only'},
       order:['source:stable'],
-      records:{'source:stable':{assetId:'source:stable',locator:'Project/src/shared/stable.png',decision:'accepted',application:'applied',validation:'valid',revision:'r1',acceptedRevision:'r1',provenance:'manual',updatedAt:'2026-10-21T00:00:00.000Z'}},
+      records:{'source:stable':{assetId:'source:stable',locator:'Project/inbox/stable.png',decision:'accepted',application:'applied',validation:'valid',revision:'r1',acceptedRevision:'r1',provenance:'manual',updatedAt:'2026-10-21T00:00:00.000Z'}},
     };
     const dir = directory();
     await createProjectDirectory(dir, project);
@@ -494,10 +494,10 @@ try {
   assert.equal(await readDatasetManifest(migrationDirectory), null);
   await assert.rejects(migrationDatasetDirectory.getFileHandle('ignored.dataset.json'), { name:'NotFoundError' });
   await layoutDirectory.removeEntry('dataset', { recursive: true });
-  await (await layoutDirectory.getDirectoryHandle('src')).removeEntry('assets', { recursive: true });
+  await (await layoutDirectory.getDirectoryHandle('inbox')).removeEntry('edits', { recursive: true });
   await readProjectDirectory(layoutDirectory);
   assert.ok(await layoutDirectory.getDirectoryHandle('dataset'));
-  assert.ok(await (await layoutDirectory.getDirectoryHandle('src')).getDirectoryHandle('assets'));
+  assert.ok(await (await layoutDirectory.getDirectoryHandle('inbox')).getDirectoryHandle('edits'));
   await assert.rejects(layoutDirectory.getFileHandle(DATASET_MANIFEST_FILE), { name: 'NotFoundError' });
   const datasetDirectory = await layoutDirectory.getDirectoryHandle('dataset');
   const classDirectory = await datasetDirectory.getDirectoryHandle('3_character', { create: true });
@@ -514,13 +514,13 @@ try {
     const root = directory('physical-dataset');
     const project = createProject('Physical Dataset', 'character');
     await createProjectDirectory(root, project);
-    const shared = await (await root.getDirectoryHandle('src')).getDirectoryHandle('shared');
+    const shared = await root.getDirectoryHandle('inbox');
     const image = await shared.getFileHandle('physical.psd', {create:true});
     const imageWriter = await image.createWritable(); await imageWriter.write(new Blob(['pixels'], {type:'image/vnd.adobe.photoshop'})); await imageWriter.close();
     const captionWriter = await (await shared.getFileHandle('physical.txt', {create:true})).createWritable(); await captionWriter.write('physical caption'); await captionWriter.close();
     useProjectStore.getState().loadProject(project);
     useUIStore.getState().setProjectDirectory({handle:root,name:project.name});
-    const item = {id:'asset:physical',sourceImageId:'',kind:'psd',label:'PSD',displayIdentity:'1',fileName:'physical.psd',assetPath:'Project/src/shared/physical.psd',imageData:await image.getFile(),psdData:await image.getFile(),width:1,height:1,aspectRatio:'1:1'};
+    const item = {id:'asset:physical',sourceImageId:'',kind:'psd',label:'PSD',displayIdentity:'1',fileName:'physical.psd',assetPath:'Project/inbox/physical.psd',imageData:await image.getFile(),psdData:await image.getFile(),width:1,height:1,aspectRatio:'1:1'};
     const added = await addItemsToDatasetFolder(root,[item]);
     assert.equal(added.completed.length,1);
     assert.ok(isProjectDatasetPath(added.completed[0].to));
@@ -543,15 +543,15 @@ try {
     const archive=await JSZip.loadAsync(await (await createProjectFileBlob({...project,sourceImages:{[source.id]:{...source,originalFile:await source.originalFile.arrayBuffer()}}})).arrayBuffer());
     const archiveMetadata=JSON.parse(await archive.file(source.manifestPath).async('string'));
     archive.file(source.manifestPath,JSON.stringify({...archiveMetadata,excludedFromDataset:true}));
-    archive.file('src/shared/legacy.png','unrelated archive file');
+    archive.file('inbox/legacy.png','unrelated archive file');
     const restoredArchive=await readProjectFile(await archive.generateAsync({type:'nodebuffer'}));
-    assert.equal(restoredArchive.sourceImages[source.id].originalFilePath,'src/shared/legacy 2.png','Old ZIP exclusions are materialized as shared paths too');
+    assert.equal(restoredArchive.sourceImages[source.id].originalFilePath,'inbox/legacy 2.png','Old ZIP exclusions are materialized as shared paths too');
     assert.equal(await restoredArchive.sourceImages[source.id].originalFile.text(),'legacy pixels');
     const newArchive=await JSZip.loadAsync(await (await createProjectFileBlob({...restoredArchive,sourceImages:{[source.id]:{...restoredArchive.sourceImages[source.id],originalFile:await restoredArchive.sourceImages[source.id].originalFile.arrayBuffer()}}})).arrayBuffer());
     assert.equal(newArchive.file('dataset/legacy.png'),null);
-    assert.equal(await newArchive.file('src/shared/legacy 2.png').async('string'),'legacy pixels');
+    assert.equal(await newArchive.file('inbox/legacy 2.png').async('string'),'legacy pixels');
     const data=await root.getDirectoryHandle('dataset');
-    const shared=await (await root.getDirectoryHandle('src')).getDirectoryHandle('shared');
+    const shared=await (await root.getDirectoryHandle('src',{create:true})).getDirectoryHandle('shared',{create:true});
     await shared.getFileHandle('legacy.png',{create:true}); // Existing file must survive the collision.
     const meta=await data.getFileHandle('legacy.png.manifest.json');
     const parsed=JSON.parse(await (await meta.getFile()).text());
@@ -642,16 +642,16 @@ try {
   const recoveryFile=await (await recoveryFolder.getFileHandle(recoveryPath.split('/').pop())).getFile();
   const recoveryZip=await JSZip.loadAsync(await recoveryFile.arrayBuffer());
   assert.equal(await recoveryZip.file('preserve.txt').async('string'),'recovery bytes','A failed rollback retains a readable recovery archive');
-  const privateAssetsDirectory = await (await layoutDirectory.getDirectoryHandle('src')).getDirectoryHandle('assets');
+  const privateAssetsDirectory = await (await layoutDirectory.getDirectoryHandle('inbox')).getDirectoryHandle('edits');
   const privateImageWriter = await (await privateAssetsDirectory.getFileHandle('private.png', { create: true })).createWritable();
   await privateImageWriter.write(new Blob(['png'], { type: 'image/png' })); await privateImageWriter.close();
   assert.ok((await indexProjectAssets(layoutDirectory)).discoveredCount >= 1,'Indexing covers private and arbitrary project folders');
-  const sharedDirectory = await (await layoutDirectory.getDirectoryHandle('src')).getDirectoryHandle('shared');
+  const sharedDirectory = await layoutDirectory.getDirectoryHandle('inbox');
   const sharedVideoWriter = await (await sharedDirectory.getFileHandle('shared.webm', { create: true })).createWritable();
   await sharedVideoWriter.write(new Blob(['video'], { type: 'video/webm' })); await sharedVideoWriter.close();
   const privateVideoWriter = await (await privateAssetsDirectory.getFileHandle('private.webm', { create: true })).createWritable();
   await privateVideoWriter.write(new Blob(['video'], { type: 'video/webm' })); await privateVideoWriter.close();
-  assert.deepEqual((await collectWorkspaceFileAssets(layoutDirectory)).map((asset) => asset.path).sort(), ['Project/src/assets/private.webm','Project/src/shared/shared.webm']);
+  assert.deepEqual((await collectWorkspaceFileAssets(layoutDirectory)).map((asset) => asset.path).sort(), ['Project/inbox/edits/private.webm','Project/inbox/shared.webm']);
   const scopedDirectory = await layoutDirectory.getDirectoryHandle('scoped', {create:true});
   const selectedHandle = await scopedDirectory.getFileHandle('selected.webm', {create:true});
   const unrelatedHandle = await scopedDirectory.getFileHandle('unrelated.webm', {create:true});
@@ -763,8 +763,8 @@ try {
       { name: 'dataset', path: 'Project/dataset', kind: 'folder', children: [{ name: 'a.png', path: 'Project/dataset/a.png', kind: 'file' }] },
     ] };
     const clean = sanitizeExplorerTree(tree);
-    assert.deepEqual(clean.children.map((entry) => entry.path), ['Project/dataset'], 'Legacy sources roots are dropped, case-insensitively, with or without the Project prefix');
-    assert.equal(clean.children[0].children[0].name, 'a.png');
+    assert.deepEqual(clean.children.map((entry) => entry.path), ['Project/sources', 'sources/x', 'Project/dataset'], 'Folders named sources are ordinary user folders in a v3 project');
+    assert.equal(clean.children[2].children[0].name, 'a.png');
     assert.equal(tree.children.length, 3, 'sanitizeExplorerTree does not mutate its input');
     assert.equal(sanitizeExplorerTree({ name: 'sources', path: 'Project', kind: 'folder' }).name, 'sources', 'The Project root is kept regardless of name');
     assert.equal(sanitizeExplorerTree({ name: 'f', path: 'Project/f', kind: 'file' }).children, undefined, 'Nodes without children stay without children');
@@ -887,7 +887,7 @@ try {
     const makeLegacy = async ({ git = 'service', manifestExtra } = {}) => {
       const root = directory();
       await put(root, 'manifest.json', legacyManifest(manifestExtra));
-      await put(root, 'src/shared/a.png', 'AAA'); await put(root, 'dataset/b.png', 'BBB'); await put(root, 'dataset/b.txt', 'trg, x');
+      await put(root, 'inbox/a.png', 'AAA'); await put(root, 'dataset/b.png', 'BBB'); await put(root, 'dataset/b.txt', 'trg, x');
       await put(root, '.cache/previews/source/s.jpg', 'jpg');
       if (git === 'service' || git === 'real') {
         await put(root, '.git/dataset-creator-versions.json', oldIndex);
@@ -1074,6 +1074,136 @@ try {
     await restoreProjectVersion(roundTrip, first.snapshotVersionId);
     assert.equal(await exists(roundTrip, '.cache'), false, 'Preserved root names in old ZIPs are not applied');
     assert.equal(await exists(roundTrip, 'dataset/z.png'), true);
+
+    // 11. Raw materials move from src/shared and src/assets to inbox and inbox/edits (v3 project with legacy src).
+    const readAt = async (root, path) => {
+      const parts = path.split('/'); let dir = root;
+      for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
+      return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text();
+    };
+    const makeRaw = async () => {
+      const root = directory();
+      const project = createProject('Raw move', 'character');
+      await createProjectDirectory(root, project);
+      await put(root, 'src/shared/a.png', 'AAA');
+      await put(root, 'src/shared/a.png.manifest.json', JSON.stringify({ originalFilePath: 'src/shared/a.png', tags: ['t'] }));
+      await put(root, 'src/shared/a.txt', 'caption a');
+      await put(root, 'src/shared/sub/deep.png', 'DEEP');
+      await put(root, 'src/assets/e.png', 'EEE');
+      await put(root, 'src/assets/e.png.manifest.json', JSON.stringify({ imageDataPath: 'src/assets/e.png', originalFilePath: 'src/shared/a.png' }));
+      await put(root, 'src/assets/e.psd', 'PSD');
+      await put(root, 'dataset/d.png', 'DDD');
+      await put(root, 'dataset/d.png.manifest.json', JSON.stringify({ originalFilePath: 'src/shared/a.png', imageDataPath: 'dataset/d.png' }));
+      const json = await readJsonAt(root, '.datasetcreator/project.json');
+      json.project.buildSession = { ...json.project.buildSession, records: { 'source:a': { assetId: 'source:a', locator: 'Project/src/shared/a.png', decision: 'accepted', application: 'applied', validation: 'valid', revision: 'r1', acceptedRevision: 'r1', provenance: 'manual', updatedAt: '2026-10-21T00:00:00.000Z' } } };
+      json.project.sourceImageManifests = { 's1': 'src/shared/a.png.manifest.json' };
+      json.project.editedAssetManifests = { 'e1': 'src/assets/e.png.manifest.json' };
+      json.project.dataset = { ...json.project.dataset, assetOrder: ['file:Project/src/shared/sub/deep.png', 'file:src/assets/e.psd', 'image:s1'] };
+      json.project.workspaceSettings = { ...json.project.workspaceSettings, excludedProjectCategories: ['src/shared/sub'], includedProjectCategories: ['Project/src/assets'] };
+      await put(root, '.datasetcreator/project.json', JSON.stringify(json, null, 2));
+      return root;
+    };
+
+    const raw = await makeRaw();
+    assert.equal(await detectProjectLayout(raw), 'v3');
+    assert.equal(await detectLegacyRawLayout(raw), true, 'A v3 project with src/shared is detected');
+    const rawPlan = await planRawMaterialsMove(raw);
+    assert.equal(rawPlan.fileCount, 7, 'The plan counts every file under src/shared and src/assets');
+    assert.deepEqual(rawPlan.folders, ['src/shared -> inbox', 'src/assets -> inbox/edits']);
+    assert.ok(rawPlan.bytes > 0);
+    assert.equal(await exists(raw, 'inbox/a.png'), false, 'Planning is read-only');
+    const rawReport = await runRawMaterialsMove(raw);
+    assert.ok(rawReport.journalId);
+    assert.deepEqual(rawReport.collisions, []);
+    assert.equal(await readAt(raw, 'inbox/a.png'), 'AAA');
+    assert.equal(await readAt(raw, 'inbox/a.txt'), 'caption a', 'The caption .txt travels with its file');
+    assert.equal(await readAt(raw, 'inbox/sub/deep.png'), 'DEEP');
+    assert.equal(await readAt(raw, 'inbox/edits/e.png'), 'EEE');
+    assert.equal(await readAt(raw, 'inbox/edits/e.psd'), 'PSD');
+    assert.equal(await exists(raw, 'src'), false, 'Empty src/shared, src/assets and src are removed');
+    assert.equal(await detectLegacyRawLayout(raw), false);
+    assert.equal((await readJsonAt(raw, 'inbox/a.png.manifest.json')).originalFilePath, 'inbox/a.png', 'Sidecar paths are rewritten');
+    assert.equal((await readJsonAt(raw, 'inbox/edits/e.png.manifest.json')).imageDataPath, 'inbox/edits/e.png');
+    assert.equal((await readJsonAt(raw, 'inbox/edits/e.png.manifest.json')).originalFilePath, 'inbox/a.png');
+    assert.equal((await readJsonAt(raw, 'dataset/d.png.manifest.json')).originalFilePath, 'inbox/a.png', 'Dataset sidecars that point at moved files are rewritten');
+    const rawJson = await readJsonAt(raw, '.datasetcreator/project.json');
+    assert.equal(rawJson.project.buildSession.records['source:a'].locator, 'Project/inbox/a.png', 'buildSession locators are rewritten');
+    assert.equal(rawJson.project.sourceImageManifests.s1, 'inbox/a.png.manifest.json');
+    assert.equal(rawJson.project.editedAssetManifests.e1, 'inbox/edits/e.png.manifest.json');
+    assert.deepEqual(rawJson.project.dataset.assetOrder, ['file:Project/inbox/sub/deep.png', 'file:inbox/edits/e.psd', 'image:s1'], 'file: asset keys are rewritten, others kept');
+    assert.deepEqual(rawJson.project.workspaceSettings.excludedProjectCategories, ['inbox/sub']);
+    assert.deepEqual(rawJson.project.workspaceSettings.includedProjectCategories, ['Project/inbox/edits']);
+    assert.equal(await readAt(raw, 'dataset/d.png'), 'DDD', 'Dataset files are untouched');
+    // A second run changes nothing.
+    const rawDone = await files(raw);
+    assert.equal(await runRawMaterialsMove(raw), undefined, 'Nothing to move on a project without legacy src');
+    assert.deepEqual(await files(raw), rawDone, 'Re-running changes nothing');
+
+    // Name collisions are renamed and reported; folders merge into existing ones.
+    const clash = await makeRaw();
+    await put(clash, 'inbox/a.png', 'EXISTING-A');
+    await put(clash, 'inbox/sub/other.png', 'OTHER');
+    const clashReport = await runRawMaterialsMove(clash);
+    assert.equal(await readAt(clash, 'inbox/a.png'), 'EXISTING-A', 'An existing destination file is never overwritten');
+    assert.ok(clashReport.collisions.length >= 1 && clashReport.collisions.some(entry => entry.from === 'src/shared/a.png' && entry.to === 'inbox/a 2.png'), `Collision is reported: ${JSON.stringify(clashReport.collisions)}`);
+    assert.equal(await readAt(clash, 'inbox/a 2.png'), 'AAA');
+    assert.equal(await exists(clash, 'inbox/a 2.png.manifest.json'), true, 'The sidecar follows the renamed file');
+    assert.equal(await readAt(clash, 'inbox/sub/deep.png'), 'DEEP', 'A folder merges into an existing folder');
+    assert.equal(await readAt(clash, 'inbox/sub/other.png'), 'OTHER');
+    assert.equal(await exists(clash, 'src'), false);
+    const clashJson = await readJsonAt(clash, '.datasetcreator/project.json');
+    assert.equal(clashJson.project.buildSession.records['source:a'].locator, 'Project/inbox/a 2.png', 'References follow the renamed file');
+    assert.equal(clashJson.project.sourceImageManifests.s1, 'inbox/a 2.png.manifest.json');
+    assert.equal((await readJsonAt(clash, 'inbox/a 2.png.manifest.json')).originalFilePath, 'inbox/a 2.png');
+    assert.equal((await readJsonAt(clash, 'dataset/d.png.manifest.json')).originalFilePath, 'inbox/a 2.png');
+
+    // Non-empty leftovers survive: only empty src folders are removed.
+    const leftover = await makeRaw();
+    await put(leftover, 'src/notes/keep.txt', 'user notes');
+    await runRawMaterialsMove(leftover);
+    assert.equal(await readAt(leftover, 'src/notes/keep.txt'), 'user notes', 'A non-empty src folder is kept');
+    assert.equal(await exists(leftover, 'src/shared'), false);
+    assert.equal(await exists(leftover, 'src/assets'), false);
+    assert.equal(await readAt(leftover, 'inbox/a.png'), 'AAA');
+
+    // Abort after N steps, then resume: same result as an uninterrupted run (also with a collision).
+    for (const withClash of [false, true]) {
+      const build = async () => { const root = await makeRaw(); if (withClash) await put(root, 'inbox/a.png', 'EXISTING-A'); return root; };
+      const rawRef = await build();
+      const rawRefRun = countSteps(rawRef, 0);
+      await runRawMaterialsMove(rawRef, { signal: rawRefRun.signal, onProgress: rawRefRun.onProgress });
+      const rawSteps = rawRefRun.steps();
+      assert.ok(rawSteps >= 4);
+      const rawRefTree = await files(rawRef);
+      const stable = (tree) => {
+        const out = Object.fromEntries(Object.entries(tree).filter(([path]) => !path.startsWith('.datasetcreator/journal/') && path !== '.datasetcreator/project.json'));
+        const project = JSON.parse(tree['.datasetcreator/project.json']).project;
+        out.references = JSON.stringify([project.buildSession.records, project.sourceImageManifests, project.editedAssetManifests, project.dataset.assetOrder, project.workspaceSettings.excludedProjectCategories, project.workspaceSettings.includedProjectCategories]);
+        return out;
+      };
+      for (let abortAt = 1; abortAt < rawSteps; abortAt++) {
+        const interrupted = await build();
+        const tracker = countSteps(interrupted, abortAt);
+        await assert.rejects(runRawMaterialsMove(interrupted, { signal: tracker.signal, onProgress: tracker.onProgress }), { name: 'AbortError' }, `raw abort at step ${abortAt}`);
+        const resumedIds = await resumePendingJournals(interrupted);
+        assert.equal(resumedIds.length, 1, `raw journal is resumed after abort at step ${abortAt}`);
+        assert.deepEqual(stable(await files(interrupted)), stable(rawRefTree), `raw resume after abort at step ${abortAt} reaches the same result (clash=${withClash})`);
+        assert.deepEqual(await resumePendingJournals(interrupted), [], 'A finished raw journal is not resumed again');
+        assert.equal(await detectLegacyRawLayout(interrupted), false);
+      }
+    }
+
+    // Full v2 -> v3 migration now ends with inbox/ and no src/.
+    const legacyFull = await makeLegacy();
+    await put(legacyFull, 'src/assets/edit.png', 'EDIT');
+    const legacyReport = await runLayoutMigration(legacyFull);
+    assert.equal(await detectProjectLayout(legacyFull), 'v3');
+    assert.ok(legacyReport.rawMaterials, 'The v2 upgrade reports the raw materials move');
+    assert.equal(await readAt(legacyFull, 'inbox/a.png'), 'AAA');
+    assert.equal(await readAt(legacyFull, 'inbox/edits/edit.png'), 'EDIT');
+    assert.equal(await exists(legacyFull, 'src'), false, 'No src folder remains after the v2 upgrade');
+    assert.equal(await readAt(legacyFull, 'dataset/b.txt'), 'trg, x');
+    assert.equal(await detectLegacyRawLayout(legacyFull), false);
   }
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }

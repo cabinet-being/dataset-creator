@@ -50,8 +50,8 @@ test.describe('build auto pipeline', () => {
     expect(inDataset).toHaveLength(3);
     const rest = Object.entries(paths).filter(([, path]) => !/(^|\/)dataset\//.test(path ?? ''));
     expect(rest).toHaveLength(6);
-    for (const [name, path] of rest) expect(path, `${name} must stay in src/shared`).toMatch(/(^|\/)src\/shared\//);
-    for (const name of ['tiny.png', 'flat.png', 'below.png']) expect(paths[name]).toMatch(new RegExp(`(^|/)src/shared/${name}$`));
+    for (const [name, path] of rest) expect(path, `${name} must stay in inbox`).toMatch(/(^|\/)inbox\//);
+    for (const name of ['tiny.png', 'flat.png', 'below.png']) expect(paths[name]).toMatch(new RegExp(`(^|/)inbox/${name}$`));
 
     const records = Object.values(await reasonsByName(page));
     const codes = (code: string) => records.filter((record) => record.codes.includes(code)).length;
@@ -104,7 +104,7 @@ test.describe('build auto pipeline', () => {
     await expect(page.getByLabel('Queue filter')).toHaveValue('needs-decision');
     await page.getByRole('button', { name: 'Reject all 1' }).click();
     await expectCounters(page, 0, 3, 6);
-    expect((await pathsOf(page))['below.png']).toMatch(/src\/shared\/below\.png$/);
+    expect((await pathsOf(page))['below.png']).toMatch(/inbox\/below\.png$/);
 
     // Accept all acts on the whole visible group: 5 rejected proposals plus the explicitly skipped item.
     await page.getByLabel('Queue filter').selectOption('rejected');

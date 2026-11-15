@@ -445,6 +445,47 @@ try {
     assert.equal(isToolName('photopea'), false);
     assert.equal(isToolName(null), false);
   }
+  {
+    // Saved tabs follow a moved folder (src/shared -> inbox), plain and URI-encoded, for one project only.
+    const { rewriteWorkspaceTabPaths } = await import(pathToFileURL(join(temporary, 'workspacePersistence.js')));
+    const tabs = (projectId) => ({ projectId, activeTabId: `file:${encodeURIComponent('src/shared')}`, openTabs: [
+      { kind: 'file', id: `file:${encodeURIComponent('src/shared')}`, path: 'src/shared/a b.png' },
+      { kind: 'file', id: 'file:other', path: 'src/shared' },
+      { kind: 'file', id: 'file:keep', path: 'dataset/src/shared-not/x.png' },
+      { kind: 'file', id: `file:${encodeURIComponent('src/shared/sub/a b.png')}`, path: 'Project/src/shared/sub/a b.png' },
+      { kind: 'tool', id: `tool:review:${encodeURIComponent('Project/src/shared/sub')}`, path: 'dataset/src/shared/nested.png' },
+    ] });
+    const store = new Map();
+    const fake = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => store.set(key, value) };
+    store.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 2, workspace: tabs('p1'), dock: { marker: 'src/shared/dock.png' }, projects: { p1: { workspace: tabs('p1'), dock: { marker: 'src/shared/x' } }, p2: { workspace: tabs('p2'), dock: null } } }));
+    rewriteWorkspaceTabPaths('p1', [{ from: 'src/shared', to: 'inbox' }], fake);
+    const saved = JSON.parse(store.get(WORKSPACE_STORAGE_KEY));
+    const encodedNew = `file:${encodeURIComponent('inbox')}`;
+    assert.equal(saved.projects.p1.workspace.openTabs[0].path, 'inbox/a b.png', 'Plain paths are rewritten');
+    assert.equal(saved.projects.p1.workspace.openTabs[0].id, encodedNew, 'A URI-encoded folder path in a tab id is rewritten');
+    assert.equal(saved.projects.p1.workspace.activeTabId, encodedNew);
+    assert.equal(saved.projects.p1.workspace.openTabs[1].path, 'inbox', 'A tab on the folder itself follows it');
+    assert.equal(saved.projects.p1.workspace.openTabs[2].path, 'dataset/src/shared-not/x.png', 'Unrelated paths are untouched');
+    assert.equal(saved.projects.p1.workspace.openTabs[3].id, `file:${encodeURIComponent('inbox/sub/a b.png')}`, 'Nested URI-encoded paths in tab ids are rewritten');
+    assert.equal(saved.projects.p1.workspace.openTabs[3].path, 'Project/inbox/sub/a b.png', 'Project-prefixed paths are rewritten');
+    assert.equal(saved.projects.p1.workspace.openTabs[4].id, `tool:review:${encodeURIComponent('Project/inbox/sub')}`, 'Encoded Project-prefixed scopes are rewritten');
+    assert.equal(saved.projects.p1.workspace.openTabs[4].path, 'dataset/src/shared/nested.png', 'A same-named folder deeper in the tree is untouched');
+    assert.equal(saved.workspace.openTabs[0].path, 'inbox/a b.png', 'The current workspace of the same project is rewritten');
+    assert.equal(saved.dock.marker, 'inbox/dock.png');
+    assert.equal(saved.projects.p2.workspace.openTabs[0].path, 'src/shared/a b.png', 'Other projects keep their paths');
+    const once = store.get(WORKSPACE_STORAGE_KEY);
+    rewriteWorkspaceTabPaths('p1', [{ from: 'src/shared', to: 'inbox' }], fake);
+    assert.equal(store.get(WORKSPACE_STORAGE_KEY), once, 'Rewriting twice changes nothing');
+    store.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 2, workspace: tabs('p2'), dock: null, projects: {} }));
+    const other = store.get(WORKSPACE_STORAGE_KEY);
+    rewriteWorkspaceTabPaths('p1', [{ from: 'src/shared', to: 'inbox' }], fake);
+    assert.equal(JSON.parse(store.get(WORKSPACE_STORAGE_KEY)).workspace.openTabs[0].path, 'src/shared/a b.png', 'The workspace of another project is not rewritten');
+    assert.equal(other.length > 0, true);
+    rewriteWorkspaceTabPaths('p1', [], fake);
+    store.set(WORKSPACE_STORAGE_KEY, '{broken');
+    rewriteWorkspaceTabPaths('p1', [{ from: 'src/shared', to: 'inbox' }], fake);
+    assert.equal(store.get(WORKSPACE_STORAGE_KEY), '{broken', 'Unreadable storage is left alone');
+  }
   console.log('PASS: accurate drop previews, empty editor targets, docking in all directions for editors and panels, nested geometry/resizing, tab and group moves, floating groups, pin restoration, Explorer constraints, persistence and legacy migration.');
 } finally {
   await rm(temporary, { recursive: true, force: true });

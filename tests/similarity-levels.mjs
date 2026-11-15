@@ -439,7 +439,7 @@ test('rankKeepCandidates: reject flags, sharpness, shortSide, inDataset, session
   assert.deepEqual(rank([]), []);
 });
 
-const mkItem = (id, extra = {}) => ({ id, sourceImageId: id, kind: 'source', assetPath: `src/shared/${id}.png`, fileName: `${id}.png`, tags: undefined, ...extra });
+const mkItem = (id, extra = {}) => ({ id, sourceImageId: id, kind: 'source', assetPath: `inbox/${id}.png`, fileName: `${id}.png`, tags: undefined, ...extra });
 const assetOf = (item) => `source:${item.sourceImageId}`;
 const mkSession = (items, records = {}, order = items.map(assetOf)) => ({
   version: 1, profile: { target: 10, reviewMode: 'every-item', captionRequired: true }, cursor: 0, filter: 'all', order,

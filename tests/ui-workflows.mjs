@@ -78,12 +78,12 @@ try {
   assert.equal(moveToolViewScope(directoryReview,[{from:'Project/selected',to:'Project/renamed'}]).scope.review.path,'Project/renamed');
   assert.equal(pruneToolViewScope(directoryReview,['Project/selected'],new Set()).scope.review.path,'','A removed Review directory becomes explicitly unavailable');
   const { applyProjectRelativePathMoves } = await module('datasetAssets');
-  const assetMove = [{from:'Project/src/shared/image.png',to:'Project/src/shared/renamed.png'}];
-  assert.equal(applyProjectRelativePathMoves('src/shared/image.png',assetMove),'src/shared/renamed.png');
-  assert.equal(applyProjectRelativePathMoves('src/shared/image.png.manifest.json',assetMove,true),'src/shared/renamed.png.manifest.json','Sidecars follow their asset filename even though they are not child paths');
-  assert.equal(applyProjectRelativePathMoves('src/shared/image.png.manifest.json',assetMove),'src/shared/image.png.manifest.json','Unrelated ordinary paths do not follow a filename prefix');
-  assert.equal(applyProjectRelativePathMoves('src/shared/images.png.manifest.json',assetMove,true),'src/shared/images.png.manifest.json');
-  assert.equal(applyProjectRelativePathMoves('Project/src/shared/folder/image.png.manifest.json',[{from:'Project/src/shared/folder',to:'Project/src/shared/renamed'}],true),'src/shared/renamed/image.png.manifest.json');
+  const assetMove = [{from:'Project/inbox/image.png',to:'Project/inbox/renamed.png'}];
+  assert.equal(applyProjectRelativePathMoves('inbox/image.png',assetMove),'inbox/renamed.png');
+  assert.equal(applyProjectRelativePathMoves('inbox/image.png.manifest.json',assetMove,true),'inbox/renamed.png.manifest.json','Sidecars follow their asset filename even though they are not child paths');
+  assert.equal(applyProjectRelativePathMoves('inbox/image.png.manifest.json',assetMove),'inbox/image.png.manifest.json','Unrelated ordinary paths do not follow a filename prefix');
+  assert.equal(applyProjectRelativePathMoves('inbox/images.png.manifest.json',assetMove,true),'inbox/images.png.manifest.json');
+  assert.equal(applyProjectRelativePathMoves('Project/inbox/folder/image.png.manifest.json',[{from:'Project/inbox/folder',to:'Project/inbox/renamed'}],true),'inbox/renamed/image.png.manifest.json');
   assert.equal(applyProjectRelativePathMoves(undefined,assetMove,true),undefined);
   const { moveFileTab, findFileTab } = await module('workspaceFileTabs');
   const liveFile = new Blob(['PSD with unsaved edits']);
