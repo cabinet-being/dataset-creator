@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, HelpCircle, ImageIcon, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
 import type { BuildReviewDecision, BuildReviewView, BuildSession, BuildStage, EditedAsset } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
+import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { usePublishInspectorSelection, type InspectorSelectionPayload } from '../../stores/useInspectorSelectionStore';
 import { useUIStore } from '../../stores/useUIStore';
@@ -198,8 +198,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     const available = new Set(effectiveItems.map(getBuildAssetId));
     return reconciled.order.map((id) => reconciled.records[id]).filter((record) => record && !available.has(record.assetId) && record.decision !== 'skipped');
   }, [effectiveItems, reconciled.order, reconciled.records]);
-  const previews = useWorkspacePreviewUrls(queue.filter((item) => item.kind !== 'video'));
   const filmstrip = useMemo(() => queue.slice(Math.max(0, cursor - 18), Math.min(queue.length, cursor + 19)), [cursor, queue]);
+  const filmstripImages = useMemo(() => filmstrip.filter((item) => item.kind !== 'video'), [filmstrip]);
+  const mainImages = useMemo(() => (current && current.kind !== 'video' ? [current] : []), [current]);
+  const neighborImages = useMemo(() => [1, -1, 2, -2].map((offset) => queue[cursor + offset]).filter((item) => item && item.kind !== 'video'), [cursor, queue]);
+  const thumbs = useSizedPreviewUrls(filmstripImages, 'thumb', { focusId: current?.id });
+  const mainPreviews = useSizedPreviewUrls(mainImages, 'large', { focusId: current?.id, prefetch: neighborImages });
 
   useEffect(() => { setDraft(currentRecord?.draft ?? current?.tags?.join(', ') ?? ''); }, [currentId, current?.tags, currentRecord?.draft]);
   useEffect(() => { setSelected((ids) => new Set([...ids].filter((id) => reconciled.order.includes(id)))); }, [reconciled.order]);
@@ -545,9 +549,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
             selected={selected} onSelectedChange={setSelected} onCursor={(index) => patchSession((value) => ({ ...value, cursor: index }))}
             onCommit={(entries) => commitDecisions(entries)} onOpenItem={(index) => patchSession((value) => ({ ...value, view: 'list', cursor: index }))} />
           : current?.kind === 'video' ? <div className="h-full w-full overflow-auto"><VideoFramesTool active={active} tabId={`${viewId}:video:${current.id}`} projectDirectoryHandle={directory} file={current.imageData} fileName={current.fileName} onSaved={onRefresh} /></div>
-          : current && previews[current.id] ? <div className="relative flex h-full w-full items-center justify-center">{cropGeometry
-            ? <svg role="img" aria-label={itemName(current)} viewBox={`${cropGeometry.sourceX} ${cropGeometry.sourceY} ${cropGeometry.sourceWidth} ${cropGeometry.sourceHeight}`} className="max-h-full max-w-full rounded-lg shadow-lg" style={{ aspectRatio: `${cropGeometry.outputWidth} / ${cropGeometry.outputHeight}`, height: '100%', width: 'auto' }}><image href={previews[current.id]} width={current.width} height={current.height} preserveAspectRatio="none" /></svg>
-            : <img src={previews[current.id]} alt={itemName(current)} className="max-h-full max-w-full rounded-lg object-contain shadow-lg" />}</div>
+          : current && mainPreviews[current.id] ? <div className="relative flex h-full w-full items-center justify-center">{cropGeometry
+            ? <svg role="img" aria-label={itemName(current)} viewBox={`${cropGeometry.sourceX} ${cropGeometry.sourceY} ${cropGeometry.sourceWidth} ${cropGeometry.sourceHeight}`} className="max-h-full max-w-full rounded-lg shadow-lg" style={{ aspectRatio: `${cropGeometry.outputWidth} / ${cropGeometry.outputHeight}`, height: '100%', width: 'auto' }}><image href={mainPreviews[current.id]} width={current.width} height={current.height} preserveAspectRatio="none" /></svg>
+            : <img src={mainPreviews[current.id]} alt={itemName(current)} className="max-h-full max-w-full rounded-lg object-contain shadow-lg" />}</div>
           : <div className="text-center text-sm text-muted-foreground"><ImageIcon className="mx-auto mb-2 h-10 w-10" />{current ? 'Preview unavailable' : candidates.length ? 'No items match this queue' : <><p className="font-medium text-foreground">No materials yet</p><button type="button" onClick={() => goToStage('add')} className="mt-2 rounded bg-primary px-3 py-1.5 text-primary-foreground">Add materials →</button></>}</div>}
           {busy && <div className="absolute inset-0 flex items-center justify-center bg-background/60"><Loader2 className="h-6 w-6 animate-spin" /></div>}
         </section>
@@ -573,7 +577,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       <section className="border-t border-border bg-card p-3">
         {!!selected.size && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs"><strong>{selected.size} selected</strong><select value={batchMode} onChange={(event) => setBatchMode(event.target.value as 'add' | 'remove' | 'replace')} className="rounded border border-border bg-background px-2 py-1"><option value="add">Add tag</option><option value="remove">Remove tag</option><option value="replace">Replace tag</option></select><input value={batchTag} onChange={(event) => setBatchTag(event.target.value)} className="rounded border border-border bg-background px-2 py-1" placeholder={batchMode === 'replace' ? 'old tag' : 'tag'} />{batchMode === 'replace' && <input value={batchReplacement} onChange={(event)=>setBatchReplacement(event.target.value)} className="rounded border border-border bg-background px-2 py-1" placeholder="new tag" />}<button onClick={() => void applyBatchCaption()} className="rounded border border-border px-2 py-1">Apply</button><button disabled={busy} onClick={() => void commitDecision('accepted', candidates.filter((item) => selected.has(getBuildAssetId(item))))} className="rounded bg-primary px-2 py-1 text-primary-foreground">Accept selected</button><button onClick={() => setSelected(new Set())}>Clear</button></div>}
         {view !== 'grid' && <div className="flex gap-2 overflow-x-auto" aria-label="Candidate filmstrip">{filmstrip.map((item) => { const id = getBuildAssetId(item); const record = reconciled.records[id]; const itemCursor = queue.indexOf(item); return <button key={id} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey) setSelected((ids) => { const next = new Set(ids); if (next.has(id)) next.delete(id); else next.add(id); return next; }); else patchSession((value) => ({ ...value, cursor: itemCursor })); }} className={`relative h-16 w-20 shrink-0 overflow-hidden rounded border-2 ${itemCursor === cursor ? 'border-primary' : selected.has(id) ? 'border-sky-500' : 'border-transparent'}`} title={`${itemName(item)} · ${record?.decision}`}>
-          {previews[item.id] ? <img src={previews[item.id]} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center bg-secondary text-[10px]">{item.kind}</span>}
+          {thumbs[item.id] ? <img src={thumbs[item.id]} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center bg-secondary text-[10px]">{item.kind}</span>}
           {(record?.decision === 'skipped' || (record?.decision === 'unreviewed' && record.triage?.group === 'rejected')) && <span aria-label="Rejected" className="absolute right-1 top-1 rounded-full bg-red-600 p-0.5 text-white"><X className="h-3 w-3" /></span>}{(record?.decision === 'deferred' || (record?.decision === 'unreviewed' && record.triage?.group === 'needs-decision')) && <span aria-label="Flagged" className="absolute right-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><HelpCircle className="h-3 w-3" /></span>}{record?.decision === 'accepted' && <span className="absolute right-1 top-1 rounded-full bg-emerald-600 p-0.5 text-white"><Check className="h-3 w-3" /></span>}{record?.validation === 'stale' && <span className="absolute left-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><RotateCcw className="h-3 w-3" /></span>}
         </button>; })}</div>}
       </section>

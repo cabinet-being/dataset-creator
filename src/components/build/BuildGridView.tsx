@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEve
 import { ImageIcon } from 'lucide-react';
 import type { BuildReviewDecision, BuildSession } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
+import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { getBuildAssetId } from '../../services/build/buildSessionService';
 import { getBuildTriageGroup } from '../../services/build/buildTriageService';
 import { useCommands } from '../workspace/Commands';
@@ -54,7 +54,7 @@ export function BuildGridView({ active, root, queue, session, cursor, busy, sele
   const grid = useRef<HTMLUListElement>(null);
   const shown = Math.min(queue.length, Math.max(limit, Math.ceil((cursor + 1) / PAGE) * PAGE));
   const visible = useMemo(() => queue.slice(0, shown), [queue, shown]);
-  const previews = useWorkspacePreviewUrls(useMemo(() => visible.filter((item) => item.kind !== 'video'), [visible]));
+  const previews = useSizedPreviewUrls(useMemo(() => visible.filter((item) => item.kind !== 'video'), [visible]), 'thumb', { focusId: queue[cursor]?.id });
   const current = queue[cursor];
 
   const targets = () => {

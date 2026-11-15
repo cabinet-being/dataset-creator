@@ -1,5 +1,6 @@
 import type { ImageQualitySummary, TargetModelId } from '../../types';
 import { DEFAULT_TARGET_MODEL, TARGET_MODEL_PRESETS } from '../../lib/projectProfilePresets';
+import { isImageWorkerSupported, measureImageQualityInWorker } from '../image/imageWorkerClient';
 import { inspectFramePixels } from '../video/frameQuality';
 
 export const IMAGE_QUALITY_VERSION = 1;
@@ -108,7 +109,8 @@ const decodeImage = async (blob: Blob): Promise<ImageBitmap> => {
   catch { return createImageBitmap(blob); }
 };
 
-export const measureImageQuality = async (blob: Blob, options: ImageQualityOptions = {}, signal?: AbortSignal): Promise<ImageQualityReport> => {
+/** Decode + downscale + pixel analysis on the calling thread. The worker runs this same function. */
+export const measureImageQualityLocal = async (blob: Blob, options: ImageQualityOptions = {}, signal?: AbortSignal): Promise<ImageQualityReport> => {
   signal?.throwIfAborted();
   const bitmap = await decodeImage(blob);
   try {
@@ -125,6 +127,17 @@ export const measureImageQuality = async (blob: Blob, options: ImageQualityOptio
     const { data } = context.getImageData(0, 0, width, height);
     return assessImagePixels(data, width, height, { width: bitmap.width, height: bitmap.height }, options);
   } finally { bitmap.close(); }
+};
+
+/** Runs the analysis in a worker so the UI thread stays free; falls back to the calling thread when workers are unavailable. */
+export const measureImageQuality = async (blob: Blob, options: ImageQualityOptions = {}, signal?: AbortSignal): Promise<ImageQualityReport> => {
+  signal?.throwIfAborted();
+  if (!isImageWorkerSupported()) return measureImageQualityLocal(blob, options, signal);
+  try { return await measureImageQualityInWorker(blob, options, signal); }
+  catch (error) {
+    if (signal?.aborted) throw error;
+    return measureImageQualityLocal(blob, options, signal);
+  }
 };
 
 export const summarizeImageQuality = (report: ImageQualityReport): ImageQualitySummary => ({
