@@ -9,6 +9,7 @@ import type { WorkspaceImage } from '../src/lib/workspaceImages';
 import { toWorkspaceImages } from '../src/lib/workspaceImages';
 import { useProjectStore } from '../src/stores/useProjectStore';
 import { useUIStore } from '../src/stores/useUIStore';
+import { useHistoryStore } from '../src/stores/useHistoryStore';
 import { useProjectSave } from '../src/hooks/useProjectSave';
 import { createProjectDirectory, type ProjectDirectoryHandle } from '../src/services/project/projectDirectoryService';
 import '../src/index.css';
@@ -90,6 +91,9 @@ function Harness() {
     useUIStore.setState({ projectDirectoryHandle:directory });
     (window as unknown as Record<string, unknown>).__buildFixture = {
       session: () => useProjectStore.getState().buildSession,
+      undo: () => useHistoryStore.getState().undo(),
+      setTrigger: (word: string) => useProjectStore.setState((state) => ({ dataset: { ...state.dataset, triggerWord: word } })),
+      tags: () => Object.fromEntries(Object.values(useProjectStore.getState().sourceImages).map((source) => [(source.originalFilePath ?? source.fileName).split('/').pop()!, source.tags])),
       paths: () => {
         const state = useProjectStore.getState();
         return Object.fromEntries(toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems)).map((item) => [(item.assetPath ?? item.fileName).split('/').pop()!, item.assetPath]));

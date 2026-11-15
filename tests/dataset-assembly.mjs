@@ -463,6 +463,10 @@ try {
     for (const stage of ['caption','check','export']) assert.equal(buildSession.normalizeBuildSession({ ...fresh, stage }).stage,stage,`valid stage ${stage} kept`);
     assert.equal(buildSession.normalizeBuildSession({ ...fresh, stage:'bogus' }).stage,'add','invalid stage falls back');
     assert.equal(buildSession.normalizeBuildSession({ ...legacyEmpty, stage:'bogus', records:{ 'source:a': record } }).stage,'select','invalid stage with records falls back to select');
+    // Select view mode: grid/clusters persist, invalid or missing -> list (absent)
+    for (const view of ['grid','clusters']) assert.equal(buildSession.normalizeBuildSession({ ...fresh, view }).view,view,`view ${view} kept`);
+    for (const view of ['list','bogus',5,null,undefined]) assert.equal(buildSession.normalizeBuildSession({ ...fresh, view }).view ?? 'list','list',`view ${String(view)} -> list`);
+    assert.equal(buildSession.normalizeBuildSession(null).view ?? 'list','list');
 
     const img = (id, extra = {}) => ({ id, sourceImageId:id, kind:'image', label:'Image', displayIdentity:id, fileName:`${id}.png`, assetPath:`inbox/${id}.png`, imageData:new Blob(), width:1024, height:1024, aspectRatio:'1:1', ...extra });
     const summarize = (items, session, readiness) => stageSummary.getBuildStageSummary({ session, effectiveItems:items, candidates:items.filter((i)=>!i.assetPath?.startsWith('dataset/')), readiness });
