@@ -80,7 +80,7 @@ try {
     ], closedTabs:[{kind:'dataset-tool',datasetId:'global',tool:'select'}]};
     const check = (result) => {
       assert.equal(result.workspace.activeTabId, nextId);
-      assert.deepEqual(result.workspace.openTabs, [projectSelect, {kind:'dataset-tool',datasetId:'global',tool:'add-files',pinned:true}, {kind:'dataset-tool',datasetId:'global',tool:'analysis'}], 'Project select stays Remove Duplicates; dataset select becomes add-files; nothing lost');
+      assert.deepEqual(result.workspace.openTabs, [projectSelect, {kind:'dataset-tool',datasetId:'global',tool:'add-files',pinned:true}, {kind:'dataset-tool',datasetId:'global',tool:'analysis'}], 'Project select stays Similar images; dataset select becomes add-files; nothing lost');
       assert.deepEqual(result.workspace.closedTabs, [{kind:'dataset-tool',datasetId:'global',tool:'add-files'}]);
       const ids = viewIds(result.dock);
       assert.equal(ids.includes(legacyId), false);
@@ -393,7 +393,7 @@ try {
     const projectSelect = { kind: 'tool', tool: 'select' };
     const projectSelectTab = createWorkspaceTabFromPersisted(projectSelect);
     assert.equal(projectSelectTab.id, 'tool:select');
-    assert.deepEqual(persistWorkspaceTab(projectSelectTab), { ...projectSelect, id: 'tool:select', scope: undefined, pinned: undefined }, 'Project tool select (Remove Duplicates) is not migrated');
+    assert.deepEqual(persistWorkspaceTab(projectSelectTab), { ...projectSelect, id: 'tool:select', scope: undefined, pinned: undefined }, 'Project tool select (Similar images) is not migrated');
     assert.equal(createWorkspaceTabFromPersisted({ kind: 'dataset-tool', datasetId: 'g', tool: 'select' }).id, 'dataset:g:select', 'Tab factory does not rewrite ids; migration happens in persistence');
 
     const mk = (id, pinned) => ({ id, kind: 'window', window: 'output', pinned });
@@ -415,7 +415,7 @@ try {
     assert.equal(inspect({ kind: 'file-video' }), 'file');
     assert.equal(inspect({ kind: 'tool', tool: 'review' }), 'review');
     assert.equal(inspect({ kind: 'dataset-tool', tool: 'add-files' }), 'review');
-    assert.equal(inspect({ kind: 'tool', tool: 'select' }), 'empty', 'Project Remove Duplicates tab has no review inspector');
+    assert.equal(inspect({ kind: 'tool', tool: 'select' }), 'empty', 'Project Similar images tab has no review inspector');
     assert.equal(inspect({ kind: 'dataset-tool', tool: 'analysis' }), 'analysis');
     assert.equal(inspect({ kind: 'tool', tool: 'analysis' }), 'analysis');
     assert.equal(inspect({ kind: 'dataset-tool', tool: 'tagging' }), 'empty', 'dataset-tool tagging without activeTool falls through to empty');

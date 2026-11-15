@@ -109,7 +109,7 @@ test.describe('build quality profile coverage', () => {
     await expect(prune).toBeVisible();
     expect(Object.values(await tagsOf(page)).every((tags) => tags?.includes('solo'))).toBe(true);
     page.once('dialog', (dialog) => { expect(dialog.message()).toContain('solo'); void dialog.accept(); });
-    await prune.getByRole('button', { name: 'Застосувати' }).click();
+    await prune.getByRole('button', { name: 'Apply' }).click();
     await expect.poll(async () => Object.values(await tagsOf(page)).some((tags) => tags?.includes('solo')), { timeout: 30_000 }).toBe(false);
     const after = Object.values(await tagsOf(page));
     expect(after).toHaveLength(10);

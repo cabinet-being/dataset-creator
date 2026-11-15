@@ -147,7 +147,7 @@ try {
     const effective = metrics.measureEffectiveSize(clones);
     close(effective.value, 1, 1e-6, 'Clones are one effective file');
     assert.equal(effective.status, 'fail');
-    assert.match(effective.display, /20 файлів ≈ 1 ефективно різних/);
+    assert.match(effective.display, /20 files ≈ 1 effectively distinct/);
     const diverse = metrics.measureEffectiveSize(items(20));
     close(diverse.value, 20, 1e-6, 'Orthogonal files are all effective');
     assert.equal(diverse.status, 'ok');
@@ -222,18 +222,18 @@ try {
     assert.equal(failed.readiness, 'fail');
     for (const metric of [...report.required, ...report.insights, ...failed.required]) {
       assert.ok(['ok', 'warn', 'fail'].includes(metric.status), metric.id);
-      assert.ok(metric.explanation.length > 0 && /[а-яіїєґ]/i.test(metric.explanation), `${metric.id} has a Ukrainian explanation`);
+      assert.ok(metric.explanation.length > 0 && /[a-z]/i.test(metric.explanation) && !/[а-яіїєґ]/i.test(metric.explanation), `${metric.id} has an English explanation`);
     }
 
     const { createElement } = await import('react');
     const { renderToStaticMarkup } = await import('react-dom/server');
     const html = renderToStaticMarkup(createElement(QualityReport, { report: failed, labelFor: (id) => `file:${id}`, onAction: () => {} }));
     assert.match(html, /data-readiness="fail"/);
-    assert.match(html, /Не готово/);
+    assert.match(html, /Not ready/);
     assert.match(html, /data-metric="trigger" data-status="fail"/);
     assert.match(html, /file:item-0/, 'Action ids are rendered through labelFor');
-    assert.match(html, /Ще 12/, 'Long action lists are collapsed');
-    assert.match(html, /Застосувати/);
+    assert.match(html, /12 more/, 'Long action lists are collapsed');
+    assert.match(html, /Apply/);
   }
 
   // Build adapter: workspace data -> QualityReportInput.
@@ -352,7 +352,7 @@ try {
       assert.deepEqual(axis(mk(n), 'style', 'aspect').buckets.map((bucket) => bucket.id), [...bucketIds('sdxl'), 'other'], 'default model is sdxl');
       const mostlyOther = axis(mk(n, (index) => (index < n * 0.6 ? { width: 1000, height: 100 } : {})), 'style', 'aspect');
       assert.equal(mostlyOther.status, 'warn');
-      assert.match(mostlyOther.explanation, /не підходять до жодного бакета/);
+      assert.match(mostlyOther.explanation, /fit none of the .* buckets/);
     }
 
     // Not evaluated: too few items.
@@ -373,15 +373,15 @@ try {
       assert.equal(sparse.evaluated, false);
       assert.equal(sparse.value, null);
       assert.equal(sparse.unlabeled, total - labeledCount);
-      assert.ok(sparse.explanation.includes(`${labeledCount} з ${total}`), sparse.explanation);
-      assert.match(sparse.explanation, /Вісь не оцінено/);
-      assert.match(sparse.explanation, /теги кадрування/);
+      assert.ok(sparse.explanation.includes(`only ${labeledCount} of ${total} files`), sparse.explanation);
+      assert.match(sparse.explanation, /Axis not evaluated/);
+      assert.match(sparse.explanation, /framing tags/);
       const enough = axis(mk(total, (index) => ({ tags: index <= labeledCount ? ['full body'] : ['solo'] })), 'character', 'framing');
       assert.equal(enough.evaluated, true, 'fraction at the minimum evaluates');
       assert.equal(enough.unlabeled, total - labeledCount - 1);
       const noSize = axis(mk(total, () => ({ width: undefined, height: undefined })), 'general', 'orientation');
       assert.equal(noSize.evaluated, false);
-      assert.match(noSize.explanation, /розміри відомі лише для 0 з 20/);
+      assert.match(noSize.explanation, /sizes are known for only 0 of 20/);
     }
 
     // Tags semantics: undefined → derive from caption; [] → unlabeled.
@@ -409,7 +409,7 @@ try {
       assert.equal(bucketOf(withTarget, 'full').count, 0);
       assert.equal(withTarget.status, 'warn');
       assert.ok(withTarget.explanation.includes(`ceil(${pct}% × 100) = ${expected}`), withTarget.explanation);
-      assert.ok(withTarget.explanation.includes(`0 з рекомендованих ${expected}`), withTarget.explanation);
+      assert.ok(withTarget.explanation.includes(`0 of ${expected} recommended`), withTarget.explanation);
       const small = axis(list, 'character', 'framing', { target: { min: 5, max: 10 } });
       assert.equal(bucketOf(small, 'full').recommended, Math.ceil(share * n), 'item count is the basis when above target.min');
       assert.ok(small.explanation.includes(`ceil(${pct}% × ${n}) = ${Math.ceil(share * n)}`), small.explanation);
@@ -418,7 +418,7 @@ try {
       const hint = metrics.buildQualityReport(input).hints.find((entry) => entry.id === 'gap-axis-framing-full');
       assert.ok(hint, 'gap hint for the missing bucket');
       assert.equal(hint.metricId, 'axis-framing');
-      assert.ok(hint.text.includes(`є 0 з рекомендованих ${expected}`), hint.text);
+      assert.ok(hint.text.includes(`0 of ${expected} recommended`), hint.text);
       assert.ok(hint.explanation.includes(`ceil(${pct}% × 100) = ${expected}`), hint.explanation);
       assert.equal(hint.action, undefined);
       // A bucket meeting its recommendation produces no hint.
@@ -473,17 +473,17 @@ try {
       assert.equal(hints.length, 2, 'one hint per kept anchor');
       const first = hints[0];
       assert.equal(first.id, 'near-duplicates-dir/f-3.png');
-      assert.equal(first.text, '2 майже-дублікати кадру «f-3.png»');
+      assert.equal(first.text, '2 near-duplicates of “f-3.png”');
       assert.equal(first.action.kind, 'remove');
       assert.deepEqual(first.action.ids, ['dir/f-5.png', 'dir/f-9.png']);
       assert.ok(first.explanation.includes('DINOv2'));
       assert.ok(first.explanation.includes(String(T.nearDuplicates.similarity)), 'explanation names the threshold');
-      assert.ok(first.explanation.includes('знайдено 2 з 20 файлів'), first.explanation);
-      assert.ok(!first.explanation.includes('точні копії'), 'no exact note without exact copies');
+      assert.ok(first.explanation.includes('found 2 of 20 files'), first.explanation);
+      assert.ok(!first.explanation.includes('Exact copies'), 'no exact note without exact copies');
       const exactHint = hints[1];
       assert.equal(exactHint.id, 'near-duplicates-dir/f-12.png');
-      assert.equal(exactHint.text, '1 майже-дублікат кадру «f-12.png»');
-      assert.match(exactHint.explanation, /1 точні копії за хешем/);
+      assert.equal(exactHint.text, '1 near-duplicate of “f-12.png”');
+      assert.match(exactHint.explanation, /Exact copies by hash: 1/);
       assert.deepEqual(exactHint.action.ids, ['dir/f-13.png']);
       assert.equal(metrics.buildQualityReport({ items: mk(20, (index) => ({ embedding: basis(64, index) })) }).hints.filter((hint) => hint.metricId === 'near-duplicates').length, 0);
       const many = mk(40, (index) => ({ embedding: basis(64, Math.floor(index / 2)) }));
@@ -512,15 +512,15 @@ try {
       const character = metrics.measureCommonTags(list, 'hero', PROFILE_RULES.character.tagPolicy);
       assert.equal(character.status, 'warn');
       assert.equal(character.action.kind, 'remove');
-      assert.equal(character.action.label, 'Прибрати з підписів');
+      assert.equal(character.action.label, 'Remove from captions');
       assert.deepEqual([...character.action.tags].sort(), constant);
-      assert.match(character.explanation, /незмінні ознаки/);
+      assert.match(character.explanation, /constant traits/);
       assert.ok(character.explanation.includes(String(Math.ceil(T.tags.commonFraction * 20))), 'explanation states the file threshold');
       const style = metrics.measureCommonTags(list, 'hero', PROFILE_RULES.style.tagPolicy);
       assert.equal(style.status, 'ok');
       assert.equal(style.action, undefined);
       assert.equal(style.evaluated, true);
-      assert.match(style.explanation, /не прибирайте/);
+      assert.match(style.explanation, /keep such tags/);
       assert.equal(style.display, character.display);
       const general = metrics.measureCommonTags(list, 'hero', PROFILE_RULES.general.tagPolicy);
       const legacy = metrics.measureCommonTags(list, 'hero');
@@ -539,7 +539,7 @@ try {
       assert.equal(pruneHint.metricId, 'common-tags');
       assert.equal(pruneHint.action.kind, 'remove');
       assert.deepEqual([...pruneHint.action.tags].sort(), constant);
-      assert.ok(pruneHint.text.startsWith('2 теги у майже всіх файлах'), pruneHint.text);
+      assert.ok(pruneHint.text.startsWith('2 tags in almost every file'), pruneHint.text);
       assert.ok(pruneHint.explanation.length > 0);
       assert.ok(hintFor('concept'));
       assert.equal(hintFor('style'), undefined, 'keep: no hint');
