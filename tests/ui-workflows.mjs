@@ -340,7 +340,7 @@ try {
     };
   }
   const write = async (dir, name, data) => { const stream = await (await dir.getFileHandle(name, { create: true })).createWritable(); await stream.write(data); await stream.close(); };
-  const bytes = async (dir, name) => new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer());
+  const bytes = async (dir, name) => { const parts = name.split('/'); const file = parts.pop(); for (const part of parts) dir = await dir.getDirectoryHandle(part); return new Uint8Array(await (await (await dir.getFileHandle(file)).getFile()).arrayBuffer()); };
   const readJson = async (dir, name) => JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text());
   const { persistCaptionTagsForItems } = await module('captionMutationService');
   const captionDirectory = directory('caption-project');
@@ -415,7 +415,7 @@ try {
   const args = { scope: 'dataset', items: [a, b, excluded], dataset, directory:exportProject, blacklist: [' blocked '] };
   assert.equal(renderExportCaption(['Tag', 'tag', 'blocked', ''], 'Trigger', ['blocked']), 'Trigger, Tag');
   const plan = await buildExportPlan(args);
-  assert.deepEqual(plan.entries.map(entry => entry.imageName), ['excluded.png', 'same.png', 'same-2.jpg']);
+  assert.deepEqual(plan.entries.map(entry => entry.imageName), ['excluded.png', 'same.png', 'sub/same.jpg']);
   assert.deepEqual(plan.entries.map(entry => entry.caption), ['Trigger, replacement, blocked', 'Trigger, replacement, blocked', 'Trigger, blue, BLUE'], 'Dataset captions are the TXT as it is: blacklist and trigger are not applied again');
   assert.deepEqual(plan.entries.map(entry => entry.textContent), [captionTexts['excluded.png'], captionTexts['same.png'], captionTexts['same.jpg']], 'Dataset export keeps TXT bytes (including CRLF)');
   assert.deepEqual(plan.warnings, []);
@@ -425,7 +425,7 @@ try {
   const target = directory(); const progress = [];
   await exportPlanToDirectory(plan, target, undefined, (done, total) => progress.push([done, total]));
   assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]]);
-  assert.deepEqual(Object.keys(zip.files).sort(), ['excluded.png', 'excluded.txt', 'same-2.jpg', 'same-2.txt', 'same.png', 'same.txt']);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['excluded.png', 'excluded.txt', 'same.png', 'same.txt', 'sub/', 'sub/same.jpg', 'sub/same.txt']);
   for (const entry of plan.entries) {
     assert.deepEqual(await zip.file(entry.imageName).async('uint8array'), new Uint8Array(await entry.blob.arrayBuffer()));
     assert.equal(await zip.file(entry.textName).async('string'), entry.textContent);
@@ -453,7 +453,7 @@ try {
   assert.equal(partial.files.size, 2, 'Cancellation retains one completed image/caption pair');
   assert.deepEqual([...completedEntries],[plan.entries[0].imageName]);
   await exportPlanToDirectory(plan, partial, undefined, undefined, recoveryJournal);
-  assert.equal(partial.files.size,6,'A verified recovery journal skips completed pairs and writes only the remainder');
+  assert.equal(partial.files.size,5,'A verified recovery journal skips completed pairs and writes only the remainder (sub/ is one top-level folder)');
   const flaky = directory(); const flakyJournal = { completedEntryNames:new Set(), startedEntryNames:new Set() };
   const flakyText = plan.entries[0].textName; const flakyGetFileHandle = flaky.getFileHandle.bind(flaky); let failOnce = true;
   flaky.getFileHandle = async (name, options) => {

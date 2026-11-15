@@ -26,8 +26,7 @@ try {
   const migration = await load('layoutMigrationService');
   const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges } = await load('datasetFolderService');
   const { createProjectDirectory } = await load('projectDirectoryService');
-  const { exportProjectDatasetAsZip } = await load('datasetExportService');
-  const { buildExportPlan, getExportEntryText } = await load('exportPlan');
+  const { buildExportPlan, getExportEntryText, exportPlanAsZip } = await load('exportPlan');
   const { importImageFiles } = await load('importService');
   const { useProjectStore } = await load('useProjectStore');
   const { useUIStore } = await load('useUIStore');
@@ -290,7 +289,8 @@ try {
     await put(root, 'dataset/3_class/b.png', png('B')); await put(root, 'dataset/3_class/b.txt', 'T');
     await put(root, 'dataset/c.png', png('C')); // no TXT
     await put(root, 'dataset/a.png.manifest.json', JSON.stringify({ tags: ['sidecar'] }));
-    const { blob, count } = await exportProjectDatasetAsZip(root);
+    const plan0 = await buildExportPlan({ scope: 'dataset', items: [], dataset: createProject('Export', 'character').dataset, directory: root, blacklist: [] });
+    const blob = await exportPlanAsZip(plan0), count = plan0.entries.length;
     assert.equal(count, 3);
     const zip = await JSZip.loadAsync(await blob.arrayBuffer());
     const files = Object.values(zip.files).filter((entry) => !entry.dir).map((entry) => entry.name);
@@ -299,7 +299,7 @@ try {
     const text = async (name) => new TextDecoder('utf-8', { ignoreBOM: true }).decode(await zip.file(name).async('uint8array'));
     const names = files.filter((name) => name.endsWith('.txt'));
     assert.deepEqual((await Promise.all(names.map((name) => text(name)))).sort(), ['T', 'T, blocked, tag\r\n'].sort(), 'TXT content (CRLF included) is exported unchanged');
-    assert.ok(names.includes('3_class/1.txt'));
+    assert.ok(names.includes('3_class/b.txt'));
     const dataset = { ...createProject('Export', 'character').dataset, triggerWord: 'T' };
     const plan = await buildExportPlan({ scope: 'dataset', items: [], dataset, directory: root, blacklist: ['blocked', 'T'] });
     assert.equal(plan.entries.length, 3);

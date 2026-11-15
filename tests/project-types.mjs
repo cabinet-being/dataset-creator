@@ -14,8 +14,8 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/project/assetRegistryService.ts', 'src/lib/workspaceImages.ts', 'src/services/build/buildSessionService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
-  const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
+  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/project/assetRegistryService.ts', 'src/lib/workspaceImages.ts', 'src/services/build/buildSessionService.ts', 'src/services/export/datasetExportService.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, readExplorerDirectory, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
   const { createProjectDirectory, readProjectDirectory, writeProjectDirectoryChanges, clearProjectDirectory, listProjectDirectoryClearTargets, countProjectDirectoryFiles } = await import(pathToFileURL(join(temp, 'projectDirectoryService.mjs')));
@@ -27,7 +27,10 @@ try {
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError, detectLegacyRawLayout, planRawMaterialsMove, runRawMaterialsMove, runCaptionTxtMigration, runAssetsRegistryMigration, detectPendingAssetsRegistryMigration } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
   const { getProjectVersionLayout } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
-  const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
+  const { buildExportPlan } = await import(pathToFileURL(join(temp, 'exportPlan.mjs')));
+  const exportProjectDatasetAsZip = async (root) => { const plan = await buildExportPlan({ scope: 'dataset', items: [], dataset: createProject('Export', 'character').dataset, directory: root, blacklist: [] }); return { blob: await exportPlanAsZip(plan), count: plan.entries.length }; };
+  const { exportPlanAsZip, exportPlanToDirectory } = await import(pathToFileURL(join(temp, 'exportPlan.mjs')));
+  const { saveZipToProjectExports, createProjectExportZipName } = await import(pathToFileURL(join(temp, 'exportService.mjs')));
   const { indexProjectAssets, fillAssetHashes } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
   const { toWorkspaceImages } = await import(pathToFileURL(join(temp, 'workspaceImages.mjs')));
   const { getBuildAssetRevision } = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
@@ -510,8 +513,8 @@ try {
   const { blob: exportedDataset, count: exportedCount } = await exportProjectDatasetAsZip(layoutDirectory);
   assert.equal(exportedCount, 1);
   const datasetZip = await JSZip.loadAsync(await exportedDataset.arrayBuffer());
-  assert.ok(datasetZip.file('3_character/1.png'));
-  assert.equal(await datasetZip.file('3_character/1.txt').async('string'), 'trigger, portrait, blue hair\n');
+  assert.ok(datasetZip.file('3_character/portrait.png'));
+  assert.equal(await datasetZip.file('3_character/portrait.txt').async('string'), 'trigger, portrait, blue hair\n');
   {
     const root = directory('physical-dataset');
     const project = createProject('Physical Dataset', 'character');
@@ -669,11 +672,11 @@ try {
   const missingDatasetManifestDirectory = directory();
   await createProjectDirectory(missingDatasetManifestDirectory, createProject('No metadata', 'character'));
   await missingDatasetManifestDirectory.removeEntry(DATASET_MANIFEST_FILE);
-  await assert.rejects(exportProjectDatasetAsZip(missingDatasetManifestDirectory), /contains no images/);
+  assert.equal((await exportProjectDatasetAsZip(missingDatasetManifestDirectory)).count, 0);
   const missingDatasetDirectory = directory();
   await createProjectDirectory(missingDatasetDirectory, createProject('No dataset directory', 'character'));
   await missingDatasetDirectory.removeEntry('dataset', { recursive: true });
-  await assert.rejects(exportProjectDatasetAsZip(missingDatasetDirectory), /no images/);
+  assert.equal((await exportProjectDatasetAsZip(missingDatasetDirectory)).count, 0);
   const dir = directory();
   await createProjectDirectory(dir, createProject('Legacy', 'character'));
   const legacy = await readManifest(dir);
@@ -1536,6 +1539,77 @@ try {
       assert.deepEqual(await resumePendingJournals(root), [], 'A finished journal is not resumed again');
       assert.equal(await runAssetsRegistryMigration(root), undefined);
     }
+  }
+
+  {
+    // C7: dataset export keeps nested sub-folders, saves ZIPs in exports/ and exports/ stays outside assets, snapshots and restore.
+    const JSZip = (await import('jszip')).default;
+    const put = async (root, path, data) => {
+      const parts = path.split('/'); const file = parts.pop(); let dir = root;
+      for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writer = await (await dir.getFileHandle(file, { create: true })).createWritable(); await writer.write(data); await writer.close();
+    };
+    const readText = async (root, path) => { const parts = path.split('/'); const file = parts.pop(); let dir = root; for (const part of parts) dir = await dir.getDirectoryHandle(part); return (await dir.getFileHandle(file)).getFile().then((f) => f.text()); };
+    const png = (label) => new Blob([label], { type: 'image/png' });
+    const root = directory('export-c7');
+    await createProjectDirectory(root, createProject('Export C7', 'character'));
+    const crlf = 'trig, close up\r\n';
+    await put(root, 'dataset/10_char/close/a.png', png('A')); await put(root, 'dataset/10_char/close/a.txt', crlf);
+    await put(root, 'dataset/10_char/b.jpg', png('B')); await put(root, 'dataset/10_char/b.txt', 'trig, b');
+    const plan = await buildExportPlan({ scope: 'dataset', items: [], dataset: createProject('Export C7', 'character').dataset, directory: root, blacklist: ['close up'] });
+    assert.deepEqual(plan.entries.map((entry) => entry.imageName).sort(), ['10_char/b.jpg', '10_char/close/a.png']);
+    const zip = await JSZip.loadAsync(await (await exportPlanAsZip(plan)).arrayBuffer());
+    assert.equal(await zip.file('10_char/close/a.png').async('string'), 'A');
+    assert.deepEqual(await zip.file('10_char/close/a.txt').async('uint8array'), new TextEncoder().encode(crlf), 'TXT is exported byte for byte, blacklist not applied');
+    assert.ok(zip.file('10_char/b.jpg'), 'The on-disk extension is kept');
+    const destination = directory('destination');
+    await exportPlanToDirectory(plan, destination);
+    assert.equal(await readText(destination, '10_char/close/a.png'), 'A');
+    assert.equal(await readText(destination, '10_char/close/a.txt'), crlf, 'Destination directory keeps nested folders and TXT bytes');
+    assert.equal(await readText(destination, '10_char/b.txt'), 'trig, b');
+
+    // exports/<name>-<yyyyMMdd-HHmmss>.zip without overwriting.
+    assert.equal(createProjectExportZipName('My/Set', new Date(2026, 0, 5, 7, 8, 9)), 'My_Set-20260105-070809.zip');
+    const RealDate = Date; const fixed = new RealDate(2026, 10, 15, 13, 4, 5);
+    globalThis.Date = class extends RealDate { constructor(...args) { super(...(args.length ? args : [fixed.getTime()])); } };
+    let first, second, third;
+    try {
+      first = await saveZipToProjectExports(root, new Blob(['zip-1']), 'Set');
+      second = await saveZipToProjectExports(root, new Blob(['zip-2']), 'Set');
+      third = await saveZipToProjectExports(root, new Blob(['zip-3']), 'Set');
+    } finally { globalThis.Date = RealDate; }
+    assert.equal(first, 'exports/Set-20261115-130405.zip');
+    assert.equal(second, 'exports/Set-20261115-130405-2.zip');
+    assert.equal(third, 'exports/Set-20261115-130405-3.zip');
+    assert.equal(await readText(root, first), 'zip-1', 'The earlier archive is never overwritten');
+    assert.equal(await readText(root, second), 'zip-2');
+
+    // exports/ is outside registry, galleries, snapshots and restore.
+    await put(root, 'exports/stray.png', png('S')); await put(root, 'exports/clip.webm', new Blob(['v'], { type: 'video/webm' }));
+    await put(root, 'inbox/real.png', png('R'));
+    const assetPaths = (await collectWorkspaceFileAssets(root)).map((asset) => asset.path);
+    assert.ok(!assetPaths.some((path) => path.startsWith('Project/exports/')), 'exports/ is not a gallery asset source');
+    const withExports = (await indexProjectAssets(root)).discoveredCount;
+    await put(root, 'exports/another.png', png('X'));
+    assert.equal((await indexProjectAssets(root)).discoveredCount, withExports, 'exports/ files do not change the indexed asset count');
+    assert.ok(!Object.values((await loadAssetRegistry(root)).assets).some((record) => record.path.startsWith('exports/')), 'exports/ is not in the asset registry');
+    const exportsSnapshot = await createProjectVersion(root, 'with exports');
+    const snapshotFile = await (await (await (await root.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('versions')).getDirectoryHandle('snapshots')).getFileHandle(`${exportsSnapshot.id}.zip`);
+    const snapshotNames = Object.keys((await JSZip.loadAsync(await (await snapshotFile.getFile()).arrayBuffer())).files);
+    assert.ok(snapshotNames.some((name) => name.startsWith('dataset/10_char/close/a.png')), 'sanity: the snapshot holds project files');
+    assert.ok(!snapshotNames.some((name) => name.startsWith('exports')), 'Snapshots do not contain exports/');
+    await put(root, 'exports/after.zip', 'later');
+    await restoreProjectVersion(root, exportsSnapshot.id);
+    assert.equal(await readText(root, 'exports/after.zip'), 'later', 'Restore does not delete exports/');
+    assert.equal(await readText(root, first), 'zip-1');
+
+    // Explorer lists the archives of the root exports/ folder only.
+    const tree = await readExplorerDirectory(root);
+    const exportsNode = tree.children.find((node) => node.name === 'exports');
+    assert.ok(exportsNode, 'Explorer shows exports/');
+    assert.ok(exportsNode.children.some((node) => node.path === `Project/${second}`), 'Explorer shows exports/*.zip');
+    await put(root, 'inbox/note.zip', 'not shown');
+    assert.ok(!(await readExplorerDirectory(root)).children.find((node) => node.name === 'inbox').children.some((node) => node.name === 'note.zip'), 'Non-asset files outside exports/ stay hidden');
   }
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }
