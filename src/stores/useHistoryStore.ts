@@ -6,6 +6,9 @@ type History = { past: Entry[]; future: Entry[]; busy: boolean; push: (entry: Om
 type PendingEntry = Omit<Entry, 'project'>;
 export type HistoryTransactionWriter = { push: (entry: PendingEntry) => void };
 let projectEpoch = 0;
+// Transactions still running. Undo/Redo wait for them so they act on the finished action, not on the one before it.
+const runningTransactions = new Set<Promise<void>>();
+const settleRunningTransactions = async () => { while (runningTransactions.size) await Promise.allSettled([...runningTransactions]); };
 
 const compoundEntry = (label: string, entries: PendingEntry[]): PendingEntry => ({
   label,
@@ -29,11 +32,15 @@ export function isHistoryEpochCurrent(capture: HistoryEpochCapture): boolean {
 export async function runHistoryTransaction<T>(label: string, action: (writer: HistoryTransactionWriter) => Promise<T>): Promise<T> {
   const pending = { label, project: useProjectStore.getState().id, epoch: projectEpoch, entries: [] as PendingEntry[] };
   const writer: HistoryTransactionWriter = { push: entry => pending.entries.push(entry) };
+  let finish!: () => void;
+  const running = new Promise<void>(resolve => { finish = resolve; });
+  runningTransactions.add(running);
   try { return await action(writer); }
   finally {
     if (pending.entries.length && pending.project === useProjectStore.getState().id && pending.epoch === projectEpoch) {
       useHistoryStore.getState().push(compoundEntry(label, pending.entries));
     }
+    runningTransactions.delete(running); finish();
   }
 }
 export const useHistoryStore = create<History>((set, get) => ({
@@ -42,6 +49,7 @@ export const useHistoryStore = create<History>((set, get) => ({
     set(state => ({ past: [...state.past.filter(item => item.project === useProjectStore.getState().id).slice(-19), { ...entry, project: useProjectStore.getState().id }], future: [] }));
   },
   undo: async () => {
+    if (runningTransactions.size) await settleRunningTransactions();
     const state = get(); const entry = state.past[state.past.length - 1];
     if (!entry || state.busy || entry.project !== useProjectStore.getState().id) return;
     const capture = captureHistoryEpoch();
@@ -55,6 +63,7 @@ export const useHistoryStore = create<History>((set, get) => ({
     } finally { if (isHistoryEpochCurrent(capture)) set({ busy: false }); }
   },
   redo: async () => {
+    if (runningTransactions.size) await settleRunningTransactions();
     const state = get(); const entry = state.future[state.future.length - 1];
     if (!entry || state.busy || entry.project !== useProjectStore.getState().id) return;
     const capture = captureHistoryEpoch();
