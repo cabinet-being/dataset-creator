@@ -713,19 +713,59 @@ export const projectDirectoryHasManifest = async (directory: ProjectDirectoryHan
   }
 };
 
+const CLEARED_PROJECT_ENTRIES = [
+  '.dataset-creator-data',
+  PROJECT_DIRECTORY_CACHE,
+  'sources',
+  'edited',
+  PROJECT_DIRECTORY_MANIFEST,
+  DATASET_MANIFEST_FILE,
+  PROJECT_DATASET_DIRECTORY,
+  'src',
+];
+const GIT_SERVICE_ENTRIES = new Set(['dataset-creator-versions.json', 'snapshots', 'restore-backups']);
+
+// A .git folder holding anything besides Dataset Creator version files is a real repository.
+const hasRealGitRepository = async (directory: ProjectDirectoryHandle): Promise<boolean> => {
+  try {
+    const git = await directory.getDirectoryHandle('.git');
+    for await (const [name] of git.entries()) {
+      if (!GIT_SERVICE_ENTRIES.has(name)) return true;
+    }
+  } catch {
+    // Missing or unreadable .git is not a repository.
+  }
+  return false;
+};
+
+/** Names that clearProjectDirectory would delete from the folder (a real Git repository is never listed). */
+export const listProjectDirectoryClearTargets = async (directory: ProjectDirectoryHandle): Promise<string[]> => {
+  const names = new Set<string>();
+  for await (const [name] of directory.entries()) names.add(name);
+  const targets = CLEARED_PROJECT_ENTRIES.filter((name) => names.has(name));
+  if (names.has('.git') && !(await hasRealGitRepository(directory))) targets.push('.git');
+  return targets;
+};
+
+/** Counts files in a folder recursively, skipping .git, for user-facing confirmations. */
+export const countProjectDirectoryFiles = async (directory: ProjectDirectoryHandle): Promise<number> => {
+  let count = 0;
+  const walk = async (current: ProjectDirectoryHandle, isRoot: boolean) => {
+    for await (const [name, entry] of current.entries()) {
+      if (isRoot && name === '.git') continue;
+      if ('entries' in entry) await walk(entry as ProjectDirectoryHandle, false);
+      else count += 1;
+    }
+  };
+  await walk(directory, true);
+  return count;
+};
+
 export const clearProjectDirectory = async (directory: ProjectDirectoryHandle) => {
+  const entries = [...CLEARED_PROJECT_ENTRIES];
+  if (!(await hasRealGitRepository(directory))) entries.push('.git');
   await Promise.all(
-    [
-      '.dataset-creator-data',
-      PROJECT_DIRECTORY_CACHE,
-      'sources',
-      'edited',
-      PROJECT_DIRECTORY_MANIFEST,
-      DATASET_MANIFEST_FILE,
-      PROJECT_DATASET_DIRECTORY,
-      'src',
-      '.git',
-    ].map(async (entry) => {
+    entries.map(async (entry) => {
       try {
         await directory.removeEntry(entry, { recursive: true });
       } catch {

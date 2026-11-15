@@ -8,6 +8,8 @@ import { isAbortError } from '../lib/utils';
 import {
   createProjectDirectory,
   clearProjectDirectory,
+  countProjectDirectoryFiles,
+  listProjectDirectoryClearTargets,
   pickProjectDirectory,
   projectDirectoryHasManifest,
   readProjectDirectory,
@@ -151,12 +153,17 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       const parentDirectory = await pickProjectDirectory();
       logger.info(`creating project directory ${nextName}`);
       const directory = await parentDirectory.getDirectoryHandle(nextName, { create: true });
-      if (
-        (await projectDirectoryHasManifest(directory)) &&
-        !window.confirm(`Overwrite the Dataset Creator project in "${nextName}"?`)
-      ) {
+      const hasManifest = await projectDirectoryHasManifest(directory);
+      if (hasManifest && !window.confirm(`Overwrite the Dataset Creator project in "${nextName}"?`)) {
         logger.warning(`new project canceled before overwriting ${nextName}`);
         return;
+      }
+      else if (!hasManifest) {
+        const targets = await listProjectDirectoryClearTargets(directory);
+        if (targets.length > 0 && !window.confirm(`The folder "${nextName}" is not a DatasetCreator project but contains entries that will be permanently deleted: ${targets.join(', ')}. Continue?`)) {
+          logger.warning(`new project canceled before clearing ${nextName}`);
+          return;
+        }
       }
       await flushProjectSave();
       const project = createProject(nextName, projectType, targetModel);
@@ -187,6 +194,10 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     await flushProjectSave();
     const previousProject = useProjectStore.getState();
     const project = await readProjectDirectory(directory, async (name) => {
+      const fileCount = await countProjectDirectoryFiles(directory);
+      if (!window.confirm(`This folder is not a DatasetCreator project. Create a project here? ${fileCount} file${fileCount === 1 ? '' : 's'} will be indexed and may get caption sidecar files.`)) {
+        throw new DOMException('Project opening canceled', 'AbortError');
+      }
       const setup = await requestProjectSetup(name, true);
       if (!setup) throw new DOMException('Project opening canceled', 'AbortError');
       return setup.projectType;

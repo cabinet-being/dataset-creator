@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import type { ProjectDirectoryHandle } from './projectDirectoryService';
-import { PROJECT_GIT_DIRECTORY, REQUIRED_PROJECT_DIRECTORIES } from './projectLayoutService';
+import { PROJECT_CACHE_DIRECTORY, PROJECT_GIT_DIRECTORY, REQUIRED_PROJECT_DIRECTORIES } from './projectLayoutService';
 
 const VERSION_INDEX_PATH = `${PROJECT_GIT_DIRECTORY}/dataset-creator-versions.json`;
 const VERSION_SNAPSHOT_DIRECTORY = `${PROJECT_GIT_DIRECTORY}/snapshots`;
@@ -26,6 +26,9 @@ type VersionIndex = {
   currentId?: string;
   versions: ProjectVersion[];
 };
+
+// Root entries that are never snapshotted nor removed by restore: Git/version storage and the reproducible cache.
+const PRESERVED_ROOT_ENTRIES = new Set([PROJECT_GIT_DIRECTORY, PROJECT_CACHE_DIRECTORY]);
 
 const getPathParts = (path: string): string[] => path.split('/').filter(Boolean);
 
@@ -77,7 +80,7 @@ const writeVersionIndex = async (root: ProjectDirectoryHandle, index: VersionInd
 
 const addDirectoryToZip = async (zip: JSZip, directory: ProjectDirectoryHandle, prefix = ''): Promise<void> => {
   for await (const [name, entry] of directory.entries()) {
-    if (!prefix && name === PROJECT_GIT_DIRECTORY) {
+    if (!prefix && PRESERVED_ROOT_ENTRIES.has(name)) {
       continue;
     }
     const path = prefix ? `${prefix}/${name}` : name;
@@ -93,7 +96,7 @@ const addDirectoryToZip = async (zip: JSZip, directory: ProjectDirectoryHandle, 
 const clearProjectContents = async (root: ProjectDirectoryHandle) => {
   const entries: string[] = [];
   for await (const [name] of root.entries()) {
-    if (name !== PROJECT_GIT_DIRECTORY) {
+    if (!PRESERVED_ROOT_ENTRIES.has(name)) {
       entries.push(name);
     }
   }
