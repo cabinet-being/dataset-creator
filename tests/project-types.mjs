@@ -14,7 +14,7 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/export/datasetExportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
@@ -25,6 +25,8 @@ try {
   const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
   const { DATASET_MANIFEST_FILE, REQUIRED_PROJECT_DIRECTORIES, readDatasetManifest } = await import(pathToFileURL(join(temp, 'projectLayoutService.mjs')));
   const { createProjectVersion, restoreProjectVersion, listProjectVersions, ProjectVersionRestoreError } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
+  const { detectProjectLayout, planLayoutMigration, runLayoutMigration, resumePendingJournals, LayoutMigrationError } = await import(pathToFileURL(join(temp, 'layoutMigrationService.mjs')));
+  const { getProjectVersionLayout } = await import(pathToFileURL(join(temp, 'projectVersionService.mjs')));
   const { exportProjectDatasetAsZip } = await import(pathToFileURL(join(temp, 'datasetExportService.mjs')));
   const { indexProjectAssets } = await import(pathToFileURL(join(temp, 'assetIndexService.mjs')));
   const { sortExplorerNodes, sanitizeExplorerTree, buildEmptyExplorerTree } = await import(pathToFileURL(join(temp, 'explorerTreeUpdates.mjs')));
@@ -354,7 +356,7 @@ try {
     }));
     const before = {...createProject('Before failure','character'),sourceImages:Object.fromEntries(sources.map(source => [source.id,source]))};
     await createProjectDirectory(root,before);
-    const manifest = await root.getFileHandle('manifest.json');
+    const manifest = await (await root.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json');
     const originalManifest = await (await manifest.getFile()).text();
     const archive = await root.getDirectoryHandle('Archive');
     const first = await archive.getFileHandle('first.png.manifest.json');
@@ -393,10 +395,26 @@ try {
       assert.equal(await reopened.sourceImages[source.id].originalFile.text(),await source.originalFile.text());
     }
   }
-  const readManifest = async (dir) => JSON.parse(await (await (await dir.getFileHandle('manifest.json')).getFile()).text());
+  const projectJsonHandle = async (dir) => (await dir.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json');
+  const readManifest = async (dir) => {
+    try { return JSON.parse(await (await dir.getFileHandle('manifest.json')).getFile().then(file => file.text())); }
+    catch (error) { if (error?.name !== 'NotFoundError') throw error; }
+    return JSON.parse(await (await (await projectJsonHandle(dir)).getFile()).text());
+  };
   const writeManifest = async (dir, manifest) => {
-    const stream = await (await dir.getFileHandle('manifest.json')).createWritable();
+    const stream = await (await projectJsonHandle(dir)).createWritable();
     await stream.write(JSON.stringify(manifest)); await stream.close();
+  };
+  // Turns a v3 project into the previous layout (manifest.json v1/v2) so legacy conversions and migration can be exercised.
+  const toLegacyLayout = async (dir, version = 2, mutate = () => {}) => {
+    const json = await readManifest(dir);
+    const legacy = { format: 'dataset-creator-directory', version, project: json.project };
+    delete legacy.project.migrations;
+    mutate(legacy);
+    const stream = await (await dir.getFileHandle('manifest.json', { create: true })).createWritable();
+    await stream.write(JSON.stringify(legacy)); await stream.close();
+    await (await dir.getDirectoryHandle('.datasetcreator')).removeEntry('project.json');
+    return legacy;
   };
   for (const type of ['character', 'style', 'concept']) {
     const project = createProject(`Test ${type}`, type);
@@ -454,10 +472,7 @@ try {
     originalFilePath:'src/shared/legacy.png', manifestPath:'src/shared/legacy.png.manifest.json'};
   const legacyProject = {...createProject('Dataset migration', 'character'), sourceImages:{[legacySource.id]:legacySource}};
   await createProjectDirectory(migrationDirectory, legacyProject);
-  const legacyProjectManifest = await readManifest(migrationDirectory);
-  legacyProjectManifest.version = 1;
-  delete legacyProjectManifest.project.dataset;
-  await writeManifest(migrationDirectory, legacyProjectManifest);
+  await toLegacyLayout(migrationDirectory, 1, legacy => { delete legacy.project.dataset; });
   const migrationDatasetDirectory = await migrationDirectory.getDirectoryHandle('dataset');
   const migrationImageWriter = await (await migrationDatasetDirectory.getFileHandle('legacy.png', { create: true })).createWritable();
   await migrationImageWriter.write(new Blob(['png'], { type: 'image/png' })); await migrationImageWriter.close();
@@ -524,6 +539,7 @@ try {
       originalFilePath:'dataset/legacy.png',manifestPath:'dataset/legacy.png.manifest.json',tags:['legacy caption']};
     const project={...createProject('Legacy exclusions','character'),sourceImages:{[source.id]:source}};
     await createProjectDirectory(root,project);
+    await toLegacyLayout(root);
     const archive=await JSZip.loadAsync(await (await createProjectFileBlob({...project,sourceImages:{[source.id]:{...source,originalFile:await source.originalFile.arrayBuffer()}}})).arrayBuffer());
     const archiveMetadata=JSON.parse(await archive.file(source.manifestPath).async('string'));
     archive.file(source.manifestPath,JSON.stringify({...archiveMetadata,excludedFromDataset:true}));
@@ -587,20 +603,21 @@ try {
   };
   await writeRoot(layoutDirectory,'current-only.txt','unsnapshotted current files');
   await layoutDirectory.getDirectoryHandle('empty-user-folder',{create:true});
-  const getLayoutFile = layoutDirectory.getFileHandle;
+  const layoutService = await layoutDirectory.getDirectoryHandle('.datasetcreator');
+  const getLayoutFile = layoutService.getFileHandle;
   let failRestoreWrite = true;
-  layoutDirectory.getFileHandle = async (name,options) => {
-    if(name==='manifest.json' && options?.create && failRestoreWrite) {failRestoreWrite=false; throw new Error('Write denied once');}
+  layoutService.getFileHandle = async (name,options) => {
+    if(name==='project.json' && options?.create && failRestoreWrite) {failRestoreWrite=false; throw new Error('Write denied once');}
     return getLayoutFile(name,options);
   };
   await assert.rejects(restoreProjectVersion(layoutDirectory,versionOne.id),error=>error instanceof ProjectVersionRestoreError && error.previousRestored);
-  layoutDirectory.getFileHandle = getLayoutFile;
+  layoutService.getFileHandle = getLayoutFile;
   assert.equal(await (await (await layoutDirectory.getFileHandle('current-only.txt')).getFile()).text(),'unsnapshotted current files','A failed restore rolls back current files, including those outside versions');
   assert.ok(await layoutDirectory.getDirectoryHandle('empty-user-folder'),'Rollback retains empty folders');
   assert.equal((await listProjectVersions(layoutDirectory)).currentId,versionThree.id,'Failed restore cannot advance the version pointer');
   await assert.rejects(restoreProjectVersion(layoutDirectory,versionOne.id,async()=>{throw new Error('Restored project cannot open');}),error=>error.previousRestored && /cannot open/.test(error.message));
   assert.ok(await layoutDirectory.getFileHandle('current-only.txt'),'Read validation failure also rolls back before exposing the restored project');
-  const snapshots = await (await layoutDirectory.getDirectoryHandle('.git')).getDirectoryHandle('snapshots');
+  const snapshots = await (await (await layoutDirectory.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('versions')).getDirectoryHandle('snapshots');
   const versionArchive = await (await snapshots.getFileHandle(`${versionOne.id}.zip`)).getFile();
   const invalidArchive = new JSZip(); invalidArchive.file('.git/overwrite.txt','bad');
   await writeRoot(snapshots,`${versionOne.id}.zip`,await invalidArchive.generateAsync({type:'blob'}));
@@ -611,16 +628,17 @@ try {
   await createProjectDirectory(brokenDirectory,createProject('Recovery failure','style'));
   const brokenVersion = await createProjectVersion(brokenDirectory,'before');
   await writeRoot(brokenDirectory,'preserve.txt','recovery bytes');
-  const getBrokenFile=brokenDirectory.getFileHandle;
-  brokenDirectory.getFileHandle=async(name,options)=>{
-    if(name==='manifest.json' && options?.create) throw new Error('Persistent denial');
+  const brokenService=await brokenDirectory.getDirectoryHandle('.datasetcreator');
+  const getBrokenFile=brokenService.getFileHandle;
+  brokenService.getFileHandle=async(name,options)=>{
+    if(name==='project.json' && options?.create) throw new Error('Persistent denial');
     return getBrokenFile(name,options);
   };
   let recoveryPath;
   await assert.rejects(restoreProjectVersion(brokenDirectory,brokenVersion.id),error=>{
     recoveryPath=error.recoveryPath; return error instanceof ProjectVersionRestoreError && !error.previousRestored && Boolean(recoveryPath);
   });
-  const recoveryFolder=await (await brokenDirectory.getDirectoryHandle('.git')).getDirectoryHandle('restore-backups');
+  const recoveryFolder=await (await (await (await brokenDirectory.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('backup')).getDirectoryHandle('restore'));
   const recoveryFile=await (await recoveryFolder.getFileHandle(recoveryPath.split('/').pop())).getFile();
   const recoveryZip=await JSZip.loadAsync(await recoveryFile.arrayBuffer());
   assert.equal(await recoveryZip.file('preserve.txt').async('string'),'recovery bytes','A failed rollback retains a readable recovery archive');
@@ -808,7 +826,7 @@ try {
     await put(verRoot, 'manifest.json', JSON.stringify({ format: 'dataset-creator-directory', version: 2, project: { id: 'p', name: 'P' } }));
     await put(verRoot, '.dataset-creator-data/index.json', 'idx1'); await put(verRoot, '.cache/thumb.bin', 'cache'); await put(verRoot, '.git/HEAD', 'ref');
     const snap = await createProjectVersion(verRoot, 'snap');
-    const zipFile = await (await (await verRoot.getDirectoryHandle('.git')).getDirectoryHandle('snapshots')).getFileHandle(`${snap.id}.zip`);
+    const zipFile = await (await (await (await verRoot.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('versions')).getDirectoryHandle('snapshots')).getFileHandle(`${snap.id}.zip`);
     const JSZip = (await import('jszip')).default;
     const zip = await JSZip.loadAsync(await (await zipFile.getFile()).arrayBuffer());
     const zipNames = Object.keys(zip.files);
@@ -821,6 +839,241 @@ try {
     await (await verRoot.getDirectoryHandle('.git')).getFileHandle('HEAD');
     assert.equal(await (await (await (await verRoot.getDirectoryHandle('.dataset-creator-data')).getFileHandle('index.json')).getFile()).text(), 'idx1', 'Restore recovers .dataset-creator-data');
     await assert.rejects(verRoot.getFileHandle('extra.txt'), 'Restore removes files absent from the snapshot');
+  }
+  {
+    // Layout v3 migration engine: v2 (manifest.json, .cache, .git service entries) -> .datasetcreator/.
+    const put = async (root, path, text = 'x') => {
+      const parts = path.split('/'); let dir = root;
+      for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(parts.at(-1), { create: true })).createWritable();
+      await writable.write(text); await writable.close();
+    };
+    const files = async (dir, prefix = '') => {
+      const out = {};
+      for await (const [name, entry] of dir.entries()) {
+        const path = prefix ? `${prefix}/${name}` : name;
+        if ('getFile' in entry) out[path] = await (await entry.getFile()).text();
+        else { out[`${path}/`] = ''; Object.assign(out, await files(entry, path)); }
+      }
+      return out;
+    };
+    const exists = async (root, path) => {
+      const parts = path.split('/'); let dir = root;
+      try {
+        for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
+        try { await dir.getFileHandle(parts.at(-1)); } catch { await dir.getDirectoryHandle(parts.at(-1)); }
+        return true;
+      } catch { return false; }
+    };
+    const readJsonAt = async (root, path) => {
+      const parts = path.split('/'); let dir = root;
+      for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
+      return JSON.parse(await (await (await dir.getFileHandle(parts.at(-1))).getFile()).text());
+    };
+    const normalized = (tree) => Object.keys(tree)
+      .map((path) => path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<id>'))
+      .sort();
+    const legacyManifest = (extra = {}) => JSON.stringify({
+      format: 'dataset-creator-directory', version: 2,
+      project: {
+        id: 'p1', name: 'Old project', projectType: 'general', currentTool: 'import', workspaceSettings: {},
+        taggingConfig: { datasetKeyword: 'trg', threshold: 0.3, maxTags: 10, insertMode: 'append', blacklist: [] },
+        dataset: { name: 'D', triggerWord: 'trg', assetOrder: [], createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
+        sourceImageManifests: {}, editedAssetManifests: {},
+        lastModified: '2024-01-01T00:00:00.000Z', createdAt: '2024-01-01T00:00:00.000Z', ...extra,
+      },
+    });
+    const oldIndex = JSON.stringify({ format: 'dataset-creator-versions', version: 1, currentId: 'old1', versions: [{ id: 'old1', name: 'old', createdAt: '2024-01-01T00:00:00.000Z' }] });
+    const makeLegacy = async ({ git = 'service', manifestExtra } = {}) => {
+      const root = directory();
+      await put(root, 'manifest.json', legacyManifest(manifestExtra));
+      await put(root, 'src/shared/a.png', 'AAA'); await put(root, 'dataset/b.png', 'BBB'); await put(root, 'dataset/b.txt', 'trg, x');
+      await put(root, '.cache/previews/source/s.jpg', 'jpg');
+      if (git === 'service' || git === 'real') {
+        await put(root, '.git/dataset-creator-versions.json', oldIndex);
+        await put(root, '.git/snapshots/old1.zip', 'zipbytes'); await put(root, '.git/restore-backups/r.zip', 'rb');
+      }
+      if (git === 'real') { await put(root, '.git/HEAD', 'ref: refs/heads/main'); await put(root, '.git/objects/ab/cd', 'o'); }
+      if (git === 'file') await put(root, '.git', 'gitdir: /somewhere/else/.git/worktrees/w');
+      return root;
+    };
+    const countSteps = (root, abortAt) => {
+      const controller = new AbortController(); let steps = 0;
+      return { signal: controller.signal, onProgress: (progress) => {
+        if (progress.phase === 'Creating a safety snapshot' || progress.phase === 'Finishing old project conversions' || progress.completed >= progress.total) return;
+        steps += 1; if (steps === abortAt) controller.abort();
+      }, steps: () => steps };
+    };
+
+    // 1. Full migration of a service-only .git.
+    const full = await makeLegacy();
+    assert.equal(await detectProjectLayout(full), 'v2');
+    const plan = await planLayoutMigration(full);
+    assert.equal(plan.fromVersion, 2); assert.ok(plan.snapshotFileCount > 0); assert.ok(plan.changes.length > 0);
+    assert.equal(await exists(full, '.datasetcreator/project.json'), false, 'Planning is read-only');
+    const report = await runLayoutMigration(full);
+    assert.equal(await detectProjectLayout(full), 'v3');
+    assert.ok(report.journalId && report.snapshotVersionId && report.keptLegacyData === false);
+    const json = await readJsonAt(full, '.datasetcreator/project.json');
+    assert.equal(json.format, 'dataset-creator-project'); assert.equal(json.version, 3);
+    assert.equal(json.project.name, 'Old project');
+    assert.equal(json.project.migrations.layoutV3.id, report.journalId);
+    assert.ok(json.project.migrations.layoutV3.completedAt, 'completedAt is written after the last step');
+    assert.equal(await exists(full, 'manifest.json'), false);
+    assert.equal(await (await (await (await (await (await full.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('backup')).getDirectoryHandle(report.journalId)).getFileHandle('manifest.json')).getFile()).text().then(text => JSON.parse(text).project.id), 'p1', 'manifest.json is kept in the backup');
+    assert.equal(await exists(full, '.cache'), false);
+    assert.equal(await exists(full, '.datasetcreator/cache/previews/source/s.jpg'), true, '.cache moved into .datasetcreator/cache');
+    assert.equal(await exists(full, '.git'), false, 'A .git holding only service entries is removed once empty');
+    assert.equal(await exists(full, '.datasetcreator/versions/snapshots/old1.zip'), true);
+    assert.equal(await exists(full, '.datasetcreator/backup/restore/r.zip'), true);
+    const listed = await listProjectVersions(full);
+    assert.ok(listed.versions.some(version => version.id === 'old1'), 'Old versions stay available in the new index');
+    assert.ok(listed.versions.some(version => version.id === report.snapshotVersionId), 'The pre-migration snapshot is registered as a version');
+    assert.equal(await (await (await (await full.getDirectoryHandle('dataset')).getFileHandle('b.txt')).getFile()).text(), 'trg, x', 'User files are untouched');
+    assert.equal((await readProjectDirectory(full)).name, 'Old project', 'The migrated project opens through the v3 reader');
+    assert.equal(await getProjectVersionLayout(full, report.snapshotVersionId), 'legacy', 'The pre-migration snapshot is a legacy snapshot');
+
+    // 2. A second run changes nothing.
+    const before = await files(full);
+    const again = await runLayoutMigration(full);
+    assert.deepEqual(again.resumed, []); assert.equal(again.journalId, undefined);
+    assert.deepEqual(await files(full), before, 'Re-running the migration on a v3 project changes nothing');
+    assert.deepEqual(await resumePendingJournals(full), []);
+
+    // 3. Real .git keeps HEAD and objects; its service entries move out.
+    const real = await makeLegacy({ git: 'real' });
+    await runLayoutMigration(real);
+    assert.equal(await (await (await (await real.getDirectoryHandle('.git')).getFileHandle('HEAD')).getFile()).text(), 'ref: refs/heads/main');
+    assert.equal(await exists(real, '.git/objects/ab/cd'), true);
+    for (const name of ['dataset-creator-versions.json', 'snapshots', 'restore-backups']) assert.equal(await exists(real, `.git/${name}`), false, `${name} leaves .git`);
+    assert.equal(await exists(real, '.datasetcreator/versions/snapshots/old1.zip'), true);
+    assert.equal(await detectProjectLayout(real), 'v3');
+
+    // 4. A gitfile is never touched, and versions work with it.
+    const gitFile = await makeLegacy({ git: 'file' });
+    const gitFileText = 'gitdir: /somewhere/else/.git/worktrees/w';
+    const gitFilePlan = await planLayoutMigration(gitFile);
+    assert.ok(gitFilePlan.changes.some(change => /left untouched/.test(change)));
+    const gitFileReport = await runLayoutMigration(gitFile);
+    assert.equal(await (await (await gitFile.getFileHandle('.git')).getFile()).text(), gitFileText, 'A .git file is left as is');
+    assert.equal(await detectProjectLayout(gitFile), 'v3');
+    const gitFileVersion = await createProjectVersion(gitFile, 'with gitfile');
+    await put(gitFile, 'dataset/later.png', 'later');
+    await restoreProjectVersion(gitFile, gitFileVersion.id);
+    assert.equal(await exists(gitFile, 'dataset/later.png'), false, 'Restore works next to a gitfile');
+    assert.equal(await (await (await gitFile.getFileHandle('.git')).getFile()).text(), gitFileText, 'Versions never touch the gitfile');
+    assert.ok((await listProjectVersions(gitFile)).versions.some(version => version.id === gitFileReport.snapshotVersionId));
+    const gitFileNew = directory();
+    await put(gitFileNew, '.git', gitFileText);
+    await readProjectDirectory(gitFileNew, async () => 'general');
+    assert.equal(await (await (await gitFileNew.getFileHandle('.git')).getFile()).text(), gitFileText, 'Creating a project next to a gitfile does not fail or change it');
+    assert.equal(await exists(gitFileNew, '.datasetcreator/project.json'), true);
+
+    // 5. Abort after N steps, then resume: same result as an uninterrupted run.
+    const reference = await makeLegacy();
+    const referenceRun = countSteps(reference, 0);
+    await runLayoutMigration(reference, { signal: referenceRun.signal, onProgress: referenceRun.onProgress });
+    const stepCount = referenceRun.steps();
+    assert.ok(stepCount >= 4);
+    const referenceTree = normalized(await files(reference));
+    for (let abortAt = 1; abortAt < stepCount; abortAt++) {
+      const interrupted = await makeLegacy();
+      const tracker = countSteps(interrupted, abortAt);
+      await assert.rejects(runLayoutMigration(interrupted, { signal: tracker.signal, onProgress: tracker.onProgress }), { name: 'AbortError' }, `abort at step ${abortAt}`);
+      if (await exists(interrupted, '.datasetcreator/project.json')) {
+        assert.equal((await readJsonAt(interrupted, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt, undefined, `completedAt is absent after abort at step ${abortAt}`);
+      }
+      const resumedIds = await resumePendingJournals(interrupted);
+      assert.equal(resumedIds.length, 1, `journal is resumed after abort at step ${abortAt}`);
+      assert.deepEqual(normalized(await files(interrupted)), referenceTree, `resume after abort at step ${abortAt} reaches the same layout`);
+      assert.ok((await readJsonAt(interrupted, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt, 'completedAt appears after the resumed run');
+      assert.deepEqual(await resumePendingJournals(interrupted), [], 'A finished journal is not resumed again');
+      const manifestBackups = normalized(await files(interrupted)).filter(path => /backup\/<id>\/manifest\.json$/.test(path));
+      assert.equal(manifestBackups.length, 1, 'manifest.json is backed up exactly once');
+    }
+    // runLayoutMigration itself finishes an interrupted upgrade first.
+    const viaRun = await makeLegacy();
+    const viaTracker = countSteps(viaRun, 2);
+    await assert.rejects(runLayoutMigration(viaRun, { signal: viaTracker.signal, onProgress: viaTracker.onProgress }), { name: 'AbortError' });
+    const viaResult = await runLayoutMigration(viaRun);
+    assert.equal(viaResult.resumed.length, 1);
+    assert.deepEqual(normalized(await files(viaRun)), referenceTree);
+
+    // 6. A failed safety snapshot leaves the project untouched.
+    const failing = await makeLegacy();
+    const failingBefore = await files(failing);
+    const originalGetDirectory = failing.getDirectoryHandle.bind(failing);
+    failing.getDirectoryHandle = async (name, options) => {
+      if (name === '.datasetcreator' && options?.create) throw new Error('disk full');
+      return originalGetDirectory(name, options);
+    };
+    await assert.rejects(runLayoutMigration(failing), error => error instanceof LayoutMigrationError && error.kind === 'snapshot-failed' && /not changed/.test(error.message));
+    failing.getDirectoryHandle = originalGetDirectory;
+    assert.deepEqual(await files(failing), failingBefore, 'Nothing changes when the snapshot cannot be written');
+    assert.equal(await detectProjectLayout(failing), 'v2');
+
+    // 7. Unresolved legacy caption data blocks the upgrade before any v3 step.
+    const blocked = await makeLegacy({ manifestExtra: { captionMigration: {
+      version: 1, status: 'pending', overwriteEnabled: true, legacyOverrides: { 'image:ghost': ['x'] },
+      assetSnapshots: {}, applied: [], unresolved: ['image:ghost'], unavailable: [], conflicts: [],
+    } } });
+    await assert.rejects(runLayoutMigration(blocked), error => error instanceof LayoutMigrationError && error.kind === 'blocked');
+    assert.equal(await detectProjectLayout(blocked), 'v2', 'A blocked upgrade stays in the old layout');
+    assert.equal(await exists(blocked, '.datasetcreator/project.json'), false);
+    assert.equal(await exists(blocked, '.datasetcreator/journal'), false, 'No journal is written for a blocked upgrade');
+    assert.equal(await exists(blocked, 'manifest.json'), true);
+    assert.equal(await exists(blocked, '.cache/previews/source/s.jpg'), true);
+    assert.equal(await exists(blocked, '.git/snapshots/old1.zip'), true);
+    assert.equal(await exists(blocked, '.datasetcreator/backup'), false);
+
+    // 8. Snapshots skip service folders and .git; restore never touches them.
+    const markers = ['.datasetcreator/cache/c.bin', '.datasetcreator/journal/j.json', '.datasetcreator/backup/keep/b.bin'];
+    for (const marker of markers) await put(full, marker, 'marker');
+    const snap = await createProjectVersion(full, 'marked');
+    const snapZip = await JSZip.loadAsync(await (await (await (await (await (await full.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('versions')).getDirectoryHandle('snapshots')).getFileHandle(`${snap.id}.zip`)).getFile()).arrayBuffer());
+    const snapNames = Object.keys(snapZip.files);
+    assert.ok(snapNames.includes('.datasetcreator/project.json'), 'Snapshot holds project.json');
+    assert.ok(!snapNames.some(name => /^\.datasetcreator\/(cache|journal|versions|backup)(\/|$)/.test(name) || name.split('/')[0] === '.git'), 'Snapshot excludes service folders and .git');
+    await put(full, '.datasetcreator/cache/c.bin', 'changed'); await put(full, 'extra.txt', 'removed by restore');
+    const versionsBefore = JSON.stringify((await listProjectVersions(full)).versions.map(version => version.id));
+    await restoreProjectVersion(full, snap.id);
+    assert.equal(await exists(full, 'extra.txt'), false);
+    assert.equal(await (await (await (await (await full.getDirectoryHandle('.datasetcreator')).getDirectoryHandle('cache')).getFileHandle('c.bin')).getFile()).text(), 'changed', 'Restore keeps the cache as is');
+    for (const marker of markers.slice(1)) assert.equal(await exists(full, marker), true, `${marker} survives restore`);
+    assert.equal(await exists(full, '.datasetcreator/versions/snapshots/old1.zip'), true);
+    assert.equal(await exists(full, `.datasetcreator/backup/${report.journalId}/manifest.json`), true, 'Migration backups survive restore');
+    assert.equal(await exists(full, '.datasetcreator/project.json'), true);
+    assert.deepEqual((await listProjectVersions(full)).versions.map(version => version.id).filter(id => JSON.parse(versionsBefore).includes(id)), JSON.parse(versionsBefore));
+    // Snapshot ZIPs that contain service paths are rejected before anything is deleted.
+    for (const entryName of ['.datasetcreator/cache/x.bin', '.datasetcreator/journal/x.json', '.datasetcreator/versions/index.json', '.datasetcreator/backup/x', '.git/HEAD']) {
+      const bad = new JSZip(); bad.file('.datasetcreator/project.json', JSON.stringify(json)); bad.file(entryName, 'bad');
+      await put(full, `.datasetcreator/versions/snapshots/${snap.id}.zip`, await bad.generateAsync({ type: 'blob' }));
+      await assert.rejects(restoreProjectVersion(full, snap.id), /invalid project path/, entryName);
+      assert.equal(await exists(full, 'dataset/b.txt'), true, `${entryName} is rejected before files are deleted`);
+    }
+
+    // 9. Restoring the pre-migration (legacy) snapshot brings back v2, which migrates again.
+    const roundTrip = await makeLegacy();
+    const first = await runLayoutMigration(roundTrip);
+    await put(roundTrip, 'dataset/after.png', 'after');
+    await restoreProjectVersion(roundTrip, first.snapshotVersionId);
+    assert.equal(await detectProjectLayout(roundTrip), 'v2', 'A legacy snapshot restores the old layout');
+    assert.equal(await exists(roundTrip, 'dataset/after.png'), false);
+    assert.equal(await exists(roundTrip, `.datasetcreator/backup/${first.journalId}/manifest.json`), true, 'Backups survive the legacy restore');
+    // Re-upgrading right after the restore (same second) must not collide with the earlier snapshot name.
+    const second = await runLayoutMigration(roundTrip);
+    assert.notEqual(second.journalId, first.journalId);
+    assert.equal(await detectProjectLayout(roundTrip), 'v3');
+    assert.ok((await readJsonAt(roundTrip, '.datasetcreator/project.json')).project.migrations.layoutV3.completedAt);
+    assert.equal(await exists(roundTrip, 'manifest.json'), false);
+    assert.equal((await readProjectDirectory(roundTrip)).name, 'Old project');
+
+    // 10. Old ZIPs carrying .cache entries do not recreate the old cache on restore.
+    const oldZip = new JSZip(); oldZip.file('manifest.json', legacyManifest()); oldZip.file('.cache/old.bin', 'stale'); oldZip.file('dataset/z.png', 'z');
+    await put(roundTrip, `.datasetcreator/versions/snapshots/${first.snapshotVersionId}.zip`, await oldZip.generateAsync({ type: 'blob' }));
+    await restoreProjectVersion(roundTrip, first.snapshotVersionId);
+    assert.equal(await exists(roundTrip, '.cache'), false, 'Preserved root names in old ZIPs are not applied');
+    assert.equal(await exists(roundTrip, 'dataset/z.png'), true);
   }
   console.log('PASS: project types, global Dataset migration, required layout repair, whole-project indexing, dataset ZIP export, version branches/restoration, and legacy project migration.');
 } finally { await rm(temp, { recursive: true, force: true }); }

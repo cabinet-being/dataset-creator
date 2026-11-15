@@ -41,7 +41,7 @@ function Harness() {
       (window as unknown as Record<string, unknown>).__newProject = {
         manifest: async (name: string) => {
           const directory = await parent.getDirectoryHandle(name);
-          return JSON.parse(await (await (await directory.getFileHandle('manifest.json')).getFile()).text());
+          return JSON.parse(await (await (await (await directory.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json')).getFile()).text());
         },
       };
       setReady(true);

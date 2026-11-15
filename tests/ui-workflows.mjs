@@ -369,10 +369,10 @@ try {
   const savedDataset = { ...initialProject.dataset, triggerWord: 'first' };
   const projectOne = { ...initialProject, dataset: savedDataset };
   await writeProjectDirectoryChanges(projectOne, undefined, projectDirectory);
-  const readProjectManifest = async () => JSON.parse(await (await (await projectDirectory.getFileHandle('manifest.json')).getFile()).text());
+  const readProjectManifest = async () => JSON.parse(await (await (await (await projectDirectory.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json')).getFile()).text());
   assert.equal((await readProjectManifest()).project.dataset.triggerWord, 'first');
   const projectTwo = { ...projectOne, dataset: { ...savedDataset, triggerWord:'latest' } };
-  const manifestHandle = await projectDirectory.getFileHandle('manifest.json');
+  const manifestHandle = await (await projectDirectory.getDirectoryHandle('.datasetcreator')).getFileHandle('project.json');
   const createManifestWritable = manifestHandle.createWritable;
   manifestHandle.createWritable = async () => { throw new Error('Manifest write denied'); };
   const projectStatuses = [];
