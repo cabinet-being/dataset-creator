@@ -259,10 +259,15 @@ export interface SimilarityCluster {
 export type ProjectType = 'general' | 'character' | 'style' | 'concept';
 export type TargetModelId = 'sd15' | 'sdxl' | 'flux';
 
+/** `include`: always written to captions; `omit`: left for the trigger word to learn. Both drop contradicting tags of the same group. */
+export interface CharacterTrait { tag: string; mode: 'include' | 'omit' }
+
 export interface ProjectState {
   projectType: ProjectType;
   /** Project-level target model; the single source of the minimum short side. */
   targetModel: TargetModelId;
+  /** Typical traits of a `character` project; a missing value means none. */
+  characterTraits?: CharacterTrait[];
   id: string;
   name: string;
   sourceImages: Record<string, SourceImage>;

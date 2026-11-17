@@ -21,7 +21,7 @@ export const buildQualityReport = (input: QualityReportInput): QualityReport => 
     measureEffectiveSize(items),
     measureMaterialCoverage(items, input.candidates),
     measureSaturation(items, input.candidates, input.selectionOrder),
-    measureCommonTags(items, input.triggerWord, PROFILE_RULES[input.projectType ?? 'general'].tagPolicy),
+    measureCommonTags(items, input.triggerWord, PROFILE_RULES[input.projectType ?? 'general'].tagPolicy, input.characterTraitTags),
     measureRareTags(items, input.triggerWord),
     measureCaptionLength(items),
     measureConsistency(items, input.projectType),

@@ -27,6 +27,8 @@ import { TriggerWordInput } from '../ui/TriggerWordInput';
 import { setAssetsDatasetMembership } from '../../lib/assetActions';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
+import { applyCharacterTraits } from '../../services/tagging/characterTraits';
+import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
 import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
 import { connectLocalTaggerSource, restoreSavedLocalTagger } from '../../services/tagging/localTaggerConnectionService';
 import {
@@ -85,6 +87,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const removeDatasetItem = useProjectStore((state) => state.removeDatasetItem);
   const notify = useUIStore((state) => state.addNotification);
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
+  const characterTraits = useProjectStore(selectActiveCharacterTraits);
   const localTagger = useLocalTaggerStore((state) => state.bundle);
   const savedTaggerFileNames = useLocalTaggerStore((state) => state.savedFileNames);
   const [showAssembly, setShowAssembly] = useState(false);
@@ -289,7 +292,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     patchSession(value => Object.values(value.records).some(record => record.proposal)
       ? { ...value, records: Object.fromEntries(Object.entries(value.records).map(([id, record]) => [id, { ...record, proposal: undefined }])) }
       : value);
-  }, [localTagger, taggingConfig.threshold, taggingConfig.maxTags, projectId, patchSession]);
+  }, [localTagger, taggingConfig.threshold, taggingConfig.maxTags, characterTraits, projectId, patchSession]);
 
   const moveCursor = useCallback((step: number) => setCursor(Math.max(0, Math.min(queue.length - 1, cursorRef.current + step))), [queue.length, setCursor]);
 
@@ -495,13 +498,13 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
           patchSession((value) => {
             const record = value.records[id];
             if (!record || record.revision !== revision || record.decision === 'accepted') return value;
-            return { ...value, records: { ...value.records, [id]: { ...record, proposal: { tags: predictions.map((prediction) => prediction.tag), revision } } } };
+            return { ...value, records: { ...value.records, [id]: { ...record, proposal: { tags: applyCharacterTraits(predictions.map((prediction) => prediction.tag), characterTraits), revision } } } };
           });
         } catch { return; }
       }
     })();
     return () => { cancelled = true; };
-  }, [active, busy, cursor, localTagger, patchSession, pipeline.phase, queue, reconciled.records, taggingConfig.threshold, taggingConfig.maxTags]);
+  }, [active, busy, cursor, localTagger, patchSession, pipeline.phase, queue, reconciled.records, taggingConfig.threshold, taggingConfig.maxTags, characterTraits]);
 
   useCommands([
     { id: 'build.accept', label: 'Build: Accept', shortcut: 'A', active: active && stage === 'select' && view === 'list', disabled: busy || !current || current.kind === 'video', run: () => commitDecision('accepted') },
@@ -550,7 +553,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       <div className="mr-auto"><h1 className="flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-primary" />Build Dataset</h1><p className="text-xs text-muted-foreground">One queue from import to export</p></div>
     </header>
     <BuildStepper stages={summary.stages} current={stage} onSelect={goToStage} />
-    {stage === 'add' ? <div className="min-h-0 flex-1 overflow-auto p-4"><div role="group" aria-label="Project settings" className="mb-4 flex flex-wrap items-center gap-3 text-xs"><BuildProfileControls onModelChange={clearQualityTriage} /></div><ImportTool active={active} onImportFiles={onImportFiles} /></div>
+    {stage === 'add' ? <div className="min-h-0 flex-1 overflow-auto p-4"><div role="group" aria-label="Project settings" className="mb-4 flex flex-wrap items-center gap-3 text-xs"><BuildProfileControls onModelChange={clearQualityTriage} suggestions={captionSuggestions} /></div><ImportTool active={active} onImportFiles={onImportFiles} /></div>
     : stage === 'caption' ? <BuildCaptionStage active={active} items={datasetItems} suggestions={captionSuggestions} directory={directory} />
     : stage === 'check' ? <section aria-label="Dataset quality" className="min-h-0 flex-1 overflow-auto p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>
     : stage === 'export' ? <div className="min-h-0 flex-1 overflow-auto"><ExportTool active={active} fixedSource="dataset" onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div>
@@ -580,7 +583,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <details className="relative" data-build-settings><summary className="cursor-pointer rounded border border-border px-2 py-1">Settings</summary><div className="absolute left-0 top-full z-20 mt-1 flex w-72 flex-col gap-2 rounded border border-border bg-popover p-3 text-popover-foreground shadow-lg">
         <label>Review <select value={reconciled.profile.reviewMode} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, reviewMode: event.target.value as BuildSession['profile']['reviewMode'] } }))} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="every-item">Every photo</option><option value="uncertain-only">Uncertain only</option></select></label>
         <label>Output <select value={!reconciled.profile.transform ? 'original' : `${reconciled.profile.transform.mode}-${reconciled.profile.transform.width}`} onChange={(event) => setProfileTransform(event.target.value)} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="original">Original</option><option value="fit-512">Fit within 512</option><option value="crop-512">Center crop 512</option><option value="crop-768">Center crop 768</option></select></label>
-        <BuildProfileControls onModelChange={clearQualityTriage} />
+        <BuildProfileControls onModelChange={clearQualityTriage} suggestions={captionSuggestions} />
         <label className="flex items-center gap-1"><input type="checkbox" checked={reconciled.profile.autoPipeline !== false} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, autoPipeline: event.target.checked } }))} />Auto pipeline</label>
         <label className="flex items-start gap-1">Trigger word <TriggerWordInput value={dataset.triggerWord} onApply={(word) => { void changeDatasetTriggerWord(word).then(() => patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) }))).catch((error) => notify('error', error instanceof Error ? error.message : 'Could not change the trigger word')); }} className="w-32 rounded border border-border bg-background px-2 py-1" /></label>
         </div></details>

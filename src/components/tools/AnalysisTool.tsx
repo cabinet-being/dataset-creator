@@ -37,7 +37,7 @@ import { SimilarityStrictnessControl } from './SimilarityReviewTool';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { addAssetsToDataset, removeAssetsFromDataset } from '../../lib/assetActions';
-import { useProjectStore } from '../../stores/useProjectStore';
+import { selectActiveCharacterTraits, useProjectStore } from '../../stores/useProjectStore';
 import { useUIStore } from '../../stores/useUIStore';
 import type { AspectRatio, Dataset, SimilarityCluster, SimilarityResult } from '../../types';
 import { WorkspacePreviewCard } from '../ui/WorkspacePreviewCard';
@@ -950,6 +950,7 @@ export const AnalysisTool = ({
   const controlId = useId();
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
+  const characterTraits = useProjectStore(selectActiveCharacterTraits);
   const excludedProjectCategories = useMemo(() => workspaceSettings.excludedProjectCategories ?? [], [workspaceSettings.excludedProjectCategories]);
   const includedProjectCategories = useMemo(() => workspaceSettings.includedProjectCategories ?? [], [workspaceSettings.includedProjectCategories]);
   const dataset = useProjectStore((state) => datasetId && state.dataset?.id === datasetId ? state.dataset : undefined);
@@ -1437,9 +1438,9 @@ export const AnalysisTool = ({
   // Same report as Build (minimum resolution, near-duplicate level and technical checks come from shared owners).
   const qualityReport = useMemo(() => targetMode === 'dataset' && dataset ? buildQualityReport(buildDatasetQualityInput({
     items: items.filter((item) => item.kind !== 'video'), candidates: coverageCandidateItems, triggerWord: dataset.triggerWord,
-    target: buildSession.profile.target, targetModel, projectType,
+    target: buildSession.profile.target, targetModel, projectType, characterTraits,
     qualitySummaries: collectBuildQualitySummaries(buildSession), features: similarityFeatures,
-  })) : undefined, [buildSession.records, buildSession.profile.target, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode, targetModel]);
+  })) : undefined, [buildSession.records, buildSession.profile.target, characterTraits, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode, targetModel]);
   const qualityAttention = qualityReport ? qualityReport.required.filter((metric) => metric.status !== 'ok').length : 0;
   const traitReadyCount = visualItems.filter((item) => visualTraitsById[item.id]).length;
   const embeddingReadyCount = visualItems.filter((item) => itemEmbeddings[item.id]).length;

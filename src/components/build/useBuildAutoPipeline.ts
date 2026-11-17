@@ -8,6 +8,8 @@ import { resolveDatasetMembership, normalizeDatasetPath } from '../../services/d
 import { assembleDataset, encodeAssemblyInputs } from '../../services/dataset/datasetAssemblyService';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
+import { applyCharacterTraits } from '../../services/tagging/characterTraits';
+import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
 import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
@@ -72,12 +74,13 @@ export function useBuildAutoPipeline(input: Input) {
 
   useEffect(() => { latest.current = input; });
 
+  const characterTraits = useProjectStore(selectActiveCharacterTraits);
   const cancel = useCallback(() => { abortRef.current?.abort(); setPaused(true); }, []);
   const resume = useCallback(() => setPaused(false), []);
 
   useEffect(() => () => { abortRef.current?.abort(); attempted.current.clear(); didWork.current = false; setPaused(false); }, [projectId]);
   useEffect(() => { attempted.current = new Set([...attempted.current].filter((key) => !key.startsWith('tag:'))); },
-    [input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags]);
+    [input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, characterTraits]);
   useEffect(() => { setPaused(false); }, [input.enabled]);
 
   const minShortSideOf = (targetModel: TargetModelId) => getMinShortSide(targetModel);
@@ -302,7 +305,7 @@ export function useBuildAutoPipeline(input: Input) {
         const predictions = await predictLocalTags(localTagger, item.imageData, taggingConfig.threshold, taggingConfig.maxTags);
         ctx.signal.throwIfAborted();
         if (!ctx.isCurrent() || latest.current.localTagger !== localTagger) throw abortError();
-        const tags = predictions.map((prediction) => prediction.tag);
+        const tags = applyCharacterTraits(predictions.map((prediction) => prediction.tag), selectActiveCharacterTraits(useProjectStore.getState()));
         latest.current.patchSession((value) => {
           const target = value.records[id];
           if (!target || target.revision !== revision) return value;

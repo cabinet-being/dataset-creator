@@ -1,3 +1,4 @@
+import { normalizeCharacterTraits } from '../tagging/characterTraits';
 import { normalizeProjectType, resolveProjectType, resolveTargetModel, type ProjectTypeResolver } from '../../lib/projectProfiles';
 import { URL_TOOL_ALIASES } from '../../lib/constants';
 import {
@@ -122,6 +123,7 @@ type DirectoryProjectManifest = {
     name: string;
     projectType?: ProjectType;
     targetModel?: TargetModelId;
+    characterTraits?: ProjectState['characterTraits'];
     currentTool: ToolName;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
@@ -404,6 +406,7 @@ const getProjectManifest = (
     name: project.name,
     projectType: project.projectType,
     targetModel: project.targetModel,
+    ...(project.characterTraits?.length ? { characterTraits: project.characterTraits } : {}),
     currentTool: project.currentTool,
     taggingConfig: {
       threshold: project.taggingConfig.threshold,
@@ -1736,6 +1739,7 @@ export const readProjectDirectory = async (
 
   const loadedProject: ProjectState = {
     ...defaults,
+    characterTraits: normalizeCharacterTraits(manifest.project.characterTraits),
     id: manifest.project.id,
     name: manifest.project.name,
     currentTool,

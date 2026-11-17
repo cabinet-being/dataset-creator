@@ -2,6 +2,7 @@ import { normalizeProjectType, resolveTargetModel, type ProjectTypeResolver } fr
 import JSZip from 'jszip';
 import { TOOL_URL_SLUGS, URL_TOOL_ALIASES } from '../../lib/constants';
 import { createDataset } from '../../types';
+import { normalizeCharacterTraits } from '../tagging/characterTraits';
 import type {
   BrickColumnCount,
   ProjectState,
@@ -106,6 +107,7 @@ type ProjectFileManifest = {
     name: string;
     projectType?: ProjectType;
     targetModel?: TargetModelId;
+    characterTraits?: ProjectState['characterTraits'];
     currentTool?: string;
     taggingConfig: ProjectFileTaggingConfig;
     workspaceSettings?: ProjectFileWorkspaceSettings;
@@ -342,6 +344,7 @@ export const createProjectFileBlob = async (project: ProjectState): Promise<Blob
       name: project.name,
       projectType: project.projectType,
       targetModel: project.targetModel,
+      ...(project.characterTraits?.length ? { characterTraits: project.characterTraits } : {}),
       currentTool: getToolSlug(project.currentTool),
       sourceImageManifests,
       editedAssetManifests,
@@ -641,6 +644,7 @@ export const readProjectFile = async (file: File, _options?: { selectProjectType
     ...projectMetadata,
     projectType,
     targetModel,
+    characterTraits: normalizeCharacterTraits(manifest.project.characterTraits),
     sourceImages: migration.sourceImages,
     datasetItems: migration.datasetItems,
     dataset,

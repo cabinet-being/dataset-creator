@@ -1,5 +1,6 @@
 import { PROJECT_TYPE_PROFILES, resolveTargetModel } from '../lib/projectProfiles';
-import type { ProjectType, TargetModelId } from '../types';
+import type { CharacterTrait, ProjectType, TargetModelId } from '../types';
+import { normalizeCharacterTraits } from '../services/tagging/characterTraits';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import {
@@ -54,6 +55,7 @@ interface ProjectStore extends ProjectState {
   // Project management
   initializeProject: (name: string, projectType: ProjectType, targetModel?: TargetModelId) => void;
   setProjectProfile: (profile: { projectType?: ProjectType; targetModel?: TargetModelId }) => void;
+  setCharacterTraits: (traits: CharacterTrait[]) => void;
   loadProject: (project: ProjectState) => void;
   renameProject: (name: string) => void;
   setCurrentTool: (tool: ToolName) => void;
@@ -93,6 +95,11 @@ interface ProjectStore extends ProjectState {
   updateWorkspaceSettings: (updates: Partial<WorkspaceSettings>) => void;
   updateBuildSession: (session: BuildSession | ((current: BuildSession) => BuildSession)) => void;
 }
+
+const NO_TRAITS: CharacterTrait[] = [];
+/** Traits only apply to `character` projects; other types keep the data but ignore it. */
+export const selectActiveCharacterTraits = (state: Pick<ProjectState, 'projectType' | 'characterTraits'>): CharacterTrait[] =>
+  state.projectType === 'character' ? state.characterTraits ?? NO_TRAITS : NO_TRAITS;
 
 export const useProjectStore = create<ProjectStore>()(
   devtools(
@@ -144,6 +151,7 @@ export const useProjectStore = create<ProjectStore>()(
               ...defaults,
               ...project,
               targetModel: resolveTargetModel(project.targetModel),
+              characterTraits: normalizeCharacterTraits(project.characterTraits),
               sourceImages: migrated?.sourceImages ?? project.sourceImages,
               datasetItems: migrated?.datasetItems ?? supportedDatasetItems,
               dataset,
@@ -164,6 +172,9 @@ export const useProjectStore = create<ProjectStore>()(
             ...(targetModel ? { targetModel } : {}),
             lastModified: new Date(),
           })),
+
+        setCharacterTraits: (traits) =>
+          set((state) => ({ ...state, characterTraits: normalizeCharacterTraits(traits), lastModified: new Date() })),
 
         renameProject: (name: string) =>
           set((state) => ({

@@ -4,6 +4,7 @@ import type { BuildSession, ProjectType, TargetModelId } from '../../types';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { buildDatasetQualityInput, collectBuildQualitySummaries } from '../../services/quality/datasetQualityInput';
 import { buildQualityReport } from '../../services/quality/metrics';
+import { selectActiveCharacterTraits, useProjectStore } from '../../stores/useProjectStore';
 import { useSimilarityFeatures } from '../../services/similarity/useSimilarityFeatures';
 
 type Options = {
@@ -27,12 +28,13 @@ export const useDatasetQualityReport = ({ featuresActive, items, candidates, ses
     for (const item of [...datasetItems, ...candidates]) if (item.kind !== 'video') byId.set(item.id, item);
     return [...byId.values()];
   }, [candidates, datasetItems]);
+  const characterTraits = useProjectStore(selectActiveCharacterTraits);
   const features = useSimilarityFeatures(pool, { active: featuresActive });
   const summaries = useMemo(() => collectBuildQualitySummaries(session), [session.records]);
   const report = useMemo(() => buildQualityReport(buildDatasetQualityInput({
     items: datasetItems, candidates, triggerWord, target: session.profile.target, targetModel,
-    projectType, qualitySummaries: summaries, features,
-  })), [candidates, datasetItems, features, projectType, session.profile.target, summaries, targetModel, triggerWord]);
+    projectType, characterTraits, qualitySummaries: summaries, features,
+  })), [candidates, characterTraits, datasetItems, features, projectType, session.profile.target, summaries, targetModel, triggerWord]);
   const labels = useMemo(() => new Map(pool.map((item) => [item.id, item.originalFileName || item.fileName])), [pool]);
   const labelFor = (id: string) => labels.get(id) ?? id;
   return { report, features, datasetItems, labelFor };

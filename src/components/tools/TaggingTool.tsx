@@ -5,7 +5,8 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useId, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import { AlertCircle, Plus, Plug, Sparkles, Upload, X } from 'lucide-react';
-import { useProjectStore } from '../../stores/useProjectStore';
+import { selectActiveCharacterTraits, useProjectStore } from '../../stores/useProjectStore';
+import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import {
@@ -935,7 +936,7 @@ export const TaggingTool = ({
           autoCaptionMaxTags
         );
         if (autoTaggingRunTokenRef.current !== runToken) { task.finish('cancelled', 'Captions were not changed.'); setLocalTaggerStatus('ready'); setLocalTaggerMessage('Ready. Auto-caption stopped.'); return; }
-        predictedTagsByItemId.set(item.id, predictions.map((prediction) => prediction.tag));
+        predictedTagsByItemId.set(item.id, applyCharacterTraits(predictions.map((prediction) => prediction.tag), selectActiveCharacterTraits(useProjectStore.getState())));
 
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       }

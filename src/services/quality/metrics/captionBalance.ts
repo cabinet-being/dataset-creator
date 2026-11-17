@@ -15,12 +15,13 @@ export const countTagFrequencies = (items: readonly QualityItemInput[], triggerW
     .sort((left, right) => right.files - left.files || left.tag.localeCompare(right.tag));
 };
 
-export const measureCommonTags = (items: readonly QualityItemInput[], triggerWord = '', policy?: TagPolicy): QualityMetric => {
+export const measureCommonTags = (items: readonly QualityItemInput[], triggerWord = '', policy?: TagPolicy, traitTags: readonly string[] = []): QualityMetric => {
   const title = 'Tags in almost every file';
   if (items.length < 3) {
     return { id: 'common-tags', title, value: null, display: 'too few files', status: 'ok', evaluated: false, explanation: 'At least 3 files are required.' };
   }
-  const common = countTagFrequencies(items, triggerWord).filter((entry) => entry.fraction >= T.tags.commonFraction);
+  const traits = new Set(traitTags.map(normalizeTag));
+  const common = countTagFrequencies(items, triggerWord).filter((entry) => entry.fraction >= T.tags.commonFraction && !traits.has(entry.tag));
   const mode = policy?.constantTags ?? 'review';
   const base = {
     id: 'common-tags', title, value: common.length,

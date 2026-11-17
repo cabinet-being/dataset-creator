@@ -1,5 +1,5 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import type { BuildSession, ImageQualitySummary, ProjectType, TargetModelId } from '../../types';
+import type { BuildSession, CharacterTrait, ImageQualitySummary, ProjectType, TargetModelId } from '../../types';
 import { getBuildAssetId } from '../build/buildSessionService';
 import { resolveAssetCaption } from '../caption/captionResolver';
 import type { SimilarityBasis } from '../similarity/similarityLevels';
@@ -51,6 +51,7 @@ export type DatasetQualitySource = {
   /** Project target model; owns the one min-short-side setting. */
   targetModel?: TargetModelId;
   projectType?: ProjectType;
+  characterTraits?: readonly CharacterTrait[];
   qualitySummaries?: ReadonlyMap<string, ImageQualitySummary>;
   features?: { basis: SimilarityBasis; embeddings: Record<string, Float32Array>; sha256ById?: Record<string, string> };
 };
@@ -89,5 +90,6 @@ export const buildDatasetQualityInput = (source: DatasetQualitySource): QualityR
     resolutionPreset: source.targetModel ?? DEFAULT_TARGET_MODEL,
     ...(technical ? { technical } : {}),
     projectType: source.projectType,
+    ...(source.characterTraits?.length ? { characterTraitTags: source.characterTraits.map((trait) => trait.tag) } : {}),
   };
 };

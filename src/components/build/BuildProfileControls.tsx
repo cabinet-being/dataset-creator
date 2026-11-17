@@ -1,9 +1,10 @@
 import { PROJECT_TYPE_PROFILES, TARGET_MODEL_PRESETS } from '../../lib/projectProfiles';
 import { useProjectStore } from '../../stores/useProjectStore';
+import { CharacterTraitsEditor } from './CharacterTraitsEditor';
 import type { ProjectType, TargetModelId } from '../../types';
 
 /** Project type and target model; the model is the single source of the minimum short side. */
-export function BuildProfileControls({ onModelChange }: { onModelChange?: (model: TargetModelId) => void }) {
+export function BuildProfileControls({ onModelChange, suggestions }: { onModelChange?: (model: TargetModelId) => void; suggestions?: readonly string[] }) {
   const projectType = useProjectStore((state) => state.projectType);
   const targetModel = useProjectStore((state) => state.targetModel);
   const setProjectProfile = useProjectStore((state) => state.setProjectProfile);
@@ -19,5 +20,6 @@ export function BuildProfileControls({ onModelChange }: { onModelChange?: (model
     }} className={selectClass}>
       {(Object.keys(TARGET_MODEL_PRESETS) as TargetModelId[]).map((id) => <option key={id} value={id}>{TARGET_MODEL_PRESETS[id].label} (min {TARGET_MODEL_PRESETS[id].minShortSide}px)</option>)}
     </select></label>
+    <CharacterTraitsEditor suggestions={suggestions} />
   </>;
 }

@@ -98,6 +98,8 @@ export type QualityReportInput = {
   /** Undefined means technical checks have not run yet. */
   technical?: ImageQualityVerdict[];
   projectType?: ProjectType;
+  /** Tags the user deliberately keeps (`include`) or leaves to the trigger (`omit`); never reported as constant tags to remove. */
+  characterTraitTags?: readonly string[];
 };
 
 export type QualityReport = {
