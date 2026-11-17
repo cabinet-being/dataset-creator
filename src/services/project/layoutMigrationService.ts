@@ -39,6 +39,7 @@ import {
   statProjectFile,
   type AssetRecord,
 } from './assetRegistryService';
+import { invalidateProjectJsonMigrations } from './projectJsonMigrationsCache';
 import { applyBuildSessionPathMoves, normalizeBuildSession } from '../build/buildSessionService';
 import { applyProjectRelativePathMoves, type ExplorerPathMove } from '../../lib/datasetAssets';
 import type { AspectRatio, AugmentationConfig, CropFrame, ImageType } from '../../types';
@@ -211,6 +212,7 @@ const listEntries = async (directory: ProjectDirectoryHandle) => {
 };
 
 const writeAt = async (root: ProjectDirectoryHandle, path: string, value: Blob | string) => {
+  if (path === PROJECT_FILE) invalidateProjectJsonMigrations(root);
   const handle = await (await getDirectory(root, parentOf(path), true)).getFileHandle(nameOf(path), { create: true });
   const writable = await handle.createWritable();
   try {

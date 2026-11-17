@@ -34,6 +34,9 @@ import type { ReviewScope } from '../../lib/workspaceToolScope';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 
+/** Stable fallback so the selector does not return a fresh object (and re-render) on every store change. */
+const EMPTY_CLEANUP_STATE: { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> } = {};
+
 type SortMode = 'dataset-order' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc' | 'kind-asc' | 'kind-desc' | 'format-asc' | 'format-desc' | 'dimensions-desc' | 'dimensions-asc' | 'bytes-desc' | 'bytes-asc' | 'date-desc' | 'date-asc';
 type ExportStatus = 'active' | 'inactive';
 
@@ -184,7 +187,7 @@ export const FinalReviewTool = ({
     (state) =>
       (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
-        | undefined) ?? {}
+        | undefined) ?? EMPTY_CLEANUP_STATE
   );
   const addNotification = useUIStore((state) => state.addNotification);
   const projectDirectoryHandle = useUIStore((state) => state.projectDirectoryHandle);

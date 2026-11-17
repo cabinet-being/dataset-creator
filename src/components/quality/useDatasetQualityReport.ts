@@ -28,7 +28,7 @@ export const useDatasetQualityReport = ({ featuresActive, items, candidates, ses
     return [...byId.values()];
   }, [candidates, datasetItems]);
   const features = useSimilarityFeatures(pool, { active: featuresActive });
-  const summaries = useMemo(() => collectBuildQualitySummaries(session), [session]);
+  const summaries = useMemo(() => collectBuildQualitySummaries(session), [session.records]);
   const report = useMemo(() => buildQualityReport(buildDatasetQualityInput({
     items: datasetItems, candidates, triggerWord, target: session.profile.target, targetModel,
     projectType, qualitySummaries: summaries, features,

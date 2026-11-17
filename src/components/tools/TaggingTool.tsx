@@ -33,6 +33,9 @@ import { persistCaptionTagsForItems as persistAssetCaptionTags } from '../../ser
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { CaptionEditor } from '../caption/CaptionEditor';
 
+/** Stable fallback so the selector does not return a fresh object (and re-render) on every store change. */
+const EMPTY_CLEANUP_STATE: { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> } = {};
+
 type InsertMode = 'prepend' | 'append' | 'overwrite';
 
 const canAutoTagItem = (item: WorkspaceImage): boolean =>
@@ -381,7 +384,7 @@ export const TaggingTool = ({
     (state) =>
       (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
-        | undefined) ?? {}
+        | undefined) ?? EMPTY_CLEANUP_STATE
   );
   const initialSelectedItemId = useProjectStore(
     (state) => (state.toolState.tagging as { selectedItemId?: string } | undefined)?.selectedItemId

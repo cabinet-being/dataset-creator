@@ -471,11 +471,13 @@ export const useProjectStore = create<ProjectStore>()(
           })),
 
         updateBuildSession: (session) =>
-          set((state) => ({
-            ...state,
-            buildSession: typeof session === 'function' ? session(state.buildSession) : session,
-            lastModified: new Date(),
-          })),
-      })
+          set((state) => {
+            const next = typeof session === 'function' ? session(state.buildSession) : session;
+            // A patch that changed nothing must not notify subscribers or schedule a save.
+            return next === state.buildSession ? state : { ...state, buildSession: next, lastModified: new Date() };
+          }),
+      }),
+    // Opt-in only: Redux DevTools serializes the whole multi-MB state on every update, which made Build lag.
+    { enabled: import.meta.env?.VITE_STORE_DEVTOOLS === '1' }
   )
 );

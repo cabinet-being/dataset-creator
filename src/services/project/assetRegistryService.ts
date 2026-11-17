@@ -203,6 +203,9 @@ export const commitAssetRegistry = async (root: ProjectDirectoryHandle, next: As
   return true;
 };
 
+/** True once the live registry of this root has been read from or written to assets.json. */
+export const isAssetRegistrySaved = (root: ProjectDirectoryHandle): boolean => states.get(root)?.baseline !== undefined;
+
 /** Serialised read-modify-write of the live registry. No-op (false) for a root without a live registry. */
 export const updateAssetRegistry = (
   root: ProjectDirectoryHandle,

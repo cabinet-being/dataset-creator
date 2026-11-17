@@ -51,13 +51,15 @@ export const selectBuildDatasetItems = (items: readonly WorkspaceImage[]): Works
   items.filter((item) => item.kind !== 'video' && isProjectDatasetPath(item.assetPath));
 
 /** One source of truth for the Build stepper and the Project Home stage cards. */
-export const getBuildStageSummary = ({ session, effectiveItems, candidates, readiness }: {
+export const getBuildStageSummary = ({ session, effectiveItems, candidates, readiness, counts: knownCounts }: {
   session: BuildSession;
+  /** Counts the caller already computed for this session and items. */
+  counts?: BuildCounts;
   effectiveItems: readonly WorkspaceImage[];
   candidates: readonly WorkspaceImage[];
   readiness?: QualityStatus;
 }): BuildStageSummary => {
-  const counts = getBuildCounts(session, [...effectiveItems]);
+  const counts = knownCounts ?? getBuildCounts(session, [...effectiveItems]);
   const dataset = selectBuildDatasetItems(effectiveItems);
   const captioned = dataset.filter((item) => Boolean(item.tags?.length)).length;
   const materials = candidates.length;

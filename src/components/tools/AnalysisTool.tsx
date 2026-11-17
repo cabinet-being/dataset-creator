@@ -48,6 +48,9 @@ import { buildDatasetQualityInput, collectBuildQualitySummaries } from '../../se
 import { buildQualityReport } from '../../services/quality/metrics';
 import { QUALITY_STATUS_TEXT } from '../quality/QualityReport';
 
+/** Stable fallback so the selector does not return a fresh object (and re-render) on every store change. */
+const EMPTY_CLEANUP_STATE: { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> } = {};
+
 type AnalysisTargetMode = 'project' | 'dataset' | 'file';
 type AnalysisView = 'overview' | 'duplicates' | 'similar' | 'coverage' | 'tags' | 'outliers';
 type SimilarGroupSort = 'risk' | 'similarity' | 'coverage' | 'size';
@@ -957,7 +960,7 @@ export const AnalysisTool = ({
     (state) =>
       (state.toolState.clean as
         | { workingEdits?: Record<string, { blob: Blob; previewUrl: string; width: number; height: number }> }
-        | undefined) ?? {}
+        | undefined) ?? EMPTY_CLEANUP_STATE
   );
   const { addNotification } = useUIStore();
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
@@ -1436,7 +1439,7 @@ export const AnalysisTool = ({
     items: items.filter((item) => item.kind !== 'video'), candidates: coverageCandidateItems, triggerWord: dataset.triggerWord,
     target: buildSession.profile.target, targetModel, projectType,
     qualitySummaries: collectBuildQualitySummaries(buildSession), features: similarityFeatures,
-  })) : undefined, [buildSession, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode, targetModel]);
+  })) : undefined, [buildSession.records, buildSession.profile.target, coverageCandidateItems, dataset, items, projectType, similarityFeatures, targetMode, targetModel]);
   const qualityAttention = qualityReport ? qualityReport.required.filter((metric) => metric.status !== 'ok').length : 0;
   const traitReadyCount = visualItems.filter((item) => visualTraitsById[item.id]).length;
   const embeddingReadyCount = visualItems.filter((item) => itemEmbeddings[item.id]).length;

@@ -21,7 +21,7 @@ import { ExplorerTree, getExplorerIcon, type ExplorerTreeNode } from './componen
 import { useDocumentStateStore } from './stores/useDocumentStateStore';
 import { type EmptyDatasetSuggestion } from './components/workspace/DatasetBoard';
 import { DatasetToolView, DatasetWorkspaceView } from './components/workspace/DatasetWorkspaceView';
-import { WorkspaceInspector, type FileInspectorMetadata, type InspectorSectionId } from './components/workspace/WorkspaceInspector';
+import { ConnectedWorkspaceInspector, type FileInspectorMetadata, type InspectorSectionId } from './components/workspace/WorkspaceInspector';
 import { WorkspaceTabMenus, type ExplorerContextMenuState } from './components/workspace/WorkspaceTabMenus';
 import { buildDatasetBoardContextActionGroups, buildDirectoryContextActionGroups, buildFileContextActionGroups, type CreateExplorerAction } from './lib/explorerContextActions';
 import { findFileTab, isFileBackedTab, type FileWorkspaceTab } from './lib/workspaceFileTabs';
@@ -53,7 +53,6 @@ import {
   PanelRight,
 } from 'lucide-react';
 import { useProjectStore } from './stores/useProjectStore';
-import { useInspectorSelectionStore } from './stores/useInspectorSelectionStore';
 import { useUIStore } from './stores/useUIStore';
 import {
   TOOLS,
@@ -254,11 +253,6 @@ function App() {
   useEscapeToClose(Boolean(explorerContextMenu), () => setExplorerContextMenu(null));
 
   const activeTab = openTabs.find((tab) => tab.id === activeTabId) ?? null;
-  const activeInspectorSelection = useInspectorSelectionStore((state) =>
-    state.projectId === projectId && state.activeOwnerId === activeTabId && activeTabId
-      ? state.selections[activeTabId] ?? null
-      : null
-  );
   const activeTool = activeTab?.kind === 'tool' ? activeTab.tool : activeTab?.kind === 'dataset-tool' ? getDatasetToolBaseTool(activeTab.tool) : null;
   const activeDataset =
     activeTab?.kind === 'dataset' || activeTab?.kind === 'dataset-tool'
@@ -1249,9 +1243,9 @@ function App() {
                 </div>
               )}
 </div> },
-    { id: 'window:inspector', title: 'Inspector', icon: PanelRight, content: <div className="h-full overflow-auto p-3"><WorkspaceInspector
+    { id: 'window:inspector', title: 'Inspector', icon: PanelRight, content: <div className="h-full overflow-auto p-3"><ConnectedWorkspaceInspector
       activeTab={activeTab} activeTabId={activeTabId} activeTool={activeTool} activeDatasetName={activeDataset?.name}
-      activeInspectorSelection={activeInspectorSelection} inspectorSectionsOpen={inspectorSectionsOpen} setInspectorSectionOpen={setInspectorSectionOpen}
+      inspectorSectionsOpen={inspectorSectionsOpen} setInspectorSectionOpen={setInspectorSectionOpen}
       fileInspectorMetadata={fileInspectorMetadata} showFileInspector={showFileInspector} showAnalysisInspector={showAnalysisInspector}
       inspectorWindowOpen={dock.isOpen('window:inspector')} onFocusView={(id) => focusView(id)} /></div> },
     { id: 'window:output', title: 'Output', icon: PanelBottom,

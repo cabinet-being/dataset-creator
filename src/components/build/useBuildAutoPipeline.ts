@@ -119,7 +119,7 @@ export function useBuildAutoPipeline(input: Input) {
       setPhase('idle'); setProgress({ completed: 0, total: 0 });
       setTick((value) => value + 1);
     });
-  }, [input.active, input.enabled, input.busy, input.session, input.targetModel, input.candidates, input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, paused, tick, projectId]);
+  }, [input.active, input.enabled, input.busy, input.session.order, input.session.records, input.session.profile, input.session.auto, input.targetModel, input.candidates, input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, paused, tick, projectId]);
 
   const taggingTargets = (session: BuildSession, candidates: WorkspaceImage[]) => candidates.filter((item) => {
     if (!isMeasurable(item)) return false;

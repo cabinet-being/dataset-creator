@@ -7,7 +7,8 @@ import type { WorkspaceTab } from '../../lib/workspaceTabs';
 import { TOOL_LABELS } from '../../lib/constants';
 import { TOOL_ICONS as toolIcons } from '../../lib/toolDefinitions';
 import type { ToolName } from '../../types';
-import type { InspectorSelectionPayload } from '../../stores/useInspectorSelectionStore';
+import { useInspectorSelectionStore, type InspectorSelectionPayload } from '../../stores/useInspectorSelectionStore';
+import { useProjectStore } from '../../stores/useProjectStore';
 
 export type InspectorSectionId = 'object' | 'actions' | 'file' | 'dataset' | 'photopea' | 'review' | 'analysis' | 'caption';
 
@@ -24,6 +25,20 @@ const getAspectRatioLabel = (width: number, height: number): string => {
   const value = divisor(width, height);
   return `${Math.round(width / value)}:${Math.round(height / value)}`;
 };
+
+type WorkspaceInspectorProps = Parameters<typeof WorkspaceInspector>[0];
+
+/** Subscribes to the active selection itself so a selection change re-renders only the Inspector, not App. */
+export function ConnectedWorkspaceInspector(props: Omit<WorkspaceInspectorProps, 'activeInspectorSelection'>) {
+  const projectId = useProjectStore((state) => state.id);
+  const { activeTabId } = props;
+  const activeInspectorSelection = useInspectorSelectionStore((state) =>
+    state.projectId === projectId && state.activeOwnerId === activeTabId && activeTabId
+      ? state.selections[activeTabId] ?? null
+      : null
+  );
+  return <WorkspaceInspector {...props} activeInspectorSelection={activeInspectorSelection} />;
+}
 
 export function WorkspaceInspector({
   activeTab, activeTabId, activeTool, activeDatasetName, activeInspectorSelection, inspectorSectionsOpen, setInspectorSectionOpen,

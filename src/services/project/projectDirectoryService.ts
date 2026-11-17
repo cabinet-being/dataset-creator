@@ -17,6 +17,7 @@ import { snapshotFileIfNeeded } from './fileSnapshotService';
 import { isTriggerMissing, readCaptionFile, readCaptionRaw, writeCaptionFile } from '../caption/captionFileService';
 import { migrateLegacyCaptions, type PathCaptionAsset } from '../caption/captionMigrationService';
 import { isLegacyProjectRootPath } from './projectPathFilters';
+import { getCachedProjectJsonMigrations, setCachedProjectJsonMigrations } from './projectJsonMigrationsCache';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import { migrateLegacyDatasetExclusions } from './legacyDatasetExclusionService';
 import {
@@ -40,6 +41,7 @@ import { hashAssetBlob, reconcileProjectAssets, type AssetReconcileReport } from
 import {
   commitAssetRegistry,
   getActiveAssetRegistry,
+  isAssetRegistrySaved,
   loadAssetRegistry,
   statProjectFile,
   updateAssetRegistry,
@@ -494,8 +496,12 @@ export const projectJsonToManifest = (json: ProjectJsonV3): DirectoryProjectMani
 };
 
 const readProjectJsonMigrations = async (directory: ProjectDirectoryHandle): Promise<ProjectJsonV3['project']['migrations']> => {
+  const cached = getCachedProjectJsonMigrations<ProjectJsonV3['project']['migrations']>(directory);
+  if (cached) return cached.value;
   try {
-    return (JSON.parse(await readTextFile(await getDirectoryAtPath(directory, PROJECT_INTERNAL_DIRECTORY), 'project.json')) as ProjectJsonV3).project?.migrations;
+    const migrations = (JSON.parse(await readTextFile(await getDirectoryAtPath(directory, PROJECT_INTERNAL_DIRECTORY), 'project.json')) as ProjectJsonV3).project?.migrations;
+    setCachedProjectJsonMigrations(directory, migrations);
+    return migrations;
   } catch {
     return undefined;
   }
@@ -507,16 +513,20 @@ const writeProjectManifest = async (
   project: ProjectState,
   paths: ManifestPaths = {}
 ) => {
-  if (await detectProjectLayout(directory) === 'v2') {
+  const layout = await detectProjectLayout(directory);
+  if (layout === 'v2') {
     await writeTextFile(directory, PROJECT_DIRECTORY_MANIFEST, JSON.stringify(getProjectManifest(project, paths), null, 2));
     return;
   }
   // A brand-new project has no sidecars or sidecar tags to convert, so it starts with those conversions marked complete.
   const completedAt = new Date().toISOString();
-  const migrations = await detectProjectLayout(directory) === 'v3'
+  const migrations = layout === 'v3'
     ? await readProjectJsonMigrations(directory)
     : { captionsTxt: { id: 'new-project', completedAt }, assetsRegistry: { id: 'new-project', completedAt } };
-  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(serializeProjectJson(project, migrations), null, 2));
+  const json = serializeProjectJson(project, migrations);
+  await writeTextFileAtPath(directory, PROJECT_FILE, JSON.stringify(json, null, 2));
+  // The file now holds exactly these markers; remembering them skips re-parsing it on the next save.
+  setCachedProjectJsonMigrations(directory, json.project.migrations);
 };
 
 const getDefaultSourceManifestPath = (source: SourceImage): string => {
@@ -964,7 +974,10 @@ const removeEditedAssetV3 = async (root: ProjectDirectoryHandle, id: string, pre
 };
 
 const applyRegistryChanges = (root: ProjectDirectoryHandle, changes: RegistryChanges) =>
-  updateAssetRegistry(root, (assets) => {
+  // Nothing to change and assets.json already exists: serializing the whole registry just to find it identical is wasted work.
+  !changes.upserts.length && !changes.removeIds.size && !changes.removePaths.size && isAssetRegistrySaved(root)
+    ? Promise.resolve(false)
+    : updateAssetRegistry(root, (assets) => {
     for (const id of changes.removeIds) delete assets[id];
     for (const [id, record] of Object.entries(assets)) {
       if (changes.removePaths.has(record.path) && record.role === 'file') delete assets[id];

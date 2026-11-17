@@ -156,6 +156,13 @@ const createRecord = (item: BuildCandidate, now: string, transform?: BuildTransf
   updatedAt: now,
 });
 
+/** Id lookup where the first item wins, matching the former `find` semantics. */
+const firstItemById = <T extends BuildCandidate>(items: readonly T[]): Map<string, T> => {
+  const map = new Map<string, T>();
+  for (const item of items) { const id = getBuildAssetId(item); if (!map.has(id)) map.set(id, item); }
+  return map;
+};
+
 export const reconcileBuildSession = (
   current: BuildSession,
   items: BuildCandidate[],
@@ -164,7 +171,9 @@ export const reconcileBuildSession = (
 ): BuildSession => {
   const session = normalizeBuildSession(current);
   const itemIds = items.map(getBuildAssetId);
-  const order = [...session.order, ...itemIds.filter((id) => !session.order.includes(id))];
+  const knownIds = new Set(session.order);
+  const order = [...session.order, ...itemIds.filter((id) => !knownIds.has(id))];
+  const physicalById = firstItemById(physicalItems);
   const records = { ...session.records };
   for (const item of items) {
     const assetId = getBuildAssetId(item);
@@ -175,7 +184,7 @@ export const reconcileBuildSession = (
       records[assetId] = createRecord(item, now, transform);
       continue;
     }
-    const output = previous.outputAssetId ? physicalItems.find((candidate) => getBuildAssetId(candidate) === previous.outputAssetId) : undefined;
+    const output = previous.outputAssetId ? physicalById.get(previous.outputAssetId) : undefined;
     const stale = previous.acceptedRevision !== undefined && previous.acceptedRevision !== revision;
     const outputStale = previous.decision === 'accepted' && previous.application === 'applied' && Boolean(previous.outputAssetId) &&
       (!output || !previous.outputRevision || previous.outputRevision !== getBuildAssetRevision(output, output.tags, transform) ||
@@ -249,6 +258,7 @@ export const selectBuildQueue = <T extends BuildCandidate>(session: BuildSession
 
 export const getBuildCounts = (session: BuildSession, items: BuildCandidate[]): BuildCounts => {
   const byId = new Map(items.map((item) => [getBuildAssetId(item), item]));
+  const firstById = firstItemById(items);
   let ready = 0; let saving = 0; let unresolved = 0; let errors = 0;
   for (const id of session.order) {
     const item = byId.get(id); const record = session.records[id];
@@ -257,7 +267,7 @@ export const getBuildCounts = (session: BuildSession, items: BuildCandidate[]): 
     if (record.application === 'pending') saving += 1;
     if (record.application === 'failed' || record.validation === 'error') errors += 1;
     const physicalItem = record.outputAssetId
-      ? items.find((candidate) => getBuildAssetId(candidate) === record.outputAssetId)
+      ? firstById.get(record.outputAssetId)
       : item;
     const outputValid = !record.outputAssetId || Boolean(physicalItem && record.outputRevision &&
       record.outputRevision === getBuildAssetRevision(physicalItem, physicalItem.tags, record.transform ?? session.profile.transform));
