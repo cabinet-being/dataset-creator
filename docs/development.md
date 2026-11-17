@@ -16,6 +16,7 @@
 | `npm run test:browser-fixtures` | Збірка стендів із `vite.browser.config.ts` у `dist/browser-fixtures/` |
 | `npm run test:browser` | Збірка стендів і `playwright test` (Chromium) над `vite preview` на `127.0.0.1:4174` за `tests/e2e/*.spec.ts`; порт змінює `PW_PORT` (наприклад `PW_PORT=4175 npm run test:browser`), щоб паралельні checkout-и або worktrees не конфліктували |
 | `npm run test:caption-txt` | TXT як єдине джерело підпису: формат, trigger word, переміщення через межу `dataset/`, міграція sidecar-тегів |
+| `npm run test:character-traits` | Риси персонажа: групи тегів, правила Always tag / Leave to trigger, збереження в `project.json`, виключення з постійних тегів |
 | `npm run test:browser:network` | Лише сценарії з тегом `@network`, один воркер |
 | `npx playwright test --grep @slow` | Тривалі сценарії (one-hour video) |
 
@@ -27,6 +28,7 @@
 | --- | --- |
 | Серіалізація, формат v3, міграція layout (знімок, журнал, resume), реєстр ресурсів і rebind, експорт, індексація, Explorer, Dataset-файли, версії | `npm run test:project-types` |
 | TXT-підписи, trigger word, пакетний перезапис, sidecar → TXT | `npm run test:caption-txt` |
+| Риси персонажа й правила тегера | `npm run test:character-traits` |
 | Docking, геометрія, вкладки й відновлення layout | `npm run test:workspace-layout` |
 | Вибір кадрів, індекс, скасування, fingerprints, запис PNG | `npm run test:video-frames` |
 | Команди, підписи, імпорт/експорт, save queue, навігація | `npm run test:ui-workflows` |
@@ -64,3 +66,5 @@ CI в `.github/workflows/tests.yml` запускає `npm run test:ci` на push
 `scripts/check-docs.mjs` перевіряє README, ARCHITECTURE, DEPLOYMENT, AGENTS та всі Markdown-файли в `docs/`, включно з підпапками. Перевіряються локальні inline/reference-посилання (наявність файлу, без anchors), явні шляхи `src/` до TS/TSX/CSS у backticks і назви `npm run` команд. Зовнішні URL не запитуються; історичні звіти й приватні плани не скануються. Це перевірка посилань і команд, а не повний Markdown-парсер чи перевірка змісту документації.
 
 `.gitignore` виключає кореневий `plan.md`, `tmp/`, кеші, результати тестів, coverage, тимчасові файли та локальні `.env.*`. Шаблони `.env.example` і `.env.*.example` залишаються доступними для комітів. AGENTS і документація залишаються під контролем версій. Ігнорування не діє на вже відстежувані файли; перед комітом усе одно перевіряйте staged diff і додавайте файли явно.
+
+Redux DevTools для store проєкту вимкнено за замовчуванням, бо розширення серіалізує весь багатомегабайтний стан на кожну зміну й гальмує Build. Щоб увімкнути для налагодження, запустіть dev-сервер із `VITE_STORE_DEVTOOLS=1`.
