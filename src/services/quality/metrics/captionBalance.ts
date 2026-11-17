@@ -20,8 +20,10 @@ export const measureCommonTags = (items: readonly QualityItemInput[], triggerWor
   if (items.length < 3) {
     return { id: 'common-tags', title, value: null, display: 'too few files', status: 'ok', evaluated: false, explanation: 'At least 3 files are required.' };
   }
-  const traits = new Set(traitTags.map(normalizeTag));
-  const common = countTagFrequencies(items, triggerWord).filter((entry) => entry.fraction >= T.tags.commonFraction && !traits.has(entry.tag));
+  // Traits are stored in tagger form (blue_eyes); captions may spell them with spaces (blue eyes).
+  const traitKey = (tag: string) => normalizeTag(tag).replace(/[\s_]+/g, '_');
+  const traits = new Set(traitTags.map(traitKey));
+  const common = countTagFrequencies(items, triggerWord).filter((entry) => entry.fraction >= T.tags.commonFraction && !traits.has(traitKey(entry.tag)));
   const mode = policy?.constantTags ?? 'review';
   const base = {
     id: 'common-tags', title, value: common.length,
