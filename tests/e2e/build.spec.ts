@@ -129,3 +129,31 @@ test.describe('build auto pipeline', () => {
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 });
+
+test.describe('character traits', () => {
+  test('character project adds, switches and removes a trait', async ({ page }) => {
+    await page.goto('/tests/build-browser.html');
+    await page.getByRole('button', { name: 'Prepare empty fixture' }).click();
+    const group = page.getByRole('group', { name: 'Character traits' });
+    await expect(group).toBeVisible({ timeout: 20_000 });
+    await group.getByLabel('Trait tag').fill('Blue Eyes');
+    await group.getByRole('button', { name: 'Add trait' }).click();
+    await expect(group.getByText('blue_eyes', { exact: true })).toBeVisible();
+    const mode = group.getByLabel('Mode for blue_eyes');
+    await expect(mode).toHaveValue('include');
+    await mode.selectOption('omit');
+    await expect(mode).toHaveValue('omit');
+    await group.getByLabel('Trait tag').fill('blue_eyes');
+    await group.getByLabel('Trait tag').press('Enter');
+    await expect(group.getByLabel('Mode for blue_eyes')).toHaveCount(1);
+    await group.getByRole('button', { name: 'Remove blue_eyes' }).click();
+    await expect(group.getByText('blue_eyes', { exact: true })).toHaveCount(0);
+  });
+
+  test('other project types do not show the trait editor', async ({ page }) => {
+    await page.goto('/tests/build-browser.html');
+    await page.getByRole('button', { name: 'Prepare style fixture' }).click();
+    await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('group', { name: 'Character traits' })).toHaveCount(0);
+  });
+});

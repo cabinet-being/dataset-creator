@@ -22,7 +22,8 @@
     "test:quality-metrics": "node tests/quality-metrics.mjs",
     "test:model-download": "node tests/model-download.mjs",
     "test:caption-txt": "node tests/caption-txt.mjs",
-    "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery && npm run test:similarity && npm run test:quality-metrics && npm run test:model-download && npm run test:caption-txt",
+    "test:character-traits": "node tests/character-traits.mjs",
+    "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery && npm run test:similarity && npm run test:quality-metrics && npm run test:model-download && npm run test:caption-txt && npm run test:character-traits",
     "test:ci": "npm run lint && npm run test:docs && npm test && npm run build && npm run test:browser",
     "test:docs": "node tests/docs-checker.mjs && node scripts/check-docs.mjs"
   },
