@@ -59,13 +59,23 @@ export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progres
   context.imageSmoothingQuality = 'high';
   const encodeImage = async (item: WorkspaceImage): Promise<{ imageHash: string; image: Float32Array }> => {
     signal?.throwIfAborted();
+    // A PSD is encoded from its existing preview; the raw file is not decodable by the browser.
+    if (item.kind === 'psd' && !item.previewUrl) throw new Error('PSD preview unavailable');
     const imageHash = await hexDigest(item.imageData);
     const imageKey = `${imageHash}:${SEMANTIC_FEATURE_MODEL.visual}`;
     let image = getCachedImageFeature(imageKey);
     if (!image) {
-      const visualBlob = item.kind === 'psd' && item.previewUrl
-        ? await fetch(item.previewUrl, { signal }).then((response) => response.blob())
-        : item.imageData;
+      let visualBlob: Blob = item.imageData;
+      if (item.kind === 'psd' && item.previewUrl) {
+        try {
+          const response = await fetch(item.previewUrl, { signal });
+          if (!response.ok) throw new Error('preview request failed');
+          visualBlob = await response.blob();
+        } catch {
+          signal?.throwIfAborted();
+          throw new Error('PSD preview unavailable');
+        }
+      }
       const bitmap = await createImageBitmap(visualBlob);
       try {
         const scale = 256 / Math.min(bitmap.width, bitmap.height);

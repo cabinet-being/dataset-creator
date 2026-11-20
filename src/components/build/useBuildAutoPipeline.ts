@@ -5,7 +5,7 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { useOperation } from '../../hooks/useOperation';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { resolveDatasetMembership, normalizeDatasetPath } from '../../services/dataset/datasetMembershipResolver';
-import { assembleDataset, encodeAssemblyInputs } from '../../services/dataset/datasetAssemblyService';
+import { assembleDataset, encodeAssemblyInputs, type SkippedAssemblyItem } from '../../services/dataset/datasetAssemblyService';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
 import { hasVideoModel } from '../../services/video/videoCache';
@@ -263,15 +263,24 @@ export function useBuildAutoPipeline(input: Input) {
       }
       let reusable = false;
       try {
+        const skipped: SkippedAssemblyItem[] = [];
         const features = await encodeAssemblyInputs(all, {
           triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
           onProgress: (completed, total) => { lastTotal = total; assemblyOperation.progress(completed, total, 'Understanding images and captions'); setProgress({ completed, total }); },
+          onSkip: (entry) => skipped.push(entry),
         });
+        if (skipped.length && ctx.isCurrent()) {
+          const reasons = new Map<string, number>();
+          for (const { reason } of skipped) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+          latest.current.notify('warning', `Auto-select skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'}: ${[...reasons].map(([reason, count]) => `${reason} (${count})`).join('; ')}.`);
+        }
         assemblyOperation.progress(all.length, all.length, 'Maximizing coverage');
+        const baselineSet = new Set(baseline);
         const plan = await assembleDataset({
           projectId: ctx.startedProject, projectType: useProjectStore.getState().projectType, dataset,
-          baseline: features.slice(0, baseline.length), candidates: features.slice(baseline.length),
-          mode: { kind: 'total', target },
+          baseline: features.filter((entry) => baselineSet.has(entry.item)), candidates: features.filter((entry) => !baselineSet.has(entry.item)),
+          mode: { kind: 'total', target }, signal: ctx.signal,
+          onProgress: ({ completed, total }) => { setProgress({ completed, total }); assemblyOperation.progress(completed, total, 'Maximizing coverage'); },
         });
         ctx.signal.throwIfAborted();
         if (!ctx.isCurrent()) throw abortError();

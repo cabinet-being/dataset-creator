@@ -62,7 +62,9 @@ export async function scanSharedCandidates(root: ProjectDirectoryHandle, options
     const file = await entry.handle.getFile();
     const manifest = readMetadata(root, `${PROJECT_LAYOUT.rawDir}/${entry.path}`);
     if (manifest?.hidden || manifest?.deleted) { skipped.push({ path, reason: 'excluded' }); continue; }
-    const size = await dimensions(file, manifest);
+    let size: { width: number; height: number };
+    try { size = await dimensions(file, manifest); }
+    catch { skipped.push({ path, reason: 'could not be decoded' }); continue; }
     const { tags } = await readCaptionFile(root, path);
     const sourceImageId = manifest?.sourceImageId ?? manifest?.id ?? '';
     candidates.push({
