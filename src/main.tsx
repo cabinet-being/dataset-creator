@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
+import { AppErrorBoundary } from './components/AppErrorBoundary'
 import './index.css'
 import { CommandProvider } from './components/workspace/Commands'
 import { InspectorProvider } from './components/workspace/InspectorHost'
@@ -11,6 +12,6 @@ void requestPersistentStorage()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <CommandProvider><InspectorProvider><App /></InspectorProvider></CommandProvider>
+    <AppErrorBoundary><CommandProvider><InspectorProvider><App /></InspectorProvider></CommandProvider></AppErrorBoundary>
   </React.StrictMode>,
 )

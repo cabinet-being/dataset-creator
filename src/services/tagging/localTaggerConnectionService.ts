@@ -20,7 +20,7 @@ let restoredOnThisPage = false;
 
 const messageFrom = (error: unknown) => error instanceof Error ? error.message : 'Could not connect the model.';
 
-const connectSource = async (source: LocalTaggerBundleSource, current: number): Promise<boolean> => {
+const connectSource = async (source: LocalTaggerBundleSource, current: number, keepWorkerWarm = true): Promise<boolean> => {
   const state = useLocalTaggerStore.getState();
   state.setBundle(null);
   state.setStatus('loading');
@@ -29,7 +29,7 @@ const connectSource = async (source: LocalTaggerBundleSource, current: number): 
   try {
     const bundle = await connectLocalTaggerBundle(source, (progress) => {
       if (current === generation) useLocalTaggerStore.getState().setProgress(progress);
-    });
+    }, { keepWorkerWarm });
     if (current !== generation) {
       await releaseLocalTaggerBundle(bundle);
       return false;
@@ -93,7 +93,7 @@ export const restoreSavedLocalTagger = (requestPermission = false, force = false
       if (!modelFile || !tagsFile) throw new Error('Saved caption model files are unavailable. Choose them again in Settings.');
       await verifyDownloadedFiles({ model: modelFile, tags: tagsFile });
       if (current !== generation) return false;
-      return connectSource({ kind: 'explicit-files', name: names.model, modelFile, tagsFile }, current);
+      return connectSource({ kind: 'explicit-files', name: names.model, modelFile, tagsFile }, current, requestPermission || force);
     } catch (error) {
       if (current === generation) {
         useLocalTaggerStore.getState().setStatus('not-ready');

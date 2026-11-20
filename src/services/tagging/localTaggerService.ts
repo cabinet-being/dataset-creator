@@ -1,5 +1,5 @@
 import type { InferenceSession, Tensor } from 'onnxruntime-web';
-import { isTaggerWorkerSupported, scoreImageInTaggerWorker } from './taggerWorkerClient';
+import { isTaggerWorkerSupported, scoreImageInTaggerWorker, validateModelInTaggerWorker } from './taggerWorkerClient';
 import { filterTagPredictions, packImageChannels, parseSelectedTagCsv, type TagCategory } from './wdTagger';
 
 export type LocalTaggerRuntime = 'webgpu' | 'wasm';
@@ -22,6 +22,18 @@ export type LocalTaggerBundle = {
   inputWidth: number;
   inputHeight: number;
   layout: 'nhwc' | 'nchw';
+  /** Runtime actually used by the tagger worker; updated if the worker falls back from WebGPU. */
+  runtime: LocalTaggerRuntime;
+  /** Identity of the tagger worker that owns this bundle's model (the bundle object itself is not used as owner). */
+  workerKey: object;
+};
+
+/** Structured-cloneable description of a loaded ONNX model, so validation does not need an ORT session on the calling thread. */
+export type TaggerModelInfo = {
+  inputNames: string[];
+  outputNames: string[];
+  inputShapes: Record<string, (number | string)[]>;
+  outputShapes: Record<string, (number | string)[]>;
   runtime: LocalTaggerRuntime;
 };
 
@@ -109,11 +121,23 @@ const readBundleFiles = async (
   return { modelFile: modelFile!, tagsFile: tagsFile! };
 };
 
-const inferInputSpec = (session: InferenceSession) => {
-  const inputName = session.inputNames[0];
-  const outputName = session.outputNames[0];
-  const metadata = session.inputMetadata.find((entry) => entry.name === inputName);
-  const dims = metadata?.isTensor ? metadata.shape : [];
+export const describeSession = (session: InferenceSession, runtime: LocalTaggerRuntime): TaggerModelInfo => {
+  const shapes = (entries: InferenceSession['inputMetadata']): Record<string, (number | string)[]> => Object.fromEntries(
+    entries.flatMap((entry) => (entry.isTensor ? [[entry.name, [...entry.shape] as (number | string)[]] as const] : []))
+  );
+  return {
+    inputNames: [...session.inputNames],
+    outputNames: [...session.outputNames],
+    inputShapes: shapes(session.inputMetadata),
+    outputShapes: shapes(session.outputMetadata),
+    runtime,
+  };
+};
+
+export const inferInputSpec = (info: TaggerModelInfo) => {
+  const inputName = info.inputNames[0];
+  const outputName = info.outputNames[0];
+  const dims = (inputName ? info.inputShapes[inputName] : undefined) ?? [];
   const numericDims = dims.map((dimension) => (typeof dimension === 'number' ? dimension : undefined));
   const secondDim = numericDims[1];
   const layout: 'nhwc' | 'nchw' = secondDim === 3 ? 'nchw' : 'nhwc';
@@ -133,9 +157,8 @@ const inferInputSpec = (session: InferenceSession) => {
   };
 };
 
-const validateOutputTagCount = (session: InferenceSession, outputName: string, tagCount: number) => {
-  const metadata = session.outputMetadata.find((entry) => entry.name === outputName);
-  const shape = metadata?.isTensor ? metadata.shape : [];
+export const validateOutputTagCount = (info: TaggerModelInfo, outputName: string, tagCount: number) => {
+  const shape = info.outputShapes[outputName] ?? [];
   const outputCount = [...shape].reverse().find((dimension) => typeof dimension === 'number' && dimension > 1);
 
   if (typeof outputCount === 'number' && outputCount !== tagCount) {
@@ -145,12 +168,31 @@ const validateOutputTagCount = (session: InferenceSession, outputName: string, t
   }
 };
 
+/** Thrown by createSession (with `failOnWebGpuError`) so the worker can report a WebGPU-specific failure. */
+export class WebGpuSessionError extends Error {}
+
+export type CreateSessionOptions = {
+  disableWebGpu?: boolean;
+  /** Throw WebGpuSessionError instead of falling back to WASM in the same heap. */
+  failOnWebGpuError?: boolean;
+};
+
+const hasWebGpuAdapter = async (): Promise<boolean> => {
+  try {
+    const gpu = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } }).gpu;
+    return Boolean(gpu && (await gpu.requestAdapter()));
+  } catch {
+    return false;
+  }
+};
+
 export const createSession = async (
   ort: OrtModule,
   modelBuffer: ArrayBuffer,
-  onProgress?: LocalTaggerProgress
+  onProgress?: LocalTaggerProgress,
+  options: CreateSessionOptions = {}
 ): Promise<{ session: InferenceSession; runtime: LocalTaggerRuntime }> => {
-  const webGpuAvailable = typeof navigator !== 'undefined' && 'gpu' in navigator;
+  const webGpuAvailable = !options.disableWebGpu && await hasWebGpuAdapter();
 
   if (!globalThis.crossOriginIsolated) {
     ort.env.wasm.numThreads = 1;
@@ -165,6 +207,7 @@ export const createSession = async (
       });
       return { session, runtime: 'webgpu' };
     } catch (error) {
+      if (options.failOnWebGpuError) throw new WebGpuSessionError(error instanceof Error ? error.message : String(error));
       if (import.meta.env.DEV) {
         console.warn('[tagging] WebGPU model load failed, falling back to WASM', error);
       }
@@ -178,9 +221,15 @@ export const createSession = async (
   return { session, runtime: 'wasm' };
 };
 
+export type ConnectLocalTaggerOptions = {
+  /** Keep the tagger worker (and its model) alive after validation. Startup restore passes false so the memory is returned. */
+  keepWorkerWarm?: boolean;
+};
+
 export const connectLocalTaggerBundle = async (
   source: LocalTaggerBundleSource,
-  onProgress?: LocalTaggerProgress
+  onProgress?: LocalTaggerProgress,
+  options: ConnectLocalTaggerOptions = {}
 ): Promise<LocalTaggerBundle> => {
   onProgress?.('Validating model folder...');
   const { modelFile, tagsFile } = await readBundleFiles(source);
@@ -189,6 +238,28 @@ export const connectLocalTaggerBundle = async (
   const parsedTags = parseSelectedTagCsv(await tagsFile.text());
   const tagRows = parsedTags.rows;
   const tags = tagRows.map((tag) => tag.name);
+  if (tags.length === 0) {
+    throw new Error('selected_tags.csv did not contain any usable tags.');
+  }
+  const common = {
+    name: source.name || 'Local model',
+    modelFile,
+    tags,
+    tagCategories: tagRows.map((tag) => tag.category),
+    inputChannelOrder: parsedTags.hasCategories ? 'bgr' as const : 'rgb' as const,
+    workerKey: {},
+  };
+
+  if (isTaggerWorkerSupported()) {
+    // The model is loaded and checked inside the worker; ORT is never instantiated on the main thread.
+    onProgress?.('Loading ONNX model in a background worker...');
+    let inputSpec: ReturnType<typeof inferInputSpec> | undefined;
+    const info = await validateModelInTaggerWorker(common.workerKey, modelFile, (modelInfo) => {
+      inputSpec = inferInputSpec(modelInfo);
+      validateOutputTagCount(modelInfo, inputSpec.outputName, tags.length);
+    }, options.keepWorkerWarm ?? true);
+    return { ...common, runtime: info.runtime, ...inputSpec! };
+  }
 
   onProgress?.('Loading browser ONNX runtime...');
   const ort = await import('onnxruntime-web/all');
@@ -196,26 +267,9 @@ export const connectLocalTaggerBundle = async (
   const { session, runtime } = await createSession(ort, await modelFile.arrayBuffer(), onProgress);
 
   try {
-    const inputSpec = inferInputSpec(session);
-    validateOutputTagCount(session, inputSpec.outputName, tags.length);
-
-    if (tags.length === 0) {
-      throw new Error('selected_tags.csv did not contain any usable tags.');
-    }
-
-    // With a worker available the model is reloaded there on demand; keeping a second copy here would double the memory.
-    const useWorker = isTaggerWorkerSupported();
-    if (useWorker) await session.release();
-    return {
-      name: source.name || 'Local model',
-      session: useWorker ? undefined : session,
-      modelFile,
-      tags,
-      tagCategories: tagRows.map((tag) => tag.category),
-      inputChannelOrder: parsedTags.hasCategories ? 'bgr' : 'rgb',
-      runtime,
-      ...inputSpec,
-    };
+    const inputSpec = inferInputSpec(describeSession(session, runtime));
+    validateOutputTagCount(describeSession(session, runtime), inputSpec.outputName, tags.length);
+    return { ...common, session, runtime, ...inputSpec };
   } catch (error) {
     await session.release();
     throw error;

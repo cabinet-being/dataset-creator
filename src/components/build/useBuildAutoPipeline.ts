@@ -10,6 +10,7 @@ import { computeNarrowing, computeShortlist, qualityScoreFromSummary, type Narro
 import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
+import { TAGGER_MEMORY_MESSAGE } from '../../services/tagging/taggerWorkerClient';
 import { hasVideoModel } from '../../services/video/videoCache';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
 import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
@@ -386,30 +387,51 @@ export function useBuildAutoPipeline(input: Input) {
     const targets = taggingTargets(startSession, candidates, ctx.scope);
     if (!targets.length) return;
     taggingOperation.start(() => cancel(), targets.length);
-    for (const [index, item] of targets.entries()) {
-      ctx.signal.throwIfAborted();
-      const id = getBuildAssetId(item);
-      const record = latest.current.session.records[id] ?? startSession.records[id];
-      const revision = record?.revision ?? getBuildAssetRevision(item);
-      try {
-        const predictions = await predictLocalTags(localTagger, item.imageData, taggingConfig.threshold, taggingConfig.maxTags);
+    // The image encoder shares the page's memory budget with the tagger model.
+    releaseEncoder();
+    // Proposals are applied in one session patch at most once per interval; revision checks happen inside the patch.
+    const proposals: { id: string; revision: string; tags: string[] }[] = [];
+    let lastApplied = Date.now();
+    const flushProposals = () => {
+      lastApplied = Date.now();
+      if (!proposals.length || !ctx.isCurrent()) { proposals.length = 0; return; }
+      const batch = proposals.splice(0);
+      latest.current.patchSession((value) => {
+        let records = value.records;
+        for (const { id, revision, tags } of batch) {
+          const target = records[id];
+          if (!target || target.revision !== revision) continue;
+          records = { ...records, [id]: { ...target, proposal: { tags, revision } } };
+        }
+        return records === value.records ? value : { ...value, records };
+      });
+    };
+    try {
+      for (const [index, item] of targets.entries()) {
         ctx.signal.throwIfAborted();
-        if (!ctx.isCurrent() || latest.current.localTagger !== localTagger) throw abortError();
-        // Raw model tags: character traits are applied when suggestions are shown or merged.
-        const tags = predictions.map((prediction) => prediction.tag);
-        latest.current.patchSession((value) => {
-          const target = value.records[id];
-          if (!target || target.revision !== revision) return value;
-          return { ...value, records: { ...value.records, [id]: { ...target, proposal: { tags, revision } } } };
-        });
-      } catch (error) {
-        if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
-        latest.current.notify('warning', 'Caption suggestions stopped: the local model failed.');
-        taggingOperation.finish('failed', 'The local model failed');
-        return;
+        const id = getBuildAssetId(item);
+        const record = latest.current.session.records[id] ?? startSession.records[id];
+        const revision = record?.revision ?? getBuildAssetRevision(item);
+        try {
+          const predictions = await predictLocalTags(localTagger, item.imageData, taggingConfig.threshold, taggingConfig.maxTags);
+          ctx.signal.throwIfAborted();
+          if (!ctx.isCurrent() || latest.current.localTagger !== localTagger) throw abortError();
+          // Raw model tags: character traits are applied when suggestions are shown or merged.
+          proposals.push({ id, revision, tags: predictions.map((prediction) => prediction.tag) });
+          if (Date.now() - lastApplied >= TRIAGE_APPLY_INTERVAL_MS) flushProposals();
+        } catch (error) {
+          if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
+          flushProposals();
+          const memory = error instanceof Error && error.message === TAGGER_MEMORY_MESSAGE;
+          latest.current.notify(memory ? 'error' : 'warning', memory ? TAGGER_MEMORY_MESSAGE : 'Caption suggestions stopped: the local model failed.');
+          taggingOperation.finish('failed', memory ? 'Not enough memory' : 'The local model failed');
+          return;
+        }
+        taggingOperation.progress(index + 1, targets.length);
+        setProgress({ completed: index + 1, total: targets.length });
       }
-      taggingOperation.progress(index + 1, targets.length);
-      setProgress({ completed: index + 1, total: targets.length });
+    } finally {
+      flushProposals();
     }
     taggingOperation.finish('completed', `${targets.length} suggestion${targets.length === 1 ? '' : 's'} prepared`);
   });
