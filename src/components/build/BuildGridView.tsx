@@ -24,6 +24,8 @@ type Props = {
   onCommit: (entries: Array<{ item: WorkspaceImage; decision: BuildReviewDecision }>) => Promise<void> | void;
   /** Leaves the grid and shows the item in the list. */
   onOpenItem: (index: number) => void;
+  /** Build asset ids on the active shortlist. */
+  shortlisted?: ReadonlySet<string>;
 };
 
 const PAGE = 120;
@@ -48,7 +50,7 @@ const gridState = (session: BuildSession, item: WorkspaceImage): { state: GridSt
 };
 
 /** Thumbnail grid of the current Select queue with multi-select and bulk decisions. */
-export function BuildGridView({ active, root, queue, session, cursor, busy, selected, onSelectedChange, onCursor, onCommit, onOpenItem }: Props) {
+export function BuildGridView({ active, root, queue, session, cursor, busy, selected, onSelectedChange, onCursor, onCommit, onOpenItem, shortlisted }: Props) {
   const [limit, setLimit] = useState(PAGE);
   const anchor = useRef(cursor);
   const grid = useRef<HTMLUListElement>(null);
@@ -118,6 +120,7 @@ export function BuildGridView({ active, root, queue, session, cursor, busy, sele
             className={`relative block aspect-square w-full overflow-hidden rounded border-2 bg-secondary ${isCurrent ? 'border-primary' : isSelected ? 'border-sky-500' : 'border-transparent'} ${isSelected ? 'ring-2 ring-sky-500/60' : ''}`}>
             {previews[item.id] ? <img src={previews[item.id]} alt={itemName(item)} loading="lazy" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center"><ImageIcon className="h-5 w-5" /></span>}
             <span data-testid="build-grid-badge" className={`absolute left-1 top-1 rounded px-1 text-[10px] ${STATE_CLASS[state]}`}>{STATE_LABEL[state]}</span>
+            {shortlisted?.has(id) && <span data-testid="build-shortlist-badge" className="absolute bottom-1 left-1 rounded bg-primary px-1 text-[10px] text-primary-foreground">Shortlist</span>}
           </button>
         </li>;
       })}

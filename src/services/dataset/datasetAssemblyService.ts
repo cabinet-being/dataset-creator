@@ -59,7 +59,7 @@ export async function encodeAssemblyInputs(items: WorkspaceImage[], options: {
   return features;
 }
 
-const stableKey = (asset: AssemblyInputAsset) => normalizeDatasetPath(asset.item.assetPath ?? asset.item.id);
+export const stableKey = (asset: AssemblyInputAsset) => normalizeDatasetPath(asset.item.assetPath ?? asset.item.id);
 export const coverageAsset = (asset: AssemblyInputAsset): CoverageAsset => ({ key: stableKey(asset), feature: asset.feature });
 const stableSet = (values?: ReadonlySet<string>) => [...(values ?? [])].sort();
 
@@ -89,7 +89,7 @@ const limitsFor = (mode: AssemblyMode, baseline: number) => {
 
 const SLICE_MS = 16;
 const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-const createSlicer = (signal?: AbortSignal) => {
+export const createSlicer = (signal?: AbortSignal) => {
   let sliceStart = performance.now();
   return async () => {
     signal?.throwIfAborted();
@@ -100,7 +100,7 @@ const createSlicer = (signal?: AbortSignal) => {
   };
 };
 /** Row-major n×n clamped cosine similarity (Float32Array, computed once; 2000² = 16 MB). */
-const pairwiseSimilarity = async (vectors: readonly Float32Array[], slice: () => Promise<void>): Promise<Float32Array> => {
+export const pairwiseSimilarity = async (vectors: readonly Float32Array[], slice: () => Promise<void>): Promise<Float32Array> => {
   const size = vectors.length;
   const matrix = new Float32Array(size * size);
   for (let left = 0; left < size; left += 1) {

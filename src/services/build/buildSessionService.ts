@@ -6,6 +6,7 @@ import type {
   BuildTriageProposal,
   BuildReviewRecord,
   BuildSession,
+  BuildShortlistEntry,
   BuildStage,
   BuildTransformRecipe,
   BuildValidationStatus,
@@ -38,7 +39,7 @@ export const createBuildSession = (): BuildSession => ({
 });
 
 const TRIAGE_GROUPS = ['accepted', 'rejected', 'needs-decision'];
-const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected'] as const;
+const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected', 'shortlisted'] as const;
 
 /** Triage is derived data: drop it unless it has a recognisable shape. */
 const normalizeTriage = (value: unknown): BuildTriageProposal | undefined => {
@@ -238,12 +239,69 @@ export const updateBuildDecision = (
   };
 };
 
+export type ActiveShortlist<T extends BuildCandidate> = {
+  /** Still valid and undecided, in rank order. */
+  entries: Array<{ entry: BuildShortlistEntry; item: T }>;
+  /** Pass-2 result restricted to entries that are still valid. */
+  narrowed: T[];
+  size: number;
+};
+
+/** The shortlist without entries whose image changed, moved into the Dataset or was decided by hand. */
+export const getActiveShortlist = <T extends BuildCandidate>(session: BuildSession, items: readonly T[] | ReadonlyMap<string, T>): ActiveShortlist<T> | null => {
+  const shortlist = session.auto?.shortlist;
+  if (!shortlist) return null;
+  const byId: ReadonlyMap<string, T> = Array.isArray(items) ? new Map((items as readonly T[]).map((item) => [getBuildAssetId(item), item])) : items as ReadonlyMap<string, T>;
+  const entries = shortlist.entries.flatMap((entry) => {
+    const item = byId.get(entry.id); const record = session.records[entry.id];
+    if (!item || !record || isProjectDatasetPath(item.assetPath)) return [];
+    if (record.decision !== 'unreviewed' && record.decision !== 'deferred') return [];
+    if (entry.revision !== getBuildContentRevision(item, record.transform ?? session.profile.transform)) return [];
+    return [{ entry, item }];
+  }).sort((left, right) => left.entry.rank - right.entry.rank);
+  const active = new Map(entries.map(({ entry, item }) => [entry.id, item]));
+  const narrowed = (shortlist.narrowed?.ids ?? []).flatMap((id) => active.get(id) ?? []);
+  return { entries, narrowed, size: shortlist.size };
+};
+
+export const createBuildShortlist = (
+  session: BuildSession,
+  result: { needed: number; requested: number; duplicates: number; items: Array<{ item: BuildCandidate; cluster: string; gain: number; rank: number }> },
+  now = new Date().toISOString()
+): BuildSession => ({
+  ...session,
+  auto: {
+    ...session.auto, assembledAt: now, assemblyError: undefined,
+    shortlist: {
+      createdAt: now, needed: result.needed, size: result.requested, duplicatesRejected: result.duplicates,
+      entries: result.items.flatMap(({ item, cluster, gain, rank }) => {
+        const id = getBuildAssetId(item); const record = session.records[id];
+        return record ? [{ id, revision: getBuildContentRevision(item, record.transform ?? session.profile.transform), cluster, gain, rank }] : [];
+      }),
+    },
+  },
+});
+
+export const setBuildShortlistNarrowed = (session: BuildSession, ids: string[], target: number, now = new Date().toISOString()): BuildSession => {
+  const shortlist = session.auto?.shortlist;
+  return shortlist ? { ...session, auto: { ...session.auto, shortlist: { ...shortlist, narrowed: { createdAt: now, target, ids } } } } : session;
+};
+
+export const clearBuildShortlist = (session: BuildSession): BuildSession => {
+  if (!session.auto?.shortlist) return session;
+  const { shortlist: _removed, ...auto } = session.auto;
+  void _removed;
+  return { ...session, auto };
+};
+
 export const selectBuildQueue = <T extends BuildCandidate>(session: BuildSession, items: T[]): T[] => {
   const byId = new Map(items.map((item) => [getBuildAssetId(item), item]));
+  const shortlisted = session.filter === 'shortlisted' ? new Set(getActiveShortlist(session, byId)?.entries.map(({ entry }) => entry.id)) : null;
   return session.order.flatMap<T>((id) => {
     const item = byId.get(id);
     const record = session.records[id];
     if (!item || !record) return [];
+    if (shortlisted && !shortlisted.has(id)) return [];
     if (session.filter === 'errors' && record.application !== 'failed' && record.validation !== 'error') return [];
     if (session.filter === 'unresolved' && record.decision !== 'unreviewed' && record.decision !== 'deferred' && record.validation !== 'stale' && !(record.decision === 'accepted' && record.validation === 'pending')) return [];
     if (session.filter === 'unresolved' && record.decision === 'unreviewed' && record.triage?.group === 'rejected') return [];

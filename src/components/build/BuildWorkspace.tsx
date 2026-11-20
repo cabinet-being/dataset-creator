@@ -31,6 +31,9 @@ import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
 import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
 import { connectLocalTaggerSource, restoreSavedLocalTagger } from '../../services/tagging/localTaggerConnectionService';
 import {
+  clearBuildShortlist,
+  createBuildShortlist,
+  getActiveShortlist,
   getBuildAssetId,
   getBuildAssetRevision,
   assertBuildSourceCurrent,
@@ -55,6 +58,8 @@ import { getBuildStageSummary, mergeBuildItems, selectBuildCandidates, selectBui
 import { useQualityActions } from './useQualityActions';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
+import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
+import { qualityScoreFromSummary } from '../../services/dataset/shortlistService';
 
 type Props = {
   active: boolean;
@@ -469,8 +474,18 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
 
   const pipeline = useBuildAutoPipeline({
     active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled, targetModel,
-    patchSession, dataset, commitDecision, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory,
+    patchSession, dataset, commitDecision, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory, characterTraits,
   });
+  const shortlist = useMemo(() => getActiveShortlist(reconciled, candidates), [reconciled.auto, reconciled.records, reconciled.profile, candidates]);
+  const shortlistedIds = useMemo(() => new Set(shortlist?.entries.map(({ entry }) => entry.id)), [shortlist]);
+  const datasetCount = useMemo(() => resolveDatasetMembership(dataset, effectiveItems).effective.length, [dataset, effectiveItems]);
+  const shortlistNeeded = Math.max(0, reconciled.profile.target - datasetCount);
+  const shortlistCaptions = useMemo(() => {
+    const entries = shortlist?.entries ?? [];
+    const ready = entries.filter(({ item }) => { const record = reconciled.records[getBuildAssetId(item)]; return !!item.tags?.length || (!!record?.proposal && record.proposal.revision === record.revision); }).length;
+    return { ready, missing: entries.length - ready };
+  }, [shortlist, reconciled.records]);
+  const dialogCandidates = useMemo(() => candidates.filter((item) => reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped'), [candidates, reconciled.records]);
   const triageCounts = useMemo(() => getBuildTriageCounts(reconciled, candidates), [candidates, reconciled.order, reconciled.records]);
   const lastFocusPass = useRef(0);
   useEffect(() => {
@@ -601,15 +616,26 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <label className="flex items-start gap-1">Trigger word <TriggerWordInput value={dataset.triggerWord} onApply={(word) => { void changeDatasetTriggerWord(word).then(() => patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) }))).catch((error) => notify('error', error instanceof Error ? error.message : 'Could not change the trigger word')); }} className="w-32 rounded border border-border bg-background px-2 py-1" /></label>
         </div></details>
         <button className="ml-auto rounded border border-border px-2 py-1" onClick={() => setShowAssembly(true)}>Auto-select</button>
-        <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle'} title="Analyze the Dataset and candidates and propose which images to add" onClick={() => pipeline.startAssembly()}>Suggest selection</button>
+        <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle'} title="Analyze the Dataset and candidates and propose which images to add" onClick={() => pipeline.startShortlist()}>Suggest selection</button>
         {suggestionButton(selectedItems.length ? selectedItems : undefined, selectedItems.length ? `Prepare caption suggestions (${selectedItems.length} selected)` : 'Prepare caption suggestions')}
-        {pipeline.needsModelDownload && <span role="alert" className="flex items-center gap-2 rounded bg-amber-500/15 px-2 py-1">Download DINOv2 (~88 MB)?<button type="button" className="underline" onClick={() => pipeline.startAssembly({ allowDownload: true })}>Download and continue</button><button type="button" className="underline" onClick={pipeline.dismissModelDownload}>Not now</button></span>}
-        <select aria-label="Queue filter" value={reconciled.filter} onChange={(event) => patchSessionAndCursor((value) => ({ ...value, filter: event.target.value as BuildSession['filter'], cursor: 0 }))} className="rounded border border-border bg-background px-2 py-1"><option value="all">All</option><option value="unresolved">Undecided</option><option value="needs-decision">Flagged</option><option value="accepted">Accepted (proposed)</option><option value="rejected">Rejected (proposed)</option><option value="errors">Errors</option></select>
+        {pipeline.needsModelDownload && <span role="alert" className="flex items-center gap-2 rounded bg-amber-500/15 px-2 py-1">Download DINOv2 (~88 MB)?<button type="button" className="underline" onClick={pipeline.confirmModelDownload}>Download and continue</button><button type="button" className="underline" onClick={pipeline.dismissModelDownload}>Not now</button></span>}
+        <select aria-label="Queue filter" value={reconciled.filter} onChange={(event) => patchSessionAndCursor((value) => ({ ...value, filter: event.target.value as BuildSession['filter'], cursor: 0 }))} className="rounded border border-border bg-background px-2 py-1"><option value="all">All</option><option value="unresolved">Undecided</option><option value="needs-decision">Flagged</option><option value="accepted">Accepted (proposed)</option><option value="rejected">Rejected (proposed)</option><option value="shortlisted">Shortlisted{shortlist ? ` (${shortlist.entries.length})` : ''}</option><option value="errors">Errors</option></select>
         {queueGroupActive && (acceptTargets.length > 0 || rejectTargets.length > 0) && <>
           <button disabled={busy || !acceptTargets.length} onClick={() => void commitDecision('accepted', acceptTargets)} className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40">Accept all {acceptTargets.length}</button>
           <button disabled={busy || !rejectTargets.length} onClick={() => void commitDecision('skipped', rejectTargets)} className="rounded border border-border px-2 py-1 disabled:opacity-40">Reject all {rejectTargets.length}</button>
         </>}
       </div>
+
+      {shortlist && <div role="group" aria-label="Shortlist" data-testid="build-shortlist-bar" className="flex flex-wrap items-center gap-3 border-b border-border bg-primary/5 px-4 py-2 text-xs">
+        <button type="button" className="font-medium underline" onClick={() => setFilter('shortlisted')}>Shortlist: {shortlist.entries.length} of ~{shortlist.size}</button>
+        <button type="button" className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle' || shortlistCaptions.ready === 0 || shortlistNeeded === 0}
+          title={shortlistCaptions.ready === 0 ? 'Prepare caption suggestions for the shortlist first' : 'Choose the most varied images by tags and appearance'} onClick={() => pipeline.startNarrow()}>Narrow to {shortlistNeeded}</button>
+        {shortlistCaptions.missing > 0 && <span className="text-muted-foreground">{shortlistCaptions.missing} without captions or suggestions</span>}
+        {shortlistCaptions.missing > 0 && suggestionButton(shortlist.entries.map(({ item }) => item), 'Prepare caption suggestions for the shortlist')}
+        {shortlist.narrowed.length > 0 && <><span role="status">Narrowed to {shortlist.narrowed.length}</span>
+          <button type="button" className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle'} onClick={() => pipeline.startApplyNarrowed(shortlist.narrowed)}>Apply {shortlist.narrowed.length} to the Dataset</button></>}
+        <button type="button" className="ml-auto rounded border border-border px-2 py-1" onClick={() => patchSessionAndCursor((value) => ({ ...clearBuildShortlist(value), filter: value.filter === 'shortlisted' ? 'all' : value.filter, cursor: 0 }))}>Clear shortlist</button>
+      </div>}
 
       {view === 'clusters' ? <BuildClusterView active={active} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(targetModel)} busy={busy}
         onCommit={(entries) => commitDecisions(entries)} onOpenItem={(id) => { setView('list'); selectQualityItem(id); }} /> : <>
@@ -617,7 +643,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <section className="relative flex min-h-0 flex-col items-center justify-center overflow-auto bg-black/5 p-4 dark:bg-black/20">
           {view === 'grid' ? <BuildGridView active={active && stage === 'select'} root={root} queue={queue} session={reconciled} cursor={cursor} busy={busy}
             selected={selected} onSelectedChange={setSelected} onCursor={setCursor}
-            onCommit={(entries) => commitDecisions(entries)} onOpenItem={(index) => patchSessionAndCursor((value) => ({ ...value, view: 'list', cursor: index }))} />
+            onCommit={(entries) => commitDecisions(entries)} onOpenItem={(index) => patchSessionAndCursor((value) => ({ ...value, view: 'list', cursor: index }))} shortlisted={shortlistedIds} />
           : current?.kind === 'video' ? <div className="h-full w-full overflow-auto"><VideoFramesTool active={active} tabId={`${viewId}:video:${current.id}`} projectDirectoryHandle={directory} file={current.imageData} fileName={current.fileName} onSaved={onRefresh} /></div>
           : current && mainPreviews[current.id] ? <div className="relative flex h-full w-full items-center justify-center">{cropGeometry
             ? <svg role="img" aria-label={itemName(current)} viewBox={`${cropGeometry.sourceX} ${cropGeometry.sourceY} ${cropGeometry.sourceWidth} ${cropGeometry.sourceHeight}`} className="max-h-full max-w-full rounded-lg shadow-lg" style={{ aspectRatio: `${cropGeometry.outputWidth} / ${cropGeometry.outputHeight}`, height: '100%', width: 'auto' }}><image href={mainPreviews[current.id]} width={current.width} height={current.height} preserveAspectRatio="none" /></svg>
@@ -648,17 +674,19 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         {!!selected.size && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs"><strong>{selected.size} selected</strong><select value={batchMode} onChange={(event) => setBatchMode(event.target.value as 'add' | 'remove' | 'replace')} className="rounded border border-border bg-background px-2 py-1"><option value="add">Add tag</option><option value="remove">Remove tag</option><option value="replace">Replace tag</option></select><input value={batchTag} onChange={(event) => setBatchTag(event.target.value)} className="rounded border border-border bg-background px-2 py-1" placeholder={batchMode === 'replace' ? 'old tag' : 'tag'} />{batchMode === 'replace' && <input value={batchReplacement} onChange={(event)=>setBatchReplacement(event.target.value)} className="rounded border border-border bg-background px-2 py-1" placeholder="new tag" />}<button onClick={() => void applyBatchCaption()} className="rounded border border-border px-2 py-1">Apply</button><button disabled={busy} onClick={() => void commitDecision('accepted', candidates.filter((item) => selected.has(getBuildAssetId(item))))} className="rounded bg-primary px-2 py-1 text-primary-foreground">Accept selected</button><button onClick={() => setSelected(new Set())}>Clear</button></div>}
         {view !== 'grid' && <div className="flex gap-2 overflow-x-auto" aria-label="Candidate filmstrip">{filmstrip.map((item) => { const id = getBuildAssetId(item); const record = reconciled.records[id]; const itemCursor = queue.indexOf(item); return <button key={id} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey) setSelected((ids) => { const next = new Set(ids); if (next.has(id)) next.delete(id); else next.add(id); return next; }); else setCursor(itemCursor); }} className={`relative h-16 w-20 shrink-0 overflow-hidden rounded border-2 ${itemCursor === cursor ? 'border-primary' : selected.has(id) ? 'border-sky-500' : 'border-transparent'}`} title={`${itemName(item)} · ${record?.decision}`}>
           {thumbs[item.id] ? <img src={thumbs[item.id]} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center bg-secondary text-[10px]">{item.kind}</span>}
-          {(record?.decision === 'skipped' || (record?.decision === 'unreviewed' && record.triage?.group === 'rejected')) && <span aria-label="Rejected" className="absolute right-1 top-1 rounded-full bg-red-600 p-0.5 text-white"><X className="h-3 w-3" /></span>}{(record?.decision === 'deferred' || (record?.decision === 'unreviewed' && record.triage?.group === 'needs-decision')) && <span aria-label="Flagged" className="absolute right-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><HelpCircle className="h-3 w-3" /></span>}{record?.decision === 'accepted' && <span className="absolute right-1 top-1 rounded-full bg-emerald-600 p-0.5 text-white"><Check className="h-3 w-3" /></span>}{record?.validation === 'stale' && <span className="absolute left-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><RotateCcw className="h-3 w-3" /></span>}
+          {(record?.decision === 'skipped' || (record?.decision === 'unreviewed' && record.triage?.group === 'rejected')) && <span aria-label="Rejected" className="absolute right-1 top-1 rounded-full bg-red-600 p-0.5 text-white"><X className="h-3 w-3" /></span>}{(record?.decision === 'deferred' || (record?.decision === 'unreviewed' && record.triage?.group === 'needs-decision')) && <span aria-label="Flagged" className="absolute right-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><HelpCircle className="h-3 w-3" /></span>}{record?.decision === 'accepted' && <span className="absolute right-1 top-1 rounded-full bg-emerald-600 p-0.5 text-white"><Check className="h-3 w-3" /></span>}{shortlistedIds.has(id) && <span aria-label="Shortlisted" data-testid="build-shortlist-badge" className="absolute bottom-1 left-1 rounded bg-primary px-1 text-[9px] text-primary-foreground">Shortlist</span>}{record?.validation === 'stale' && <span className="absolute left-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><RotateCcw className="h-3 w-3" /></span>}
         </button>; })}</div>}
       </section>
       </>}
     {!canExport && candidates.length > 0 && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
     </>}
     <BuildNextStageFooter current={stage} onNext={goToStage} />
-    <DatasetAssemblyDialog open={showAssembly} onOpenChange={setShowAssembly} dataset={dataset} items={items} candidates={candidates} directory={directory ?? undefined} projectId={projectId} projectType={projectType} defaultMode="total" defaultTotal={reconciled.profile.target} excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []} onApply={async (paths) => {
-      const selectedItems = candidates.filter((item) => item.assetPath && paths.some((path) => item.assetPath!.replace(/^Project\//, '') === path.replace(/^Project\//, '')));
-      if (selectedItems.length !== paths.length) throw new Error('Some proposed files changed before the selection was applied. Run Auto-select again.');
-      await commitDecision('accepted', selectedItems, 'auto', true);
+    <DatasetAssemblyDialog open={showAssembly} onOpenChange={setShowAssembly} dataset={dataset} items={items} candidates={dialogCandidates} directory={directory ?? undefined} projectId={projectId} projectType={projectType} defaultMode="total" defaultTotal={reconciled.profile.target} excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []} shortlistFlow={{
+      onMark: (result) => patchSession((value) => ({ ...createBuildShortlist(value, { needed: result.needed, requested: result.requested, duplicates: result.duplicates.length, items: result.items }), filter: 'shortlisted', cursor: 0 })),
+      narrow: { hasShortlist: !!shortlist?.entries.length, ready: shortlistCaptions.ready, missing: shortlistCaptions.missing, busy: busy || pipeline.phase !== 'idle' },
+      onNarrowAndApply: () => pipeline.startNarrow({ apply: true }),
+      onPrepareSuggestions: () => prepareSuggestions(shortlist?.entries.map(({ item }) => item)),
+      qualityOf: (item) => { const summary = reconciled.records[getBuildAssetId(item)]?.triage?.quality; return summary ? qualityScoreFromSummary(summary) : undefined; },
     }} />
   </div>;
 }

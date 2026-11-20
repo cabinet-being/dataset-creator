@@ -232,11 +232,33 @@ export interface BuildSession {
   view?: BuildReviewView;
   profile: BuildPreparationProfile;
   cursor: number;
-  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected';
+  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected' | 'shortlisted';
   order: string[];
   records: Record<string, BuildReviewRecord>;
   lastExport?: { fingerprint: string; completedAt: string; entries: number };
-  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string };
+  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string; shortlist?: BuildShortlist };
+}
+
+/** Pass-1 result of Auto-select: marks candidates only; nothing moves into the Dataset until pass 2 is applied. */
+export interface BuildShortlistEntry {
+  /** Build asset id. */
+  id: string;
+  /** Content revision when the entry was created; a changed image drops the entry. */
+  revision: string;
+  cluster: string;
+  gain: number;
+  rank: number;
+}
+export interface BuildShortlist {
+  createdAt: string;
+  /** Images the Dataset still needed when the shortlist was made. */
+  needed: number;
+  /** Wanted shortlist size (the entries may be fewer when the pool is small). */
+  size: number;
+  duplicatesRejected: number;
+  entries: BuildShortlistEntry[];
+  /** Pass-2 result: Build asset ids to add, in rank order. */
+  narrowed?: { createdAt: string; target: number; ids: string[] };
 }
 
 // ============ SIMILARITY ============

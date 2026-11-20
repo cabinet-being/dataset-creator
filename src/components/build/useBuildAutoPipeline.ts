@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import type { BuildReviewDecision, BuildSession, Dataset, TargetModelId } from '../../types';
+import type { BuildReviewDecision, BuildSession, CharacterTrait, Dataset, TargetModelId } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useOperation } from '../../hooks/useOperation';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { resolveDatasetMembership, normalizeDatasetPath } from '../../services/dataset/datasetMembershipResolver';
-import { assembleDataset, encodeAssemblyInputs, type SkippedAssemblyItem } from '../../services/dataset/datasetAssemblyService';
+import type { SkippedAssemblyItem } from '../../services/dataset/datasetAssemblyService';
+import { computeNarrowing, computeShortlist, qualityScoreFromSummary, type NarrowResult, type ShortlistResult } from '../../services/dataset/shortlistService';
+import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
 import { hasVideoModel } from '../../services/video/videoCache';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
 import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
-import { getBuildAssetId, getBuildAssetRevision, getBuildContentRevision } from '../../services/build/buildSessionService';
+import { clearBuildShortlist, createBuildShortlist, getActiveShortlist, getBuildAssetId, getBuildAssetRevision, getBuildContentRevision, setBuildShortlistNarrowed } from '../../services/build/buildSessionService';
 import {
-  applyAssemblyTriage, applyTriageProposal, classifyQualityTriage, createAssemblyKey, findExactDuplicates,
+  applyTriageProposal, classifyQualityTriage, createAssemblyKey, findExactDuplicates,
   getBuildTriageGroup, selectAssemblyCandidates, selectTriageTargets,
 } from '../../services/build/buildTriageService';
 
@@ -37,6 +39,7 @@ type Input = {
   viewId: string;
   notify: (type: 'info' | 'success' | 'error' | 'warning', message: string) => void;
   encoderFactory?: typeof createSemanticFeatureEncoder;
+  characterTraits: CharacterTrait[];
 };
 
 const CHUNK = 8;
@@ -70,6 +73,7 @@ export function useBuildAutoPipeline(input: Input) {
   const latest = useRef(input);
   const running = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const lastRequest = useRef<{ kind: 'shortlist' } | { kind: 'narrow'; apply?: boolean }>({ kind: 'shortlist' });
   const attempted = useRef(new Set<string>());
   const didWork = useRef(false);
   const triageOperation = useOperation('Build triage', input.root, input.viewId);
@@ -231,97 +235,150 @@ export function useBuildAutoPipeline(input: Input) {
     triageOperation.finish('completed', `${targets.length} image${targets.length === 1 ? '' : 's'} analyzed`);
   });
 
-  const runAssembly = (ctx: Ctx) => guarded(ctx, assemblyOperation, async () => {
-    const { session: startSession, candidates, effectiveItems, dataset, encoderFactory = createSemanticFeatureEncoder } = latest.current;
-    const pool = selectAssemblyCandidates(startSession, candidates);
-    const target = startSession.profile.target;
-    if (!pool.length) return;
+  /** Runs `work` with the shared DINOv2 encoder (kept warm afterwards); false means the model still has to be downloaded. */
+  const withEncoder = async (ctx: Ctx, operation: ReturnType<typeof useOperation>, work: (encoder: SemanticEncoder) => Promise<void>, total: number): Promise<boolean> => {
+    const encoderFactory = latest.current.encoderFactory ?? createSemanticFeatureEncoder;
     if (!encoderRef.current && !ctx.allowDownload && encoderFactory === createSemanticFeatureEncoder && !(await hasVideoModel().catch(() => false))) {
       if (ctx.isCurrent()) setNeedsModelDownload(true);
-      return;
+      return false;
     }
     setNeedsModelDownload(false);
-    const assemblyKey = createAssemblyKey(target, pool, startSession);
-    assemblyOperation.start(() => cancel());
-    const failWith = (message: string, severity: 'warning' | 'error') => {
-      if (!ctx.isCurrent()) return;
-      latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: message } }));
-      latest.current.notify(severity, `Auto-select failed: ${message}. Proposals stay for manual review.`);
-    };
-    let selectedIds: string[] = [];
+    const held = encoderRef.current;
+    if (held?.timer) clearTimeout(held.timer);
+    let encoder: SemanticEncoder;
+    if (held && held.factory === encoderFactory) encoder = held.encoder;
+    else {
+      releaseEncoder();
+      encoder = await encoderFactory(ctx.signal, (message) => operation.progress(0, total, message), { allowDownload: ctx.allowDownload });
+    }
+    let reusable = false;
     try {
-      const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
-      const all = [...baseline, ...pool];
-      let lastTotal = all.length;
-      const held = encoderRef.current;
-      if (held?.timer) clearTimeout(held.timer);
-      let encoder: SemanticEncoder;
-      if (held && held.factory === encoderFactory) encoder = held.encoder;
-      else {
-        releaseEncoder();
-        encoder = await encoderFactory(ctx.signal, (message) => assemblyOperation.progress(0, lastTotal, message), { allowDownload: ctx.allowDownload });
-      }
-      let reusable = false;
-      try {
-        const skipped: SkippedAssemblyItem[] = [];
-        const features = await encodeAssemblyInputs(all, {
-          triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
-          onProgress: (completed, total) => { lastTotal = total; assemblyOperation.progress(completed, total, 'Understanding images and captions'); setProgress({ completed, total }); },
+      await work(encoder);
+      reusable = true;
+    } finally {
+      if (reusable && ctx.isCurrent()) encoderRef.current = { encoder, factory: encoderFactory, timer: setTimeout(releaseEncoder, ENCODER_IDLE_MS) };
+      else { if (encoderRef.current?.encoder === encoder) encoderRef.current = null; await encoder.dispose(); }
+    }
+    return true;
+  };
+  const reportSkipped = (ctx: Ctx, skipped: SkippedAssemblyItem[]) => {
+    if (!skipped.length || !ctx.isCurrent()) return;
+    const reasons = new Map<string, number>();
+    for (const { reason } of skipped) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    latest.current.notify('warning', `Auto-select skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'}: ${[...reasons].map(([reason, count]) => `${reason} (${count})`).join('; ')}.`);
+  };
+  const qualityOf = (session: BuildSession) => (item: WorkspaceImage) => {
+    const summary = session.records[getBuildAssetId(item)]?.triage?.quality;
+    return summary ? qualityScoreFromSummary(summary) : undefined;
+  };
+
+  /** Pass 1: marks a visually diverse shortlist; never changes decisions or Dataset membership. */
+  const runShortlist = (ctx: Ctx) => guarded(ctx, assemblyOperation, async () => {
+    const { session: startSession, candidates, effectiveItems, dataset } = latest.current;
+    const pool = selectAssemblyCandidates(startSession, candidates);
+    if (!pool.length) { latest.current.notify('info', 'No analyzed candidates are available to shortlist yet.'); return; }
+    const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
+    const needed = Math.max(0, startSession.profile.target - baseline.length);
+    if (!needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
+    const assemblyKey = createAssemblyKey(startSession.profile.target, pool, startSession);
+    assemblyOperation.start(() => cancel());
+    let result: ShortlistResult | null = null;
+    const skipped: SkippedAssemblyItem[] = [];
+    try {
+      const ran = await withEncoder(ctx, assemblyOperation, async (encoder) => {
+        result = await computeShortlist({
+          baselineItems: baseline, poolItems: pool, needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(startSession),
+          onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
+          onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing a diverse shortlist' : 'Comparing images'); },
           onSkip: (entry) => skipped.push(entry),
-        });
-        if (skipped.length && ctx.isCurrent()) {
-          const reasons = new Map<string, number>();
-          for (const { reason } of skipped) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
-          latest.current.notify('warning', `Auto-select skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'}: ${[...reasons].map(([reason, count]) => `${reason} (${count})`).join('; ')}.`);
-        }
-        assemblyOperation.progress(all.length, all.length, 'Maximizing coverage');
-        const baselineSet = new Set(baseline);
-        const plan = await assembleDataset({
-          projectId: ctx.startedProject, projectType: useProjectStore.getState().projectType, dataset,
-          baseline: features.filter((entry) => baselineSet.has(entry.item)), candidates: features.filter((entry) => !baselineSet.has(entry.item)),
-          mode: { kind: 'total', target }, signal: ctx.signal,
-          onProgress: ({ completed, total }) => { setProgress({ completed, total }); assemblyOperation.progress(completed, total, 'Maximizing coverage'); },
         });
         ctx.signal.throwIfAborted();
         if (!ctx.isCurrent()) throw abortError();
-        const assetIdByKey = new Map(all.map((item) => [normalizeDatasetPath(item.assetPath ?? item.id), getBuildAssetId(item)]));
-        selectedIds = plan.selected.flatMap((step) => assetIdByKey.get(step.key) ?? []);
-        const now = new Date().toISOString();
-        latest.current.patchSession((value) => ({
-          ...applyAssemblyTriage(value, plan, assetIdByKey, now),
-          auto: { ...value.auto, assemblyKey, assembledAt: now, assemblyError: undefined },
-        }));
-        reusable = true;
-      } finally {
-        if (reusable && ctx.isCurrent()) {
-          encoderRef.current = { encoder, factory: encoderFactory, timer: setTimeout(releaseEncoder, ENCODER_IDLE_MS) };
-        } else { if (encoderRef.current?.encoder === encoder) encoderRef.current = null; await encoder.dispose(); }
-      }
+      }, baseline.length + pool.length);
+      if (!ran) return;
     } catch (error) {
       if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
-      assemblyOperation.finish('failed', error instanceof Error ? error.message : 'Failed');
-      failWith(error instanceof Error ? error.message : 'unknown error', 'warning');
+      const message = error instanceof Error ? error.message : 'unknown error';
+      assemblyOperation.finish('failed', message);
+      latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: message } }));
+      latest.current.notify('warning', `Auto-select failed: ${message}. Proposals stay for manual review.`);
       return;
     }
-    assemblyOperation.finish('completed', `${selectedIds.length} image${selectedIds.length === 1 ? '' : 's'} selected`);
-    // This is the only place the pipeline changes Dataset membership.
-    const wanted = new Set(selectedIds);
-    const fresh = useProjectStore.getState().buildSession;
-    const targets = latest.current.candidates.filter((item) => {
-      const id = getBuildAssetId(item); const record = fresh.records[id];
-      return wanted.has(id) && record?.decision === 'unreviewed' && record.triage?.group === 'accepted';
+    reportSkipped(ctx, skipped);
+    const done = result as ShortlistResult | null;
+    if (!done) return;
+    latest.current.patchSession((value) => {
+      const next = createBuildShortlist(value, { needed: done.needed, requested: done.requested, duplicates: done.duplicates.length, items: done.items }, new Date().toISOString());
+      return { ...next, filter: 'shortlisted', cursor: 0, auto: { ...next.auto, assemblyKey } };
     });
+    assemblyOperation.finish('completed', `${done.items.length} image${done.items.length === 1 ? '' : 's'} shortlisted`);
+    latest.current.notify('success', `Shortlisted ${done.items.length} image${done.items.length === 1 ? '' : 's'} (${done.duplicates.length} near-duplicate${done.duplicates.length === 1 ? '' : 's'} skipped). Prepare caption suggestions, then narrow to ${done.needed}.`);
+  });
+
+  /** Tags used by pass 2: the resolved caption, else the model suggestion with character traits applied. */
+  const narrowTagsOf = (session: BuildSession, traits: CharacterTrait[]) => (item: WorkspaceImage): string[] => {
+    if (item.tags !== undefined && item.tags.length) return item.tags;
+    const record = session.records[getBuildAssetId(item)];
+    return record?.proposal && record.proposal.revision === record.revision ? applyCharacterTraits(record.proposal.tags, traits) : [];
+  };
+
+  /** Pass 2: narrows the shortlist to the target; with `apply` the result is moved into the Dataset in one batch. */
+  const runNarrow = (ctx: Ctx & { apply?: boolean }) => guarded(ctx, assemblyOperation, async () => {
+    const { session: startSession, candidates, effectiveItems, dataset, characterTraits } = latest.current;
+    const active = getActiveShortlist(startSession, candidates);
+    if (!active?.entries.length) { latest.current.notify('info', 'There is no shortlist to narrow.'); return; }
+    const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
+    const needed = Math.max(0, startSession.profile.target - baseline.length);
+    if (!needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
+    assemblyOperation.start(() => cancel());
+    let result: NarrowResult | null = null;
+    const skipped: SkippedAssemblyItem[] = [];
+    try {
+      const ran = await withEncoder(ctx, assemblyOperation, async (encoder) => {
+        result = await computeNarrowing({
+          baselineItems: baseline, shortlistItems: active.entries.map(({ item }) => item), target: needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
+          tagsOf: narrowTagsOf(startSession, characterTraits), ignoredTags: [dataset.triggerWord, ...characterTraits.map((trait) => trait.tag)],
+          qualityOf: qualityOf(startSession),
+          onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
+          onProgress: ({ completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Narrowing the shortlist'); },
+          onSkip: (entry) => skipped.push(entry),
+        });
+        ctx.signal.throwIfAborted();
+        if (!ctx.isCurrent()) throw abortError();
+      }, baseline.length + active.entries.length);
+      if (!ran) return;
+    } catch (error) {
+      if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
+      const message = error instanceof Error ? error.message : 'unknown error';
+      assemblyOperation.finish('failed', message);
+      latest.current.notify('warning', `Narrowing failed: ${message}.`);
+      return;
+    }
+    reportSkipped(ctx, skipped);
+    const done = result as NarrowResult | null;
+    if (!done) return;
+    const itemByKey = new Map(active.entries.map(({ item }) => [normalizeDatasetPath(item.assetPath ?? item.id), item]));
+    const narrowedItems = done.items.flatMap((entry) => itemByKey.get(entry.key) ?? []);
+    latest.current.patchSession((value) => setBuildShortlistNarrowed(value, narrowedItems.map(getBuildAssetId), needed));
+    assemblyOperation.finish('completed', `${narrowedItems.length} image${narrowedItems.length === 1 ? '' : 's'} chosen`);
+    if (!ctx.apply) { latest.current.notify('success', `Narrowed to ${narrowedItems.length} image${narrowedItems.length === 1 ? '' : 's'}. Review them, then apply.`); return; }
+    await applyNarrowedItems(ctx, narrowedItems);
+  });
+
+  /** The only place the pipeline changes Dataset membership: one batch, one Undo. */
+  const applyNarrowedItems = async (ctx: Ctx, targets: WorkspaceImage[]) => {
     if (!targets.length) return;
     await waitIdle(ctx.signal);
     if (!ctx.isCurrent()) throw abortError();
     try {
       await latest.current.commitDecision('accepted', targets, 'auto', true);
+      latest.current.patchSession((value) => ({ ...clearBuildShortlist(value), filter: value.filter === 'shortlisted' ? 'all' : value.filter, cursor: 0 }));
       latest.current.notify('success', `Auto-select added ${targets.length} image${targets.length === 1 ? '' : 's'} to the Dataset.`);
     } catch (error) {
       if (!ctx.isCurrent()) return;
-      latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: error instanceof Error ? error.message : 'Could not apply the selection.' } }));
+      latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyError: error instanceof Error ? error.message : 'Could not apply the selection.' } }));
     }
-  });
+  };
 
   const runTagging = (ctx: Ctx & { scope?: WorkspaceImage[] }) => guarded(ctx, taggingOperation, async () => {
     const { session: startSession, candidates, localTagger, taggingConfig } = latest.current;
@@ -357,9 +414,23 @@ export function useBuildAutoPipeline(input: Input) {
     taggingOperation.finish('completed', `${targets.length} suggestion${targets.length === 1 ? '' : 's'} prepared`);
   });
 
-  /** Explicit Auto-select; never started automatically. */
-  const startAssembly = (options: { allowDownload?: boolean } = {}) => {
-    if (!launch('assembly', (ctx) => runAssembly({ ...ctx, allowDownload: options.allowDownload }), 'Auto-select failed.')) latest.current.notify('info', 'Another background task is still running.');
+  /** Explicit pass 1 (shortlist); never started automatically. */
+  const startShortlist = (options: { allowDownload?: boolean } = {}) => {
+    lastRequest.current = { kind: 'shortlist' };
+    if (!launch('assembly', (ctx) => runShortlist({ ...ctx, allowDownload: options.allowDownload }), 'Auto-select failed.')) latest.current.notify('info', 'Another background task is still running.');
+  };
+  /** Explicit pass 2: narrows the shortlist to the target; `apply` also adds the result to the Dataset. */
+  const startNarrow = (options: { allowDownload?: boolean; apply?: boolean } = {}) => {
+    lastRequest.current = { kind: 'narrow', apply: options.apply };
+    if (!launch('assembly', (ctx) => runNarrow({ ...ctx, allowDownload: options.allowDownload, apply: options.apply }), 'Narrowing failed.')) latest.current.notify('info', 'Another background task is still running.');
+  };
+  /** Adds the pass-2 result to the Dataset (one batch). */
+  const startApplyNarrowed = (targets: WorkspaceImage[]) => {
+    if (!launch('assembly', (ctx) => guarded(ctx, assemblyOperation, () => applyNarrowedItems(ctx, targets)), 'Could not apply the selection.')) latest.current.notify('info', 'Another background task is still running.');
+  };
+  /** Repeats the request that stopped at the model-download prompt, now allowed to download. */
+  const confirmModelDownload = () => {
+    if (lastRequest.current.kind === 'narrow') startNarrow({ allowDownload: true, apply: lastRequest.current.apply }); else startShortlist({ allowDownload: true });
   };
   /** Explicit caption suggestions for the scope (default: accepted images). */
   const startTagging = (scope?: WorkspaceImage[]) => {
@@ -368,5 +439,5 @@ export function useBuildAutoPipeline(input: Input) {
   };
   const countTaggingTargets = (scope?: WorkspaceImage[]) => taggingTargets(input.session, input.candidates, scope).length;
 
-  return { phase, progress, cancel, resume, paused, passCount, startAssembly, startTagging, countTaggingTargets, needsModelDownload, dismissModelDownload: () => setNeedsModelDownload(false) };
+  return { phase, progress, cancel, resume, paused, passCount, startShortlist, startNarrow, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets, needsModelDownload, dismissModelDownload: () => setNeedsModelDownload(false) };
 }

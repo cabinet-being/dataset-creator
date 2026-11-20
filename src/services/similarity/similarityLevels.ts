@@ -61,6 +61,9 @@ export const getSimilarityLevel = (id: SimilarityLevelId): SimilarityLevel => {
 export const getSimilarityThreshold = (id: SimilarityLevelId, basis: SimilarityBasis): number =>
   getSimilarityLevel(id).minSimilarity[basis];
 
+/** Auto-select never picks an image this visually similar (DINOv2 cosine) to the Dataset or to an already shortlisted image. */
+export const SELECTION_DUPLICATE_SIMILARITY = getSimilarityThreshold('similar', 'dinov2');
+
 /** Strictest level reached by a similarity value, or null when the pair is not even related. */
 export const classifySimilarity = (similarity: number, basis: SimilarityBasis): SimilarityLevel | null =>
   SIMILARITY_LEVELS.find((level) => similarity >= level.minSimilarity[basis]) ?? null;
