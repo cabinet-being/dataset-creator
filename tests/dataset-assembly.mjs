@@ -16,6 +16,7 @@ try {
       'src/services/dataset/coverageService.ts',
       'src/services/dataset/datasetAssemblyService.ts',
       'src/services/analysis/semanticFeatureService.ts',
+      'src/services/analysis/semanticFeatureCache.ts',
       'src/services/caption/captionMigrationService.ts',
       'src/services/build/buildSessionService.ts',
       'src/services/build/buildTransformService.ts',
@@ -33,6 +34,7 @@ try {
   const registryService = await import(pathToFileURL(join(temp, 'assetRegistryService.mjs')));
   const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
   const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
+  const featureCache = await import(pathToFileURL(join(temp, 'semanticFeatureCache.mjs')));
   const migration = await import(pathToFileURL(join(temp, 'captionMigrationService.mjs')));
   const buildSession = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
   const buildTransform = await import(pathToFileURL(join(temp, 'buildTransformService.mjs')));
@@ -564,6 +566,44 @@ try {
     assert.equal(byId(exported).export.state,'done'); assert.equal(byId(exported).export.counter,'3 files exported');
     assert.equal(byId(exported).caption.state,'done');
     assert.equal(exported.nextIncomplete,'select','first non-done stage is reported');
+  }
+  {
+    // Semantic feature cache LRU (memory tier; semanticFeatureStore needs IndexedDB, which Node lacks and no fake-indexeddb is installed).
+    featureCache.clearSemanticFeatureCache();
+    const vec = (n) => new Float32Array([n]);
+    for (let i = 0; i < 5000; i += 1) featureCache.setCachedImageFeature(`k${i}`, vec(i));
+    assert.ok(featureCache.getCachedImageFeature('k0'), 'a full cache keeps every entry');
+    featureCache.setCachedImageFeature('new', vec(-1)); // evicts the least recently used: k1 (k0 was just read)
+    assert.equal(featureCache.getCachedImageFeature('k1'), undefined, 'least recently used entry is evicted first');
+    assert.ok(featureCache.getCachedImageFeature('k0'), 'a recently read entry survives eviction');
+    assert.ok(featureCache.getCachedImageFeature('k2'));
+    featureCache.setCachedImageFeature('k2', vec(99)); // overwrite refreshes recency without growing
+    featureCache.setCachedImageFeature('new2', vec(-2)); // evicts k3
+    assert.equal(featureCache.getCachedImageFeature('k3'), undefined);
+    assert.equal(featureCache.getCachedImageFeature('k2')[0], 99);
+    assert.equal(await featureCache.readImageFeature('missing-without-indexeddb'), undefined, 'storage unavailable is a miss, not an error');
+    featureCache.writeImageFeature('w', vec(7));
+    assert.equal((await featureCache.readImageFeature('w'))[0], 7, 'write is served from memory');
+    featureCache.clearSemanticFeatureCache();
+  }
+  {
+    // encodeAssemblyInputs: model failures are fatal, per-item failures are skipped.
+    const semantic = await import(pathToFileURL(join(temp, 'semanticFeatureService.mjs')));
+    const imgs = ['a', 'b', 'c'].map((n) => item(`source:${n}`, n, `Project/inbox/${n}.png`));
+    const feature = { imageHash: 'h', image: new Float32Array(1), text: new Float32Array(1), contexts: [], caption: '' };
+    const skipped = [];
+    const ok = await assembly.encodeAssemblyInputs(imgs, {
+      triggerWord: 'hero', onSkip: (s) => skipped.push(s),
+      encoder: { encode: async (i) => { if (i.id === 'source:b') throw new Error('bad pixels'); return feature; } },
+    });
+    assert.deepEqual(ok.map((a) => a.item.id), ['source:a', 'source:c']);
+    assert.deepEqual(skipped.map((s) => [s.item.id, s.reason]), [['source:b', 'bad pixels']]);
+    const skippedOnModelError = [];
+    await assert.rejects(assembly.encodeAssemblyInputs(imgs, {
+      triggerWord: 'hero', onSkip: (s) => skippedOnModelError.push(s),
+      encoder: { encode: async () => { throw new semantic.SemanticModelError('model missing'); } },
+    }), (e) => semantic.isSemanticModelError(e) && e.message === 'model missing');
+    assert.equal(skippedOnModelError.length, 0, 'SemanticModelError must not reach onSkip');
   }
   console.log('dataset assembly contracts: ok');
 } finally {

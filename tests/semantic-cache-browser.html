@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Semantic embedding cache fixture</title></head>
+<body>
+  <main>
+    <h1>Semantic embedding cache reload check</h1>
+    <p>Uses the real embedding IndexedDB; never loads or downloads a model.</p>
+    <button id="save">Write embedding and reload</button>
+    <button id="verify">Verify embedding</button>
+    <button id="clear">Clear embedding cache</button>
+    <pre id="result" aria-live="polite"></pre>
+  </main>
+  <script type="module" src="./semantic-cache-browser.tsx"></script>
+</body>
+</html>
