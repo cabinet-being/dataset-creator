@@ -8,8 +8,7 @@ import { resolveDatasetMembership, normalizeDatasetPath } from '../../services/d
 import { assembleDataset, encodeAssemblyInputs } from '../../services/dataset/datasetAssemblyService';
 import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
-import { applyCharacterTraits } from '../../services/tagging/characterTraits';
-import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
+import { hasVideoModel } from '../../services/video/videoCache';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
 import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
@@ -55,13 +54,19 @@ const cachedDigest = async (blob: Blob) => {
 };
 const isMeasurable = (item: WorkspaceImage) => item.kind !== 'video' && item.kind !== 'psd';
 
-/** Runs triage, automatic assembly and background tagging one stage at a time. */
+const ENCODER_IDLE_MS = 5 * 60 * 1000;
+type SemanticEncoder = Awaited<ReturnType<typeof createSemanticFeatureEncoder>>;
+
+/** Runs quality triage automatically; assembly and caption suggestions run only when requested. */
 export function useBuildAutoPipeline(input: Input) {
   const [phase, setPhase] = useState<BuildAutoPipelinePhase>('idle');
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [paused, setPaused] = useState(false);
   const [passCount, setPassCount] = useState(0);
   const [tick, setTick] = useState(0);
+  const [needsModelDownload, setNeedsModelDownload] = useState(false);
+  const phaseRef = useRef<BuildAutoPipelinePhase>('idle');
+  const encoderRef = useRef<{ encoder: SemanticEncoder; factory: unknown; timer?: ReturnType<typeof setTimeout> } | null>(null);
   const latest = useRef(input);
   const running = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -74,13 +79,15 @@ export function useBuildAutoPipeline(input: Input) {
 
   useEffect(() => { latest.current = input; });
 
-  const characterTraits = useProjectStore(selectActiveCharacterTraits);
-  const cancel = useCallback(() => { abortRef.current?.abort(); setPaused(true); }, []);
+  const cancel = useCallback(() => { abortRef.current?.abort(); if (phaseRef.current === 'triage') setPaused(true); }, []);
+  const releaseEncoder = useCallback(() => {
+    const held = encoderRef.current; encoderRef.current = null;
+    if (held?.timer) clearTimeout(held.timer);
+    if (held) void held.encoder.dispose().catch(() => {});
+  }, []);
   const resume = useCallback(() => setPaused(false), []);
 
-  useEffect(() => () => { abortRef.current?.abort(); attempted.current.clear(); didWork.current = false; setPaused(false); }, [projectId]);
-  useEffect(() => { attempted.current = new Set([...attempted.current].filter((key) => !key.startsWith('tag:'))); },
-    [input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, characterTraits]);
+  useEffect(() => () => { abortRef.current?.abort(); releaseEncoder(); attempted.current.clear(); didWork.current = false; setPaused(false); setNeedsModelDownload(false); }, [projectId, releaseEncoder]);
   useEffect(() => { setPaused(false); }, [input.enabled]);
 
   const minShortSideOf = (targetModel: TargetModelId) => getMinShortSide(targetModel);
@@ -88,49 +95,49 @@ export function useBuildAutoPipeline(input: Input) {
     const record = session.records[getBuildAssetId(item)];
     return `triage:${getBuildAssetId(item)}:${getBuildContentRevision(item, record?.transform ?? session.profile.transform)}:${minShortSideOf(targetModel)}`;
   };
-  const tagKey = (id: string, revision: string) => `tag:${id}:${revision}`;
 
   useEffect(() => {
     if (!input.active || !input.enabled || input.busy || paused || running.current) return;
     const { session, candidates } = input;
     const triageTargets = selectTriageTargets(session, candidates).filter((item) => !attempted.current.has(triageKey(session, item, input.targetModel)));
-    let stage: 'triage' | 'assembly' | 'tagging' | undefined;
-    if (triageTargets.length) stage = 'triage';
-    else {
-      const pool = selectAssemblyCandidates(session, candidates);
-      if (pool.length && session.profile.target > 0 && createAssemblyKey(session.profile.target, pool, session) !== session.auto?.assemblyKey) stage = 'assembly';
-      else if (input.localTagger && taggingTargets(session, candidates).length) stage = 'tagging';
-    }
-    if (!stage) {
+    if (!triageTargets.length) {
       if (didWork.current) { didWork.current = false; setPassCount((value) => value + 1); }
       return;
     }
+    launch('triage', runTriage, 'Automatic analysis failed.');
+    didWork.current = true;
+  }, [input.active, input.enabled, input.busy, input.session.order, input.session.records, input.session.profile, input.targetModel, input.candidates, paused, tick, projectId]);
+
+  /** Starts one background job; only one runs at a time. Returns false when another job is running. */
+  const launch = (stage: 'triage' | 'assembly' | 'tagging', run: (ctx: Ctx) => Promise<void>, failure: string) => {
+    if (running.current) return false;
     const controller = new AbortController();
     abortRef.current = controller;
-    running.current = true; didWork.current = true;
+    running.current = true;
     const startedProject = useProjectStore.getState().id;
     const isCurrent = () => !controller.signal.aborted && useProjectStore.getState().id === startedProject;
     const ctx = { signal: controller.signal, isCurrent, startedProject };
-    const job = stage === 'triage' ? runTriage(ctx) : stage === 'assembly' ? runAssembly(ctx) : runTagging(ctx);
+    phaseRef.current = stage;
     setPhase(stage); setProgress({ completed: 0, total: 0 });
-    void job.catch((error) => {
+    void run(ctx).catch((error) => {
       if (controller.signal.aborted || !isCurrent() || isAbort(error)) return;
-      const message = error instanceof Error ? error.message : 'Automatic pipeline failed.';
-      latest.current.notify('error', message);
+      latest.current.notify('error', error instanceof Error ? error.message : failure);
     }).finally(() => {
-      running.current = false; abortRef.current = null;
+      running.current = false; abortRef.current = null; phaseRef.current = 'idle';
       setPhase('idle'); setProgress({ completed: 0, total: 0 });
       setTick((value) => value + 1);
     });
-  }, [input.active, input.enabled, input.busy, input.session.order, input.session.records, input.session.profile, input.session.auto, input.targetModel, input.candidates, input.localTagger, input.taggingConfig.threshold, input.taggingConfig.maxTags, paused, tick, projectId]);
+    return true;
+  };
 
-  const taggingTargets = (session: BuildSession, candidates: WorkspaceImage[]) => candidates.filter((item) => {
-    if (!isMeasurable(item)) return false;
-    const id = getBuildAssetId(item); const record = session.records[id];
-    if (!record || getBuildTriageGroup(record) !== 'accepted') return false;
-    const revision = record.revision ?? getBuildAssetRevision(item);
-    return record.proposal?.revision !== revision && !attempted.current.has(tagKey(id, revision));
-  });
+  const needsTags = (item: WorkspaceImage, session: BuildSession) => {
+    const record = session.records[getBuildAssetId(item)];
+    return !!record && record.proposal?.revision !== (record.revision ?? getBuildAssetRevision(item));
+  };
+  /** Explicit scope wins; otherwise accepted images. */
+  const taggingTargets = (session: BuildSession, candidates: WorkspaceImage[], scope?: WorkspaceImage[]) =>
+    (scope ?? candidates.filter((item) => { const record = session.records[getBuildAssetId(item)]; return !!record && getBuildTriageGroup(record) === 'accepted'; }))
+      .filter((item) => isMeasurable(item) && needsTags(item, session));
 
   const waitIdle = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
     const check = () => {
@@ -141,7 +148,7 @@ export function useBuildAutoPipeline(input: Input) {
     check();
   });
 
-  type Ctx = { signal: AbortSignal; isCurrent: () => boolean; startedProject: string };
+  type Ctx = { signal: AbortSignal; isCurrent: () => boolean; startedProject: string; allowDownload?: boolean };
   const guarded = async (ctx: Ctx, operation: ReturnType<typeof useOperation>, run: () => Promise<void>) => {
     try { await run(); }
     catch (error) {
@@ -229,6 +236,11 @@ export function useBuildAutoPipeline(input: Input) {
     const pool = selectAssemblyCandidates(startSession, candidates);
     const target = startSession.profile.target;
     if (!pool.length) return;
+    if (!encoderRef.current && !ctx.allowDownload && encoderFactory === createSemanticFeatureEncoder && !(await hasVideoModel().catch(() => false))) {
+      if (ctx.isCurrent()) setNeedsModelDownload(true);
+      return;
+    }
+    setNeedsModelDownload(false);
     const assemblyKey = createAssemblyKey(target, pool, startSession);
     assemblyOperation.start(() => cancel());
     const failWith = (message: string, severity: 'warning' | 'error') => {
@@ -241,7 +253,15 @@ export function useBuildAutoPipeline(input: Input) {
       const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
       const all = [...baseline, ...pool];
       let lastTotal = all.length;
-      const encoder = await encoderFactory(ctx.signal, (message) => assemblyOperation.progress(0, lastTotal, message));
+      const held = encoderRef.current;
+      if (held?.timer) clearTimeout(held.timer);
+      let encoder: SemanticEncoder;
+      if (held && held.factory === encoderFactory) encoder = held.encoder;
+      else {
+        releaseEncoder();
+        encoder = await encoderFactory(ctx.signal, (message) => assemblyOperation.progress(0, lastTotal, message), { allowDownload: ctx.allowDownload });
+      }
+      let reusable = false;
       try {
         const features = await encodeAssemblyInputs(all, {
           triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
@@ -262,7 +282,12 @@ export function useBuildAutoPipeline(input: Input) {
           ...applyAssemblyTriage(value, plan, assetIdByKey, now),
           auto: { ...value.auto, assemblyKey, assembledAt: now, assemblyError: undefined },
         }));
-      } finally { await encoder.dispose(); }
+        reusable = true;
+      } finally {
+        if (reusable && ctx.isCurrent()) {
+          encoderRef.current = { encoder, factory: encoderFactory, timer: setTimeout(releaseEncoder, ENCODER_IDLE_MS) };
+        } else { if (encoderRef.current?.encoder === encoder) encoderRef.current = null; await encoder.dispose(); }
+      }
     } catch (error) {
       if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
       assemblyOperation.finish('failed', error instanceof Error ? error.message : 'Failed');
@@ -289,10 +314,10 @@ export function useBuildAutoPipeline(input: Input) {
     }
   });
 
-  const runTagging = (ctx: Ctx) => guarded(ctx, taggingOperation, async () => {
+  const runTagging = (ctx: Ctx & { scope?: WorkspaceImage[] }) => guarded(ctx, taggingOperation, async () => {
     const { session: startSession, candidates, localTagger, taggingConfig } = latest.current;
     if (!localTagger) return;
-    const targets = taggingTargets(startSession, candidates);
+    const targets = taggingTargets(startSession, candidates, ctx.scope);
     if (!targets.length) return;
     taggingOperation.start(() => cancel(), targets.length);
     for (const [index, item] of targets.entries()) {
@@ -300,12 +325,12 @@ export function useBuildAutoPipeline(input: Input) {
       const id = getBuildAssetId(item);
       const record = latest.current.session.records[id] ?? startSession.records[id];
       const revision = record?.revision ?? getBuildAssetRevision(item);
-      attempted.current.add(tagKey(id, revision));
       try {
         const predictions = await predictLocalTags(localTagger, item.imageData, taggingConfig.threshold, taggingConfig.maxTags);
         ctx.signal.throwIfAborted();
         if (!ctx.isCurrent() || latest.current.localTagger !== localTagger) throw abortError();
-        const tags = applyCharacterTraits(predictions.map((prediction) => prediction.tag), selectActiveCharacterTraits(useProjectStore.getState()));
+        // Raw model tags: character traits are applied when suggestions are shown or merged.
+        const tags = predictions.map((prediction) => prediction.tag);
         latest.current.patchSession((value) => {
           const target = value.records[id];
           if (!target || target.revision !== revision) return value;
@@ -313,11 +338,7 @@ export function useBuildAutoPipeline(input: Input) {
         });
       } catch (error) {
         if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
-        for (const rest of targets) {
-          const restId = getBuildAssetId(rest);
-          attempted.current.add(tagKey(restId, latest.current.session.records[restId]?.revision ?? getBuildAssetRevision(rest)));
-        }
-        latest.current.notify('warning', 'Background caption suggestions stopped: the local model failed.');
+        latest.current.notify('warning', 'Caption suggestions stopped: the local model failed.');
         taggingOperation.finish('failed', 'The local model failed');
         return;
       }
@@ -327,5 +348,16 @@ export function useBuildAutoPipeline(input: Input) {
     taggingOperation.finish('completed', `${targets.length} suggestion${targets.length === 1 ? '' : 's'} prepared`);
   });
 
-  return { phase, progress, cancel, resume, paused, passCount };
+  /** Explicit Auto-select; never started automatically. */
+  const startAssembly = (options: { allowDownload?: boolean } = {}) => {
+    if (!launch('assembly', (ctx) => runAssembly({ ...ctx, allowDownload: options.allowDownload }), 'Auto-select failed.')) latest.current.notify('info', 'Another background task is still running.');
+  };
+  /** Explicit caption suggestions for the scope (default: accepted images). */
+  const startTagging = (scope?: WorkspaceImage[]) => {
+    if (!latest.current.localTagger) { latest.current.notify('info', 'Connect a local tagger model first.'); return; }
+    if (!launch('tagging', (ctx) => runTagging({ ...ctx, scope }), 'Caption suggestions failed.')) latest.current.notify('info', 'Another background task is still running.');
+  };
+  const countTaggingTargets = (scope?: WorkspaceImage[]) => taggingTargets(input.session, input.candidates, scope).length;
+
+  return { phase, progress, cancel, resume, paused, passCount, startAssembly, startTagging, countTaggingTargets, needsModelDownload, dismissModelDownload: () => setNeedsModelDownload(false) };
 }

@@ -53,14 +53,24 @@ export const getVideoThumbnail = async (run: string, timestamp: number): Promise
   const record = await requestValue((await database()).transaction('thumbnails').objectStore('thumbnails').get([run, timestamp]));
   return record?.blob;
 };
+/** Clears cached frames and analyses. The downloaded model is kept; it is expensive to fetch again. */
 export const clearVideoCache = async () => {
   const transaction = (await database()).transaction(['frames', 'thumbnails', 'meta'], 'readwrite');
   const done = committed(transaction);
+  const meta = transaction.objectStore('meta');
+  const model = await requestValue(meta.get('model'));
   transaction.objectStore('frames').clear();
   transaction.objectStore('thumbnails').clear();
-  transaction.objectStore('meta').clear();
+  meta.clear();
+  if (model !== undefined) meta.put(model, 'model');
   await done;
 };
+let persistRequest: Promise<boolean> | undefined;
+/** Asks the browser once per session not to evict stored models. Silent when unsupported or refused. */
+export const requestPersistentStorage = (): Promise<boolean> => persistRequest ??= (async () => {
+  try { return typeof navigator !== 'undefined' && !!navigator.storage?.persist && await navigator.storage.persist(); }
+  catch { return false; }
+})();
 export const videoFingerprint = async (file: Blob, signal?: AbortSignal, progress?: (read: number) => void) => {
   const hashes: Uint8Array[] = [];
   for (let offset = 0; offset < file.size; offset += 4 * 1024 * 1024) {

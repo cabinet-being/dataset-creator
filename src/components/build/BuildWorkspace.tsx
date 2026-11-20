@@ -26,7 +26,6 @@ import { changeDatasetTriggerWord } from '../../lib/triggerWordActions';
 import { TriggerWordInput } from '../ui/TriggerWordInput';
 import { setAssetsDatasetMembership } from '../../lib/assetActions';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
-import { predictLocalTags } from '../../services/tagging/localTaggerService';
 import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
 import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
@@ -45,7 +44,7 @@ import {
 import { getMinShortSide } from '../../services/quality/imageQuality';
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
 import { PROJECT_EDITS_DIRECTORY } from '../../services/project/projectLayoutService';
-import { getBuildTriageCounts, getBuildTriageGroup } from '../../services/build/buildTriageService';
+import { getBuildTriageCounts } from '../../services/build/buildTriageService';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
 import { BuildProfileControls } from './BuildProfileControls';
@@ -292,7 +291,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     patchSession(value => Object.values(value.records).some(record => record.proposal)
       ? { ...value, records: Object.fromEntries(Object.entries(value.records).map(([id, record]) => [id, { ...record, proposal: undefined }])) }
       : value);
-  }, [localTagger, taggingConfig.threshold, taggingConfig.maxTags, characterTraits, projectId, patchSession]);
+  }, [localTagger, taggingConfig.threshold, taggingConfig.maxTags, projectId, patchSession]);
 
   const moveCursor = useCallback((step: number) => setCursor(Math.max(0, Math.min(queue.length - 1, cursorRef.current + step))), [queue.length, setCursor]);
 
@@ -483,28 +482,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     finally { setBusy(false); }
   }, [batchMode, batchReplacement, batchTag, busy, candidates, directory, notify, operation, selected]);
 
-  useEffect(() => {
-    if (!localTagger || !active || busy) return;
-    let cancelled = false;
-    const targets = queue.slice(cursor, cursor + 3).filter((item) => item.kind !== 'video' && item.kind !== 'psd' &&
-      !(pipeline.phase === 'tagging' && getBuildTriageGroup(reconciled.records[getBuildAssetId(item)] ?? { decision: 'unreviewed' } as never) === 'accepted'));
-    void (async () => {
-      for (const item of targets) {
-        const id = getBuildAssetId(item); const revision = reconciled.records[id]?.revision ?? getBuildAssetRevision(item);
-        if (reconciled.records[id]?.proposal?.revision === revision) continue;
-        try {
-          const predictions = await predictLocalTags(localTagger, item.imageData, taggingConfig.threshold, taggingConfig.maxTags);
-          if (cancelled) return;
-          patchSession((value) => {
-            const record = value.records[id];
-            if (!record || record.revision !== revision || record.decision === 'accepted') return value;
-            return { ...value, records: { ...value.records, [id]: { ...record, proposal: { tags: applyCharacterTraits(predictions.map((prediction) => prediction.tag), characterTraits), revision } } } };
-          });
-        } catch { return; }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [active, busy, cursor, localTagger, patchSession, pipeline.phase, queue, reconciled.records, taggingConfig.threshold, taggingConfig.maxTags, characterTraits]);
 
   useCommands([
     { id: 'build.accept', label: 'Build: Accept', shortcut: 'A', active: active && stage === 'select' && view === 'list', disabled: busy || !current || current.kind === 'video', run: () => commitDecision('accepted') },
@@ -515,7 +492,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     { id: 'build.finish', label: 'Build: Finish review', shortcut: 'Mod+Enter', active: active && stage !== 'caption', disabled: busy, run: () => counts.unresolved || counts.errors ? patchSessionAndCursor((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })) : setStage('export') },
   ], () => root.current);
 
-  const proposal = currentRecord?.proposal && currentRecord.proposal.revision === currentRecord.revision ? currentRecord.proposal.tags : [];
+  // Proposals keep the raw model tags; character traits are applied here and when merging.
+  const proposal = useMemo(() => currentRecord?.proposal && currentRecord.proposal.revision === currentRecord.revision
+    ? applyCharacterTraits(currentRecord.proposal.tags, characterTraits) : [], [characterTraits, currentRecord?.proposal, currentRecord?.revision]);
   const currentTransform = currentRecord?.transform ?? reconciled.profile.transform;
   const crop = currentTransform?.crop ?? { x:0, y:0, width:1, height:1 };
   const cropZoom = Math.round(100 / Math.max(crop.width, crop.height));
@@ -548,13 +527,26 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     transform: value === 'original' ? undefined : { mode: value === 'fit-512' ? 'fit' : 'crop', width: value === 'crop-768' ? 768 : 512, height: value === 'crop-768' ? 768 : 512, allowUpscale: false },
   } }));
 
-  return <div ref={root} className="flex h-full min-h-0 flex-col bg-background" data-build-workspace>
+  // Keep keyboard shortcuts working when the focused control disappears (for example a rejected filmstrip item).
+  useEffect(() => {
+    if (!active) return;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body || !focused.isConnected) root.current?.focus({ preventScroll: true });
+  }, [active, stage, view, reconciled.filter, busy, currentId]);
+  const selectedItems = useMemo(() => candidates.filter((item) => selected.has(getBuildAssetId(item))), [candidates, selected]);
+  const prepareSuggestions = (scope?: WorkspaceImage[]) => pipeline.startTagging(scope);
+  const suggestionButton = (scope: WorkspaceImage[] | undefined, label: string) => <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle' || !localTagger || pipeline.countTaggingTargets(scope) === 0}
+    title={localTagger ? undefined : 'Connect a local caption model first'} onClick={() => prepareSuggestions(scope)}>{label}</button>;
+
+  return <div ref={root} tabIndex={-1} className="flex h-full min-h-0 flex-col bg-background outline-none" data-build-workspace>
     <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2">
       <div className="mr-auto"><h1 className="flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-primary" />Build Dataset</h1><p className="text-xs text-muted-foreground">One queue from import to export</p></div>
     </header>
     <BuildStepper stages={summary.stages} current={stage} onSelect={goToStage} />
     {stage === 'add' ? <div className="min-h-0 flex-1 overflow-auto p-4"><div role="group" aria-label="Project settings" className="mb-4 flex flex-wrap items-center gap-3 text-xs"><BuildProfileControls onModelChange={clearQualityTriage} suggestions={captionSuggestions} /></div><ImportTool active={active} onImportFiles={onImportFiles} /></div>
-    : stage === 'caption' ? <BuildCaptionStage active={active} items={datasetItems} suggestions={captionSuggestions} directory={directory} />
+    : stage === 'caption' ? <>
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">{suggestionButton(datasetItems, 'Prepare caption suggestions')}{pipeline.phase === 'tagging' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Preparing caption suggestions{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}</div>
+      <BuildCaptionStage active={active} items={datasetItems} suggestions={captionSuggestions} directory={directory} /></>
     : stage === 'check' ? <section aria-label="Dataset quality" className="min-h-0 flex-1 overflow-auto p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>
     : stage === 'export' ? <div className="min-h-0 flex-1 overflow-auto"><ExportTool active={active} fixedSource="dataset" onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div>
     : <>
@@ -566,7 +558,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <button onClick={() => setFilter('rejected')} className="rounded bg-red-500/15 px-2 py-1 text-red-800 dark:text-red-200">Rejected {triageCounts.rejected}</button>
         {triageCounts.pending > 0 && <span className="rounded bg-secondary px-2 py-1">Analyzing {triageCounts.pending}</span>}
         {pipeline.phase !== 'idle' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{pipeline.phase === 'triage' ? 'Analyzing images' : pipeline.phase === 'assembly' ? 'Selecting Dataset images' : 'Preparing caption suggestions'}{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}
-        {pipeline.phase === 'idle' && pipeline.paused && <button className="underline" onClick={pipeline.resume}>Resume automatic pipeline</button>}
+        {pipeline.phase === 'idle' && pipeline.paused && <button className="underline" onClick={pipeline.resume}>Resume automatic analysis</button>}
       </div>
       <div role="group" aria-label="Review view" className="flex overflow-hidden rounded border border-border text-sm">
         <button type="button" data-testid="build-view-toggle" data-view="list" aria-pressed={view === 'list'} onClick={() => setView('list')} className={`px-3 py-2 ${view === 'list' ? 'bg-primary text-primary-foreground' : ''}`}>List</button>
@@ -588,6 +580,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         <label className="flex items-start gap-1">Trigger word <TriggerWordInput value={dataset.triggerWord} onApply={(word) => { void changeDatasetTriggerWord(word).then(() => patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) }))).catch((error) => notify('error', error instanceof Error ? error.message : 'Could not change the trigger word')); }} className="w-32 rounded border border-border bg-background px-2 py-1" /></label>
         </div></details>
         <button className="ml-auto rounded border border-border px-2 py-1" onClick={() => setShowAssembly(true)}>Auto-select</button>
+        <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle'} title="Analyze the Dataset and candidates and propose which images to add" onClick={() => pipeline.startAssembly()}>Suggest selection</button>
+        {suggestionButton(selectedItems.length ? selectedItems : undefined, selectedItems.length ? `Prepare caption suggestions (${selectedItems.length} selected)` : 'Prepare caption suggestions')}
+        {pipeline.needsModelDownload && <span role="alert" className="flex items-center gap-2 rounded bg-amber-500/15 px-2 py-1">Download DINOv2 (~88 MB)?<button type="button" className="underline" onClick={() => pipeline.startAssembly({ allowDownload: true })}>Download and continue</button><button type="button" className="underline" onClick={pipeline.dismissModelDownload}>Not now</button></span>}
         <select aria-label="Queue filter" value={reconciled.filter} onChange={(event) => patchSessionAndCursor((value) => ({ ...value, filter: event.target.value as BuildSession['filter'], cursor: 0 }))} className="rounded border border-border bg-background px-2 py-1"><option value="all">All</option><option value="unresolved">Undecided</option><option value="needs-decision">Flagged</option><option value="accepted">Accepted (proposed)</option><option value="rejected">Rejected (proposed)</option><option value="errors">Errors</option></select>
         {queueGroupActive && (acceptTargets.length > 0 || rejectTargets.length > 0) && <>
           <button disabled={busy || !acceptTargets.length} onClick={() => void commitDecision('accepted', acceptTargets)} className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40">Accept all {acceptTargets.length}</button>

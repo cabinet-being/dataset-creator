@@ -49,9 +49,9 @@ export const extractCaptionContexts = (caption: string): string[] => {
   return [...new Set([...tokens, ...tokens.slice(0, -1).map((token, index) => `${token} ${tokens[index + 1]}`)])].sort();
 };
 
-export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progress?: (phase: string) => void) => {
+export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progress?: (phase: string) => void, options: { allowDownload?: boolean } = {}) => {
   progress?.('Preparing semantic model');
-  await downloadVideoModel(signal, (value) => progress?.(value.phase));
+  if (options.allowDownload !== false) await downloadVideoModel(signal, (value) => progress?.(value.phase));
   progress?.('Loading semantic model');
   const model = await loadVideoModel(signal, (value) => progress?.(value.phase));
   const canvas = new OffscreenCanvas(224, 224);

@@ -340,8 +340,8 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
           const result = await client.current.request({ type: 'model' }, reportProgress); setModelReady(true); logger.success(`DINOv2 ready (${result.runtime})`);
         })}>{modelReady ? 'Check DINOv2 model' : 'Download DINOv2 · 88.5 MB'}</button>
         <button className={buttonClass} disabled={busy} onClick={() => {
-          if (window.confirm('Clear downloaded DINOv2 weights and all cached video analyses? Other video tabs must be idle.')) void perform(async () => {
-            await clearVideoCache(); setModelReady(false); invalidateAnalysis();
+          if (window.confirm('Clear all cached video analyses? The downloaded DINOv2 model is kept. Other video tabs must be idle.')) void perform(async () => {
+            await clearVideoCache(); invalidateAnalysis();
           });
         }}>Clear video cache</button>
       </div>

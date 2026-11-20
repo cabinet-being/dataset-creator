@@ -1,6 +1,6 @@
 import type { InferenceSession } from 'onnxruntime-web';
 import type { VideoSample } from 'mediabunny';
-import { getVideoMeta, setVideoMeta } from './videoCache';
+import { getVideoMeta, requestPersistentStorage, setVideoMeta } from './videoCache';
 import { normalizeFrameEmbedding } from './frameSelection';
 import { checkVideoAbort, type VideoProgress } from './types';
 import { downloadVerifiedModelAsset, verifyModelAsset } from '../models/verifiedModelDownload';
@@ -19,9 +19,15 @@ const VIDEO_ASSET = { label: 'DINOv2', url: MODEL_URL, bytes: VIDEO_MODEL.bytes,
 const VIDEO_INTEGRITY_MESSAGE = 'DINOv2 download failed its integrity check. Clear the video cache and download again.';
 
 export const verifyVideoModel = (buffer: ArrayBuffer) => verifyModelAsset(buffer, VIDEO_ASSET, VIDEO_INTEGRITY_MESSAGE);
+// The stored model only changes through a verified download, so hashing 88 MB once per session is enough.
+let verifiedStoredModel: Promise<void> | undefined;
+const verifyStoredModelOnce = (buffer: ArrayBuffer) => {
+  verifiedStoredModel ??= verifyVideoModel(buffer).catch((error) => { verifiedStoredModel = undefined; throw error; });
+  return verifiedStoredModel;
+};
 export const downloadVideoModel = async (signal?: AbortSignal, progress?: (progress: VideoProgress) => void) => {
   const existing = await getVideoMeta<ArrayBuffer>('model');
-  if (existing) { await verifyVideoModel(existing); return; }
+  if (existing) { await verifyStoredModelOnce(existing); void requestPersistentStorage(); return; }
   const buffer = await downloadVerifiedModelAsset(VIDEO_ASSET, {
     signal, progress, phase: 'Downloading DINOv2',
     messages: {
@@ -32,6 +38,8 @@ export const downloadVideoModel = async (signal?: AbortSignal, progress?: (progr
     },
   });
   await setVideoMeta('model', buffer);
+  verifiedStoredModel = Promise.resolve();
+  void requestPersistentStorage();
 };
 
 export const rgbModelTensor = (pixels: Uint8ClampedArray): Float32Array => {
@@ -47,7 +55,7 @@ export const rgbModelTensor = (pixels: Uint8ClampedArray): Float32Array => {
 export const loadVideoModel = async (signal?: AbortSignal, progress?: (progress: VideoProgress) => void, preferred: 'auto' | 'wasm' | 'webgpu' = 'auto') => {
   const buffer = await getVideoMeta<ArrayBuffer>('model');
   if (!buffer) throw new Error('Download the DINOv2 model before starting automatic analysis.');
-  await verifyVideoModel(buffer);
+  await verifyStoredModelOnce(buffer);
   checkVideoAbort(signal);
   const ort = await import('onnxruntime-web/all');
   ort.env.wasm.numThreads = 1;
