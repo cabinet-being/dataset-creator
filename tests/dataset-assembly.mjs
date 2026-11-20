@@ -15,6 +15,7 @@ try {
       'src/services/project/assetRegistryService.ts',
       'src/services/dataset/coverageService.ts',
       'src/services/dataset/datasetAssemblyService.ts',
+      'src/services/dataset/shortlistService.ts',
       'src/services/analysis/semanticFeatureService.ts',
       'src/services/analysis/semanticFeatureCache.ts',
       'src/services/caption/captionMigrationService.ts',
@@ -34,6 +35,7 @@ try {
   const registryService = await import(pathToFileURL(join(temp, 'assetRegistryService.mjs')));
   const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
   const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
+  const shortlist = await import(pathToFileURL(join(temp, 'shortlistService.mjs')));
   const featureCache = await import(pathToFileURL(join(temp, 'semanticFeatureCache.mjs')));
   const migration = await import(pathToFileURL(join(temp, 'captionMigrationService.mjs')));
   const buildSession = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
@@ -604,6 +606,101 @@ try {
       encoder: { encode: async () => { throw new semantic.SemanticModelError('model missing'); } },
     }), (e) => semantic.isSemanticModelError(e) && e.message === 'model missing');
     assert.equal(skippedOnModelError.length, 0, 'SemanticModelError must not reach onSkip');
+  }
+
+  {
+    // Two-pass shortlist: synthetic unit vectors; similarity is the dot product.
+    const DIM = 80;
+    const unit = (parts) => { const v = new Float32Array(DIM); for (const [axis, w] of parts) v[axis] += w; const n = Math.hypot(...v); return v.map((x) => x / n); };
+    const input = (path, parts, extra = {}) => ({
+      item: { id: `asset:${path}`, sourceImageId: path, assetPath: path, kind: 'image', imageData: new Blob(['x']) },
+      feature: { imageHash: `h:${path}`, image: unit(parts), text: unit(parts), caption: '', contexts: [] }, caption: '', quality: 0.5, ...extra,
+    });
+    const keys = (items) => items.map((entry) => entry.path);
+    const cutoff = shortlist.SHORTLIST_DUPLICATE_THRESHOLD;
+    assert.equal(cutoff, 0.93);
+
+    // 5 near-identical comic pages (pairwise >= 0.93) plus distinct images: at most one page is shortlisted.
+    {
+      const pages = [0, 1, 2, 3, 4].map((n) => input(`Project/inbox/comic_p${n}.png`, [[0, 1], [10 + n, 0.1]]));
+      for (const a of pages) for (const b of pages) if (a !== b) assert.ok(a.feature.image.reduce((sum, x, i) => sum + x * b.feature.image[i], 0) >= cutoff, 'pages are near-identical');
+      const others = [20, 21, 22, 23, 24, 25].map((axis) => input(`Project/inbox/other_${axis}.png`, [[axis, 1]]));
+      const result = await shortlist.buildShortlist({ baseline: [], candidates: [...pages, ...others], needed: 6 });
+      const pickedPages = keys(result.items).filter((path) => path.includes('comic_p'));
+      assert.ok(pickedPages.length <= 1, `at most one comic page, got ${pickedPages.length}`);
+      assert.equal(result.items.length, 7, 'the rest of the shortlist is filled with distinct images');
+      assert.ok(result.duplicates.filter((entry) => entry.against === 'shortlist').length >= 4, 'other pages are reported as duplicates of the pick');
+    }
+
+    // A candidate >= 0.93 similar to a Dataset item is never shortlisted.
+    {
+      const base = input('Project/dataset/base.png', [[0, 1]]);
+      const near = input('Project/inbox/near_base.png', [[0, 1], [1, 0.25]]);
+      assert.ok(0.97 < 1 / Math.hypot(1, 0.25) && 1 / Math.hypot(1, 0.25) < 0.98);
+      const far = [30, 31, 32].map((axis) => input(`Project/inbox/far_${axis}.png`, [[axis, 1]]));
+      const result = await shortlist.buildShortlist({ baseline: [base], candidates: [near, ...far], needed: 3 });
+      assert.ok(!keys(result.items).includes('Project/inbox/near_base.png'));
+      assert.deepEqual(result.duplicates.filter((entry) => entry.against === 'dataset').map((entry) => entry.path), ['Project/inbox/near_base.png']);
+      assert.equal(result.items.length, 3);
+    }
+
+    // A large dense cluster cannot exceed its quota in round 1.
+    {
+      const dense = Array.from({ length: 30 }, (_, n) => input(`Project/inbox/dense_${String(n).padStart(2, '0')}.png`, [[0, 1], [1 + n, 0.5]]));
+      const singles = [0, 1, 2, 3].flatMap((group) => Array.from({ length: 10 }, (_, n) => input(`Project/inbox/group${group}_${String(n).padStart(2, '0')}.png`, [[32 + group, 1], [36 + group * 10 + n, 0.5]])));
+      const result = await shortlist.buildShortlist({ baseline: [], candidates: [...dense, ...singles], needed: 12 });
+      assert.equal(result.items.length, result.requested);
+      assert.ok(result.clusters.length >= 2);
+      assert.ok(result.clusters.reduce((sum, cluster) => sum + Math.min(cluster.size, cluster.quota), 0) >= result.requested, 'round 1 alone can fill the shortlist');
+      for (const cluster of result.clusters) assert.ok(cluster.selected <= cluster.quota, `${cluster.id} selected ${cluster.selected} > quota ${cluster.quota}`);
+      const biggest = result.clusters.reduce((a, b) => (b.size > a.size ? b : a));
+      assert.ok(biggest.quota < biggest.size && biggest.quota < result.requested, 'quota is below the cluster size and the shortlist size');
+      assert.ok(result.items.filter((entry) => entry.cluster === biggest.id).length <= biggest.quota);
+    }
+
+    // Input order never changes the result.
+    {
+      const pool = [...[0, 1, 2].map((n) => input(`Project/inbox/a${n}.png`, [[0, 1], [10 + n, 0.3]])), ...[20, 21, 22, 23, 24].map((axis) => input(`Project/inbox/b${axis}.png`, [[axis, 1], [axis + 5, 0.2]]))];
+      const forward = await shortlist.buildShortlist({ baseline: [], candidates: pool, needed: 4 });
+      const reversed = await shortlist.buildShortlist({ baseline: [], candidates: [...pool].reverse(), needed: 4 });
+      assert.deepEqual(keys(forward.items), keys(reversed.items));
+      assert.deepEqual(forward.clusters, reversed.clusters);
+    }
+
+    // Names are not grouped: the same post id with different vectors stays fully eligible.
+    {
+      const post = [0, 1, 2, 3].map((n) => input(`Project/inbox/post12345_${n}.png`, [[n, 1]]));
+      const result = await shortlist.buildShortlist({ baseline: [], candidates: post, needed: 4 });
+      assert.deepEqual(keys(result.items).sort(), post.map((entry) => entry.item.assetPath).sort());
+      assert.equal(result.duplicates.length, 0);
+    }
+
+    // Pass 2.
+    const narrowItems = (rows) => rows.map(([name, tags], n) => ({ asset: input(`Project/inbox/${name}.png`, [[n, 1]]), tags }));
+    {
+      const rows = [['a', ['solo', 'smile']], ['b', ['solo', 'smile']], ['c', ['solo', 'smile']], ['d', ['solo', 'smile', 'rare_hat']], ['e', ['solo', 'smile', 'rare scarf']], ['f', ['solo', 'smile']]];
+      const result = await shortlist.narrowShortlist({ baseline: [], items: narrowItems(rows), target: 2 });
+      assert.deepEqual(keys(result.items).sort(), ['Project/inbox/d.png', 'Project/inbox/e.png'], 'rare tags win over equal visual gain');
+      assert.deepEqual(result.items.map((entry) => entry.newTags).flat().sort(), ['rare_hat', 'rare_scarf']);
+      assert.equal(result.tagged, 6);
+    }
+    {
+      // Trigger word and trait tags are ignored even when they are the rarest tags.
+      const rows = [['a', ['solo', 'x1']], ['b', ['solo', 'x2']], ['c', ['solo', 'x3']], ['f', ['hero', 'red_hair', 'long hair', 'solo']]];
+      const control = await shortlist.narrowShortlist({ baseline: [], items: narrowItems(rows), target: 1 });
+      assert.equal(control.items[0].path, 'Project/inbox/f.png', 'without ignoring, three unique tags win');
+      const ignored = await shortlist.narrowShortlist({ baseline: [], items: narrowItems(rows), target: 4, ignoredTags: ['Hero', 'red_hair', 'long_hair'] });
+      assert.notEqual(ignored.items[0].path, 'Project/inbox/f.png');
+      assert.equal(ignored.items.at(-1).path, 'Project/inbox/f.png', 'an image with only ignored tags adds nothing and ranks last');
+      for (const entry of ignored.items) for (const tag of ['hero', 'red_hair', 'long_hair']) assert.ok(!entry.newTags.includes(tag));
+    }
+    {
+      // Tags present in >= 90% of the shortlist carry no weight.
+      const rows = [...Array.from({ length: 9 }, (_, n) => [`c${n}`, ['common']]), ['zz', ['uniq']]];
+      const result = await shortlist.narrowShortlist({ baseline: [], items: narrowItems(rows), target: 3 });
+      assert.equal(result.items[0].path, 'Project/inbox/zz.png');
+      for (const entry of result.items) assert.ok(!entry.newTags.includes('common'));
+    }
   }
   console.log('dataset assembly contracts: ok');
 } finally {

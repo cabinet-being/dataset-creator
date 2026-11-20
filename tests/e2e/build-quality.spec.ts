@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { suggestAndApply } from './buildFlow';
 import type { Page } from '@playwright/test';
 
 declare global { interface Window { __buildFixture: { paths: () => Record<string, string | undefined>; tags?: () => Record<string, string[] | undefined> } } }
@@ -11,8 +12,7 @@ test.describe('build quality report', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: 'Suggest selection' }).click();
-    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    await suggestAndApply(page);
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
   });
 
@@ -61,14 +61,22 @@ test.describe('build quality report', () => {
   });
 
   test('Finish leads to the Export stage (pinned to the Dataset) and Check holds the report', async ({ page }) => {
-    // Confirm the auto-accepted proposals and reject the undecided one so Finish is allowed.
+    // Reject the undecided file and the two distinct files that were not narrowed into the Dataset, then confirm the 3 Dataset files.
+    await page.getByLabel('Queue filter').selectOption('needs-decision');
     await page.getByRole('button', { name: 'Reject all 1' }).click();
     await page.getByLabel('Queue filter').selectOption('accepted');
-    // Auto-accepted items still need a caption and an explicit review in every-item mode.
     const filmstrip = page.getByLabel('Candidate filmstrip').getByRole('button');
+    await expect(filmstrip).toHaveCount(5);
+    const inDataset = await page.evaluate(() => Object.entries(window.__buildFixture.paths()).filter(([, path]) => /(^|\/)dataset\//.test(path ?? '')).map(([name]) => name));
+    expect(inDataset).toHaveLength(3);
+    const proposed = ['a.png', 'b.png', 'c.png', 'd.png', 'near.png'];
+    for (const name of proposed.filter((candidate) => !inDataset.includes(candidate))) {
+      await page.getByLabel('Candidate filmstrip').locator(`button[title^="${name} "]`).click();
+      await page.getByRole('button', { name: 'Reject · X' }).click();
+    }
     await expect(filmstrip).toHaveCount(3);
-    for (let index = 0; index < 3; index += 1) {
-      await filmstrip.nth(index).click();
+    for (const [index, name] of inDataset.entries()) {
+      await page.getByLabel('Candidate filmstrip').locator(`button[title^="${name} "]`).click();
       await page.getByLabel('Caption', { exact: true }).fill(`tag${index}, portrait`);
       await page.getByRole('button', { name: 'Accept · A' }).click();
     }

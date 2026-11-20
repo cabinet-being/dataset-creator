@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { suggestAndApply } from './buildFlow';
 
 test('build workspace shows two candidate frames', async ({ page }) => {
   await page.goto('/tests/build-browser.html');
@@ -30,17 +31,19 @@ test.describe('build auto pipeline', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: 'Suggest selection' }).click();
+    // Pass 1 shortlist -> captions -> Narrow -> Apply: 3 files reach the Dataset in one batch.
+    await suggestAndApply(page);
   });
 
   test('triages, assembles the Dataset and leaves rejected sources untouched', async ({ page }) => {
     // 9 sources: 5 distinct sharp (one near-duplicate by fake vectors), 1 exact copy, tiny, flat, below-target.
-    // Target 3: 3 selected into Dataset; tiny, flat, exact copy, near duplicate and one not-selected are rejected; below-target needs a decision.
-    await expectCounters(page, 1, 3, 5);
+    // Triage rejects tiny, flat and the exact copy; below-target needs a decision. Target 3: pass 1 shortlists 4 of the
+    // distinct sharp files (the near duplicate never joins), pass 2 narrows to 3 and applies them.
+    await expectCounters(page, 1, 5, 3);
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId('build-shortlist-bar')).toHaveCount(0);
 
-    // Focus switches to the needs-decision queue after the pass; the single item is the below-target image.
-    await expect(page.getByLabel('Queue filter')).toHaveValue('needs-decision');
+    await page.getByLabel('Queue filter').selectOption('needs-decision');
     await expect(page.locator('aside').getByText('below.png', { exact: true })).toBeVisible();
     await expect(page.locator('aside [data-triage-box]')).toContainText('Proposal: needs decision');
     await expect(page.locator('aside [data-triage-box]')).toContainText('below');
@@ -52,27 +55,25 @@ test.describe('build auto pipeline', () => {
     const rest = Object.entries(paths).filter(([, path]) => !/(^|\/)dataset\//.test(path ?? ''));
     expect(rest).toHaveLength(6);
     for (const [name, path] of rest) expect(path, `${name} must stay in inbox`).toMatch(/(^|\/)inbox\//);
-    for (const name of ['tiny.png', 'flat.png', 'below.png']) expect(paths[name]).toMatch(new RegExp(`(^|/)inbox/${name}$`));
+    for (const name of ['tiny.png', 'flat.png', 'below.png', 'a-copy.png']) expect(paths[name]).toMatch(new RegExp(`(^|/)inbox/${name}$`));
 
     const records = Object.values(await reasonsByName(page));
     const codes = (code: string) => records.filter((record) => record.codes.includes(code)).length;
     expect(codes('too-small')).toBe(1);
     expect(codes('blurry')).toBe(1);
     expect(codes('exact-duplicate')).toBe(1);
-    expect(codes('near-duplicate')).toBe(1);
-    expect(codes('not-selected')).toBe(1);
     expect(codes('below-target-resolution')).toBe(1);
     expect(records.filter((record) => record.decision === 'accepted')).toHaveLength(3);
-    expect(records.filter((record) => record.group === 'rejected' && record.decision === 'unreviewed')).toHaveLength(5);
+    expect(records.filter((record) => record.group === 'rejected' && record.decision === 'unreviewed')).toHaveLength(3);
   });
 
   test('shows rejection reasons in the aside', async ({ page }) => {
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await page.getByLabel('Queue filter').selectOption('rejected');
     const filmstrip = page.getByLabel('Candidate filmstrip').getByRole('button');
-    await expect(filmstrip).toHaveCount(5);
+    await expect(filmstrip).toHaveCount(3);
     const seen = new Set<string>();
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 3; index += 1) {
       await filmstrip.nth(index).click();
       const box = page.locator('aside [data-triage-box]');
       await expect(box).toContainText('Proposal: rejected');
@@ -82,75 +83,73 @@ test.describe('build auto pipeline', () => {
     expect(all).toMatch(/far below the 1024px minimum/);
     expect(all).toMatch(/Image is blurry/);
     expect(all).toMatch(/Exact duplicate of another image/);
-    expect(all).toMatch(/Near duplicate \(\d+% similar\)/);
-    expect(all).toMatch(/Not selected/);
   });
 
   test('manual accept of a rejected proposal moves it into the Dataset', async ({ page }) => {
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await page.getByLabel('Queue filter').selectOption('rejected');
     const filmstrip = page.getByLabel('Candidate filmstrip').getByRole('button');
-    await expect(filmstrip).toHaveCount(5);
+    await expect(filmstrip).toHaveCount(3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     await filmstrip.first().click();
     await page.getByRole('button', { name: 'Accept · A' }).click();
-    await expectCounters(page, 1, 4, 4);
+    await expectCounters(page, 1, 6, 2);
     await expect.poll(() => datasetCount(page), { timeout: 30_000 }).toBe(4);
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   test('batch Reject all and Accept all override proposals on the needs-decision group', async ({ page }) => {
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
-    await expect(page.getByLabel('Queue filter')).toHaveValue('needs-decision');
+    await page.getByLabel('Queue filter').selectOption('needs-decision');
     await page.getByRole('button', { name: 'Reject all 1' }).click();
-    await expectCounters(page, 0, 3, 6);
+    await expectCounters(page, 0, 5, 4);
     expect((await pathsOf(page))['below.png']).toMatch(/inbox\/below\.png$/);
 
-    // Accept all acts on the whole visible group: 5 rejected proposals plus the explicitly skipped item.
+    // Accept all acts on the whole visible group: 3 rejected proposals plus the explicitly skipped item.
     await page.getByLabel('Queue filter').selectOption('rejected');
-    await expect(page.getByRole('button', { name: 'Accept all 6' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Accept all 6' }).click();
+    await expect(page.getByRole('button', { name: 'Accept all 4' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Accept all 4' }).click();
     await expectCounters(page, 0, 9, 0);
-    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(9);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(7);
     expect((await pathsOf(page))['below.png']).toMatch(/(^|\/)dataset\/below\.png$/);
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   test('bulk Accept all moves every file and one Undo reverts all of them', async ({ page }) => {
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     const before = await pathsOf(page);
     await page.getByLabel('Queue filter').selectOption('rejected');
-    await expect(page.getByRole('button', { name: 'Accept all 5' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Accept all 5' }).click();
+    await expect(page.getByRole('button', { name: 'Accept all 3' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Accept all 3' }).click();
     await expectCounters(page, 1, 8, 0);
-    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(8);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(6);
     await page.evaluate(() => (window as unknown as { __buildFixture: { undo: () => Promise<void> } }).__buildFixture.undo());
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     expect(await pathsOf(page)).toEqual(before);
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   test('bulk Reject all of accepted items moves every file out and one Undo reverts all of them', async ({ page }) => {
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     const before = await pathsOf(page);
     await page.getByLabel('Queue filter').selectOption('accepted');
-    await expect(page.getByRole('button', { name: 'Reject all 3' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Reject all 3' }).click();
+    await expect(page.getByRole('button', { name: 'Reject all 5' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Reject all 5' }).click();
     await expectCounters(page, 1, 0, 8);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(0);
     await page.evaluate(() => (window as unknown as { __buildFixture: { undo: () => Promise<void> } }).__buildFixture.undo());
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     expect(await pathsOf(page)).toEqual(before);
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
   test('changing Min short side re-triages without errors', async ({ page }) => {
-    await expectCounters(page, 1, 3, 5);
+    await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     await page.locator('[data-build-settings] summary').click();
     await page.getByLabel('Model', { exact: true }).selectOption('sd15');
@@ -170,23 +169,28 @@ test.describe('build without auto assembly', () => {
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
   });
 
-  test('entering Select runs triage only; assembly starts from Suggest selection', async ({ page }) => {
+  test('entering Select runs triage only; Suggest selection only marks a shortlist', async ({ page }) => {
     // Triage is automatic: rejected proposals (tiny, flat, exact copy) appear without any click.
     await expect(counter(page, 'Rejected')).not.toHaveText('Rejected 0', { timeout: 60_000 });
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
     expect(await datasetCount(page)).toBe(0);
     expect(Object.values(await reasonsByName(page)).filter((record) => record.decision === 'accepted')).toHaveLength(0);
+    await expect(page.getByTestId('build-shortlist-bar')).toHaveCount(0);
     const suggest = page.getByRole('button', { name: 'Suggest selection' });
     await expect(suggest).toBeEnabled();
     await suggest.click();
-    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
-    await expectCounters(page, 1, 3, 5);
+    await expect(page.getByTestId('build-shortlist-bar')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
+    // Pass 1 moves nothing and decides nothing; the Dataset only grows after Narrow and Apply.
+    expect(await datasetCount(page)).toBe(0);
+    expect(Object.values(await reasonsByName(page)).filter((record) => record.decision !== 'unreviewed')).toHaveLength(0);
+    await expectCounters(page, 1, 5, 3);
   });
 
   test('X then X/A keep working without clicking, and changing the queue filter keeps shortcuts', async ({ page }) => {
     await page.getByRole('button', { name: 'Suggest selection' }).click();
-    await expectCounters(page, 1, 3, 5);
-    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    await expect(page.getByTestId('build-shortlist-bar')).toBeVisible({ timeout: 60_000 });
+    await expectCounters(page, 1, 5, 3);
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
     await page.getByLabel('Queue filter').selectOption('all');
     await page.getByLabel('Candidate filmstrip').getByRole('button').first().click();

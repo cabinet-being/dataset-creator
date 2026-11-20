@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { suggestAndApply } from './buildFlow';
 import type { Page } from '@playwright/test';
 
 type Rec = { decision: string };
@@ -15,8 +16,7 @@ const prepare = async (page: Page) => {
   await page.goto('/tests/build-browser.html');
   await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
   await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
-  await page.getByRole('button', { name: 'Suggest selection' }).click();
-  await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+  await suggestAndApply(page);
   await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
 };
 
@@ -29,8 +29,8 @@ test.describe('build grid view', () => {
   });
 
   test('grid shows one cell per queue item and the Queue filter applies to it', async ({ page }) => {
-    await expect(cells(page)).toHaveCount(5);
-    expect(await states(page)).toEqual(Array(5).fill('rejected'));
+    await expect(cells(page)).toHaveCount(3);
+    expect(await states(page)).toEqual(Array(3).fill('rejected'));
     await expect(cells(page).first().getByTestId('build-grid-badge')).toHaveText('Rejected');
     await expect(cells(page).first()).toHaveAttribute('title', /Rejected · .+/);
     await page.getByLabel('Queue filter').selectOption('needs-decision');

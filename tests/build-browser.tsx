@@ -94,6 +94,17 @@ function Harness() {
       undo: () => useHistoryStore.getState().undo(),
       setTrigger: (word: string) => useProjectStore.setState((state) => ({ dataset: { ...state.dataset, triggerWord: word } })),
       tags: () => Object.fromEntries(Object.values(useProjectStore.getState().sourceImages).map((source) => [(source.originalFilePath ?? source.fileName).split('/').pop()!, source.tags])),
+      // File names of the current shortlist entries in rank order (the fixture has no tagger, so tests caption them by hand).
+      shortlist: () => (useProjectStore.getState().buildSession?.auto?.shortlist?.entries ?? []).map((entry) => entry.id.replace(/^source:/, ''))
+        .map((id) => useProjectStore.getState().sourceImages[id]).filter(Boolean).map((source) => (source.originalFilePath ?? source.fileName).split('/').pop()!),
+      narrowed: () => (useProjectStore.getState().buildSession?.auto?.shortlist?.narrowed?.ids ?? []).map((id) => useProjectStore.getState().sourceImages[id.replace(/^source:/, '')])
+        .filter(Boolean).map((source) => (source.originalFilePath ?? source.fileName).split('/').pop()!),
+      /** Sets (or with `undefined` removes) the caption tags of files by name. */
+      setTags: (names: string[], tags: string[] | undefined) => {
+        for (const source of Object.values(useProjectStore.getState().sourceImages)) {
+          if (names.includes((source.originalFilePath ?? source.fileName).split('/').pop()!)) useProjectStore.getState().updateSourceImage(source.id, { tags });
+        }
+      },
       paths: () => {
         const state = useProjectStore.getState();
         return Object.fromEntries(toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems)).map((item) => [(item.assetPath ?? item.fileName).split('/').pop()!, item.assetPath]));

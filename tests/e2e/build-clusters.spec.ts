@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { suggestAndApply } from './buildFlow';
 import type { Page } from '@playwright/test';
 
 type Record = { decision: string; application?: string; triage?: { group: string } };
@@ -19,8 +20,7 @@ test.describe('build clusters view', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: 'Suggest selection' }).click();
-    await expect.poll(async () => (await datasetNames(page)).length, { timeout: 60_000 }).toBe(3);
+    await suggestAndApply(page);
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
     await toggle(page, 'clusters').click();
     await expect(toggle(page, 'clusters')).toHaveAttribute('aria-pressed', 'true');
