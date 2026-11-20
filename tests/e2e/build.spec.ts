@@ -30,6 +30,7 @@ test.describe('build auto pipeline', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: 'Suggest selection' }).click();
   });
 
   test('triages, assembles the Dataset and leaves rejected sources untouched', async ({ page }) => {
@@ -128,6 +129,48 @@ test.describe('build auto pipeline', () => {
     expect(await datasetCount(page)).toBe(3);
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
+});
+
+test.describe('build without auto assembly', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/tests/build-browser.html');
+    await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
+    await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+  });
+
+  test('entering Select runs triage only; assembly starts from Suggest selection', async ({ page }) => {
+    // Triage is automatic: rejected proposals (tiny, flat, exact copy) appear without any click.
+    await expect(counter(page, 'Rejected')).not.toHaveText('Rejected 0', { timeout: 60_000 });
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
+    expect(await datasetCount(page)).toBe(0);
+    expect(Object.values(await reasonsByName(page)).filter((record) => record.decision === 'accepted')).toHaveLength(0);
+    const suggest = page.getByRole('button', { name: 'Suggest selection' });
+    await expect(suggest).toBeEnabled();
+    await suggest.click();
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    await expectCounters(page, 1, 3, 5);
+  });
+
+  test('X then X/A keep working without clicking, and changing the queue filter keeps shortcuts', async ({ page }) => {
+    await page.getByRole('button', { name: 'Suggest selection' }).click();
+    await expectCounters(page, 1, 3, 5);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
+    await page.getByLabel('Queue filter').selectOption('all');
+    await page.getByLabel('Candidate filmstrip').getByRole('button').first().click();
+    const snapshot = async () => JSON.stringify(Object.entries(await reasonsByName(page)).map(([id, x]) => [id, x.decision]).sort());
+    const press = async (key: string) => { const before = await snapshot(); await page.keyboard.press(key); await expect.poll(snapshot, { message: `key ${key} must change a decision` }).not.toBe(before); await expect(page.getByRole('button', { name: 'Reject · X' })).toBeEnabled(); };
+    await press('x');
+    await press('x'); // focus must not have fallen to body after the first reject; the cursor moved on
+    await press('x');
+
+    // Changing the filter moves focus to a select; shortcuts must still reach the workspace afterwards.
+    await page.getByLabel('Queue filter').selectOption('rejected');
+    await press('a');
+    await press('a');
+  });
+
+  // Skipped: editing a trait with existing suggestions needs the real local tagger; the fixture injects only a fake DINOv2 encoder.
 });
 
 test.describe('character traits', () => {
