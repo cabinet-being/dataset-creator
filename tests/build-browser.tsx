@@ -146,9 +146,25 @@ function Harness() {
     };
     setReady(true);
   };
+  const prepareFolders = async () => {
+    // Small nested inbox for the Auto-select dialog's folder tree: inbox (1) / a (2) / a/sub (1) / b (1).
+    const names = ['inbox/root.png', 'inbox/a/x1.png', 'inbox/a/x2.png', 'inbox/a/sub/y.png', 'inbox/b/z.png'];
+    const sourceImages = Object.fromEntries(await Promise.all(names.map(async (path, index) => {
+      const source = createSourceImage(await detailed(16, 16, index + 1), path.split('/').pop()!, 16, 16);
+      source.originalFilePath = path;
+      return [source.id, source] as const;
+    })));
+    const project = createProject('Build folders fixture', 'character'); project.sourceImages = sourceImages;
+    const storage = await navigator.storage.getDirectory();
+    const directory = await storage.getDirectoryHandle(`build-folders-fixture-${crypto.randomUUID()}`, { create:true }) as unknown as ProjectDirectoryHandle;
+    await createProjectDirectory(directory, project);
+    useProjectStore.getState().loadProject(project);
+    useUIStore.setState({ projectDirectoryHandle:directory });
+    setReady(true);
+  };
   return <CommandProvider><main className="h-screen">{ready
     ? <BuildWorkspace active viewId="fixture:build" items={items} directory={useUIStore.getState().projectDirectoryHandle} semanticEncoderFactory={auto ? fakeEncoderFactory : undefined} />
-    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button><button onClick={() => void prepareStyle()}>Prepare style fixture</button></>}</main></CommandProvider>;
+    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareFolders()}>Prepare folders fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button><button onClick={() => void prepareStyle()}>Prepare style fixture</button></>}</main></CommandProvider>;
 }
 
 const root = createRoot(document.getElementById('root')!); root.render(<Harness />);

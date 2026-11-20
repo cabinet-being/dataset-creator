@@ -160,10 +160,10 @@ try {
   const shortPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[back],mode:{kind:'range',min:4,max:6}});
   assert.equal(shortPlan.shortfall,2); assert.equal(shortPlan.stoppedBecause,'insufficient-pool');
   const textBait = assemblyItem('Project/inbox/text-bait.png', feature('bait',[0.999,0.001],'perfect requested caption',['front']));
-  const textPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[textBait,back],mode:{kind:'max-new',maxNew:2},target:'perfect requested caption'});
-  assert.equal(textPlan.selected.some(step => step.path.endsWith('text-bait.png')),false,'caption relevance cannot bypass visual near-duplicate rejection');
-  const fingerprintA = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{target:'one',mode:{kind:'auto'},pinnedKeys:new Set()});
-  const fingerprintB = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{target:'one',mode:{kind:'auto'},pinnedKeys:new Set(['inbox/back.png'])});
+  const textPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[textBait,back],mode:{kind:'max-new',maxNew:2}});
+  assert.equal(textPlan.selected.some(step => step.path.endsWith('text-bait.png')),false,'a caption-similar near-duplicate image is still rejected visually');
+  const fingerprintA = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{mode:{kind:'auto'},pinnedKeys:new Set()});
+  const fingerprintB = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{mode:{kind:'auto'},pinnedKeys:new Set(['inbox/back.png'])});
   assert.notEqual(fingerprintA,fingerprintB,'pins invalidate an assembly preview');
 
   // Signal weights must not change when the first caption enters the selection.
@@ -194,12 +194,12 @@ try {
   for (const asset of [...targetBaseline, bait, useful]) asset.feature.text = encodeCaptionText(asset.caption);
   for (const mode of [{kind:'auto'}, {kind:'max-new',maxNew:3}, {kind:'range',min:3,max:6}]) {
     const result = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
-      baseline:targetBaseline,candidates:[bait,useful],mode,target:'target'});
+      baseline:targetBaseline,candidates:[bait,useful],mode});
     assert.equal(result.selected[0]?.path, 'b-useful.png', 'Saturation must consider every eligible candidate');
     assert.ok(result.after.total > result.before.total);
   }
   const forcedTarget = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
-    baseline:targetBaseline,candidates:[bait,useful],mode:{kind:'total',target:5},target:'target'});
+    baseline:targetBaseline,candidates:[bait,useful],mode:{kind:'total',target:5}});
   assert.equal(forcedTarget.selected.length, 2, 'A requested total still fills beyond the saturation threshold');
   const pinnedLowGain = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
     baseline:targetBaseline,candidates:[bait],mode:{kind:'auto'},pinnedKeys:new Set(['a-bait.png'])});
@@ -449,6 +449,56 @@ try {
     const pre = new AbortController(); pre.abort(); const none=[];
     await assert.rejects(assembly.encodeAssemblyInputs(items,{triggerWord:'',signal:pre.signal,encoder:{async encode(i){none.push(i);return {};}}}));
     assert.equal(none.length,0);
+  }
+  {
+    // encodeAssemblyInputs skips an unreadable item (reported via onSkip) while the rest proceed; abort is never swallowed.
+    const mkImg = (id) => ({id,sourceImageId:id,assetPath:'Project/inbox/'+id+'.png',kind:'image',imageData:new Blob(['x']),tags:[id],width:64,height:64,dimensionsKnown:true});
+    const items = ['s1','bad','s3','empty'].map(mkImg);
+    const skipped = []; const progress = [];
+    const res = await assembly.encodeAssemblyInputs(items,{triggerWord:'',onProgress:(x,y)=>progress.push([x,y]),onSkip:(entry)=>skipped.push([entry.item.id,entry.reason]),
+      encoder:{async encode(i){ if (i.id==='bad') throw new Error('could not be decoded'); if (i.id==='empty') throw new Error(''); return {id:i.id}; }}});
+    assert.deepEqual(res.map((r)=>r.item.id),['s1','s3'],'throwing items are skipped, others proceed');
+    assert.deepEqual(skipped,[['bad','could not be decoded'],['empty','Could not be read']],'skips carry the reason with a fallback');
+    assert.deepEqual(progress.map((x)=>x[0]),[0,1,2,3]);
+    const silent = await assembly.encodeAssemblyInputs(items,{triggerWord:'',encoder:{async encode(i){ if (i.id!=='s1') throw new Error('x'); return {}; }}});
+    assert.equal(silent.length,1,'onSkip is optional');
+    const ctrl = new AbortController();
+    await assert.rejects(assembly.encodeAssemblyInputs(items,{triggerWord:'',signal:ctrl.signal,onSkip:()=>{ throw new Error('abort must not be reported as a skip'); },
+      encoder:{async encode(){ ctrl.abort(); throw new Error('encoder failed after abort'); }}}),(error)=>error?.name==='AbortError','abort during a failing encode rethrows instead of skipping');
+  }
+  {
+    // assembleDataset: deterministic picks equal the pre-7c585f4 implementation's picks (derived by running both on this fixture).
+    const v = (...x) => new Float32Array(x);
+    const f = (hash,image,cap,contexts=[]) => ({imageHash:hash,image:v(...image),text:v(...image),caption:cap,contexts});
+    const it = (path,semantic) => ({item:{id:'asset:'+path,assetPath:path,kind:'image',width:1024,height:1024,dimensionsKnown:true},feature:semantic,caption:semantic.caption,quality:1});
+    const base = [it('b/front.png',f('f',[1,0,0],'front',['front']))];
+    const cands = [it('inbox/a-front2.png',f('f2',[0.99,0.14,0],'front',['front'])),it('inbox/b-back.png',f('bk',[0,1,0],'back',['back'])),
+      it('inbox/c-back-copy.png',f('bk',[0,1,0],'copy',['x'])),it('inbox/d-side.png',f('sd',[0,0,1],'side',['side'])),it('inbox/e-three.png',f('t',[0,0.7,0.7],'three',['three']))];
+    const plan = await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'}});
+    assert.deepEqual(plan.selected.map((s)=>s.key),['inbox/e-three.png','inbox/b-back.png','inbox/d-side.png']);
+    assert.deepEqual(plan.rejectedDuplicates,['inbox/a-front2.png','inbox/c-back-copy.png'],'near copy and exact hash duplicate are deduplicated');
+    assert.deepEqual(plan.duplicatePairs.map((p)=>p.kind),['near','exact']);
+    assert.equal(plan.stoppedBecause,'exhausted');
+    assert.deepEqual(plan.selected.map((s)=>s.gain.toFixed(4)),['0.5432','0.1013','0.1013']);
+    assert.equal(plan.before.total.toFixed(4),'0.2500'); assert.equal(plan.after.total.toFixed(4),'0.9957');
+    const excluded = await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'},excludedKeys:new Set(['inbox/e-three.png'])});
+    assert.equal(excluded.selected.some((s)=>s.key==='inbox/e-three.png'),false); assert.equal(excluded.funnel.excluded,1);
+
+    // progress and abort
+    const events = [];
+    await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'},onProgress:(e)=>events.push(e)});
+    assert.equal(events[0].phase,'similarity'); assert.equal(events[0].total,6,'similarity pool is baseline + all non-excluded candidates');
+    const selecting = events.filter((e)=>e.phase==='selecting');
+    assert.deepEqual(selecting.map((e)=>e.completed),[1,2,3]); assert.ok(selecting.every((e)=>e.total===3));
+    const pre = new AbortController(); pre.abort();
+    await assert.rejects(assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'},signal:pre.signal}),(e)=>e?.name==='AbortError');
+    // Large pool: abort from a timer stops the run promptly instead of finishing it.
+    const many = Array.from({length:700},(_,i)=>{ const a=i*0.37; return it(`inbox/m${String(i).padStart(4,'0')}.png`,f('h'+i,[Math.cos(a),Math.sin(a)*Math.cos(i),Math.sin(a)*Math.sin(i)],'c'+i,['c'+(i%40)])); });
+    const ctrl = new AbortController();
+    const started = performance.now(); const timer = setTimeout(()=>ctrl.abort(),30);
+    const outcome = await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:many,mode:{kind:'auto'},signal:ctrl.signal}).then(()=>'done',(e)=>e?.name);
+    clearTimeout(timer);
+    assert.equal(outcome,'AbortError','a long run is cancelled by the signal'); assert.ok(performance.now()-started<1500,'abort is prompt');
   }
   {
     // mergeBuildItems: registered images override passed items by Build asset id, extra registered images are
