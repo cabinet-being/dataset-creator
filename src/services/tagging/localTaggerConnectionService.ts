@@ -2,6 +2,7 @@ import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import { verifyModelAsset } from '../models/verifiedModelDownload';
 import { WD_TAGGER_MODEL } from './wdTaggerModelManifest';
 import { connectLocalTaggerBundle, type LocalTaggerBundleSource } from './localTaggerService';
+import { releaseLocalTaggerBundle } from './localTaggerRelease';
 import {
   getLocalTaggerSavedFile,
   getLocalTaggerSavedFileNames,
@@ -30,7 +31,7 @@ const connectSource = async (source: LocalTaggerBundleSource, current: number): 
       if (current === generation) useLocalTaggerStore.getState().setProgress(progress);
     });
     if (current !== generation) {
-      await bundle.session.release();
+      await releaseLocalTaggerBundle(bundle);
       return false;
     }
     const latest = useLocalTaggerStore.getState();

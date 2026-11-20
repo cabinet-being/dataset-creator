@@ -1,7 +1,7 @@
 import type { Dataset, ProjectType } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { SemanticFeature } from '../analysis/semanticFeatureService';
-import { SEMANTIC_FEATURE_MODEL_KEY } from '../analysis/semanticFeatureService';
+import { SEMANTIC_FEATURE_MODEL_KEY, isSemanticModelError } from '../analysis/semanticFeatureService';
 import { cosineSimilarity, createCoverageUniverse, getStableSceneGroup, type CoverageAsset, type CoverageMetrics } from './coverageService';
 import { resolveAssetCaption } from '../caption/captionResolver';
 import { normalizeDatasetPath } from './datasetMembershipResolver';
@@ -51,6 +51,7 @@ export async function encodeAssemblyInputs(items: WorkspaceImage[], options: {
       features.push({ item, caption, feature: await options.encoder.encode(item, caption), quality: item.dimensionsKnown === false ? 0 : Math.min(1, Math.sqrt(item.width * item.height) / 1024) });
     } catch (error) {
       options.signal?.throwIfAborted();
+      if (isSemanticModelError(error)) throw error;
       options.onSkip?.({ item, reason: error instanceof Error && error.message ? error.message : 'Could not be read' });
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 0));

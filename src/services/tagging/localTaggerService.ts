@@ -1,4 +1,5 @@
 import type { InferenceSession, Tensor } from 'onnxruntime-web';
+import { isTaggerWorkerSupported, scoreImageInTaggerWorker } from './taggerWorkerClient';
 import { filterTagPredictions, packImageChannels, parseSelectedTagCsv, type TagCategory } from './wdTagger';
 
 export type LocalTaggerRuntime = 'webgpu' | 'wasm';
@@ -10,7 +11,9 @@ export type LocalTaggerPrediction = {
 
 export type LocalTaggerBundle = {
   name: string;
-  session: InferenceSession;
+  /** Main-thread session; absent when inference runs in the tagger worker (the model is loaded there from `modelFile`). */
+  session?: InferenceSession;
+  modelFile: File;
   inputName: string;
   outputName: string;
   tags: string[];
@@ -21,6 +24,8 @@ export type LocalTaggerBundle = {
   layout: 'nhwc' | 'nchw';
   runtime: LocalTaggerRuntime;
 };
+
+export type TaggerInputSpec = Pick<LocalTaggerBundle, 'inputName' | 'outputName' | 'inputWidth' | 'inputHeight' | 'layout' | 'inputChannelOrder'>;
 
 export type LocalTaggerProgress = (message: string) => void;
 
@@ -140,7 +145,7 @@ const validateOutputTagCount = (session: InferenceSession, outputName: string, t
   }
 };
 
-const createSession = async (
+export const createSession = async (
   ort: OrtModule,
   modelBuffer: ArrayBuffer,
   onProgress?: LocalTaggerProgress
@@ -198,9 +203,13 @@ export const connectLocalTaggerBundle = async (
       throw new Error('selected_tags.csv did not contain any usable tags.');
     }
 
+    // With a worker available the model is reloaded there on demand; keeping a second copy here would double the memory.
+    const useWorker = isTaggerWorkerSupported();
+    if (useWorker) await session.release();
     return {
       name: source.name || 'Local model',
-      session,
+      session: useWorker ? undefined : session,
+      modelFile,
       tags,
       tagCategories: tagRows.map((tag) => tag.category),
       inputChannelOrder: parsedTags.hasCategories ? 'bgr' : 'rgb',
@@ -216,7 +225,8 @@ export const connectLocalTaggerBundle = async (
 const loadImageBitmap = async (blob: Blob): Promise<ImageBitmap> => {
   try {
     return await createImageBitmap(blob, { colorSpaceConversion: 'default' });
-  } catch {
+  } catch (error) {
+    if (typeof Image === 'undefined') throw error; // worker: no <img> fallback
     const url = URL.createObjectURL(blob);
     try {
       const image = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -232,10 +242,10 @@ const loadImageBitmap = async (blob: Blob): Promise<ImageBitmap> => {
   }
 };
 
-const preprocessImage = async (image: Blob, bundle: LocalTaggerBundle): Promise<Tensor> => {
+const preprocessImage = async (image: Blob, bundle: TaggerInputSpec): Promise<Tensor> => {
   const ort = await import('onnxruntime-web/all');
   const bitmap = await loadImageBitmap(image);
-  const canvas = document.createElement('canvas');
+  const canvas = typeof document === 'undefined' ? new OffscreenCanvas(bundle.inputWidth, bundle.inputHeight) : document.createElement('canvas');
   canvas.width = bundle.inputWidth;
   canvas.height = bundle.inputHeight;
 
@@ -271,6 +281,15 @@ const preprocessImage = async (image: Blob, bundle: LocalTaggerBundle): Promise<
   return new ort.Tensor('float32', data, dims);
 };
 
+/** Runs the tagger on one image and returns the raw per-tag scores. Used on the main thread and inside the tagger worker. */
+export const scoreImageWithSession = async (session: InferenceSession, spec: TaggerInputSpec, image: Blob): Promise<Float32Array> => {
+  const inputTensor = await preprocessImage(image, spec);
+  const results = await session.run({ [spec.inputName]: inputTensor });
+  const output = results[spec.outputName];
+  if (!output) throw new Error('The ONNX model did not return the expected output tensor.');
+  return Float32Array.from(output.data as Float32Array | number[]);
+};
+
 export const predictLocalTags = async (
   bundle: LocalTaggerBundle,
   image: Blob,
@@ -278,18 +297,12 @@ export const predictLocalTags = async (
   maxTags: number,
   options: { characterThreshold?: number; includeRatings?: boolean } = {}
 ): Promise<LocalTaggerPrediction[]> => {
-  const inputTensor = await preprocessImage(image, bundle);
-  const results = await bundle.session.run({ [bundle.inputName]: inputTensor });
-  const output = results[bundle.outputName];
-
-  if (!output) {
-    throw new Error('The ONNX model did not return the expected output tensor.');
-  }
-
-  const scores = Array.from(output.data as Float32Array | number[]);
+  const scores = bundle.session
+    ? await scoreImageWithSession(bundle.session, bundle, image)
+    : await scoreImageInTaggerWorker(bundle, image);
   if (scores.length !== bundle.tags.length) {
     throw new Error(`The ONNX model returned ${scores.length} scores for ${bundle.tags.length} selected tags.`);
   }
-  const predictions = scores.map((score, index) => ({ tag: bundle.tags[index], score }));
+  const predictions = Array.from(scores, (score, index) => ({ tag: bundle.tags[index], score }));
   return filterTagPredictions(predictions, bundle.tagCategories ?? [], threshold, maxTags, options);
 };

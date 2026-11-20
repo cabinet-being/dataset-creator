@@ -52,6 +52,15 @@ export const rgbModelTensor = (pixels: Uint8ClampedArray): Float32Array => {
   }
   return values;
 };
+/** Centre-crops a decoded image to the DINOv2 224x224 input (short side 256) and returns the normalized tensor values. */
+export const bitmapModelTensor = (context: OffscreenCanvasRenderingContext2D, bitmap: ImageBitmap): Float32Array => {
+  const scale = 256 / Math.min(bitmap.width, bitmap.height);
+  const width = Math.floor(bitmap.width * scale);
+  const height = Math.floor(bitmap.height * scale);
+  context.fillStyle = 'black'; context.fillRect(0, 0, 224, 224);
+  context.drawImage(bitmap, -Math.floor((width - 224) / 2), -Math.floor((height - 224) / 2), width, height);
+  return rgbModelTensor(context.getImageData(0, 0, 224, 224).data);
+};
 export const loadVideoModel = async (signal?: AbortSignal, progress?: (progress: VideoProgress) => void, preferred: 'auto' | 'wasm' | 'webgpu' = 'auto') => {
   const buffer = await getVideoMeta<ArrayBuffer>('model');
   if (!buffer) throw new Error('Download the DINOv2 model before starting automatic analysis.');

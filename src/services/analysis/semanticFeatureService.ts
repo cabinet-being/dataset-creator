@@ -1,7 +1,8 @@
 import { sha256HexInWorker } from '../image/imageWorkerClient';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { VIDEO_MODEL_KEY, downloadVideoModel, loadVideoModel, rgbModelTensor } from '../video/videoModel';
-import { getCachedImageFeature, getCachedTextFeature, setCachedImageFeature, setCachedTextFeature } from './semanticFeatureCache';
+import { VIDEO_MODEL_KEY, bitmapModelTensor, downloadVideoModel, loadVideoModel } from '../video/videoModel';
+import { getCachedTextFeature, readImageFeature, setCachedTextFeature, writeImageFeature } from './semanticFeatureCache';
+import { createSemanticWorkerSession, isSemanticWorkerSupported } from './semanticWorkerClient';
 
 export const SEMANTIC_FEATURE_MODEL = {
   visual: VIDEO_MODEL_KEY,
@@ -18,8 +19,18 @@ export type SemanticFeature = {
   caption: string;
 };
 
+const digestByBlob = new WeakMap<Blob, string>();
 export const hexDigest = async (value: Blob | string): Promise<string> => {
-  if (typeof value !== 'string') { const hashed = await sha256HexInWorker(value); if (hashed) return hashed; }
+  if (typeof value !== 'string') {
+    const known = digestByBlob.get(value);
+    if (known) return known;
+    const hashed = (await sha256HexInWorker(value)) ?? await hexDigestOnMainThread(value);
+    digestByBlob.set(value, hashed);
+    return hashed;
+  }
+  return hexDigestOnMainThread(value);
+};
+const hexDigestOnMainThread = async (value: Blob | string): Promise<string> => {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(await value.arrayBuffer());
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -49,22 +60,54 @@ export const extractCaptionContexts = (caption: string): string[] => {
   return [...new Set([...tokens, ...tokens.slice(0, -1).map((token, index) => `${token} ${tokens[index + 1]}`)])].sort();
 };
 
-export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progress?: (phase: string) => void, options: { allowDownload?: boolean } = {}) => {
-  progress?.('Preparing semantic model');
-  if (options.allowDownload !== false) await downloadVideoModel(signal, (value) => progress?.(value.phase));
+/** DINOv2 inference backend: a dedicated worker, or the main thread when workers/OffscreenCanvas are unavailable. */
+const createInferenceBackend = async (signal: AbortSignal | undefined, progress: ((phase: string) => void) | undefined, allowDownload: boolean) => {
+  if (isSemanticWorkerSupported()) {
+    const session = await createSemanticWorkerSession(signal, allowDownload, progress);
+    return { infer: (blob: Blob) => session.encode(blob, signal), dispose: async () => session.dispose() };
+  }
+  if (allowDownload) await downloadVideoModel(signal, (value) => progress?.(value.phase));
   progress?.('Loading semantic model');
   const model = await loadVideoModel(signal, (value) => progress?.(value.phase));
-  const canvas = new OffscreenCanvas(224, 224);
-  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  const context = new OffscreenCanvas(224, 224).getContext('2d', { willReadFrequently: true })!;
   context.imageSmoothingQuality = 'high';
+  return {
+    infer: async (blob: Blob) => {
+      const bitmap = await createImageBitmap(blob);
+      try { return await model.infer(bitmapModelTensor(context, bitmap)); } finally { bitmap.close(); }
+    },
+    dispose: () => model.dispose(),
+  };
+};
+
+/** The model could not be downloaded or loaded: fatal for the whole run, not a per-image failure. */
+export class SemanticModelError extends Error {
+  constructor(message: string) { super(message); this.name = 'SemanticModelError'; }
+}
+export const isSemanticModelError = (error: unknown): error is SemanticModelError => error instanceof SemanticModelError;
+
+export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progress?: (phase: string) => void, options: { allowDownload?: boolean } = {}) => {
+  progress?.('Preparing semantic model');
+  // The worker and the 88 MB model start on the first cache miss, so fully cached runs never load them.
+  let started: Promise<Awaited<ReturnType<typeof createInferenceBackend>>> | undefined;
+  const getBackend = () => started ??= createInferenceBackend(signal, progress, options.allowDownload !== false).catch((error) => {
+    started = undefined;
+    if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+    throw new SemanticModelError(error instanceof Error && error.message ? error.message : 'The semantic model could not be loaded.');
+  });
+  const backend = {
+    infer: async (blob: Blob) => (await getBackend()).infer(blob),
+    dispose: async () => { const current = started; started = undefined; if (current) await (await current.catch(() => undefined))?.dispose(); },
+  };
   const encodeImage = async (item: WorkspaceImage): Promise<{ imageHash: string; image: Float32Array }> => {
     signal?.throwIfAborted();
     // A PSD is encoded from its existing preview; the raw file is not decodable by the browser.
     if (item.kind === 'psd' && !item.previewUrl) throw new Error('PSD preview unavailable');
     const imageHash = await hexDigest(item.imageData);
     const imageKey = `${imageHash}:${SEMANTIC_FEATURE_MODEL.visual}`;
-    let image = getCachedImageFeature(imageKey);
+    let image = await readImageFeature(imageKey);
     if (!image) {
+      signal?.throwIfAborted();
       let visualBlob: Blob = item.imageData;
       if (item.kind === 'psd' && item.previewUrl) {
         try {
@@ -76,16 +119,8 @@ export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progres
           throw new Error('PSD preview unavailable');
         }
       }
-      const bitmap = await createImageBitmap(visualBlob);
-      try {
-        const scale = 256 / Math.min(bitmap.width, bitmap.height);
-        const width = Math.floor(bitmap.width * scale);
-        const height = Math.floor(bitmap.height * scale);
-        context.fillStyle = 'black'; context.fillRect(0, 0, 224, 224);
-        context.drawImage(bitmap, -Math.floor((width - 224) / 2), -Math.floor((height - 224) / 2), width, height);
-        image = await model.infer(rgbModelTensor(context.getImageData(0, 0, 224, 224).data));
-        setCachedImageFeature(imageKey, image);
-      } finally { bitmap.close(); }
+      image = await backend.infer(visualBlob);
+      writeImageFeature(imageKey, image);
     }
     return { imageHash, image };
   };
@@ -99,6 +134,6 @@ export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progres
       if (!text) { text = encodeCaptionText(caption); setCachedTextFeature(textKey, text); }
       return { imageHash, image, text, contexts: extractCaptionContexts(caption), caption };
     },
-    dispose: () => model.dispose(),
+    dispose: () => backend.dispose(),
   };
 };

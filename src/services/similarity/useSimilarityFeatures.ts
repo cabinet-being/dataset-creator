@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { createSemanticFeatureEncoder, hexDigest, SEMANTIC_FEATURE_MODEL } from '../analysis/semanticFeatureService';
-import { getCachedImageFeature } from '../analysis/semanticFeatureCache';
+import { createSemanticFeatureEncoder, hexDigest, isSemanticModelError, SEMANTIC_FEATURE_MODEL } from '../analysis/semanticFeatureService';
+import { readImageFeature } from '../analysis/semanticFeatureCache';
 import { generateEmbedding } from '../image/embeddingService';
 import { hasVideoModel } from '../video/videoCache';
 import type { SimilarityBasis } from './similarityLevels';
@@ -36,7 +36,6 @@ const imageSha256 = async (blob: Blob): Promise<string> => {
   return digest;
 };
 
-const cachedDinoFeature = (sha256: string) => getCachedImageFeature(`${sha256}:${SEMANTIC_FEATURE_MODEL.visual}`);
 
 const isAbort = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 
@@ -124,7 +123,7 @@ export const useSimilarityFeatures = (
           continue;
         }
         try {
-          const cached = cachedDinoFeature(await imageSha256(item.imageData));
+          const cached = await readImageFeature(`${await imageSha256(item.imageData)}:${SEMANTIC_FEATURE_MODEL.visual}`);
           if (cached) {
             next[item.id] = { blob: item.imageData, value: cached };
           } else {
@@ -147,7 +146,7 @@ export const useSimilarityFeatures = (
               const { image } = await encoder.encodeImage(item);
               next[item.id] = { blob: item.imageData, value: image };
             } catch (encodeError) {
-              if (isAbort(encodeError)) {
+              if (isAbort(encodeError) || isSemanticModelError(encodeError)) {
                 throw encodeError;
               }
             }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { LocalTaggerBundle } from '../services/tagging/localTaggerService';
+import { releaseLocalTaggerBundle } from '../services/tagging/localTaggerRelease';
 
 export type LocalTaggerStatus = 'not-connected' | 'loading' | 'not-ready' | 'ready' | 'running';
 
@@ -47,7 +48,7 @@ export const useLocalTaggerStore = create<LocalTaggerState>((set, get) => ({
   setBundle: (bundle) => {
     const previousBundle = get().bundle;
     if (previousBundle && previousBundle !== bundle) {
-      void previousBundle.session.release();
+      void releaseLocalTaggerBundle(previousBundle);
     }
     set({ bundle });
   },
@@ -62,7 +63,7 @@ export const useLocalTaggerStore = create<LocalTaggerState>((set, get) => ({
       console.log('[tagging:model] explicit disconnect requested');
     }
     if (previousBundle) {
-      void previousBundle.session.release();
+      void releaseLocalTaggerBundle(previousBundle);
     }
     set({
       bundle: null,
