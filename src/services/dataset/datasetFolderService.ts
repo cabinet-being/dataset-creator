@@ -116,10 +116,12 @@ const moveItems = async (
     result.completed.push(change);
     // Same exclusive operation as the move: the caption gains or loses the trigger word as the file crosses dataset/.
     await reconcileTriggerAfterMove(root, change, useProjectStore.getState().dataset.triggerWord);
-    await updateRegisteredPaths(root, [change]);
     await clearLegacyExclusionAtPath(root,change.to);
   };
+  let processed = 0;
   for (const item of items) {
+    // Keep the UI responsive during large batches.
+    if (processed++ > 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
     const sourcePath = item.assetPath ? normalizeWorkspaceAssetPath(item.assetPath) : undefined;
     if (sourcePath && (sourcePath === destinationPath || sourcePath.startsWith(`${destinationPath}/`))) {
       result.unchanged.push(sourcePath); continue;
@@ -136,6 +138,9 @@ const moveItems = async (
     }
   }
   if (useProjectStore.getState().id === projectId && useUIStore.getState().projectDirectoryHandle === root) {
+    // References, build session and asset registry follow all moves of the batch in one pass and one registry write.
+    try { await updateRegisteredPaths(root, result.completed); }
+    catch (error) { result.failed.push({path:destinationPath,message:error instanceof Error ? error.message : String(error)}); }
     try { await indexChanges(root, result.completed); }
     catch (error) { result.failed.push({path:destinationPath,message:error instanceof Error ? error.message : String(error)}); }
     finally { notifyPathMoves(result.completed); }

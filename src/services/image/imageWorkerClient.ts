@@ -1,10 +1,10 @@
 import type { ImageQualityOptions, ImageQualityReport } from '../quality/imageQuality';
-import type { ImageWorkerRequest, ImageWorkerResponse, ResizeResult } from './imageWorker.worker';
+import type { ImageWorkerRequest, ImageWorkerResponse, ProbeResult, ResizeResult } from './imageWorker.worker';
 
 type Body = ImageWorkerRequest extends infer Value ? Value extends { id: number } ? Omit<Value, 'id'> : never : never;
 type Job = {
   body: Body; priority: number; seq: number; signal?: AbortSignal; isWanted?: () => boolean;
-  resolve: (value: ImageQualityReport | ResizeResult | string) => void; reject: (error: unknown) => void; onAbort?: () => void;
+  resolve: (value: ImageQualityReport | ResizeResult | ProbeResult | string) => void; reject: (error: unknown) => void; onAbort?: () => void;
 };
 type Slot = { worker: Worker; job?: Job; id: number };
 
@@ -105,4 +105,16 @@ export const sha256HexInWorker = async (blob: Blob): Promise<string | null> => {
   if (typeof Worker === 'undefined') return null;
   try { return await digestPool.run<string>({ type: 'digest', blob }); }
   catch { return null; }
+};
+
+const probePool = new ImageWorkerPool(2);
+
+/** One-decode import metadata (size, thumbnail, histogram, hash) computed off the UI thread; null when workers are unavailable. */
+export const probeImageInWorker = async (blob: Blob, thumbnailSize = 256, signal?: AbortSignal): Promise<ProbeResult | null> => {
+  if (!isImageWorkerSupported()) return null;
+  try { return await probePool.run<ProbeResult>({ type: 'probe', blob, thumbnailSize }, { signal }); }
+  catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
 };

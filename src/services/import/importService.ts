@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { createSourceImage, type SourceImage } from '../../types';
 import { createThumbnail, getImageDimensions } from '../image/imageProcessor';
 import { generateEmbedding, generateImageHash } from '../image/embeddingService';
+import { probeImageInWorker } from '../image/imageWorkerClient';
 import { createOperationLogger, shouldLogProgress, type OperationLogger } from '../logging/applicationLog';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { snapshotFile } from '../project/fileSnapshotService';
@@ -428,10 +429,12 @@ const processImportedFile = async (
     return { sourceImage: null, asset };
   }
 
-  const { width, height } = await getImageDimensions(file);
-  const thumbnail = await createThumbnail(file);
-  const embedding = await generateEmbedding(file);
-  const hash = await generateImageHash(file);
+  // One worker decode yields size, thumbnail, histogram and hash; the main-thread canvas path is only a fallback.
+  const probe = await probeImageInWorker(file);
+  const { width, height } = probe ?? await getImageDimensions(file);
+  const thumbnail = probe?.thumbnail ?? await createThumbnail(file);
+  const embedding = probe?.embedding ?? await generateEmbedding(file);
+  const hash = probe?.hash ?? await generateImageHash(file);
   const previewUrl = URL.createObjectURL(file);
 
   const sourceImage = createSourceImage(file, file.name, width, height, previewUrl);
@@ -549,6 +552,21 @@ const processArchiveFile = async (
   }
 
   return { importedImages, importedAssets, summary };
+};
+
+/** Collects items and flushes them together every `size` items or `intervalMs`, so a big import saves and refreshes once per batch. */
+export const createImportBatcher = <T,>(flush: (items: T[]) => void | Promise<void>, size = 25, intervalMs = 250) => {
+  let pending: T[] = [];
+  let last = Date.now();
+  const drain = async () => {
+    if (!pending.length) return;
+    const items = pending; pending = []; last = Date.now();
+    await flush(items);
+  };
+  return {
+    add: async (item: T) => { pending.push(item); if (pending.length >= size || Date.now() - last >= intervalMs) await drain(); },
+    flush: drain,
+  };
 };
 
 export const importImageFiles = async (

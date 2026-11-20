@@ -3,6 +3,7 @@ import type { DragEvent, MutableRefObject } from 'react';
 import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
 import { moveToolViewScope, pruneToolViewScope } from '../lib/workspaceToolScope';
 import type { WorkspaceTab } from '../lib/workspaceTabs';
+import type { SourceImage } from '../types';
 import { isFileBackedTab, moveFileTab } from '../lib/workspaceFileTabs';
 import { addWorkspacePathsToDataset } from '../lib/assetActions';
 import { isOperationRunning, useOperationStore } from '../stores/useOperationStore';
@@ -16,7 +17,7 @@ import type { useExplorerTree } from './useExplorerTree';
 import type { useWorkspaceTabsState } from './useWorkspaceTabs';
 import { clearLegacyExclusionAtPath } from '../services/project/legacyDatasetExclusionService';
 import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
-import { getImportFilesFromDataTransfer, importImageFiles, pickImportDirectory, pickImportFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from '../services/import/importService';
+import { getImportFilesFromDataTransfer, createImportBatcher, importImageFiles, pickImportDirectory, pickImportFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from '../services/import/importService';
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { applyBuildSessionPathMoves } from '../services/build/buildSessionService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
@@ -76,6 +77,7 @@ export function useExplorerMutations({
   const projectDirectoryHandle = useUIStore(state => state.projectDirectoryHandle);
   const addNotification = useUIStore(state => state.addNotification);
   const addSourceImage = useProjectStore((state) => state.addSourceImage);
+  const addSourceImages = useProjectStore((state) => state.addSourceImages);
   const removeSourceImage = useProjectStore((state) => state.removeSourceImage);
   const updateSourceImage = useProjectStore((state) => state.updateSourceImage);
   const updateDatasetItem = useProjectStore((state) => state.updateDatasetItem);
@@ -579,31 +581,39 @@ export function useExplorerMutations({
     try {
       let importedImageCount = 0;
       let importedAssetCount = 0;
-      const result = await importImageFiles(files, {
-        ...execution,
-        logger: createOperationLogger('Import'),
-        destination: {
-          projectDirectory: directory,
-          explorerPath: destinationPath,
-        },
-        onImageImported: async (image) => {
-          addSourceImage(image);
-          importedImageCount += 1;
+      // One store update, one save and one Explorer refresh per batch instead of per file.
+      const batcher = createImportBatcher<SourceImage | null>(async (items) => {
+        const images = items.filter((item): item is SourceImage => Boolean(item));
+        if (images.length) {
+          addSourceImages(images);
           await flushProjectSave();
-          setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
-          refreshExplorer();
-        },
-        onAssetImported: () => {
-          importedAssetCount += 1;
-          setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
-          refreshExplorer();
-        },
-        onDirectoryImported: () => {
-          setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
-          refreshExplorer();
-        },
-        onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
+        }
+        setExpandedExplorerPaths((paths) => new Set([...paths, destinationPath]));
+        refreshExplorer();
       });
+      let result: ImportImagesResult;
+      try {
+        result = await importImageFiles(files, {
+          ...execution,
+          logger: createOperationLogger('Import'),
+          destination: {
+            projectDirectory: directory,
+            explorerPath: destinationPath,
+          },
+          onImageImported: async (image) => {
+            importedImageCount += 1;
+            await batcher.add(image);
+          },
+          onAssetImported: async () => {
+            importedAssetCount += 1;
+            await batcher.add(null);
+          },
+          onDirectoryImported: () => batcher.add(null),
+          onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
+        });
+      } finally {
+        await batcher.flush();
+      }
 
       if (result.importedImages.length > 0 || result.importedAssets.length > 0) {
         const details = [

@@ -76,7 +76,7 @@ import { useExplorerMutations, isFilesystemExplorerEntry } from './hooks/useExpl
 import {
   writeProjectPreview,
 } from './services/project/projectDirectoryService';
-import { getImportFilesFromDataTransfer, importImageFiles } from './services/import/importService';
+import { createImportBatcher, getImportFilesFromDataTransfer, importImageFiles } from './services/import/importService';
 import { restoreSavedLocalTagger } from './services/tagging/localTaggerConnectionService';
 import { createOperationLogger } from './services/logging/applicationLog';
 import { InternalFileViewer } from './components/InternalFileViewer';
@@ -89,7 +89,7 @@ import {
   getUniqueExplorerName,
   readExplorerFile,
 } from './services/project/explorerFileService';
-import { type BuildStage, type Dataset, type ToolName } from './types';
+import { type BuildStage, type Dataset, type SourceImage, type ToolName } from './types';
 import {
   PROJECT_INBOX_DIRECTORY,
 } from './services/project/projectLayoutService';
@@ -121,7 +121,7 @@ function App() {
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   useEffect(() => { void restoreSavedLocalTagger(); }, []);
   const updateWorkspaceSettings = useProjectStore((state) => state.updateWorkspaceSettings);
-  const addSourceImage = useProjectStore((state) => state.addSourceImage);
+  const addSourceImages = useProjectStore((state) => state.addSourceImages);
   const updateProjectDataset = useProjectStore((state) => state.updateDataset);
   const sourceImagesById = useProjectStore((state) => state.sourceImages);
   const datasetItemsById = useProjectStore((state) => state.datasetItems);
@@ -679,15 +679,17 @@ function App() {
     const importedAssetIds: string[] = [];
     const importedAssetPaths: string[] = [];
     const importedPsdPaths: string[] = [];
-    const result = await importImageFiles(files, {
+    const imageBatcher = createImportBatcher<SourceImage>((images) => { addSourceImages(images); });
+    let result: Awaited<ReturnType<typeof importImageFiles>>;
+    try { result = await importImageFiles(files, {
       logger: createOperationLogger('Dataset'),
       destination: {
         projectDirectory: projectDirectoryHandle,
         explorerPath: DATASET_EXPLORER_PATH,
       },
-      onImageImported: (image) => {
-        addSourceImage(image);
+      onImageImported: async (image) => {
         importedAssetIds.push(image.id);
+        await imageBatcher.add(image);
       },
       onAssetImported: (asset) => {
         if (asset.kind === 'video' || asset.kind === 'psd') {
@@ -699,7 +701,7 @@ function App() {
         }
       },
       onError: (fileName) => addNotification('error', `Failed to process ${fileName}`),
-    });
+    }); } finally { await imageBatcher.flush(); }
 
     if (result.importedImages.length > 0 || result.importedAssets.length > 0) {
       await flushProjectSave();

@@ -358,7 +358,28 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       await runHistoryTransaction(`${uniform ? (uniform === 'accepted' ? 'Accept' : uniform === 'skipped' ? 'Skip' : 'Defer') : 'Review'} ${targets.length} item${targets.length === 1 ? '' : 's'}`, async (historyWriter) => {
         let next = useProjectStore.getState().buildSession;
         let activeAssetId: string | undefined;
+        // Plain membership moves of non-current items go through one batch (one registry write and Explorer pass) instead of one operation per file.
+        const batched = new Set<string>();
         try {
+          const toAdd: WorkspaceImage[] = []; const toRemove: WorkspaceImage[] = [];
+          for (const { item, decision } of entries) {
+            if (item === current || item.kind === 'video') continue;
+            const assetId = getBuildAssetId(item);
+            const recipe = next.records[assetId]?.transform ?? next.profile.transform;
+            const previousOutputId = next.records[assetId]?.outputAssetId;
+            const outputItem = previousOutputId ? currentRegisteredItem(previousOutputId) : undefined;
+            if (decision === 'accepted') {
+              if (recipe && item.sourceImageId && item.kind !== 'psd') continue;
+              if (outputItem && isProjectDatasetPath(outputItem.assetPath)) toRemove.push(outputItem);
+              toAdd.push({ ...item, tags: item.tags ?? [] });
+            } else {
+              if (outputItem && isProjectDatasetPath(outputItem.assetPath)) toRemove.push(outputItem);
+              if (isProjectDatasetPath(item.assetPath)) toRemove.push(item);
+            }
+            batched.add(assetId);
+          }
+          if (toRemove.length) await setAssetsDatasetMembership(toRemove, false, historyWriter);
+          if (toAdd.length) await setAssetsDatasetMembership(toAdd, true, historyWriter);
           for (const [index, { item, decision }] of entries.entries()) {
             if (!isHistoryEpochCurrent(epoch)) throw new Error('The project changed while applying the review decision.');
             const assetId = getBuildAssetId(item); activeAssetId = assetId;
@@ -377,12 +398,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
               if (item.kind === 'video') throw new Error('Save one or more frames before accepting a video.');
               const outputAssetId = await createTransformedOutput({ ...item, tags }, assetId, assertCurrentAsset, historyWriter);
               assertCurrentAsset();
-              if (previousOutputId && previousOutputId !== outputAssetId) {
+              if (!batched.has(assetId) && previousOutputId && previousOutputId !== outputAssetId) {
                 const oldOutput = currentRegisteredItem(previousOutputId);
                 if (oldOutput && isProjectDatasetPath(oldOutput.assetPath)) await setAssetsDatasetMembership([oldOutput], false, historyWriter);
                 assertCurrentAsset();
               }
-              if (!outputAssetId) await setAssetsDatasetMembership([{ ...item, tags }], true, historyWriter);
+              if (!outputAssetId && !batched.has(assetId)) await setAssetsDatasetMembership([{ ...item, tags }], true, historyWriter);
               assertCurrentAsset();
               const existingOutput = outputAssetId ? currentRegisteredItem(outputAssetId) : undefined;
               if (outputAssetId && !existingOutput) throw new Error('The transformed output disappeared before it could be saved.');
@@ -398,9 +419,9 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
                 draft: undefined,
               });
             } else {
-              if (outputItem && isProjectDatasetPath(outputItem.assetPath)) await setAssetsDatasetMembership([outputItem], false, historyWriter);
+              if (!batched.has(assetId) && outputItem && isProjectDatasetPath(outputItem.assetPath)) await setAssetsDatasetMembership([outputItem], false, historyWriter);
               assertCurrentAsset();
-              if (isProjectDatasetPath(item.assetPath)) await setAssetsDatasetMembership([item], false, historyWriter);
+              if (!batched.has(assetId) && isProjectDatasetPath(item.assetPath)) await setAssetsDatasetMembership([item], false, historyWriter);
               assertCurrentAsset();
               next = updateBuildDecision(next, assetId, decision, { application: 'idle', validation: 'pending', outputAssetId: previousOutputId });
             }
