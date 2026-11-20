@@ -86,7 +86,7 @@ export function DatasetAssemblyDialog({ open, onOpenChange, dataset, items, cand
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => { if (!open) abortRef.current?.abort(); }, [open]);
-  useEffect(() => { setResult(null); }, [assetPreviewRefreshKey, mode, totalTarget, rangeMin, rangeMax, maxNew, deselected]);
+  useEffect(() => { setResult(null); setError(''); }, [assetPreviewRefreshKey, mode, totalTarget, rangeMin, rangeMax, maxNew, deselected]);
 
   const assemblyMode: AssemblyMode = mode === 'total'
     ? { kind:'total', target:Math.max(0,totalTarget) }
