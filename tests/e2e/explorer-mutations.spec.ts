@@ -95,4 +95,24 @@ test.describe('explorer mutations (current behaviour)', () => {
     await expect(folder).toHaveAttribute('aria-expanded', 'true');
     await expect(row(page, 'alpha.txt')).toBeVisible();
   });
+
+  test('importing several tiny images through the Explorer Import action registers all of them', async ({ page }) => {
+    const names = Array.from({ length: 7 }, (_, index) => `imported-${index}.png`);
+    // The native picker is replaced by handles that return small generated PNGs.
+    await page.evaluate(async (fileNames) => {
+      const files = await Promise.all(fileNames.map(async (name, index) => {
+        const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16;
+        const context = canvas.getContext('2d')!; context.fillStyle = `rgb(${index * 30}, 90, 160)`; context.fillRect(0, 0, 16, 16);
+        const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), 'image/png'));
+        return new File([blob], name, { type: 'image/png' });
+      }));
+      (window as unknown as { showOpenFilePicker: () => Promise<unknown[]> }).showOpenFilePicker = async () => files.map((file) => ({ kind: 'file', name: file.name, getFile: async () => file }));
+    }, names);
+    // Import into the fixture's Keyboard folder; each file must appear as an Explorer row after the batched refresh.
+    await page.locator('[data-explorer-path$="Keyboard"]').first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Import', exact: true }).click();
+    for (const name of names) await expect(row(page, name)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/Failed to process/)).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
 });

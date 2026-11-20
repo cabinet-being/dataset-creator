@@ -117,6 +117,38 @@ test.describe('build auto pipeline', () => {
     await expect(page.getByRole('alert')).toHaveCount(0);
   });
 
+  test('bulk Accept all moves every file and one Undo reverts all of them', async ({ page }) => {
+    await expectCounters(page, 1, 3, 5);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    const before = await pathsOf(page);
+    await page.getByLabel('Queue filter').selectOption('rejected');
+    await expect(page.getByRole('button', { name: 'Accept all 5' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Accept all 5' }).click();
+    await expectCounters(page, 1, 8, 0);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(8);
+    await page.evaluate(() => (window as unknown as { __buildFixture: { undo: () => Promise<void> } }).__buildFixture.undo());
+    await expectCounters(page, 1, 3, 5);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    expect(await pathsOf(page)).toEqual(before);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
+
+  test('bulk Reject all of accepted items moves every file out and one Undo reverts all of them', async ({ page }) => {
+    await expectCounters(page, 1, 3, 5);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    const before = await pathsOf(page);
+    await page.getByLabel('Queue filter').selectOption('accepted');
+    await expect(page.getByRole('button', { name: 'Reject all 3' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Reject all 3' }).click();
+    await expectCounters(page, 1, 0, 8);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(0);
+    await page.evaluate(() => (window as unknown as { __buildFixture: { undo: () => Promise<void> } }).__buildFixture.undo());
+    await expectCounters(page, 1, 3, 5);
+    await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
+    expect(await pathsOf(page)).toEqual(before);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
+
   test('changing Min short side re-triages without errors', async ({ page }) => {
     await expectCounters(page, 1, 3, 5);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);

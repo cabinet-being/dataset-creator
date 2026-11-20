@@ -282,6 +282,69 @@ try {
     useProjectStore.setState(originalActions);
   }
 
+  // 5b. A batch of files crossing dataset/ updates paths and the registry once, keeps the trigger, and one Undo reverts the batch.
+  {
+    const root = directory();
+    const project = createProject('Batch', 'character'); project.dataset = { ...project.dataset, triggerWord: 'T' };
+    await createProjectDirectory(root, project);
+    const names = ['a', 'b', 'c', 'd'];
+    for (const name of names) { await put(root, `inbox/${name}.png`, png(name)); await put(root, `inbox/${name}.txt`, `cap-${name}\n`); }
+    useProjectStore.getState().loadProject(project);
+    const original = { addSourceImage: useProjectStore.getState().addSourceImage, updateSourceImage: useProjectStore.getState().updateSourceImage };
+    useProjectStore.setState({
+      addSourceImage: (image) => useProjectStore.setState((state) => ({ sourceImages: { ...state.sourceImages, [image.id]: image } })),
+      updateSourceImage: (id, updates) => useProjectStore.setState((state) => ({ sourceImages: { ...state.sourceImages, [id]: { ...state.sourceImages[id], ...updates } } })),
+    });
+    useUIStore.getState().setProjectDirectory({ handle: root, name: project.name });
+    const sources = Object.fromEntries(names.map((name) => [`s-${name}`, { id: `s-${name}`, originalFilePath: `inbox/${name}.png`, fileName: `${name}.png` }]));
+    useProjectStore.setState((state) => ({ sourceImages: { ...state.sourceImages, ...sources } }));
+    const items = () => names.map((name) => ({ id: `asset:${name}`, sourceImageId: `s-${name}`, kind: 'image', label: 'Image', displayIdentity: '1', fileName: `${name}.png`, assetPath: `Project/${useProjectStore.getState().sourceImages[`s-${name}`].originalFilePath}`, imageData: png(name), width: 1, height: 1, aspectRatio: '1:1' }));
+    const registryWrites = async () => (await (await dirAt(root, '.datasetcreator')).getFileHandle('assets.json').catch(() => ({ writes: 0 }))).writes;
+    const paths = () => names.map((name) => useProjectStore.getState().sourceImages[`s-${name}`].originalFilePath);
+    let moveEvents = 0; const onMoves = (event) => { moveEvents += 1; void event; };
+    const hadWindow = globalThis.window; globalThis.window ??= {};
+    const listeners = []; const originalDispatch = globalThis.window.dispatchEvent; const originalCustomEvent = globalThis.CustomEvent;
+    globalThis.window.dispatchEvent = (event) => { listeners.push(event); onMoves(event); return true; };
+    globalThis.CustomEvent ??= class { constructor(type, init) { this.type = type; this.detail = init?.detail; } };
+    try {
+      const before = await registryWrites();
+      const added = await addItemsToDatasetFolder(root, items());
+      assert.equal(added.completed.length, names.length); assert.deepEqual(added.failed, []);
+      assert.deepEqual(paths(), names.map((name) => `dataset/${name}.png`), 'every source image path follows the batch');
+      assert.equal(moveEvents, 1, 'one path-change notification for the whole batch');
+      assert.equal(listeners[0].detail.length, names.length);
+      assert.equal(await registryWrites() - before, 1, 'assets.json is written once for the whole batch, not per file');
+      for (const name of names) {
+        assert.equal(await read(root, `dataset/${name}.txt`), `T, cap-${name}\n`, 'trigger added on the way in');
+        assert.equal(await read(root, `inbox/${name}.png`), null);
+      }
+      // The history entry is one reverse call over the whole batch.
+      const undone = await reverseDatasetFolderChanges(root, added.completed);
+      assert.equal(undone.length, names.length);
+      assert.deepEqual(paths(), names.map((name) => `inbox/${name}.png`), 'one reverse restores every path');
+      for (const name of names) {
+        assert.equal(await read(root, `inbox/${name}.txt`), `cap-${name}\n`, 'trigger removed again by Undo');
+        assert.equal(await read(root, `inbox/${name}.png`), name);
+      }
+      const redone = await reverseDatasetFolderChanges(root, undone);
+      assert.deepEqual(paths(), names.map((name) => `dataset/${name}.png`), 'Redo moves the whole batch again');
+      moveEvents = 0;
+      const removed = await removeItemsFromDatasetFolder(root, items());
+      assert.equal(removed.completed.length, names.length);
+      assert.deepEqual(paths(), names.map((name) => `inbox/${name}.png`));
+      assert.equal(moveEvents, 1);
+      for (const name of names) assert.equal(await read(root, `inbox/${name}.txt`), `cap-${name}\n`, 'trigger removed on the way out');
+      await reverseDatasetFolderChanges(root, removed.completed);
+      assert.deepEqual(paths(), names.map((name) => `dataset/${name}.png`), 'one reverse puts the batch back into dataset/');
+      for (const name of names) assert.equal(await read(root, `dataset/${name}.txt`), `T, cap-${name}\n`);
+      void redone;
+    } finally {
+      if (hadWindow) globalThis.window.dispatchEvent = originalDispatch; else delete globalThis.window;
+      if (originalCustomEvent) globalThis.CustomEvent = originalCustomEvent; else delete globalThis.CustomEvent;
+      useProjectStore.setState(original);
+    }
+  }
+
   // 6. Dataset export copies the TXT byte for byte; images without a TXT get none.
   {
     const root = directory();

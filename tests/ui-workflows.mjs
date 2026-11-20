@@ -203,13 +203,37 @@ try {
   const { useOperationStore, isOperationRunning } = await module('useOperationStore');
   const { useHistoryStore } = await module('useHistoryStore');
   const { useProjectStore } = await module('useProjectStore');
-  const { importImageFiles, getImportPairKey, summarizeImportPairPaths } = await module('importService');
+  const { importImageFiles, getImportPairKey, summarizeImportPairPaths, createImportBatcher } = await module('importService');
   assert.equal(getImportPairKey('animals/Cat.PNG'),getImportPairKey('animals/Cat.TxT'));
   assert.notEqual(getImportPairKey('animals/cat.png'),getImportPairKey('portraits/cat.txt'),'Caption pairs cannot cross folders');
   const { parseCaptionText } = await module('captionFileService');
   assert.deepEqual(parseCaptionText('\uFEFFКіт, Blue Sky\r\nsecond line').tags,['Кіт','Blue Sky','second line'],'Caption import preserves Unicode and case, and treats line breaks as separators');
   assert.deepEqual(summarizeImportPairPaths(['animals/cat.png','animals/cat.jpg','animals/cat.txt','portraits/cat.png','notes.txt','dup/dog.txt','dup/DOG.TXT','dup/dog.webp']),
     {pairedImages:2,imagesWithoutCaption:1,standaloneTextFiles:1,captionConflicts:1,errors:0},'Pair summaries respect folders, multiple image formats and conflicts');
+  {
+    // Import batcher: flush at size, after the interval (controlled clock), once at the end, never empty.
+    const realNow = Date.now; let clock = 1000; Date.now = () => clock;
+    try {
+      const flushed = [];
+      const bySize = createImportBatcher(items => { flushed.push([...items]); }, 3, 250);
+      await bySize.flush(); assert.deepEqual(flushed, [], 'flushing nothing does not call the callback');
+      await bySize.add(1); await bySize.add(2); assert.deepEqual(flushed, [], 'below size and interval nothing flushes');
+      await bySize.add(3); assert.deepEqual(flushed, [[1, 2, 3]], 'flush at size');
+      await bySize.add(4); await bySize.flush(); assert.deepEqual(flushed, [[1, 2, 3], [4]], 'final flush sends the remainder');
+      await bySize.flush(); assert.equal(flushed.length, 2, 'a second final flush is a no-op, no empty batch');
+      const byTime = []; const timed = createImportBatcher(items => { byTime.push([...items]); }, 100, 250);
+      await timed.add('a'); clock += 100; await timed.add('b'); assert.deepEqual(byTime, [], 'before the interval nothing flushes');
+      clock += 150; await timed.add('c'); assert.deepEqual(byTime, [['a', 'b', 'c']], 'flush once the interval elapsed');
+      clock += 1000; await timed.flush(); assert.equal(byTime.length, 1, 'no empty flush after an interval with nothing pending');
+      await timed.add('d'); await timed.flush(); assert.deepEqual(byTime[1], ['d']);
+      // Items added while an async flush is running land in the next batch, none are lost or duplicated.
+      const order = []; let release; const gate = new Promise(resolve => { release = resolve; });
+      const slow = createImportBatcher(async items => { order.push(items.join('')); if (items[0] === 'x') await gate; }, 2, 250);
+      await slow.add('x'); const second = slow.add('y'); await Promise.resolve();
+      await slow.add('z'); release(); await second; await slow.flush();
+      assert.equal(order.join('|').replaceAll('|', ''), 'xyz', 'every item is flushed exactly once, in order');
+    } finally { Date.now = realNow; }
+  }
   let cancelled = 0;
   const operations = useOperationStore.getState();
   operations.start({ id: 'test', viewId: 'tool:import', label: 'Import', cancel: () => cancelled++, total: 3 });
