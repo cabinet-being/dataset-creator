@@ -126,9 +126,15 @@ const inOrder = <T extends BuildCandidate>(session: BuildSession, items: T[]): A
 export const selectTriageTargets = <T extends BuildCandidate>(session: BuildSession, items: T[]): T[] =>
   inOrder(session, items).filter(({ record }) => record.decision === 'unreviewed' && !record.triage).map(({ item }) => item);
 
-export const selectAssemblyCandidates = <T extends BuildCandidate>(session: BuildSession, items: T[]): T[] =>
-  inOrder(session, items)
-    .filter(({ item, record }) => record.decision === 'unreviewed' && record.triage?.group === 'accepted' && record.triage.stage === 'quality' && !isProjectDatasetPath(item.assetPath))
+/**
+ * The only owner of the candidate pool for "Find candidates": images the user has not rejected and quality triage
+ * has not rejected, outside the Dataset. `sources` is already limited to the folders chosen in the panel; images
+ * without a quality verdict yet are not in the pool.
+ */
+export const selectAssemblyCandidates = <T extends BuildCandidate>(session: BuildSession, sources: T[]): T[] =>
+  inOrder(session, sources)
+    .filter(({ item, record }) => item.kind !== 'video' && (record.decision === 'unreviewed' || record.decision === 'deferred')
+      && record.triage?.stage === 'quality' && record.triage.group !== 'rejected' && !isProjectDatasetPath(item.assetPath))
     .map(({ item }) => item);
 
 export const createAssemblyKey = (target: number, items: BuildCandidate[], session: BuildSession): string =>

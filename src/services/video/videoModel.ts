@@ -11,6 +11,7 @@ export const VIDEO_MODEL = {
   bytes: 88459888,
   preprocessing: 'rgb-short256-center224-canvas-high-imagenet-cls-l2-v1',
 };
+export const VIDEO_MODEL_MISSING_MESSAGE = 'Download the DINOv2 model before starting automatic analysis.';
 export const VIDEO_MODEL_KEY = `dinov2-small:${VIDEO_MODEL.sha256}:${VIDEO_MODEL.preprocessing}`;
 const MODEL_URL = `https://huggingface.co/Xenova/dinov2-small/resolve/${VIDEO_MODEL.revision}/onnx/model.onnx`;
 const WASM_URL = new URL('../../../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm', import.meta.url).href;
@@ -21,6 +22,8 @@ const VIDEO_INTEGRITY_MESSAGE = 'DINOv2 download failed its integrity check. Cle
 export const verifyVideoModel = (buffer: ArrayBuffer) => verifyModelAsset(buffer, VIDEO_ASSET, VIDEO_INTEGRITY_MESSAGE);
 // The stored model only changes through a verified download, so hashing 88 MB once per session is enough.
 let verifiedStoredModel: Promise<void> | undefined;
+/** A worker starts without this flag; the main thread tells it the model was already verified this page session. */
+export const markStoredVideoModelVerified = () => { verifiedStoredModel = Promise.resolve(); };
 const verifyStoredModelOnce = (buffer: ArrayBuffer) => {
   verifiedStoredModel ??= verifyVideoModel(buffer).catch((error) => { verifiedStoredModel = undefined; throw error; });
   return verifiedStoredModel;
@@ -63,7 +66,7 @@ export const bitmapModelTensor = (context: OffscreenCanvasRenderingContext2D, bi
 };
 export const loadVideoModel = async (signal?: AbortSignal, progress?: (progress: VideoProgress) => void, preferred: 'auto' | 'wasm' | 'webgpu' = 'auto') => {
   const buffer = await getVideoMeta<ArrayBuffer>('model');
-  if (!buffer) throw new Error('Download the DINOv2 model before starting automatic analysis.');
+  if (!buffer) throw new Error(VIDEO_MODEL_MISSING_MESSAGE);
   await verifyStoredModelOnce(buffer);
   checkVideoAbort(signal);
   const ort = await import('onnxruntime-web/all');

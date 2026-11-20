@@ -1,6 +1,6 @@
 import { sha256HexInWorker } from '../image/imageWorkerClient';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { VIDEO_MODEL_KEY, bitmapModelTensor, downloadVideoModel, loadVideoModel } from '../video/videoModel';
+import { VIDEO_MODEL_KEY, VIDEO_MODEL_MISSING_MESSAGE, bitmapModelTensor, downloadVideoModel, loadVideoModel } from '../video/videoModel';
 import { getCachedTextFeature, readImageFeature, setCachedTextFeature, writeImageFeature } from './semanticFeatureCache';
 import { createSemanticWorkerSession, isSemanticWorkerSupported } from './semanticWorkerClient';
 
@@ -84,6 +84,8 @@ const createInferenceBackend = async (signal: AbortSignal | undefined, progress:
 export class SemanticModelError extends Error {
   constructor(message: string) { super(message); this.name = 'SemanticModelError'; }
 }
+/** The model is not stored yet and downloading was not allowed: the caller should ask the user first. */
+export const isModelDownloadRequired = (error: unknown): boolean => error instanceof Error && error.message === VIDEO_MODEL_MISSING_MESSAGE;
 export const isSemanticModelError = (error: unknown): error is SemanticModelError => error instanceof SemanticModelError;
 
 export const createSemanticFeatureEncoder = async (signal?: AbortSignal, progress?: (phase: string) => void, options: { allowDownload?: boolean } = {}) => {

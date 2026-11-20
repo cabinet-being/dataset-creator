@@ -4,6 +4,8 @@ type Body = SemanticWorkerRequest extends infer Value ? Value extends { id: numb
 type Pending = { resolve: (response: SemanticWorkerResponse) => void; reject: (error: unknown) => void; progress?: (phase: string) => void };
 
 export const isSemanticWorkerSupported = (): boolean => typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined';
+// Hashing the stored 88 MB model takes a while; a worker restarted after an idle terminate skips it once it passed.
+let storedModelVerified = false;
 const abortError = () => new DOMException('Semantic encoding cancelled.', 'AbortError');
 
 /** One dedicated DINOv2 worker. It loads the model bytes from IndexedDB itself and returns transferred vectors. */
@@ -35,7 +37,7 @@ export const createSemanticWorkerSession = async (signal: AbortSignal | undefine
     pending.set(id, { resolve: (value) => { settle(); resolve(value); }, reject: (error) => { settle(); reject(error); }, progress: onProgress });
     worker.postMessage({ ...body, id });
   });
-  try { await request({ type: 'init', allowDownload }, signal, progress); }
+  try { await request({ type: 'init', allowDownload, verified: storedModelVerified }, signal, progress); storedModelVerified = true; }
   catch (error) { stop(error); throw error; }
   return {
     encode: async (blob: Blob, requestSignal?: AbortSignal): Promise<Float32Array> => {

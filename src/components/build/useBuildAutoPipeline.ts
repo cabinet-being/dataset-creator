@@ -8,14 +8,13 @@ import { resolveDatasetMembership, normalizeDatasetPath } from '../../services/d
 import type { SkippedAssemblyItem } from '../../services/dataset/datasetAssemblyService';
 import { computeNarrowing, computeShortlist, qualityScoreFromSummary, type NarrowResult, type ShortlistResult } from '../../services/dataset/shortlistService';
 import { applyCharacterTraits } from '../../services/tagging/characterTraits';
-import { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
+import { createSemanticFeatureEncoder, isModelDownloadRequired } from '../../services/analysis/semanticFeatureService';
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
 import { TAGGER_MEMORY_MESSAGE } from '../../services/tagging/taggerWorkerClient';
-import { hasVideoModel } from '../../services/video/videoCache';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
 import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
-import { clearBuildShortlist, createBuildShortlist, getActiveShortlist, getBuildAssetId, getBuildAssetRevision, getBuildContentRevision, setBuildShortlistNarrowed } from '../../services/build/buildSessionService';
+import { clearBuildShortlist, createBuildShortlist, getActiveShortlist, getBuildAssetId, getBuildAssetRevision, getBuildContentRevision, getBuildRecordForItem, setBuildShortlistNarrowed } from '../../services/build/buildSessionService';
 import {
   applyTriageProposal, classifyQualityTriage, createAssemblyKey, findExactDuplicates,
   getBuildTriageGroup, selectAssemblyCandidates, selectTriageTargets,
@@ -25,9 +24,10 @@ export type BuildAutoPipelinePhase = 'idle' | 'triage' | 'assembly' | 'tagging';
 
 type Input = {
   active: boolean;
-  enabled: boolean;
   busy: boolean;
   candidates: WorkspaceImage[];
+  /** Images in the folders selected for Auto-select; the only source of the "Find candidates" pool. */
+  sources: WorkspaceImage[];
   effectiveItems: WorkspaceImage[];
   session: BuildSession;
   targetModel: TargetModelId;
@@ -61,22 +61,22 @@ const isMeasurable = (item: WorkspaceImage) => item.kind !== 'video' && item.kin
 const ENCODER_IDLE_MS = 5 * 60 * 1000;
 type SemanticEncoder = Awaited<ReturnType<typeof createSemanticFeatureEncoder>>;
 
-/** Runs quality triage automatically; assembly and caption suggestions run only when requested. */
+/** Runs quality triage automatically; finding candidates, describing them and picking run only when requested. */
 export function useBuildAutoPipeline(input: Input) {
   const [phase, setPhase] = useState<BuildAutoPipelinePhase>('idle');
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [paused, setPaused] = useState(false);
-  const [passCount, setPassCount] = useState(0);
   const [tick, setTick] = useState(0);
-  const [needsModelDownload, setNeedsModelDownload] = useState(false);
+  const [modelDownloadFor, setModelDownloadFor] = useState<'find' | 'pick' | null>(null);
+  const [skipped, setSkipped] = useState<SkippedAssemblyItem[]>([]);
   const phaseRef = useRef<BuildAutoPipelinePhase>('idle');
-  const encoderRef = useRef<{ encoder: SemanticEncoder; factory: unknown; timer?: ReturnType<typeof setTimeout> } | null>(null);
+  const encoderRef = useRef<{ encoder: SemanticEncoder; factory: unknown; allowDownload: boolean; timer?: ReturnType<typeof setTimeout> } | null>(null);
   const latest = useRef(input);
   const running = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const lastRequest = useRef<{ kind: 'shortlist' } | { kind: 'narrow'; apply?: boolean }>({ kind: 'shortlist' });
   const attempted = useRef(new Set<string>());
-  const didWork = useRef(false);
+  const assemblyTask = useRef<'find' | 'pick' | 'apply'>('find');
   const triageOperation = useOperation('Build triage', input.root, input.viewId);
   const assemblyOperation = useOperation('Build auto-select', input.root, input.viewId);
   const taggingOperation = useOperation('Build caption suggestions', input.root, input.viewId);
@@ -92,8 +92,7 @@ export function useBuildAutoPipeline(input: Input) {
   }, []);
   const resume = useCallback(() => setPaused(false), []);
 
-  useEffect(() => () => { abortRef.current?.abort(); releaseEncoder(); attempted.current.clear(); didWork.current = false; setPaused(false); setNeedsModelDownload(false); }, [projectId, releaseEncoder]);
-  useEffect(() => { setPaused(false); }, [input.enabled]);
+  useEffect(() => () => { abortRef.current?.abort(); releaseEncoder(); attempted.current.clear(); setPaused(false); setModelDownloadFor(null); setSkipped([]); }, [projectId, releaseEncoder]);
 
   const minShortSideOf = (targetModel: TargetModelId) => getMinShortSide(targetModel);
   const triageKey = (session: BuildSession, item: WorkspaceImage, targetModel: TargetModelId) => {
@@ -102,16 +101,12 @@ export function useBuildAutoPipeline(input: Input) {
   };
 
   useEffect(() => {
-    if (!input.active || !input.enabled || input.busy || paused || running.current) return;
+    if (!input.active || input.busy || paused || running.current) return;
     const { session, candidates } = input;
     const triageTargets = selectTriageTargets(session, candidates).filter((item) => !attempted.current.has(triageKey(session, item, input.targetModel)));
-    if (!triageTargets.length) {
-      if (didWork.current) { didWork.current = false; setPassCount((value) => value + 1); }
-      return;
-    }
+    if (!triageTargets.length) return;
     launch('triage', runTriage, 'Automatic analysis failed.');
-    didWork.current = true;
-  }, [input.active, input.enabled, input.busy, input.session.order, input.session.records, input.session.profile, input.targetModel, input.candidates, paused, tick, projectId]);
+  }, [input.active, input.busy, input.session.order, input.session.records, input.session.profile, input.targetModel, input.candidates, paused, tick, projectId]);
 
   /** Starts one background job; only one runs at a time. Returns false when another job is running. */
   const launch = (stage: 'triage' | 'assembly' | 'tagging', run: (ctx: Ctx) => Promise<void>, failure: string) => {
@@ -136,7 +131,7 @@ export function useBuildAutoPipeline(input: Input) {
   };
 
   const needsTags = (item: WorkspaceImage, session: BuildSession) => {
-    const record = session.records[getBuildAssetId(item)];
+    const record = getBuildRecordForItem(session, item);
     return !!record && record.proposal?.revision !== (record.revision ?? getBuildAssetRevision(item));
   };
   /** Explicit scope wins; otherwise accepted images. */
@@ -221,7 +216,7 @@ export function useBuildAutoPipeline(input: Input) {
         }));
         ctx.signal.throwIfAborted();
         await waitIdle(ctx.signal);
-        if (!ctx.isCurrent() || minShortSideOf(latest.current.targetModel) !== minShortSide || !latest.current.enabled) throw abortError();
+        if (!ctx.isCurrent() || minShortSideOf(latest.current.targetModel) !== minShortSide) throw abortError();
         chunk.forEach((item, index) => received.push({ item, report: reports[index] }));
         if (Date.now() - lastApplied >= TRIAGE_APPLY_INTERVAL_MS) applyReceived();
         completed = Math.min(targets.length, start + chunk.length);
@@ -236,37 +231,45 @@ export function useBuildAutoPipeline(input: Input) {
     triageOperation.finish('completed', `${targets.length} image${targets.length === 1 ? '' : 's'} analyzed`);
   });
 
-  /** Runs `work` with the shared DINOv2 encoder (kept warm afterwards); false means the model still has to be downloaded. */
-  const withEncoder = async (ctx: Ctx, operation: ReturnType<typeof useOperation>, work: (encoder: SemanticEncoder) => Promise<void>, total: number): Promise<boolean> => {
+  /**
+   * Runs `work` with the shared DINOv2 encoder (kept warm afterwards). The encoder loads the model only on the first cache miss and
+   * never downloads it unless `allowDownload` was confirmed, so a fully cached run needs no model; a miss throws a download-required error.
+   */
+  const withEncoder = async (ctx: Ctx, operation: ReturnType<typeof useOperation>, work: (encoder: SemanticEncoder) => Promise<void>, total: number) => {
     const encoderFactory = latest.current.encoderFactory ?? createSemanticFeatureEncoder;
-    if (!encoderRef.current && !ctx.allowDownload && encoderFactory === createSemanticFeatureEncoder && !(await hasVideoModel().catch(() => false))) {
-      if (ctx.isCurrent()) setNeedsModelDownload(true);
-      return false;
-    }
-    setNeedsModelDownload(false);
+    setModelDownloadFor(null);
     const held = encoderRef.current;
     if (held?.timer) clearTimeout(held.timer);
     let encoder: SemanticEncoder;
-    if (held && held.factory === encoderFactory) encoder = held.encoder;
+    if (held && held.factory === encoderFactory && (held.allowDownload || !ctx.allowDownload)) encoder = held.encoder;
     else {
       releaseEncoder();
-      encoder = await encoderFactory(ctx.signal, (message) => operation.progress(0, total, message), { allowDownload: ctx.allowDownload });
+      encoder = await encoderFactory(ctx.signal, (message) => operation.progress(0, total, message), { allowDownload: !!ctx.allowDownload });
     }
     let reusable = false;
     try {
       await work(encoder);
       reusable = true;
     } finally {
-      if (reusable && ctx.isCurrent()) encoderRef.current = { encoder, factory: encoderFactory, timer: setTimeout(releaseEncoder, ENCODER_IDLE_MS) };
+      if (reusable && ctx.isCurrent()) encoderRef.current = { encoder, factory: encoderFactory, allowDownload: !!ctx.allowDownload || !!held?.allowDownload, timer: setTimeout(releaseEncoder, ENCODER_IDLE_MS) };
       else { if (encoderRef.current?.encoder === encoder) encoderRef.current = null; await encoder.dispose(); }
     }
+  };
+  /** Stops a run that needs the model and asks the user for the download; returns false for any other error. */
+  const askForModelDownload = (ctx: Ctx, error: unknown, kind: 'find' | 'pick', operation: ReturnType<typeof useOperation>) => {
+    if (!isModelDownloadRequired(error)) return false;
+    operation.finish('cancelled', 'Needs the image model');
+    if (ctx.isCurrent()) setModelDownloadFor(kind);
     return true;
   };
-  const reportSkipped = (ctx: Ctx, skipped: SkippedAssemblyItem[]) => {
-    if (!skipped.length || !ctx.isCurrent()) return;
-    const reasons = new Map<string, number>();
-    for (const { reason } of skipped) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
-    latest.current.notify('warning', `Auto-select skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'}: ${[...reasons].map(([reason, count]) => `${reason} (${count})`).join('; ')}.`);
+  /** Keeps unreadable files in state for the panel's list; a later run on the same files does not duplicate them. */
+  const recordSkipped = (ctx: Ctx, entries: SkippedAssemblyItem[], replace: boolean) => {
+    if (!ctx.isCurrent()) return;
+    setSkipped((previous) => {
+      const merged = new Map((replace ? [] : previous).map((entry) => [entry.item.id, entry]));
+      for (const entry of entries) merged.set(entry.item.id, entry);
+      return [...merged.values()];
+    });
   };
   const qualityOf = (session: BuildSession) => (item: WorkspaceImage) => {
     const summary = session.records[getBuildAssetId(item)]?.triage?.quality;
@@ -275,45 +278,44 @@ export function useBuildAutoPipeline(input: Input) {
 
   /** Pass 1: marks a visually diverse shortlist; never changes decisions or Dataset membership. */
   const runShortlist = (ctx: Ctx) => guarded(ctx, assemblyOperation, async () => {
-    const { session: startSession, candidates, effectiveItems, dataset } = latest.current;
-    const pool = selectAssemblyCandidates(startSession, candidates);
-    if (!pool.length) { latest.current.notify('info', 'No analyzed candidates are available to shortlist yet.'); return; }
+    const { session: startSession, sources, effectiveItems, dataset } = latest.current;
+    const pool = selectAssemblyCandidates(startSession, sources);
+    if (!pool.length) { latest.current.notify('info', 'No analyzed images are available in the selected folders yet.'); return; }
     const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
     const needed = Math.max(0, startSession.profile.target - baseline.length);
     if (!needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
     const assemblyKey = createAssemblyKey(startSession.profile.target, pool, startSession);
     assemblyOperation.start(() => cancel());
     let result: ShortlistResult | null = null;
-    const skipped: SkippedAssemblyItem[] = [];
+    const unreadable: SkippedAssemblyItem[] = [];
     try {
-      const ran = await withEncoder(ctx, assemblyOperation, async (encoder) => {
+      await withEncoder(ctx, assemblyOperation, async (encoder) => {
         result = await computeShortlist({
           baselineItems: baseline, poolItems: pool, needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(startSession),
           onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
-          onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing a diverse shortlist' : 'Comparing images'); },
-          onSkip: (entry) => skipped.push(entry),
+          onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
+          onSkip: (entry) => unreadable.push(entry),
         });
         ctx.signal.throwIfAborted();
         if (!ctx.isCurrent()) throw abortError();
       }, baseline.length + pool.length);
-      if (!ran) return;
     } catch (error) {
       if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
+      if (askForModelDownload(ctx, error, 'find', assemblyOperation)) return;
       const message = error instanceof Error ? error.message : 'unknown error';
       assemblyOperation.finish('failed', message);
       latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: message } }));
-      latest.current.notify('warning', `Auto-select failed: ${message}. Proposals stay for manual review.`);
+      latest.current.notify('warning', `Finding candidates failed: ${message}.`);
       return;
     }
-    reportSkipped(ctx, skipped);
+    recordSkipped(ctx, unreadable, true);
     const done = result as ShortlistResult | null;
     if (!done) return;
     latest.current.patchSession((value) => {
       const next = createBuildShortlist(value, { needed: done.needed, requested: done.requested, duplicates: done.duplicates.length, items: done.items }, new Date().toISOString());
       return { ...next, filter: 'shortlisted', cursor: 0, auto: { ...next.auto, assemblyKey } };
     });
-    assemblyOperation.finish('completed', `${done.items.length} image${done.items.length === 1 ? '' : 's'} shortlisted`);
-    latest.current.notify('success', `Shortlisted ${done.items.length} image${done.items.length === 1 ? '' : 's'} (${done.duplicates.length} near-duplicate${done.duplicates.length === 1 ? '' : 's'} skipped). Prepare caption suggestions, then narrow to ${done.needed}.`);
+    assemblyOperation.finish('completed', `${done.items.length} candidate${done.items.length === 1 ? '' : 's'} found`);
   });
 
   /** Tags used by pass 2: the resolved caption, else the model suggestion with character traits applied. */
@@ -327,42 +329,42 @@ export function useBuildAutoPipeline(input: Input) {
   const runNarrow = (ctx: Ctx & { apply?: boolean }) => guarded(ctx, assemblyOperation, async () => {
     const { session: startSession, candidates, effectiveItems, dataset, characterTraits } = latest.current;
     const active = getActiveShortlist(startSession, candidates);
-    if (!active?.entries.length) { latest.current.notify('info', 'There is no shortlist to narrow.'); return; }
+    if (!active?.entries.length) { latest.current.notify('info', 'There are no candidates to pick from.'); return; }
     const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
     const needed = Math.max(0, startSession.profile.target - baseline.length);
     if (!needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
     assemblyOperation.start(() => cancel());
     let result: NarrowResult | null = null;
-    const skipped: SkippedAssemblyItem[] = [];
+    const unreadable: SkippedAssemblyItem[] = [];
     try {
-      const ran = await withEncoder(ctx, assemblyOperation, async (encoder) => {
+      await withEncoder(ctx, assemblyOperation, async (encoder) => {
         result = await computeNarrowing({
           baselineItems: baseline, shortlistItems: active.entries.map(({ item }) => item), target: needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
           tagsOf: narrowTagsOf(startSession, characterTraits), ignoredTags: [dataset.triggerWord, ...characterTraits.map((trait) => trait.tag)],
           qualityOf: qualityOf(startSession),
           onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
-          onProgress: ({ completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Narrowing the shortlist'); },
-          onSkip: (entry) => skipped.push(entry),
+          onProgress: ({ completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Picking the most varied'); },
+          onSkip: (entry) => unreadable.push(entry),
         });
         ctx.signal.throwIfAborted();
         if (!ctx.isCurrent()) throw abortError();
       }, baseline.length + active.entries.length);
-      if (!ran) return;
     } catch (error) {
       if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
+      if (askForModelDownload(ctx, error, 'pick', assemblyOperation)) return;
       const message = error instanceof Error ? error.message : 'unknown error';
       assemblyOperation.finish('failed', message);
-      latest.current.notify('warning', `Narrowing failed: ${message}.`);
+      latest.current.notify('warning', `Picking failed: ${message}.`);
       return;
     }
-    reportSkipped(ctx, skipped);
+    recordSkipped(ctx, unreadable, false);
     const done = result as NarrowResult | null;
     if (!done) return;
     const itemByKey = new Map(active.entries.map(({ item }) => [normalizeDatasetPath(item.assetPath ?? item.id), item]));
     const narrowedItems = done.items.flatMap((entry) => itemByKey.get(entry.key) ?? []);
     latest.current.patchSession((value) => setBuildShortlistNarrowed(value, narrowedItems.map(getBuildAssetId), needed));
-    assemblyOperation.finish('completed', `${narrowedItems.length} image${narrowedItems.length === 1 ? '' : 's'} chosen`);
-    if (!ctx.apply) { latest.current.notify('success', `Narrowed to ${narrowedItems.length} image${narrowedItems.length === 1 ? '' : 's'}. Review them, then apply.`); return; }
+    assemblyOperation.finish('completed', `${narrowedItems.length} image${narrowedItems.length === 1 ? '' : 's'} picked`);
+    if (!ctx.apply) return;
     await applyNarrowedItems(ctx, narrowedItems);
   });
 
@@ -373,8 +375,9 @@ export function useBuildAutoPipeline(input: Input) {
     if (!ctx.isCurrent()) throw abortError();
     try {
       await latest.current.commitDecision('accepted', targets, 'auto', true);
-      latest.current.patchSession((value) => ({ ...clearBuildShortlist(value), filter: value.filter === 'shortlisted' ? 'all' : value.filter, cursor: 0 }));
-      latest.current.notify('success', `Auto-select added ${targets.length} image${targets.length === 1 ? '' : 's'} to the Dataset.`);
+      latest.current.patchSession((value) => ({ ...clearBuildShortlist(value), filter: value.filter === 'shortlisted' || value.filter === 'picked' ? 'all' : value.filter, cursor: 0 }));
+      latest.current.notify('success', `Added ${targets.length} image${targets.length === 1 ? '' : 's'} to the Dataset.`);
+      setSkipped([]);
     } catch (error) {
       if (!ctx.isCurrent()) return;
       latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyError: error instanceof Error ? error.message : 'Could not apply the selection.' } }));
@@ -409,8 +412,8 @@ export function useBuildAutoPipeline(input: Input) {
     try {
       for (const [index, item] of targets.entries()) {
         ctx.signal.throwIfAborted();
-        const id = getBuildAssetId(item);
-        const record = latest.current.session.records[id] ?? startSession.records[id];
+        const record = getBuildRecordForItem(latest.current.session, item) ?? getBuildRecordForItem(startSession, item);
+        const id = record?.assetId ?? getBuildAssetId(item);
         const revision = record?.revision ?? getBuildAssetRevision(item);
         try {
           const predictions = await predictLocalTags(localTagger, item.imageData, taggingConfig.threshold, taggingConfig.maxTags);
@@ -423,7 +426,7 @@ export function useBuildAutoPipeline(input: Input) {
           if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
           flushProposals();
           const memory = error instanceof Error && error.message === TAGGER_MEMORY_MESSAGE;
-          latest.current.notify(memory ? 'error' : 'warning', memory ? TAGGER_MEMORY_MESSAGE : 'Caption suggestions stopped: the local model failed.');
+          latest.current.notify(memory ? 'error' : 'warning', memory ? TAGGER_MEMORY_MESSAGE : 'Describing stopped: the local model failed.');
           taggingOperation.finish('failed', memory ? 'Not enough memory' : 'The local model failed');
           return;
         }
@@ -433,33 +436,43 @@ export function useBuildAutoPipeline(input: Input) {
     } finally {
       flushProposals();
     }
-    taggingOperation.finish('completed', `${targets.length} suggestion${targets.length === 1 ? '' : 's'} prepared`);
+    taggingOperation.finish('completed', `${targets.length} image${targets.length === 1 ? '' : 's'} described`);
   });
 
-  /** Explicit pass 1 (shortlist); never started automatically. */
+  /** Explicit "Find candidates"; never started automatically and never moves files. */
   const startShortlist = (options: { allowDownload?: boolean } = {}) => {
     lastRequest.current = { kind: 'shortlist' };
-    if (!launch('assembly', (ctx) => runShortlist({ ...ctx, allowDownload: options.allowDownload }), 'Auto-select failed.')) latest.current.notify('info', 'Another background task is still running.');
+    assemblyTask.current = 'find';
+    if (!launch('assembly', (ctx) => runShortlist({ ...ctx, allowDownload: options.allowDownload }), 'Finding candidates failed.')) latest.current.notify('info', 'Another background task is still running.');
   };
-  /** Explicit pass 2: narrows the shortlist to the target; `apply` also adds the result to the Dataset. */
+  /** Explicit "Pick": chooses the most varied candidates; `apply` also adds the result to the Dataset. */
   const startNarrow = (options: { allowDownload?: boolean; apply?: boolean } = {}) => {
     lastRequest.current = { kind: 'narrow', apply: options.apply };
-    if (!launch('assembly', (ctx) => runNarrow({ ...ctx, allowDownload: options.allowDownload, apply: options.apply }), 'Narrowing failed.')) latest.current.notify('info', 'Another background task is still running.');
+    assemblyTask.current = 'pick';
+    if (!launch('assembly', (ctx) => runNarrow({ ...ctx, allowDownload: options.allowDownload, apply: options.apply }), 'Picking failed.')) latest.current.notify('info', 'Another background task is still running.');
   };
-  /** Adds the pass-2 result to the Dataset (one batch). */
+  /** Adds the picks to the Dataset (one batch, one Undo). */
   const startApplyNarrowed = (targets: WorkspaceImage[]) => {
-    if (!launch('assembly', (ctx) => guarded(ctx, assemblyOperation, () => applyNarrowedItems(ctx, targets)), 'Could not apply the selection.')) latest.current.notify('info', 'Another background task is still running.');
+    assemblyTask.current = 'apply';
+    if (!launch('assembly', (ctx) => guarded(ctx, assemblyOperation, () => applyNarrowedItems(ctx, targets)), 'Could not add the picks.')) latest.current.notify('info', 'Another background task is still running.');
   };
   /** Repeats the request that stopped at the model-download prompt, now allowed to download. */
   const confirmModelDownload = () => {
     if (lastRequest.current.kind === 'narrow') startNarrow({ allowDownload: true, apply: lastRequest.current.apply }); else startShortlist({ allowDownload: true });
   };
-  /** Explicit caption suggestions for the scope (default: accepted images). */
+  /** Describes the scope (default: accepted images) with the local caption model. */
   const startTagging = (scope?: WorkspaceImage[]) => {
     if (!latest.current.localTagger) { latest.current.notify('info', 'Connect a local tagger model first.'); return; }
-    if (!launch('tagging', (ctx) => runTagging({ ...ctx, scope }), 'Caption suggestions failed.')) latest.current.notify('info', 'Another background task is still running.');
+    if (!launch('tagging', (ctx) => runTagging({ ...ctx, scope }), 'Describing failed.')) latest.current.notify('info', 'Another background task is still running.');
   };
   const countTaggingTargets = (scope?: WorkspaceImage[]) => taggingTargets(input.session, input.candidates, scope).length;
+  /** Which Auto-select task is running, if any (triage is not part of the panel's steps). */
+  const task: 'find' | 'describe' | 'pick' | 'apply' | null = phase === 'assembly' ? assemblyTask.current : phase === 'tagging' ? 'describe' : null;
+  /** Forgets the unreadable-files list (Start over). */
+  const clearSkipped = () => setSkipped([]);
 
-  return { phase, progress, cancel, resume, paused, passCount, startShortlist, startNarrow, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets, needsModelDownload, dismissModelDownload: () => setNeedsModelDownload(false) };
+  return {
+    phase, task, progress, cancel, resume, paused, skipped, clearSkipped, startShortlist, startNarrow, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets,
+    modelDownloadFor, dismissModelDownload: () => setModelDownloadFor(null),
+  };
 }

@@ -232,7 +232,7 @@ export interface BuildSession {
   view?: BuildReviewView;
   profile: BuildPreparationProfile;
   cursor: number;
-  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected' | 'shortlisted';
+  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected' | 'shortlisted' | 'picked';
   order: string[];
   records: Record<string, BuildReviewRecord>;
   lastExport?: { fingerprint: string; completedAt: string; entries: number };

@@ -39,7 +39,7 @@ export const createBuildSession = (): BuildSession => ({
 });
 
 const TRIAGE_GROUPS = ['accepted', 'rejected', 'needs-decision'];
-const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected', 'shortlisted'] as const;
+const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected', 'shortlisted', 'picked'] as const;
 
 /** Triage is derived data: drop it unless it has a recognisable shape. */
 const normalizeTriage = (value: unknown): BuildTriageProposal | undefined => {
@@ -239,6 +239,12 @@ export const updateBuildDecision = (
   };
 };
 
+/** The review record of an item; a transformed output that Build created has none of its own, so it uses the record of its source. */
+export const getBuildRecordForItem = (session: BuildSession, item: BuildCandidate): BuildReviewRecord | undefined => {
+  const id = getBuildAssetId(item);
+  return session.records[id] ?? Object.values(session.records).find((record) => record.outputAssetId === id);
+};
+
 export type ActiveShortlist<T extends BuildCandidate> = {
   /** Still valid and undecided, in rank order. */
   entries: Array<{ entry: BuildShortlistEntry; item: T }>;
@@ -296,7 +302,9 @@ export const clearBuildShortlist = (session: BuildSession): BuildSession => {
 
 export const selectBuildQueue = <T extends BuildCandidate>(session: BuildSession, items: T[]): T[] => {
   const byId = new Map(items.map((item) => [getBuildAssetId(item), item]));
-  const shortlisted = session.filter === 'shortlisted' ? new Set(getActiveShortlist(session, byId)?.entries.map(({ entry }) => entry.id)) : null;
+  const active = session.filter === 'shortlisted' || session.filter === 'picked' ? getActiveShortlist(session, byId) : null;
+  const shortlisted = session.filter === 'shortlisted' ? new Set(active?.entries.map(({ entry }) => entry.id))
+    : session.filter === 'picked' ? new Set(active?.narrowed.map(getBuildAssetId)) : null;
   return session.order.flatMap<T>((id) => {
     const item = byId.get(id);
     const record = session.records[id];

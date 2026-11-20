@@ -1,7 +1,7 @@
-import { bitmapModelTensor, downloadVideoModel, loadVideoModel } from '../video/videoModel';
+import { bitmapModelTensor, downloadVideoModel, loadVideoModel, markStoredVideoModelVerified } from '../video/videoModel';
 
 export type SemanticWorkerRequest =
-  | { id: number; type: 'init'; allowDownload: boolean }
+  | { id: number; type: 'init'; allowDownload: boolean; /** The main thread already hashed the stored model this page session. */ verified?: boolean }
   | { id: number; type: 'encode'; blob: Blob };
 export type SemanticWorkerResponse =
   | { id: number; type: 'progress'; phase: string }
@@ -20,6 +20,7 @@ const handle = async (data: SemanticWorkerRequest) => {
   try {
     if (data.type === 'init') {
       const progress = (phase: string) => scope.postMessage({ id: data.id, type: 'progress', phase });
+      if (data.verified) markStoredVideoModelVerified();
       model ??= (async () => {
         if (data.allowDownload) await downloadVideoModel(undefined, (value) => progress(value.phase));
         progress('Loading semantic model');

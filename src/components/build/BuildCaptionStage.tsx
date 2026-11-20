@@ -11,6 +11,7 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { useCommands } from '../workspace/Commands';
 import { CaptionEditor } from '../caption/CaptionEditor';
 import { parseTags, sameTags } from './buildCaptionTags';
+import { ProposalSuggestions } from './ProposalSuggestions';
 
 const itemName = (item: WorkspaceImage) => item.originalFileName || item.fileName;
 
@@ -23,10 +24,12 @@ type Props = {
   items: WorkspaceImage[];
   suggestions: string[];
   directory?: ProjectDirectoryHandle | null;
+  /** Model-suggested tags for an item (character traits already applied). */
+  proposalFor?: (item: WorkspaceImage) => string[];
 };
 
 /** Caption stage: edit Dataset captions one by one or add/remove a tag for several items at once. */
-export function BuildCaptionStage({ active = true, items, suggestions, directory }: Props) {
+export function BuildCaptionStage({ active = true, items, suggestions, directory, proposalFor }: Props) {
   const notify = useUIStore((state) => state.addNotification);
   const triggerWord = useProjectStore((state) => state.dataset.triggerWord).trim();
   const rootRef = useRef<HTMLElement>(null);
@@ -45,6 +48,7 @@ export function BuildCaptionStage({ active = true, items, suggestions, directory
   const previews = useWorkspacePreviewUrls(filtered);
   useEffect(() => { setDraft(current?.tags?.join(', ') ?? ''); }, [current?.id, current?.tags]);
   useEffect(() => { setMarked((ids) => { const live = new Set(items.map((item) => item.id)); const next = new Set([...ids].filter((id) => live.has(id))); return next.size === ids.size ? ids : next; }); }, [items]);
+  const proposal = current && proposalFor ? proposalFor(current) : [];
   const missing = sorted.filter((item) => !item.tags?.length).length;
   const markedItems = filtered.filter((item) => marked.has(item.id));
 
@@ -165,6 +169,7 @@ export function BuildCaptionStage({ active = true, items, suggestions, directory
           <span className="flex-1">The caption file does not start with the trigger word.</span>
           <button type="button" disabled={saving} onClick={() => void addTrigger()} className="rounded border border-border px-2 py-0.5 disabled:opacity-40">Add trigger</button></div>}
         <CaptionEditor key={current.id} value={draft} onChange={setDraft} suggestions={suggestions} rows={8} disabled={saving} ariaLabel="Caption" placeholder="tag one, tag two" />
+        <ProposalSuggestions tags={proposal} onMerge={() => setDraft([...new Set([...parseTags(draft), ...proposal])].join(', '))} />
         <button type="button" disabled={saving || sameTags(current.tags, parseTags(draft))} onClick={() => void save()} className="flex items-center gap-2 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-40">
           {saving && <Loader2 className="h-3 w-3 animate-spin" />}Save caption</button>
       </div>}

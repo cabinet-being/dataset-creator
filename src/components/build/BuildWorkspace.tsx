@@ -16,7 +16,6 @@ import { useCommands } from '../workspace/Commands';
 import { ImportTool } from '../tools/ImportTool';
 import { ExportTool } from '../tools/ExportTool';
 import { VideoFramesTool } from '../tools/VideoFramesTool';
-import { DatasetAssemblyDialog } from '../workspace/DatasetAssemblyDialog';
 import type { ImportInputFile, ImportImagesOptions, ImportImagesResult } from '../../services/import/importService';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { flushProjectSave } from '../../hooks/useProjectSave';
@@ -28,14 +27,13 @@ import { setAssetsDatasetMembership } from '../../lib/assetActions';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
-import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
-import { connectLocalTaggerSource, restoreSavedLocalTagger } from '../../services/tagging/localTaggerConnectionService';
+import { LocalTaggerConnectPrompt } from '../tagging/LocalTaggerConnectPrompt';
 import {
   clearBuildShortlist,
-  createBuildShortlist,
   getActiveShortlist,
   getBuildAssetId,
   getBuildAssetRevision,
+  getBuildRecordForItem,
   assertBuildSourceCurrent,
   getBuildCounts,
   getBuildValidation,
@@ -47,7 +45,7 @@ import {
 import { getMinShortSide } from '../../services/quality/imageQuality';
 import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
 import { PROJECT_EDITS_DIRECTORY } from '../../services/project/projectLayoutService';
-import { getBuildTriageCounts } from '../../services/build/buildTriageService';
+import { getBuildTriageCounts, selectAssemblyCandidates } from '../../services/build/buildTriageService';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
 import { BuildProfileControls } from './BuildProfileControls';
@@ -59,7 +57,13 @@ import { useQualityActions } from './useQualityActions';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
-import { qualityScoreFromSummary } from '../../services/dataset/shortlistService';
+import { BuildAutoSelectPanel } from './BuildAutoSelectPanel';
+import { BuildSelectStatus } from './BuildSelectStatus';
+import { BuildReviewBar } from './BuildReviewBar';
+import { ProposalSuggestions } from './ProposalSuggestions';
+import { getAutoSelectSteps } from '../../lib/autoSelectSteps';
+import { buildFolderRows, inboxFolderOf, isInboxItem, isInboxItemSelected, toggleFolderSelection } from '../../lib/inboxFolders';
+import { isProjectPathIncluded } from '../../lib/projectCategories';
 
 type Props = {
   active: boolean;
@@ -93,8 +97,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const characterTraits = useProjectStore(selectActiveCharacterTraits);
   const localTagger = useLocalTaggerStore((state) => state.bundle);
-  const savedTaggerFileNames = useLocalTaggerStore((state) => state.savedFileNames);
-  const [showAssembly, setShowAssembly] = useState(false);
+  // Folders unchecked in the Auto-select panel; empty means every inbox folder is a source. Not persisted.
+  const [deselectedFolders, setDeselectedFolders] = useState<Set<string>>(new Set());
   const [allowShortfall, setAllowShortfall] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
@@ -102,7 +106,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const [batchTag, setBatchTag] = useState('');
   const [batchReplacement, setBatchReplacement] = useState('');
   const [batchMode, setBatchMode] = useState<'add' | 'remove' | 'replace'>('add');
-  const taggerInput = useRef<HTMLInputElement>(null);
   const operation = useOperation('Build review', root, viewId);
 
   // Depend on the registered images themselves, not on the session: typing a caption draft or deciding
@@ -472,27 +475,50 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const commitDecision = useCallback((decision: BuildReviewDecision, targets: WorkspaceImage[] = current ? [current] : [], provenance: 'manual' | 'auto' = 'manual', propagateError = false) =>
     commitDecisions(targets.map((item) => ({ item, decision })), provenance, propagateError), [commitDecisions, current]);
 
+  // Auto-select sources: inbox images in the checked folders that the user has not rejected.
+  const inboxItems = useMemo(() => candidates.filter((item) => item.kind !== 'video' && isInboxItem(item) && !isProjectDatasetPath(item.assetPath)
+    && isProjectPathIncluded(item.assetPath, workspaceSettings.excludedProjectCategories ?? [], workspaceSettings.includedProjectCategories ?? [])
+    && reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped'),
+  [candidates, reconciled.records, workspaceSettings.excludedProjectCategories, workspaceSettings.includedProjectCategories]);
+  const folderRows = useMemo(() => buildFolderRows(inboxItems.map(inboxFolderOf)), [inboxItems]);
+  const sourceItems = useMemo(() => inboxItems.filter((item) => isInboxItemSelected(item, deselectedFolders)), [inboxItems, deselectedFolders]);
   const pipeline = useBuildAutoPipeline({
-    active, enabled: reconciled.profile.autoPipeline !== false, busy, candidates, effectiveItems, session: reconciled, targetModel,
+    active, busy, candidates, sources: sourceItems, effectiveItems, session: reconciled, targetModel,
     patchSession, dataset, commitDecision, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory, characterTraits,
   });
   const shortlist = useMemo(() => getActiveShortlist(reconciled, candidates), [reconciled.auto, reconciled.records, reconciled.profile, candidates]);
   const shortlistedIds = useMemo(() => new Set(shortlist?.entries.map(({ entry }) => entry.id)), [shortlist]);
   const datasetCount = useMemo(() => resolveDatasetMembership(dataset, effectiveItems).effective.length, [dataset, effectiveItems]);
-  const shortlistNeeded = Math.max(0, reconciled.profile.target - datasetCount);
-  const shortlistCaptions = useMemo(() => {
-    const entries = shortlist?.entries ?? [];
-    const ready = entries.filter(({ item }) => { const record = reconciled.records[getBuildAssetId(item)]; return !!item.tags?.length || (!!record?.proposal && record.proposal.revision === record.revision); }).length;
-    return { ready, missing: entries.length - ready };
-  }, [shortlist, reconciled.records]);
-  const dialogCandidates = useMemo(() => candidates.filter((item) => reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped'), [candidates, reconciled.records]);
+  const undescribedCandidates = useMemo(() => (shortlist?.entries ?? []).filter(({ item }) => {
+    const record = reconciled.records[getBuildAssetId(item)];
+    return !item.tags?.length && !(record?.proposal && record.proposal.revision === record.revision);
+  }).map(({ item }) => item), [shortlist, reconciled.records]);
+  const autoSelect = getAutoSelectSteps({
+    folderImages: sourceItems.length,
+    analyzed: sourceItems.filter((item) => !!reconciled.records[getBuildAssetId(item)]?.triage).length,
+    pendingAnalysis: sourceItems.filter((item) => { const record = reconciled.records[getBuildAssetId(item)]; return record?.decision === 'unreviewed' && !record.triage; }).length,
+    analysisPaused: pipeline.paused,
+    poolSize: selectAssemblyCandidates(reconciled, sourceItems).length,
+    datasetCount, target: reconciled.profile.target,
+    hasCandidates: !!reconciled.auto?.shortlist,
+    candidates: shortlist?.entries.length ?? 0,
+    described: (shortlist?.entries.length ?? 0) - undescribedCandidates.length,
+    taggable: pipeline.countTaggingTargets(undescribedCandidates),
+    picks: shortlist?.narrowed.length ?? 0,
+    duplicatesSkipped: reconciled.auto?.shortlist?.duplicatesRejected ?? 0,
+    unreadable: pipeline.skipped.length,
+    taskRunning: busy || pipeline.phase === 'assembly' || pipeline.phase === 'tagging' || pipeline.phase === 'triage',
+    task: pipeline.task,
+  });
+  const setFilter = useCallback((filter: BuildSession['filter']) => patchSessionAndCursor((value) => ({ ...value, filter, cursor: 0 })), [patchSessionAndCursor]);
+  const filterCounts = useMemo(() => {
+    const size = (filter: BuildSession['filter']) => selectBuildQueue({ ...reconciled, filter }, candidates).length;
+    return {
+      all: size('all'), unresolved: size('unresolved'), needsDecision: size('needs-decision'), accepted: size('accepted'), rejected: size('rejected'),
+      candidates: shortlist?.entries.length ?? 0, picks: shortlist?.narrowed.length ?? 0, errors: counts.errors,
+    };
+  }, [candidates, reconciled.order, reconciled.records, reconciled.profile, reconciled.auto, shortlist, counts.errors]);
   const triageCounts = useMemo(() => getBuildTriageCounts(reconciled, candidates), [candidates, reconciled.order, reconciled.records]);
-  const lastFocusPass = useRef(0);
-  useEffect(() => {
-    if (pipeline.passCount === lastFocusPass.current) return;
-    lastFocusPass.current = pipeline.passCount;
-    patchSessionAndCursor((value) => value.filter === 'all' && triageCounts.needsDecision > 0 ? { ...value, filter: 'needs-decision', cursor: 0 } : value);
-  }, [pipeline.passCount, patchSessionAndCursor, triageCounts.needsDecision]);
 
   const applyBatchCaption = useCallback(async () => {
     const tag = batchTag.trim();
@@ -545,13 +571,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     const y = Math.max(0, Math.min(1 - size, centerY / 100 - size / 2));
     patchSession((value) => { const record = value.records[currentId]; return record ? { ...value, records:{ ...value.records, [currentId]:{ ...record, transform:{ ...value.profile.transform!, crop:{x,y,width:size,height:size} } } } } : value; });
   };
-  const queueGroupActive = ['needs-decision', 'accepted', 'rejected'].includes(reconciled.filter);
+  const queueGroupActive = ['needs-decision', 'accepted', 'rejected', 'shortlisted', 'picked'].includes(reconciled.filter);
   const acceptTargets = queueGroupActive ? queue.filter((item) => {
     const record = reconciled.records[getBuildAssetId(item)];
     return item.kind !== 'video' && !(record?.decision === 'accepted' && record.application === 'applied');
   }) : [];
   const rejectTargets = queueGroupActive ? queue.filter((item) => reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped') : [];
-  const setFilter = (filter: BuildSession['filter']) => patchSessionAndCursor((value) => ({ ...value, filter, cursor: 0 }));
   const clearQualityTriage = () => { patchSession((value) => ({
     ...value,
     records: Object.fromEntries(Object.entries(value.records).map(([id, record]) => [id, record.decision === 'unreviewed' && record.triage?.stage === 'quality' ? { ...record, triage: undefined } : record])),
@@ -569,77 +594,61 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     const focused = document.activeElement;
     if (!focused || focused === document.body || !focused.isConnected) root.current?.focus({ preventScroll: true });
   }, [active, stage, view, reconciled.filter, busy, currentId]);
-  const selectedItems = useMemo(() => candidates.filter((item) => selected.has(getBuildAssetId(item))), [candidates, selected]);
-  const prepareSuggestions = (scope?: WorkspaceImage[]) => pipeline.startTagging(scope);
-  const suggestionButton = (scope: WorkspaceImage[] | undefined, label: string) => <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle' || !localTagger || pipeline.countTaggingTargets(scope) === 0}
-    title={localTagger ? undefined : 'Connect a local caption model first'} onClick={() => prepareSuggestions(scope)}>{label}</button>;
+  const startOver = () => {
+    pipeline.clearSkipped();
+    patchSessionAndCursor((value) => ({ ...clearBuildShortlist(value), filter: value.filter === 'shortlisted' || value.filter === 'picked' ? 'all' : value.filter, cursor: 0 }));
+  };
+  // Caption stage: Dataset images with neither caption tags nor a model suggestion.
+  const untaggedDatasetItems = useMemo(() => datasetItems.filter((item) => !item.tags?.length), [datasetItems]);
+  const suggestTargets = pipeline.countTaggingTargets(untaggedDatasetItems);
+  const proposalFor = useCallback((item: WorkspaceImage) => {
+    const record = getBuildRecordForItem(reconciled, item);
+    return record?.proposal && record.proposal.revision === record.revision ? applyCharacterTraits(record.proposal.tags, characterTraits) : [];
+  }, [characterTraits, reconciled]);
 
-  return <div ref={root} tabIndex={-1} className="flex h-full min-h-0 flex-col bg-background outline-none" data-build-workspace>
+  return <div ref={root} tabIndex={-1} className="flex h-full min-h-0 flex-col overflow-y-auto bg-background outline-none" data-build-workspace>
     <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2">
       <div className="mr-auto"><h1 className="flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-primary" />Build Dataset</h1><p className="text-xs text-muted-foreground">One queue from import to export</p></div>
     </header>
     <BuildStepper stages={summary.stages} current={stage} onSelect={goToStage} />
     {stage === 'add' ? <div className="min-h-0 flex-1 overflow-auto p-4"><div role="group" aria-label="Project settings" className="mb-4 flex flex-wrap items-center gap-3 text-xs"><BuildProfileControls onModelChange={clearQualityTriage} suggestions={captionSuggestions} /></div><ImportTool active={active} onImportFiles={onImportFiles} /></div>
     : stage === 'caption' ? <>
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">{suggestionButton(datasetItems, 'Prepare caption suggestions')}{pipeline.phase === 'tagging' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Preparing caption suggestions{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}</div>
-      <BuildCaptionStage active={active} items={datasetItems} suggestions={captionSuggestions} directory={directory} /></>
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">
+        <button type="button" data-testid="build-suggest-tags" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle' || !localTagger || suggestTargets === 0}
+          title={!localTagger ? 'Connect a local caption model first' : suggestTargets === 0 ? 'Every Dataset image already has tags or a suggestion' : undefined}
+          onClick={() => pipeline.startTagging(untaggedDatasetItems)}>Suggest tags for {suggestTargets} {suggestTargets === 1 ? 'image' : 'images'}</button>
+        {pipeline.phase === 'tagging' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Suggesting tags{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}
+        {!localTagger && <LocalTaggerConnectPrompt message="No local caption model connected. Connect one to get tag suggestions." />}
+      </div>
+      <BuildCaptionStage active={active} items={datasetItems} suggestions={captionSuggestions} directory={directory} proposalFor={proposalFor} /></>
     : stage === 'check' ? <section aria-label="Dataset quality" className="min-h-0 flex-1 overflow-auto p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>
     : stage === 'export' ? <div className="min-h-0 flex-1 overflow-auto"><ExportTool active={active} fixedSource="dataset" onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div>
     : <>
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2">
-      <div role="status" className="rounded-lg bg-secondary px-3 py-2 text-xs"><strong>Ready {counts.ready} / target {counts.target}</strong> · saving {counts.saving} · <button onClick={() => patchSessionAndCursor((value) => ({ ...value, filter: 'unresolved', cursor: 0 }))} className="underline">undecided {counts.unresolved}</button> · <button onClick={() => patchSessionAndCursor((value) => ({ ...value, filter: 'errors', cursor: 0 }))} className={counts.errors ? 'text-destructive underline' : ''}>errors {counts.errors}</button></div>
-      <div role="group" aria-label="Triage groups" className="flex flex-wrap items-center gap-2 text-xs">
-        <button onClick={() => setFilter('needs-decision')} className="rounded bg-amber-500/15 px-2 py-1 text-amber-800 dark:text-amber-200">Flagged {triageCounts.needsDecision}</button>
-        <button onClick={() => setFilter('accepted')} className="rounded bg-emerald-500/15 px-2 py-1 text-emerald-800 dark:text-emerald-200">Accepted {triageCounts.accepted}</button>
-        <button onClick={() => setFilter('rejected')} className="rounded bg-red-500/15 px-2 py-1 text-red-800 dark:text-red-200">Rejected {triageCounts.rejected}</button>
-        {triageCounts.pending > 0 && <span className="rounded bg-secondary px-2 py-1">Analyzing {triageCounts.pending}</span>}
-        {pipeline.phase !== 'idle' && <span role="status" className="flex items-center gap-1 text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{pipeline.phase === 'triage' ? 'Analyzing images' : pipeline.phase === 'assembly' ? 'Selecting Dataset images' : 'Preparing caption suggestions'}{pipeline.progress.total > 0 && ` ${pipeline.progress.completed}/${pipeline.progress.total}`}<button className="ml-1 underline" onClick={pipeline.cancel}>Cancel</button></span>}
-        {pipeline.phase === 'idle' && pipeline.paused && <button className="underline" onClick={pipeline.resume}>Resume automatic analysis</button>}
-      </div>
-      <div role="group" aria-label="Review view" className="flex overflow-hidden rounded border border-border text-sm">
-        <button type="button" data-testid="build-view-toggle" data-view="list" aria-pressed={view === 'list'} onClick={() => setView('list')} className={`px-3 py-2 ${view === 'list' ? 'bg-primary text-primary-foreground' : ''}`}>List</button>
-        <button type="button" data-testid="build-view-toggle" data-view="grid" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={`px-3 py-2 ${view === 'grid' ? 'bg-primary text-primary-foreground' : ''}`}>Grid</button>
-        <button type="button" data-testid="build-view-toggle" data-view="clusters" aria-pressed={view === 'clusters'} onClick={() => setView('clusters')} className={`px-3 py-2 ${view === 'clusters' ? 'bg-primary text-primary-foreground' : ''}`}>Clusters</button>
-      </div>
-      <button className="ml-auto rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40" disabled={busy} onClick={() => {
-        if (!canExport) { patchSessionAndCursor((value) => ({ ...value, filter: counts.errors ? 'errors' : 'unresolved', cursor: 0 })); return; }
-        setStage('export');
-      }}>Finish</button>
-      </div>
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs">
-        <label>Target <input type="number" min={0} value={reconciled.profile.target} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, target: Math.max(0, Number(event.target.value) || 0) } }))} className="ml-1 w-20 rounded border border-border bg-background px-2 py-1" /></label>
-        <details className="relative" data-build-settings><summary className="cursor-pointer rounded border border-border px-2 py-1">Settings</summary><div className="absolute left-0 top-full z-20 mt-1 flex w-72 flex-col gap-2 rounded border border-border bg-popover p-3 text-popover-foreground shadow-lg">
+      <BuildAutoSelectPanel derived={autoSelect} datasetCount={datasetCount} target={reconciled.profile.target}
+        onTargetChange={(target) => patchSession((value) => ({ ...value, profile: { ...value.profile, target } }))}
+        folderRows={folderRows} deselectedFolders={deselectedFolders} onToggleFolder={(folder) => setDeselectedFolders((value) => toggleFolderSelection(folderRows, value, folder))}
+        analysisPaused={pipeline.paused} onResumeAnalysis={pipeline.resume} progress={pipeline.progress}
+        modelDownloadFor={pipeline.modelDownloadFor} onConfirmDownload={pipeline.confirmModelDownload} onDismissDownload={pipeline.dismissModelDownload}
+        skipped={pipeline.skipped} taggerConnected={!!localTagger} busy={busy}
+        onFind={() => pipeline.startShortlist()} onDescribe={() => pipeline.startTagging(undescribedCandidates)} onPick={() => pipeline.startNarrow()}
+        onApply={() => pipeline.startApplyNarrowed(shortlist?.narrowed ?? [])} onCancel={pipeline.cancel}
+        onShowCandidates={() => setFilter('shortlisted')} onReviewPicks={() => setFilter('picked')} onStartOver={startOver} />
+      <BuildSelectStatus datasetCount={datasetCount} target={reconciled.profile.target}
+        analysisLeft={triageCounts.pending} analysisRunning={pipeline.phase === 'triage'} analysisPaused={pipeline.paused && pipeline.phase === 'idle'} onPause={pipeline.cancel} onResume={pipeline.resume}
+        errors={counts.errors} onShowErrors={() => setFilter('errors')}
+        settings={<>
         <label>Review <select value={reconciled.profile.reviewMode} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, reviewMode: event.target.value as BuildSession['profile']['reviewMode'] } }))} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="every-item">Every photo</option><option value="uncertain-only">Uncertain only</option></select></label>
         <label>Output <select value={!reconciled.profile.transform ? 'original' : `${reconciled.profile.transform.mode}-${reconciled.profile.transform.width}`} onChange={(event) => setProfileTransform(event.target.value)} className="ml-1 rounded border border-border bg-background px-2 py-1"><option value="original">Original</option><option value="fit-512">Fit within 512</option><option value="crop-512">Center crop 512</option><option value="crop-768">Center crop 768</option></select></label>
         <BuildProfileControls onModelChange={clearQualityTriage} suggestions={captionSuggestions} />
-        <label className="flex items-center gap-1"><input type="checkbox" checked={reconciled.profile.autoPipeline !== false} onChange={(event) => patchSession((value) => ({ ...value, profile: { ...value.profile, autoPipeline: event.target.checked } }))} />Auto pipeline</label>
         <label className="flex items-start gap-1">Trigger word <TriggerWordInput value={dataset.triggerWord} onApply={(word) => { void changeDatasetTriggerWord(word).then(() => patchSession((value) => ({ ...value, records:Object.fromEntries(Object.entries(value.records).map(([id,record]) => [id,record.decision === 'accepted' ? { ...record, validation:'stale' as const } : record])) }))).catch((error) => notify('error', error instanceof Error ? error.message : 'Could not change the trigger word')); }} className="w-32 rounded border border-border bg-background px-2 py-1" /></label>
-        </div></details>
-        <button className="ml-auto rounded border border-border px-2 py-1" onClick={() => setShowAssembly(true)}>Auto-select</button>
-        <button type="button" className="rounded border border-border px-2 py-1 disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle'} title="Analyze the Dataset and candidates and propose which images to add" onClick={() => pipeline.startShortlist()}>Suggest selection</button>
-        {suggestionButton(selectedItems.length ? selectedItems : undefined, selectedItems.length ? `Prepare caption suggestions (${selectedItems.length} selected)` : 'Prepare caption suggestions')}
-        {pipeline.needsModelDownload && <span role="alert" className="flex items-center gap-2 rounded bg-amber-500/15 px-2 py-1">Download DINOv2 (~88 MB)?<button type="button" className="underline" onClick={pipeline.confirmModelDownload}>Download and continue</button><button type="button" className="underline" onClick={pipeline.dismissModelDownload}>Not now</button></span>}
-        <select aria-label="Queue filter" value={reconciled.filter} onChange={(event) => patchSessionAndCursor((value) => ({ ...value, filter: event.target.value as BuildSession['filter'], cursor: 0 }))} className="rounded border border-border bg-background px-2 py-1"><option value="all">All</option><option value="unresolved">Undecided</option><option value="needs-decision">Flagged</option><option value="accepted">Accepted (proposed)</option><option value="rejected">Rejected (proposed)</option><option value="shortlisted">Shortlisted{shortlist ? ` (${shortlist.entries.length})` : ''}</option><option value="errors">Errors</option></select>
-        {queueGroupActive && (acceptTargets.length > 0 || rejectTargets.length > 0) && <>
-          <button disabled={busy || !acceptTargets.length} onClick={() => void commitDecision('accepted', acceptTargets)} className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40">Accept all {acceptTargets.length}</button>
-          <button disabled={busy || !rejectTargets.length} onClick={() => void commitDecision('skipped', rejectTargets)} className="rounded border border-border px-2 py-1 disabled:opacity-40">Reject all {rejectTargets.length}</button>
-        </>}
-      </div>
-
-      {shortlist && <div role="group" aria-label="Shortlist" data-testid="build-shortlist-bar" className="flex flex-wrap items-center gap-3 border-b border-border bg-primary/5 px-4 py-2 text-xs">
-        <button type="button" className="font-medium underline" onClick={() => setFilter('shortlisted')}>Shortlist: {shortlist.entries.length} of ~{shortlist.size}</button>
-        <button type="button" className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle' || shortlistCaptions.ready === 0 || shortlistNeeded === 0}
-          title={shortlistCaptions.ready === 0 ? 'Prepare caption suggestions for the shortlist first' : 'Choose the most varied images by tags and appearance'} onClick={() => pipeline.startNarrow()}>Narrow to {shortlistNeeded}</button>
-        {shortlistCaptions.missing > 0 && <span className="text-muted-foreground">{shortlistCaptions.missing} without captions or suggestions</span>}
-        {shortlistCaptions.missing > 0 && suggestionButton(shortlist.entries.map(({ item }) => item), 'Prepare caption suggestions for the shortlist')}
-        {shortlist.narrowed.length > 0 && <><span role="status">Narrowed to {shortlist.narrowed.length}</span>
-          <button type="button" className="rounded bg-primary px-2 py-1 text-primary-foreground disabled:opacity-40" disabled={busy || pipeline.phase !== 'idle'} onClick={() => pipeline.startApplyNarrowed(shortlist.narrowed)}>Apply {shortlist.narrowed.length} to the Dataset</button></>}
-        <button type="button" className="ml-auto rounded border border-border px-2 py-1" onClick={() => patchSessionAndCursor((value) => ({ ...clearBuildShortlist(value), filter: value.filter === 'shortlisted' ? 'all' : value.filter, cursor: 0 }))}>Clear shortlist</button>
-      </div>}
+        </>} />
+      <BuildReviewBar filter={reconciled.filter} onFilter={setFilter} counts={filterCounts} hasCandidates={!!reconciled.auto?.shortlist} view={view} onView={setView}
+        bulk={queueGroupActive ? { accept: acceptTargets.length, reject: rejectTargets.length } : null} busy={busy}
+        onAcceptAll={() => void commitDecision('accepted', acceptTargets)} onRejectAll={() => void commitDecision('skipped', rejectTargets)} />
 
       {view === 'clusters' ? <BuildClusterView active={active} root={root} features={quality.features} candidates={candidates} session={reconciled} minShortSide={getMinShortSide(targetModel)} busy={busy}
         onCommit={(entries) => commitDecisions(entries)} onOpenItem={(id) => { setView('list'); selectQualityItem(id); }} /> : <>
-      <main className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <main className="grid min-h-[18rem] flex-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="relative flex min-h-0 flex-col items-center justify-center overflow-auto bg-black/5 p-4 dark:bg-black/20">
           {view === 'grid' ? <BuildGridView active={active && stage === 'select'} root={root} queue={queue} session={reconciled} cursor={cursor} busy={busy}
             selected={selected} onSelectedChange={setSelected} onCursor={setCursor}
@@ -661,8 +670,8 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
               {currentRecord.decision !== 'unreviewed' && <p className="text-amber-700 dark:text-amber-300">Your decision overrides the proposal</p>}</div>}
             {currentRecord?.error && <p role="alert" className="flex gap-2 rounded border border-destructive/40 p-2 text-xs text-destructive"><AlertTriangle className="h-4 w-4 shrink-0" />{currentRecord.error}</p>}
             {current.kind !== 'video' && <div className="space-y-1"><p className="text-xs font-medium">Caption</p><CaptionEditor key={currentId} value={draft} onChange={changeDraft} suggestions={captionSuggestions} rows={6} disabled={busy} ariaLabel="Caption" placeholder="tag one, tag two" />{dataset.triggerWord.trim() && <p className="text-xs text-muted-foreground">The Dataset caption file starts with the trigger: <span className="font-mono">{dataset.triggerWord}</span></p>}</div>}
-            {!!proposal.length && <div className="rounded border border-primary/30 bg-primary/5 p-2 text-xs"><p className="font-medium">Local model suggestions</p><p className="mt-1 text-muted-foreground">{proposal.join(', ')}</p><button className="mt-2 rounded border border-border px-2 py-1" onClick={() => changeDraft([...new Set([...parseTags(draft), ...proposal])].join(', '))}>Merge suggestions</button></div>}
-            {!localTagger && current.kind !== 'video' && <div className="text-xs text-muted-foreground"><p>No local caption model connected. Manual review remains available.</p><input ref={taggerInput} type="file" multiple accept=".onnx,.csv" className="hidden" onChange={(event) => { const files = [...(event.currentTarget.files ?? [])]; event.currentTarget.value=''; if (!files.length) return; void connectLocalTaggerSource({kind:'files',name:'Build workspace model',files}).then((connected) => { if (!connected) notify('error', useLocalTaggerStore.getState().message); }); }} /><button className="mt-2 rounded border border-border px-2 py-1" onClick={() => taggerInput.current?.click()}>Connect model.onnx + selected_tags.csv</button>{savedTaggerFileNames.model && savedTaggerFileNames.tags && <button className="mt-2 ml-2 rounded border border-border px-2 py-1" onClick={() => void restoreSavedLocalTagger(true)}>Restore saved model</button>}<WdTaggerDownloadPanel className="mt-3" /></div>}
+            <ProposalSuggestions tags={proposal} onMerge={() => changeDraft([...new Set([...parseTags(draft), ...proposal])].join(', '))} />
+            {!localTagger && current.kind !== 'video' && <LocalTaggerConnectPrompt message="No local caption model connected. Manual review remains available." />}
             {currentTransform?.mode === 'crop' && current.kind !== 'video' && current.kind !== 'psd' && <fieldset className="space-y-2 rounded border border-border p-2 text-xs"><legend className="px-1 font-medium">Crop frame</legend><label className="grid grid-cols-[4rem_1fr] items-center gap-2">Zoom<input type="range" min={100} max={250} value={cropZoom} onChange={(event)=>updateCrop(Number(event.target.value),cropCenterX,cropCenterY)} /></label><label className="grid grid-cols-[4rem_1fr] items-center gap-2">Horizontal<input type="range" min={0} max={100} value={cropCenterX} onChange={(event)=>updateCrop(cropZoom,Number(event.target.value),cropCenterY)} /></label><label className="grid grid-cols-[4rem_1fr] items-center gap-2">Vertical<input type="range" min={0} max={100} value={cropCenterY} onChange={(event)=>updateCrop(cropZoom,cropCenterX,Number(event.target.value))} /></label>{!currentTransform.allowUpscale && (current.width < currentTransform.width || current.height < currentTransform.height) && <p className="text-amber-700 dark:text-amber-300">Output stays below the profile size because upscale is disabled.</p>}</fieldset>}
             <div className="grid grid-cols-3 gap-2"><button disabled={busy || current.kind === 'video'} onClick={() => void commitDecision('accepted')} className="rounded bg-primary px-2 py-2 text-xs font-medium text-primary-foreground disabled:opacity-40">Accept · A</button><button disabled={busy} onClick={() => void commitDecision('skipped')} className="rounded border border-border px-2 py-2 text-xs">Reject · X</button><button disabled={busy} onClick={() => void commitDecision('deferred')} className="rounded border border-border px-2 py-2 text-xs">Defer · D</button></div>
             <div className="flex justify-between"><button disabled={cursor <= 0} onClick={() => moveCursor(-1)} className="rounded p-2 disabled:opacity-30" aria-label="Previous"><ChevronLeft className="h-4 w-4" /></button><span className="self-center text-xs capitalize text-muted-foreground">{currentRecord?.decision} · {currentRecord?.validation}</span><button disabled={cursor >= queue.length - 1} onClick={() => moveCursor(1)} className="rounded p-2 disabled:opacity-30" aria-label="Next"><ChevronRight className="h-4 w-4" /></button></div>
@@ -674,19 +683,12 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         {!!selected.size && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs"><strong>{selected.size} selected</strong><select value={batchMode} onChange={(event) => setBatchMode(event.target.value as 'add' | 'remove' | 'replace')} className="rounded border border-border bg-background px-2 py-1"><option value="add">Add tag</option><option value="remove">Remove tag</option><option value="replace">Replace tag</option></select><input value={batchTag} onChange={(event) => setBatchTag(event.target.value)} className="rounded border border-border bg-background px-2 py-1" placeholder={batchMode === 'replace' ? 'old tag' : 'tag'} />{batchMode === 'replace' && <input value={batchReplacement} onChange={(event)=>setBatchReplacement(event.target.value)} className="rounded border border-border bg-background px-2 py-1" placeholder="new tag" />}<button onClick={() => void applyBatchCaption()} className="rounded border border-border px-2 py-1">Apply</button><button disabled={busy} onClick={() => void commitDecision('accepted', candidates.filter((item) => selected.has(getBuildAssetId(item))))} className="rounded bg-primary px-2 py-1 text-primary-foreground">Accept selected</button><button onClick={() => setSelected(new Set())}>Clear</button></div>}
         {view !== 'grid' && <div className="flex gap-2 overflow-x-auto" aria-label="Candidate filmstrip">{filmstrip.map((item) => { const id = getBuildAssetId(item); const record = reconciled.records[id]; const itemCursor = queue.indexOf(item); return <button key={id} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey) setSelected((ids) => { const next = new Set(ids); if (next.has(id)) next.delete(id); else next.add(id); return next; }); else setCursor(itemCursor); }} className={`relative h-16 w-20 shrink-0 overflow-hidden rounded border-2 ${itemCursor === cursor ? 'border-primary' : selected.has(id) ? 'border-sky-500' : 'border-transparent'}`} title={`${itemName(item)} · ${record?.decision}`}>
           {thumbs[item.id] ? <img src={thumbs[item.id]} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center bg-secondary text-[10px]">{item.kind}</span>}
-          {(record?.decision === 'skipped' || (record?.decision === 'unreviewed' && record.triage?.group === 'rejected')) && <span aria-label="Rejected" className="absolute right-1 top-1 rounded-full bg-red-600 p-0.5 text-white"><X className="h-3 w-3" /></span>}{(record?.decision === 'deferred' || (record?.decision === 'unreviewed' && record.triage?.group === 'needs-decision')) && <span aria-label="Flagged" className="absolute right-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><HelpCircle className="h-3 w-3" /></span>}{record?.decision === 'accepted' && <span className="absolute right-1 top-1 rounded-full bg-emerald-600 p-0.5 text-white"><Check className="h-3 w-3" /></span>}{shortlistedIds.has(id) && <span aria-label="Shortlisted" data-testid="build-shortlist-badge" className="absolute bottom-1 left-1 rounded bg-primary px-1 text-[9px] text-primary-foreground">Shortlist</span>}{record?.validation === 'stale' && <span className="absolute left-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><RotateCcw className="h-3 w-3" /></span>}
+          {(record?.decision === 'skipped' || (record?.decision === 'unreviewed' && record.triage?.group === 'rejected')) && <span aria-label="Rejected" className="absolute right-1 top-1 rounded-full bg-red-600 p-0.5 text-white"><X className="h-3 w-3" /></span>}{(record?.decision === 'deferred' || (record?.decision === 'unreviewed' && record.triage?.group === 'needs-decision')) && <span aria-label="Flagged" className="absolute right-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><HelpCircle className="h-3 w-3" /></span>}{record?.decision === 'accepted' && <span className="absolute right-1 top-1 rounded-full bg-emerald-600 p-0.5 text-white"><Check className="h-3 w-3" /></span>}{shortlistedIds.has(id) && <span aria-label="Candidate" data-testid="build-shortlist-badge" className="absolute bottom-1 left-1 rounded bg-primary px-1 text-[9px] text-primary-foreground">Candidate</span>}{record?.validation === 'stale' && <span className="absolute left-1 top-1 rounded-full bg-amber-500 p-0.5 text-white"><RotateCcw className="h-3 w-3" /></span>}
         </button>; })}</div>}
       </section>
       </>}
     {!canExport && candidates.length > 0 && counts.ready < counts.target && counts.unresolved === 0 && <div className="flex items-center gap-3 border-t border-border bg-amber-500/10 px-4 py-2 text-xs"><span>Only {counts.ready} of {counts.target} target items are ready.</span><button onClick={() => setAllowShortfall(true)} className="underline">Finish with fewer</button></div>}
     </>}
     <BuildNextStageFooter current={stage} onNext={goToStage} />
-    <DatasetAssemblyDialog open={showAssembly} onOpenChange={setShowAssembly} dataset={dataset} items={items} candidates={dialogCandidates} directory={directory ?? undefined} projectId={projectId} projectType={projectType} defaultMode="total" defaultTotal={reconciled.profile.target} excludedCategories={workspaceSettings.excludedProjectCategories ?? []} includedCategories={workspaceSettings.includedProjectCategories ?? []} shortlistFlow={{
-      onMark: (result) => patchSession((value) => ({ ...createBuildShortlist(value, { needed: result.needed, requested: result.requested, duplicates: result.duplicates.length, items: result.items }), filter: 'shortlisted', cursor: 0 })),
-      narrow: { hasShortlist: !!shortlist?.entries.length, ready: shortlistCaptions.ready, missing: shortlistCaptions.missing, busy: busy || pipeline.phase !== 'idle' },
-      onNarrowAndApply: () => pipeline.startNarrow({ apply: true }),
-      onPrepareSuggestions: () => prepareSuggestions(shortlist?.entries.map(({ item }) => item)),
-      qualityOf: (item) => { const summary = reconciled.records[getBuildAssetId(item)]?.triage?.quality; return summary ? qualityScoreFromSummary(summary) : undefined; },
-    }} />
   </div>;
 }
