@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { suggestAndApply } from './buildFlow';
+import { counter, filterRadio, idleStatus, markShortlist, panel, selectFilter, step, suggestAndApply } from './buildFlow';
 
 test('build workspace shows two candidate frames', async ({ page }) => {
   await page.goto('/tests/build-browser.html');
@@ -12,8 +12,6 @@ test('build workspace shows two candidate frames', async ({ page }) => {
 type Fixture = { session: () => { records: Record<string, { decision: string; triage?: { group: string; reasons: { code: string }[] } }> }; paths: () => Record<string, string | undefined> };
 declare global { interface Window { __buildFixture: Fixture } }
 
-const counter = (page: import('@playwright/test').Page, label: string) =>
-  page.getByRole('group', { name: 'Triage groups' }).getByRole('button', { name: new RegExp(`^${label} \\d+$`) });
 const expectCounters = (page: import('@playwright/test').Page, needs: number, accepted: number, rejected: number) => Promise.all([
   expect(counter(page, 'Flagged')).toHaveText(`Flagged ${needs}`, { timeout: 60_000 }),
   expect(counter(page, 'Accepted')).toHaveText(`Accepted ${accepted}`, { timeout: 60_000 }),
@@ -40,10 +38,10 @@ test.describe('build auto pipeline', () => {
     // Triage rejects tiny, flat and the exact copy; below-target needs a decision. Target 3: pass 1 shortlists 4 of the
     // distinct sharp files (the near duplicate never joins), pass 2 narrows to 3 and applies them.
     await expectCounters(page, 1, 5, 3);
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
-    await expect(page.getByTestId('build-shortlist-bar')).toHaveCount(0);
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working/ })).toHaveCount(0, { timeout: 30_000 });
+    await expect(panel(page)).toContainText('Dataset 3 of 3');
 
-    await page.getByLabel('Queue filter').selectOption('needs-decision');
+    await selectFilter(page, 'needs-decision');
     await expect(page.locator('aside').getByText('below.png', { exact: true })).toBeVisible();
     await expect(page.locator('aside [data-triage-box]')).toContainText('Proposal: needs decision');
     await expect(page.locator('aside [data-triage-box]')).toContainText('below');
@@ -69,7 +67,7 @@ test.describe('build auto pipeline', () => {
 
   test('shows rejection reasons in the aside', async ({ page }) => {
     await expectCounters(page, 1, 5, 3);
-    await page.getByLabel('Queue filter').selectOption('rejected');
+    await selectFilter(page, 'rejected');
     const filmstrip = page.getByLabel('Candidate filmstrip').getByRole('button');
     await expect(filmstrip).toHaveCount(3);
     const seen = new Set<string>();
@@ -87,7 +85,7 @@ test.describe('build auto pipeline', () => {
 
   test('manual accept of a rejected proposal moves it into the Dataset', async ({ page }) => {
     await expectCounters(page, 1, 5, 3);
-    await page.getByLabel('Queue filter').selectOption('rejected');
+    await selectFilter(page, 'rejected');
     const filmstrip = page.getByLabel('Candidate filmstrip').getByRole('button');
     await expect(filmstrip).toHaveCount(3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
@@ -101,13 +99,13 @@ test.describe('build auto pipeline', () => {
   test('batch Reject all and Accept all override proposals on the needs-decision group', async ({ page }) => {
     await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
-    await page.getByLabel('Queue filter').selectOption('needs-decision');
+    await selectFilter(page, 'needs-decision');
     await page.getByRole('button', { name: 'Reject all 1' }).click();
     await expectCounters(page, 0, 5, 4);
     expect((await pathsOf(page))['below.png']).toMatch(/inbox\/below\.png$/);
 
     // Accept all acts on the whole visible group: 3 rejected proposals plus the explicitly skipped item.
-    await page.getByLabel('Queue filter').selectOption('rejected');
+    await selectFilter(page, 'rejected');
     await expect(page.getByRole('button', { name: 'Accept all 4' })).toBeEnabled();
     await page.getByRole('button', { name: 'Accept all 4' }).click();
     await expectCounters(page, 0, 9, 0);
@@ -120,7 +118,7 @@ test.describe('build auto pipeline', () => {
     await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     const before = await pathsOf(page);
-    await page.getByLabel('Queue filter').selectOption('rejected');
+    await selectFilter(page, 'rejected');
     await expect(page.getByRole('button', { name: 'Accept all 3' })).toBeEnabled();
     await page.getByRole('button', { name: 'Accept all 3' }).click();
     await expectCounters(page, 1, 8, 0);
@@ -136,7 +134,7 @@ test.describe('build auto pipeline', () => {
     await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
     const before = await pathsOf(page);
-    await page.getByLabel('Queue filter').selectOption('accepted');
+    await selectFilter(page, 'accepted');
     await expect(page.getByRole('button', { name: 'Reject all 5' })).toBeEnabled();
     await page.getByRole('button', { name: 'Reject all 5' }).click();
     await expectCounters(page, 1, 0, 8);
@@ -151,9 +149,9 @@ test.describe('build auto pipeline', () => {
   test('changing Min short side re-triages without errors', async ({ page }) => {
     await expectCounters(page, 1, 5, 3);
     await expect.poll(() => datasetCount(page), { timeout: 60_000 }).toBe(3);
-    await page.locator('[data-build-settings] summary').click();
+    await page.getByLabel('Settings', { exact: true }).click();
     await page.getByLabel('Model', { exact: true }).selectOption('sd15');
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working/ })).toHaveCount(0, { timeout: 30_000 });
     await expect.poll(async () => Object.values(await reasonsByName(page)).filter((record) => record.codes.includes('below-target-resolution')).length, { timeout: 30_000 }).toBe(0);
     const records = Object.values(await reasonsByName(page));
     expect(records.filter((record) => record.group === 'needs-decision')).toHaveLength(0);
@@ -169,30 +167,28 @@ test.describe('build without auto assembly', () => {
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
   });
 
-  test('entering Select runs triage only; Suggest selection only marks a shortlist', async ({ page }) => {
+  test('entering Select runs triage only; Find candidates only marks candidates', async ({ page }) => {
     // Triage is automatic: rejected proposals (tiny, flat, exact copy) appear without any click.
     await expect(counter(page, 'Rejected')).not.toHaveText('Rejected 0', { timeout: 60_000 });
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting/ })).toHaveCount(0, { timeout: 30_000 });
+    await idleStatus(page);
     expect(await datasetCount(page)).toBe(0);
     expect(Object.values(await reasonsByName(page)).filter((record) => record.decision === 'accepted')).toHaveLength(0);
-    await expect(page.getByTestId('build-shortlist-bar')).toHaveCount(0);
-    const suggest = page.getByRole('button', { name: 'Suggest selection' });
-    await expect(suggest).toBeEnabled();
-    await suggest.click();
-    await expect(page.getByTestId('build-shortlist-bar')).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
-    // Pass 1 moves nothing and decides nothing; the Dataset only grows after Narrow and Apply.
+    await expect(step(page, 'find')).toHaveAttribute('data-state', 'ready');
+    await expect(filterRadio(page, 'shortlisted')).toHaveCount(0);
+    const names = await markShortlist(page);
+    expect(names.length).toBeGreaterThanOrEqual(3);
+    await expect(filterRadio(page, 'shortlisted')).toHaveText(`Candidates ${names.length}`);
+    // Pass 1 moves nothing and decides nothing; the Dataset only grows after Pick and Add.
     expect(await datasetCount(page)).toBe(0);
     expect(Object.values(await reasonsByName(page)).filter((record) => record.decision !== 'unreviewed')).toHaveLength(0);
     await expectCounters(page, 1, 5, 3);
   });
 
   test('X then X/A keep working without clicking, and changing the queue filter keeps shortcuts', async ({ page }) => {
-    await page.getByRole('button', { name: 'Suggest selection' }).click();
-    await expect(page.getByTestId('build-shortlist-bar')).toBeVisible({ timeout: 60_000 });
+    await markShortlist(page);
     await expectCounters(page, 1, 5, 3);
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
-    await page.getByLabel('Queue filter').selectOption('all');
+    await idleStatus(page);
+    await selectFilter(page, 'all');
     await page.getByLabel('Candidate filmstrip').getByRole('button').first().click();
     const snapshot = async () => JSON.stringify(Object.entries(await reasonsByName(page)).map(([id, x]) => [id, x.decision]).sort());
     const press = async (key: string) => { const before = await snapshot(); await page.keyboard.press(key); await expect.poll(snapshot, { message: `key ${key} must change a decision` }).not.toBe(before); await expect(page.getByRole('button', { name: 'Reject · X' })).toBeEnabled(); };
@@ -200,8 +196,8 @@ test.describe('build without auto assembly', () => {
     await press('x'); // focus must not have fallen to body after the first reject; the cursor moved on
     await press('x');
 
-    // Changing the filter moves focus to a select; shortcuts must still reach the workspace afterwards.
-    await page.getByLabel('Queue filter').selectOption('rejected');
+    // Changing the filter moves focus to a radio button; shortcuts must still reach the workspace afterwards.
+    await selectFilter(page, 'rejected');
     await press('a');
     await press('a');
   });

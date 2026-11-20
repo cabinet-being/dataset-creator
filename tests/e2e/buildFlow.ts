@@ -15,13 +15,35 @@ const flow = (page: Page) => ({
 
 export const inDataset = (path: string | undefined) => /(^|\/)dataset\//.test(path ?? '');
 export const datasetNames = async (page: Page) => Object.entries(await flow(page).paths()).filter(([, path]) => inDataset(path)).map(([name]) => name).sort();
-export const shortlistBar = (page: Page) => page.getByTestId('build-shortlist-bar');
-export const idleStatus = (page: Page) => expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing|Applying/ })).toHaveCount(0, { timeout: 30_000 });
+export const panel = (page: Page) => page.getByTestId('build-auto-select');
+/** Expands the collapsed Auto-select panel (it collapses itself after the picks were added and when the Dataset reaches the target). */
+export const expandPanel = async (page: Page) => {
+  if (await panel(page).getAttribute('data-expanded') !== 'true') await panel(page).getByRole('button', { name: /^Auto-select/ }).click();
+  await expect(panel(page)).toHaveAttribute('data-expanded', 'true');
+};
+export const step = (page: Page, id: 'sources' | 'find' | 'describe' | 'pick') => page.getByTestId(`auto-step-${id}`);
+/** Opens a step's controls through its "Change" / "Open" button (a no-op when it is already open). */
+export const openStep = async (page: Page, id: 'sources' | 'find' | 'describe' | 'pick') => {
+  const toggle = step(page, id).getByRole('button', { name: /^(Change|Open)$/ });
+  if (await toggle.count()) await toggle.click();
+};
+export const filterRadio = (page: Page, filter: string) => page.locator(`[role="radio"][data-filter="${filter}"]`);
+/** Counter of the queue filter (for example `Flagged 1`); the radio name is "<label> <count>". */
+export const counter = (page: Page, label: string) => page.getByRole('radiogroup', { name: 'Queue filter' }).getByRole('radio', { name: new RegExp(`^${label} \\d+$`) });
+export const selectFilter = (page: Page, filter: string) => filterRadio(page, filter).click();
+export const idleStatus = (page: Page) => expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working|Suggesting|Applying/ })).toHaveCount(0, { timeout: 30_000 });
+/** Quality triage runs on its own after entering Select; Find stays locked until it finishes. */
+export const waitForTriage = async (page: Page) => {
+  await expect(counter(page, 'Rejected')).toHaveText(/^Rejected [1-9]/, { timeout: 60_000 });
+  await idleStatus(page);
+};
 
-/** Pass 1: "Suggest selection" until the shortlist bar appears (fixture: 9 sources, target 3, so the shortlist has 4 files). */
+/** Pass 1: "Find candidates" until the step is done (fixture: 9 sources, target 3, so the shortlist has 4 files). */
 export const markShortlist = async (page: Page) => {
-  await page.getByRole('button', { name: 'Suggest selection' }).click();
-  await expect(shortlistBar(page)).toBeVisible({ timeout: 60_000 });
+  const find = page.getByRole('button', { name: 'Find candidates' });
+  await expect(find).toBeEnabled({ timeout: 60_000 });
+  await find.click();
+  await expect(step(page, 'find')).toHaveAttribute('data-state', 'done', { timeout: 60_000 });
   await idleStatus(page);
   return flow(page).shortlist();
 };
@@ -33,18 +55,20 @@ export const captionShortlist = async (page: Page, names?: string[]) => {
   return list;
 };
 
-/** Pass 1 -> captions -> "Narrow to N" -> "Apply N to the Dataset"; returns the names that moved. Captions of the moved files are removed unless `keepCaptions`. */
+/** Find -> captions -> "Pick N" -> "Add N to the Dataset"; returns the names that moved. Captions of the moved files are removed unless `keepCaptions`. */
 export const suggestAndApply = async (page: Page, { keepCaptions = false }: { keepCaptions?: boolean } = {}) => {
   const shortlist = await markShortlist(page);
   await captionShortlist(page, shortlist);
-  const narrow = shortlistBar(page).getByRole('button', { name: /^Narrow to \d+$/ });
-  await expect(narrow).toBeEnabled({ timeout: 20_000 });
-  await narrow.click();
-  const apply = shortlistBar(page).getByRole('button', { name: /^Apply \d+ to the Dataset$/ });
+  const pick = page.getByRole('button', { name: /^Pick \d+$/ });
+  await expect(pick).toBeEnabled({ timeout: 20_000 });
+  await pick.click();
+  const apply = page.getByRole('button', { name: /^Add \d+ to the Dataset$/ });
   await expect(apply).toBeVisible({ timeout: 60_000 });
   await apply.click();
   await expect.poll(async () => (await datasetNames(page)).length, { timeout: 60_000 }).toBeGreaterThan(0);
   await idleStatus(page);
+  // No manual collapse: the panel closes itself once the picks were added.
+  await expect(panel(page)).toHaveAttribute('data-expanded', 'false');
   const moved = await datasetNames(page);
   if (!keepCaptions) await flow(page).setTags(moved, undefined);
   return moved;

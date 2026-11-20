@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { suggestAndApply } from './buildFlow';
+import { selectFilter, suggestAndApply } from './buildFlow';
 import type { Page } from '@playwright/test';
 
 type Rec = { decision: string };
@@ -17,13 +17,13 @@ const prepare = async (page: Page) => {
   await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
   await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
   await suggestAndApply(page);
-  await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working/ })).toHaveCount(0, { timeout: 30_000 });
 };
 
 test.describe('build grid view', () => {
   test.beforeEach(async ({ page }) => {
     await prepare(page);
-    await page.getByLabel('Queue filter').selectOption('rejected');
+    await selectFilter(page, 'rejected');
     await toggle(page, 'grid').click();
     await expect(page.getByTestId('build-grid-view')).toBeVisible();
   });
@@ -33,14 +33,14 @@ test.describe('build grid view', () => {
     expect(await states(page)).toEqual(Array(3).fill('rejected'));
     await expect(cells(page).first().getByTestId('build-grid-badge')).toHaveText('Rejected');
     await expect(cells(page).first()).toHaveAttribute('title', /Rejected · .+/);
-    await page.getByLabel('Queue filter').selectOption('needs-decision');
+    await selectFilter(page, 'needs-decision');
     await expect(cells(page)).toHaveCount(1);
     await expect(cells(page).first()).toHaveAttribute('data-state', 'flagged');
     await expect(page.getByLabel('Candidate filmstrip')).toHaveCount(0);
   });
 
   test('click + A accepts one cell', async ({ page }) => {
-    await page.getByLabel('Queue filter').selectOption('all');
+    await selectFilter(page, 'all');
     const total = await cells(page).count();
     const before = (await states(page)).filter((state) => state === 'accepted').length;
     await cells(page).first().click();
@@ -53,7 +53,7 @@ test.describe('build grid view', () => {
 
   // Undo issued while the batch is still being applied must undo that batch, not the previous one.
   test('Shift-select two + X rejects both; Undo reverts both in one step', async ({ page }) => {
-    await page.getByLabel('Queue filter').selectOption('all');
+    await selectFilter(page, 'all');
     const byId = (page: Page) => cells(page).evaluateAll((nodes) => Object.fromEntries(nodes.map((node) => [node.getAttribute('data-grid-cell')!, node.getAttribute('data-state')!])));
     const pickTwo = async () => {
       await cells(page).nth(0).click();
@@ -77,7 +77,7 @@ test.describe('build grid view', () => {
   });
 
   test('Shift-select two + X rejects both', async ({ page }) => {
-    await page.getByLabel('Queue filter').selectOption('all');
+    await selectFilter(page, 'all');
     await cells(page).nth(0).click();
     await cells(page).nth(1).click({ modifiers: ['Shift'] });
     const ids = await page.locator('[data-testid="build-grid-cell"][data-selected="true"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-grid-cell')!));

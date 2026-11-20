@@ -13,6 +13,7 @@
     "test:video-frames": "node tests/video-frames.mjs",
     "test:ui-workflows": "node tests/ui-workflows.mjs",
     "test:dataset-assembly": "node tests/dataset-assembly.mjs",
+    "test:auto-select": "node tests/auto-select-steps.mjs",
     "test:browser-fixtures": "vite build --config vite.browser.config.ts",
     "test:browser": "npm run test:browser-fixtures && playwright test",
     "test:browser:network": "npm run test:browser-fixtures && playwright test --grep @network --workers=1",
@@ -24,7 +25,7 @@
     "test:tagger-worker": "node tests/tagger-worker.mjs",
     "test:caption-txt": "node tests/caption-txt.mjs",
     "test:character-traits": "node tests/character-traits.mjs",
-    "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:service-boundaries && npm run test:state-recovery && npm run test:similarity && npm run test:quality-metrics && npm run test:model-download && npm run test:tagger-worker && npm run test:caption-txt && npm run test:character-traits",
+    "test": "npm run test:project-types && npm run test:workspace-layout && npm run test:video-frames && npm run test:ui-workflows && npm run test:dataset-assembly && npm run test:auto-select && npm run test:service-boundaries && npm run test:state-recovery && npm run test:similarity && npm run test:quality-metrics && npm run test:model-download && npm run test:tagger-worker && npm run test:caption-txt && npm run test:character-traits",
     "test:ci": "npm run lint && npm run test:docs && npm test && npm run build && npm run test:browser",
     "test:docs": "node tests/docs-checker.mjs && node scripts/check-docs.mjs"
   },

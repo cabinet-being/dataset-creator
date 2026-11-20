@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { BuildWorkspace } from '../src/components/build/BuildWorkspace';
 import { CommandProvider } from '../src/components/workspace/Commands';
 import { createProject, createSourceImage } from '../src/types';
+import { DatasetAssemblyDialog } from '../src/components/workspace/DatasetAssemblyDialog';
+import { useLocalTaggerStore } from '../src/stores/useLocalTaggerStore';
+import type { LocalTaggerBundle } from '../src/services/tagging/localTaggerService';
 import { createBuildSession } from '../src/services/build/buildSessionService';
 import type { SemanticFeature } from '../src/services/analysis/semanticFeatureService';
 import type { WorkspaceImage } from '../src/lib/workspaceImages';
@@ -54,6 +57,7 @@ function Harness() {
   useProjectSave();
   const [ready, setReady] = useState(false);
   const [auto, setAuto] = useState(false);
+  const [dialog, setDialog] = useState(false);
   const sources = useProjectStore((state) => state.sourceImages);
   const edits = useProjectStore((state) => state.datasetItems);
   const items = useMemo(() => toWorkspaceImages(Object.values(sources), Object.values(edits)), [edits, sources]);
@@ -99,6 +103,12 @@ function Harness() {
         .map((id) => useProjectStore.getState().sourceImages[id]).filter(Boolean).map((source) => (source.originalFilePath ?? source.fileName).split('/').pop()!),
       narrowed: () => (useProjectStore.getState().buildSession?.auto?.shortlist?.narrowed?.ids ?? []).map((id) => useProjectStore.getState().sourceImages[id.replace(/^source:/, '')])
         .filter(Boolean).map((source) => (source.originalFilePath ?? source.fileName).split('/').pop()!),
+      /** Connects a fake local tagger (no model, no network): every image gets the same two tags. */
+      connectFakeTagger: () => useLocalTaggerStore.getState().setBundle({
+        name: 'Fake tagger', modelFile: new File([], 'model.onnx'), inputName: 'input', outputName: 'output', tags: ['fake_tag', 'fake_pose', 'low_score'], tagCategories: [],
+        inputChannelOrder: 'rgb', inputWidth: 8, inputHeight: 8, layout: 'nhwc', runtime: 'wasm', workerKey: {},
+        session: { run: async () => ({ output: { data: [0.9, 0.8, 0.01] } }), release: async () => undefined },
+      } as unknown as LocalTaggerBundle),
       /** Sets (or with `undefined` removes) the caption tags of files by name. */
       setTags: (names: string[], tags: string[] | undefined) => {
         for (const source of Object.values(useProjectStore.getState().sourceImages)) {
@@ -157,8 +167,8 @@ function Harness() {
     };
     setReady(true);
   };
-  const prepareFolders = async () => {
-    // Small nested inbox for the Auto-select dialog's folder tree: inbox (1) / a (2) / a/sub (1) / b (1).
+  const prepareFolders = async (asDialog = false) => {
+    // Small nested inbox for the Auto-select panel's and the assembly dialog's folder tree: inbox (1) / a (2) / a/sub (1) / b (1).
     const names = ['inbox/root.png', 'inbox/a/x1.png', 'inbox/a/x2.png', 'inbox/a/sub/y.png', 'inbox/b/z.png'];
     const sourceImages = Object.fromEntries(await Promise.all(names.map(async (path, index) => {
       const source = createSourceImage(await detailed(16, 16, index + 1), path.split('/').pop()!, 16, 16);
@@ -171,11 +181,15 @@ function Harness() {
     await createProjectDirectory(directory, project);
     useProjectStore.getState().loadProject(project);
     useUIStore.setState({ projectDirectoryHandle:directory });
+    setDialog(asDialog);
     setReady(true);
   };
-  return <CommandProvider><main className="h-screen">{ready
+  const dialogState = useProjectStore.getState();
+  return <CommandProvider><main className="h-screen">{ready && dialog
+    ? <DatasetAssemblyDialog open onOpenChange={() => undefined} dataset={dialogState.dataset} items={items} directory={useUIStore.getState().projectDirectoryHandle ?? undefined} projectId={dialogState.id} projectType={dialogState.projectType} excludedCategories={[]} includedCategories={[]} />
+    : ready
     ? <BuildWorkspace active viewId="fixture:build" items={items} directory={useUIStore.getState().projectDirectoryHandle} semanticEncoderFactory={auto ? fakeEncoderFactory : undefined} />
-    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareFolders()}>Prepare folders fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button><button onClick={() => void prepareStyle()}>Prepare style fixture</button></>}</main></CommandProvider>;
+    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareFolders()}>Prepare folders fixture</button><button onClick={() => void prepareFolders(true)}>Prepare assembly dialog fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button><button onClick={() => void prepareStyle()}>Prepare style fixture</button></>}</main></CommandProvider>;
 }
 
 const root = createRoot(document.getElementById('root')!); root.render(<Harness />);

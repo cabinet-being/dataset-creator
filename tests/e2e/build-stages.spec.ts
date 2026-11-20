@@ -14,7 +14,7 @@ test.describe('build stages with materials', () => {
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
     await suggestAndApply(page);
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working/ })).toHaveCount(0, { timeout: 30_000 });
   });
 
   test('stepper has five stages, a fresh session with materials starts in Select, and a click switches the stage', async ({ page }) => {

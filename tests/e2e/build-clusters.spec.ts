@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { suggestAndApply } from './buildFlow';
+import { selectFilter, suggestAndApply } from './buildFlow';
 import type { Page } from '@playwright/test';
 
 type Record = { decision: string; application?: string; triage?: { group: string } };
@@ -21,7 +21,7 @@ test.describe('build clusters view', () => {
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
     await suggestAndApply(page);
-    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Selecting|Preparing/ })).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working/ })).toHaveCount(0, { timeout: 30_000 });
     await toggle(page, 'clusters').click();
     await expect(toggle(page, 'clusters')).toHaveAttribute('aria-pressed', 'true');
   });
@@ -124,7 +124,7 @@ test.describe('build clusters view', () => {
     await expect(page.getByLabel('Candidate filmstrip')).toBeVisible();
     await expect(page.getByTestId('build-cluster-view')).toHaveCount(0);
     const before = await sessionDecisions(page);
-    await page.getByLabel('Queue filter').selectOption('needs-decision'); // the only undecided item (below.png)
+    await selectFilter(page, 'needs-decision'); // the only undecided item (below.png)
     await page.getByLabel('Candidate filmstrip').getByRole('button').first().click();
     await page.getByRole('button', { name: 'Accept · A' }).click();
     await expect.poll(async () => {
