@@ -4,17 +4,21 @@ import type { Dataset } from '../../types';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { getProjectDatasetAssets } from './datasetExportService';
 import { convertPsdToPng } from './exportService';
+import { canResizeExportImage, describeExportResize, resizeExportImage, type ExportResize } from './exportResize';
 
 export type ExportScope = 'dataset' | 'workspace' | 'directory';
 /** `textContent` is the exact caption file for dataset exports (null = no .txt is written); other scopes render `caption`. */
 export type ExportEntry = { imageName: string; textName: string; caption: string; blob: Blob; source: string; conversion?: 'psd'; textContent?: string | null };
-export type ExportPlan = { scope: ExportScope; entries: ExportEntry[]; skipped: string[]; fingerprint: string; warnings?: string[] };
+/** `resize` is applied to the exported copies only (never to the originals) while the plan is written. */
+export type ExportPlan = { scope: ExportScope; entries: ExportEntry[]; skipped: string[]; fingerprint: string; warnings?: string[]; resize?: ExportResize };
 /** What the .txt of an entry contains, or null when the entry has no caption file. */
 export const getExportEntryText = (entry: ExportEntry): string | null => entry.textContent !== undefined ? entry.textContent : `${entry.caption}\n`;
 export type ExportRecoveryJournal = { completedEntryNames: Set<string>; startedEntryNames?: Set<string>; pendingOutputNames?: Set<string>; root?: ProjectDirectoryHandle; fingerprint?: string; onEntryStart?: (imageName: string) => void; onEntryComplete?: (imageName: string) => void };
-export const createExportPlanFingerprint = async (scope: ExportScope, entries: ExportEntry[]): Promise<string> => {
+export const createExportPlanFingerprint = async (scope: ExportScope, entries: ExportEntry[], resize?: ExportResize): Promise<string> => {
   const hex = (digest: ArrayBuffer) => Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
   const compact: unknown[] = [scope];
+  // Only a resized plan carries the setting, so fingerprints of plans without resize stay as they were.
+  if (resize) compact.push(describeExportResize(resize));
   for (const entry of entries) {
     const chunkDigests: string[] = [];
     for (let offset = 0; offset < entry.blob.size; offset += 1024 * 1024) {
@@ -37,10 +41,12 @@ export const renderExportCaption = (tags: string[], trigger: string, blacklist: 
 };
 const extension = (blob: Blob, name: string) => ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp' }[blob.type] ?? name.split('.').pop()?.toLowerCase() ?? 'png');
 
-export async function buildExportPlan({ scope, items, dataset, directory, blacklist }: {
+export async function buildExportPlan({ scope, items, dataset, directory, blacklist, resize }: {
   scope: ExportScope; items: WorkspaceImage[]; dataset: Dataset; directory?: ProjectDirectoryHandle; blacklist: string[];
+  /** Optional downscale of the exported copies (off by default). */
+  resize?: ExportResize;
 }): Promise<ExportPlan> {
-  const plan: ExportPlan = { scope, entries: [], skipped: [], warnings: [], fingerprint: '' };
+  const plan: ExportPlan = { scope, entries: [], skipped: [], warnings: [], fingerprint: '', ...(resize ? { resize } : {}) };
   const used = new Set<string>();
   const ordered: { entry: ExportEntry; key: string }[] = [];
   const add = (blob: Blob, source: string, tags: string[], key: string, targetFolder = '', conversion?: 'psd', datasetCaption?: string | null) => {
@@ -56,6 +62,7 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
       ? { blob, source, conversion, imageName, textName: `${path}.txt`, caption: renderExportCaption(tags, dataset.triggerWord, blacklist) }
       : { blob, source, conversion, imageName, textName: `${path}.txt`, caption: (datasetCaption ?? '').replace(/\r?\n$/, ''), textContent: datasetCaption };
     if (datasetCaption === null) plan.warnings!.push(`${source} has no caption file; it is exported without a .txt.`);
+    if (resize && !canResizeExportImage(imageName)) plan.warnings!.push(`${source} is exported without resizing: only PNG, JPEG and WebP can be resized.`);
     ordered.push({ key, entry });
   };
   if (scope === 'directory' || scope === 'dataset') {
@@ -72,15 +79,15 @@ export async function buildExportPlan({ scope, items, dataset, directory, blackl
     }
   }
   plan.entries = ordered.map(({ entry }) => entry);
-  plan.fingerprint = await createExportPlanFingerprint(scope, plan.entries);
+  plan.fingerprint = await createExportPlanFingerprint(scope, plan.entries, resize);
   return plan;
 }
 
-async function exportImage(entry: ExportEntry, signal?: AbortSignal) {
+async function exportImage(entry: ExportEntry, signal?: AbortSignal, resize?: ExportResize) {
   signal?.throwIfAborted();
   const blob = entry.conversion === 'psd' ? await convertPsdToPng({ file: entry.blob, fileName: entry.source }, undefined, signal) : entry.blob;
   signal?.throwIfAborted();
-  return blob;
+  return resize ? resizeExportImage(blob, entry.imageName, resize, signal) : blob;
 }
 
 async function blobsEqual(left: Blob, right: Blob, signal?: AbortSignal) {
@@ -100,7 +107,7 @@ async function blobsEqual(left: Blob, right: Blob, signal?: AbortSignal) {
 export async function exportPlanAsZip(plan: ExportPlan, signal?: AbortSignal, progress?: (done: number, total: number) => void) {
   const zip = new JSZip();
   for (const [index, entry] of plan.entries.entries()) {
-    zip.file(entry.imageName, await (await exportImage(entry, signal)).arrayBuffer());
+    zip.file(entry.imageName, await (await exportImage(entry, signal, plan.resize)).arrayBuffer());
     const text = getExportEntryText(entry);
     if (text !== null) zip.file(entry.textName, text);
     progress?.(index + 1, plan.entries.length);
@@ -146,7 +153,7 @@ export async function exportPlanToDirectory(
     signal?.throwIfAborted();
     const recovering = recovery?.completedEntryNames.has(entry.imageName) || recovery?.startedEntryNames?.has(entry.imageName);
     if (recovering) {
-      const expectedImage = await exportImage(entry, signal);
+      const expectedImage = await exportImage(entry, signal, plan.resize);
       const actualImage = await existing(entry.imageName);
       if (actualImage && !(recovery?.pendingOutputNames?.has(entry.imageName) && actualImage.size === 0) && !(await blobsEqual(actualImage, expectedImage, signal))) throw new Error(`Recovery output does not match this plan: ${entry.imageName}.`);
       const actualText = await existing(entry.textName);
@@ -166,7 +173,7 @@ export async function exportPlanToDirectory(
     const recovering = recovery?.completedEntryNames.has(entry.imageName) || recovery?.startedEntryNames?.has(entry.imageName);
     if (recovering) {
       signal?.throwIfAborted();
-      const expectedImage = await exportImage(entry, signal);
+      const expectedImage = await exportImage(entry, signal, plan.resize);
       const currentImage = await existing(entry.imageName);
       if (!currentImage || (recovery?.pendingOutputNames?.has(entry.imageName) && currentImage.size === 0)) await writeOutput(entry.imageName, expectedImage);
       const currentText = await existing(entry.textName);
@@ -180,7 +187,7 @@ export async function exportPlanToDirectory(
     signal?.throwIfAborted();
     recovery?.startedEntryNames?.add(entry.imageName);
     recovery?.onEntryStart?.(entry.imageName);
-    const image = await exportImage(entry, signal);
+    const image = await exportImage(entry, signal, plan.resize);
     await writeOutput(entry.imageName, image);
     const text = getExportEntryText(entry);
     if (text !== null) await writeOutput(entry.textName, text);

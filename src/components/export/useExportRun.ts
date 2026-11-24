@@ -3,6 +3,7 @@ import { useOperation } from '../../hooks/useOperation';
 import { flushProjectSave, runProjectFileOperation } from '../../hooks/useProjectSave';
 import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { toWorkspaceImages } from '../../lib/workspaceImages';
+import type { ExportResize } from '../../services/export/exportResize';
 import { buildExportPlan, exportPlanAsZip, exportPlanToDirectory, type ExportPlan, type ExportRecoveryJournal, type ExportScope } from '../../services/export/exportPlan';
 import { downloadZipFile, saveZipToProjectExports } from '../../services/export/exportService';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
@@ -21,13 +22,15 @@ type Options = {
   /** Element the Export operation is attached to (progress, Cancel). */
   root: RefObject<HTMLElement>;
   viewId: string;
+  /** Optional downscale of the exported copies; keep the object stable (memoize it). Off by default. */
+  resize?: ExportResize;
 };
 
 /**
  * Export plan and run for ExportTool and the Board's export dialog: builds the plan for the chosen source, writes it as a ZIP in
  * `exports/`, a ZIP download or a folder (with recovery journal), reports progress and supports Cancel.
  */
-export function useExportRun({ fixedSource, onExportComplete, root, viewId }: Options) {
+export function useExportRun({ fixedSource, onExportComplete, root, viewId, resize }: Options) {
   const sources = useProjectStore(state => state.sourceImages);
   const edits = useProjectStore(state => state.datasetItems);
   const dataset = useProjectStore(state => state.dataset);
@@ -59,11 +62,11 @@ export function useExportRun({ fixedSource, onExportComplete, root, viewId }: Op
   useEffect(() => {
     if (busy) return;
     let cancelled = false; setLoading(true); setLoadError(''); setPlan(undefined);
-    void flushProjectSave().then(() => buildExportPlan({ scope, items, dataset, directory, blacklist })).then(next => { if (!cancelled) setPlan(next); })
+    void flushProjectSave().then(() => buildExportPlan({ scope, items, dataset, directory, blacklist, resize })).then(next => { if (!cancelled) setPlan(next); })
       .catch(reason => { if (!cancelled) setLoadError(reason instanceof Error ? reason.message : 'Unable to read export files'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [scope, items, dataset, directory, blacklist, refresh, revision, busy]);
+  }, [scope, items, dataset, directory, blacklist, refresh, revision, busy, resize]);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     if (!busy) return;

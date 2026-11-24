@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useBuildModel } from '../../components/build/useBuildModel';
-import { useUIStore } from '../../stores/useUIStore';
 import { useBuildClusters } from '../../components/build/useBuildClusters';
 import { useQualityActions } from '../../components/build/useQualityActions';
 import { useDatasetQualityReport } from '../../components/quality/useDatasetQualityReport';
@@ -18,6 +17,7 @@ import { getMinShortSide } from '../../services/quality/imageQuality';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { AssembleControls, AssembleSummary } from '../board/AssembleControls';
 import { CaptionMode } from '../board/CaptionMode';
+import { ExportDialog } from '../board/ExportDialog';
 import { FrameGrid } from '../board/FrameGrid';
 import { HealthPanel } from '../board/HealthPanel';
 import { useBoardPipeline } from '../board/useBoardPipeline';
@@ -56,7 +56,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
   const root = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<BoardMode>('select');
-  const notify = useUIStore(state => state.addNotification);
+  const [exportOpen, setExportOpen] = useState(false);
   const model = useBuildModel(runtime.workspaceReviewItems, { writeBack: true, busy: busy || runtime.isProjectDirectoryBusy });
   const { effectiveItems, candidates, reconciled, patchSession } = model;
   const sources = reconciled.profile.sources;
@@ -109,7 +109,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
 
   const assemble = <AssembleControls pipeline={pipeline} session={reconciled} sourceCount={sourceItems.length} exportCount={exportCount}
     busy={busy || runtime.isProjectDirectoryBusy} onSizeModeChange={changeSizeMode} onStrictnessChange={changeStrictness}
-    onExport={() => notify('info', 'The export dialog arrives in the next step.')} />;
+    onExport={() => setExportOpen(true)} />;
 
   return <div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
     <BoardHeader runtime={runtime} assemble={assemble} mode={mode} onModeChange={setMode} />
@@ -124,5 +124,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
       <HealthPanel assembled={assembled} report={quality.report} datasetCount={quality.datasetItems.length} features={quality.features}
         onShowIds={showIds} onApplyAction={(hint, action) => void qualityActions.apply(hint, action)} canApplyAction={qualityActions.canApply} />
     </div>}
+    <ExportDialog open={exportOpen} onOpenChange={setExportOpen} pairCount={exportCount} report={quality.report} targetModel={targetModel}
+      onExportComplete={plan => patchSession(session => ({ ...session, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} />
   </div>;
 }
