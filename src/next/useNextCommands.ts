@@ -20,6 +20,10 @@ export function useNextCommands(runtime: Runtime, openHelp: () => void) {
     { id: 'project.new', label: 'New project', disabled: isProjectDirectoryBusy, run: lifecycle.handleNewProject },
     { id: 'project.open', label: 'Open project', disabled: isProjectDirectoryBusy, run: lifecycle.handleOpenProject },
     { id: 'settings', label: 'Settings', run: () => runtime.setSettingsOpen(true) },
+    { id: 'project.rename', label: 'Rename project', disabled: noProject, reason: noProject ? 'Open a project directory first' : undefined, run: lifecycle.handleRenameProject },
+    { id: 'project.versions', label: 'Project versions', disabled: noProject, reason: noProject ? 'Open a project directory first' : undefined, run: () => runtime.setVersionsOpen(true) },
+    { id: 'project.settings', label: 'Project settings', disabled: noProject, reason: noProject ? 'Open a project directory first' : undefined, run: () => runtime.setProjectSettingsOpen(true) },
+    { id: 'activity', label: 'Activity', run: () => runtime.setActivityOpen(true) },
     { id: 'help', label: 'Keyboard shortcuts', run: openHelp },
     ...(['system', 'light', 'dark'] as const).map(mode => ({ id: `theme.${mode}`, label: `Theme: ${mode}`, run: () => appearance.setTheme(mode) })),
   ];

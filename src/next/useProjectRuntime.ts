@@ -74,6 +74,9 @@ export function useProjectRuntime() {
   const tabsState = useWorkspaceTabsState(NO_STORED_LAYOUT);
   const [, setExplorerContextMenu] = useState<ExplorerContextMenuState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [navigationRecovery, setNavigationRecovery] = useState(false);
   const persistWorkspaceRef = useRef<(() => void) | null>(null);
@@ -108,6 +111,6 @@ export function useProjectRuntime() {
   return {
     projectId, projectName, projectDirectoryHandle, projectDirectoryName,
     projectSave, appearance, localTaggerPicker, workspaceFileAssets, workspaceImages, workspaceReviewItems,
-    settingsOpen, setSettingsOpen, explorer, explorerMutations, lifecycle, closeProject, datasetCount, isProjectDirectoryBusy, navigationRecovery,
+    settingsOpen, setSettingsOpen, projectSettingsOpen, setProjectSettingsOpen, versionsOpen, setVersionsOpen, activityOpen, setActivityOpen, explorer, explorerMutations, lifecycle, closeProject, datasetCount, isProjectDirectoryBusy, navigationRecovery,
   };
 }

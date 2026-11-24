@@ -16,7 +16,7 @@ export function CharacterTraitsEditor({ suggestions = [] }: { suggestions?: read
     setCharacterTraits([...traits, { tag, mode: 'include' }]);
     setValue('');
   };
-  return <div role="group" aria-label="Character traits" className="w-full basis-full space-y-2 rounded border border-border p-2">
+  return <div role="group" aria-label="Character traits" className="w-full basis-full space-y-2 rounded border border-border p-2 text-sm">
     <p className="font-medium">Character traits</p>
     <p className="text-muted-foreground">
       <b>Always tag</b> writes the trait into every auto-generated caption. <b>Leave to trigger</b> keeps it out so the trigger word learns it.

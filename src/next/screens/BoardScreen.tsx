@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Settings } from 'lucide-react';
+import { ArrowLeft, History, Pencil, Settings } from 'lucide-react';
 import { useBuildModel } from '../../components/build/useBuildModel';
 import { useBuildClusters } from '../../components/build/useBuildClusters';
 import { useQualityActions } from '../../components/build/useQualityActions';
@@ -11,6 +11,8 @@ import type { createSemanticFeatureEncoder } from '../../services/analysis/seman
 import type { BuildSession } from '../../types';
 import { Button } from '../../components/ui/button';
 import { NextSettingsDialog } from '../board/NextSettingsDialog';
+import { ProjectSettingsDialog } from '../board/ProjectSettingsDialog';
+import { VersionsDialog } from '../board/VersionsDialog';
 import { PROJECT_TYPE_PROFILES, TARGET_MODEL_PRESETS } from '../../lib/projectProfiles';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { cn } from '../../lib/utils';
@@ -41,16 +43,22 @@ function BoardHeader({ runtime, assemble, mode, onModeChange }: { runtime: Runti
     <Button variant="outline" className="min-h-[44px]" disabled={isProjectDirectoryBusy} onClick={() => void runtime.closeProject()}>
       <ArrowLeft className="h-4 w-4" />Projects
     </Button>
-    <h1 data-next-project-name className="min-w-0 truncate text-base font-semibold tracking-tight">{runtime.projectDirectoryName ?? runtime.projectName}</h1>
-    <span data-project-chip className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+    <h1 className="min-w-0 truncate text-base font-semibold tracking-tight">
+      <button type="button" data-next-project-name title="Rename project" aria-label="Rename project"
+        disabled={isProjectDirectoryBusy} onClick={runtime.lifecycle.handleRenameProject}
+        className={cn('inline-flex min-h-[44px] max-w-full items-center gap-2 truncate rounded-md px-1 hover:bg-secondary', focusRing)}>
+        <span className="truncate">{runtime.projectName || runtime.projectDirectoryName}</span><Pencil aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></button></h1>
+    <button type="button" data-project-chip title="Project settings" onClick={() => runtime.setProjectSettingsOpen(true)}
+      className={cn('min-h-[44px] rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-secondary', focusRing)}>
       {PROJECT_TYPE_PROFILES[projectType]?.label ?? projectType} · {TARGET_MODEL_PRESETS[targetModel]?.label ?? targetModel} · min {getMinShortSide(targetModel)} px
-    </span>
+    </button>
     <div role="group" aria-label="Mode" className="ml-auto flex overflow-hidden rounded-md border border-border">
       {(['select', 'caption'] as const).map(option => <button key={option} type="button" aria-pressed={mode === option} data-mode={option} onClick={() => onModeChange(option)}
         className={cn('min-h-[44px] px-4 text-sm', mode === option ? 'bg-primary font-medium text-primary-foreground' : 'text-muted-foreground hover:bg-secondary', focusRing)}>
         {option === 'select' ? 'Select' : 'Caption'}</button>)}
     </div>
     {assemble}
+    <Button variant="outline" size="icon" className="h-11 w-11" aria-label="Versions" title="Versions" disabled={isProjectDirectoryBusy} onClick={() => runtime.setVersionsOpen(true)}><History className="h-4 w-4" /></Button>
     <Button variant="outline" size="icon" className="h-11 w-11" aria-label="Settings" title="Settings" onClick={() => runtime.setSettingsOpen(true)}><Settings className="h-4 w-4" /></Button>
   </header>;
 }
@@ -78,6 +86,12 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
 
   const changeStrictness = useCallback((strictness: SimilarityStrictnessId) => patchSession((session: BuildSession) =>
     session.profile.similarityStrictness === strictness ? session : { ...session, profile: { ...session.profile, similarityStrictness: strictness } }), [patchSession]);
+
+  // A new target model changes the size rule: quality verdicts that were only proposals are dropped (decisions and Assemble results stay).
+  const clearQualityTriage = useCallback(() => patchSession(session => ({
+    ...session,
+    records: Object.fromEntries(Object.entries(session.records).map(([id, record]) => [id, record.decision === 'unreviewed' && record.triage?.stage === 'quality' ? { ...record, triage: undefined } : record])),
+  })), [patchSession]);
 
   // Health and the theme grouping need image features: they are computed only after the first Assemble.
   const assembled = Boolean(reconciled.auto?.assembledAt);
@@ -136,6 +150,8 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     </div>}
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} pairCount={exportCount} report={quality.report} targetModel={targetModel}
       onExportComplete={plan => patchSession(session => ({ ...session, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} />
+    <ProjectSettingsDialog open={runtime.projectSettingsOpen} onOpenChange={runtime.setProjectSettingsOpen} session={reconciled} patchSession={patchSession} onModelChange={clearQualityTriage} />
+    <VersionsDialog runtime={runtime} />
     <NextSettingsDialog runtime={runtime} strictness={{ value: reconciled.profile.similarityStrictness ?? 'balanced', onChange: changeStrictness }} />
     {photopea && directory && <PhotopeaOverlay item={photopea} directory={directory} onClose={() => setPhotopea(null)} />}
     {video && directory && <VideoOverlay item={video} directory={directory} onClose={() => setVideo(null)}

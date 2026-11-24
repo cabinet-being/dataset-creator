@@ -41,7 +41,7 @@ import { getBuildTransformGeometry } from '../../services/build/buildTransformSe
 import { getBuildTriageCounts, selectAssemblyCandidates } from '../../services/build/buildTriageService';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
-import { BuildProfileControls } from './BuildProfileControls';
+import { BuildProfileControls } from '../../next/board/BuildProfileControls';
 import { BuildStepper, BuildNextStageFooter } from './BuildStepper';
 import { BuildCaptionStage } from './BuildCaptionStage';
 import { parseTags } from './buildCaptionTags';
