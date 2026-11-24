@@ -76,8 +76,7 @@ test.describe('Edit in Photopea', () => {
     await expect(overlay(page).locator('iframe'), 'the editor frame is mounted').toHaveCount(1);
   });
 
-  // DEFECT: the title is built from `item.fileName`, which for a source image is the internal "<id>.png", not the name the lightbox shows (getWorkspaceDisplayName).
-  test.fail('the overlay title names the frame the way the lightbox does', async ({ page }) => {
+  test('the overlay title names the frame the way the lightbox does', async ({ page }) => {
     await page.locator('[data-lightbox] [data-action="photopea"]').click();
     await expect(overlay(page).getByRole('heading', { name: 'Edit in Photopea: in1.png' })).toBeVisible({ timeout: 3_000 });
   });

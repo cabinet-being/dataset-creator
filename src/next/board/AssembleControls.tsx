@@ -34,7 +34,7 @@ type Props = {
   onExport: () => void;
 };
 
-/** The primary action of the Board header: Assemble, its progress with Cancel, and Re-assemble + Export afterwards. */
+/** The primary action of the Board header: Assemble, its progress with Cancel, and Re-assemble + Export afterwards (Export shows whenever the Dataset has frames). */
 export function AssembleControls({ pipeline, session, sourceCount, exportCount, busy, onSizeModeChange, onStrictnessChange, onExport }: Props) {
   const work = describePipelineWork(pipeline.phase, pipeline.step);
   const assembled = Boolean(session.auto?.assembledAt);
@@ -77,11 +77,9 @@ export function AssembleControls({ pipeline, session, sourceCount, exportCount, 
           </label>
         </div>
         {assembled
-          ? <>
-            <Button variant="outline" data-reassemble className="min-h-[44px]" disabled={disabled} title={title} onClick={() => pipeline.startAssemble()}><RotateCw className="h-4 w-4" />Re-assemble</Button>
-            <Button data-export className="min-h-[44px]" disabled={busy || exportCount === 0} onClick={onExport}><PackageCheck className="h-4 w-4" />Export {exportCount} {exportCount === 1 ? 'pair' : 'pairs'}</Button>
-          </>
-          : <Button data-assemble-button className="min-h-[44px]" disabled={disabled} title={title} onClick={() => pipeline.startAssemble()}><Wand2 className="h-4 w-4" />Assemble dataset</Button>}
+          ? <Button variant="outline" data-reassemble className="min-h-[44px]" disabled={disabled} title={title} onClick={() => pipeline.startAssemble()}><RotateCw className="h-4 w-4" />Re-assemble</Button>
+          : <Button variant={exportCount > 0 ? 'outline' : 'default'} data-assemble-button className="min-h-[44px]" disabled={disabled} title={title} onClick={() => pipeline.startAssemble()}><Wand2 className="h-4 w-4" />Assemble dataset</Button>}
+        {(assembled || exportCount > 0) && <Button data-export className="min-h-[44px]" disabled={busy || exportCount === 0} onClick={onExport}><PackageCheck className="h-4 w-4" />Export {exportCount} {exportCount === 1 ? 'pair' : 'pairs'}</Button>}
       </>}
     {pipeline.modelDownloadFor && <div className="basis-full">
       <ModelDownloadPrompt testId="next-model-download" onConfirm={pipeline.confirmModelDownload} onCancel={pipeline.dismissModelDownload} />

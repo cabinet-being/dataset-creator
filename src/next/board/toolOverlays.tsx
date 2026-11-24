@@ -7,7 +7,7 @@ import { useUIStore } from '../../stores/useUIStore';
 import { hasBusyVideoTasks } from '../../services/video/videoClient';
 import { PROJECT_LAYOUT } from '../../services/project/projectLayoutService';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
-import type { WorkspaceImage } from '../../lib/workspaceImages';
+import { getWorkspaceDisplayName, type WorkspaceImage } from '../../lib/workspaceImages';
 import { cn } from '../../lib/utils';
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -56,9 +56,9 @@ export function VideoOverlay({ item, directory, onClose, onSaved }: { item: Work
     if (hasBusyVideoTasks() && !window.confirm('Cancel the running video operation and close? Already saved frames will remain in the project.')) return;
     onClose();
   };
-  return <Overlay label={`Video frames: ${item.fileName}`} onRequestClose={requestClose}>
-    <VideoFramesTool tabId={`next:video:${item.id}`} projectDirectoryHandle={directory} file={item.imageData} fileName={item.fileName}
-      defaultDestination={videoFramesDestination(item.fileName)} onSaved={onSaved} />
+  return <Overlay label={`Video frames: ${getWorkspaceDisplayName(item)}`} onRequestClose={requestClose}>
+    <VideoFramesTool tabId={`next:video:${item.id}`} projectDirectoryHandle={directory} file={item.imageData} fileName={getWorkspaceDisplayName(item)}
+      defaultDestination={videoFramesDestination(getWorkspaceDisplayName(item))} onSaved={onSaved} />
   </Overlay>;
 }
 
@@ -76,7 +76,7 @@ export function PhotopeaOverlay({ item, directory, onClose }: { item: WorkspaceI
     onClose();
   };
   const refreshPreviews = useUIStore(state => state.refreshAssetPreviews);
-  return <Overlay label={`Edit in Photopea: ${item.fileName}`} onRequestClose={() => void requestClose()} viewId={PHOTOPEA_OVERLAY_VIEW}>
+  return <Overlay label={`Edit in Photopea: ${getWorkspaceDisplayName(item)}`} onRequestClose={() => void requestClose()} viewId={PHOTOPEA_OVERLAY_VIEW}>
     <CleanupTool singleFileMode selectedImageId={item.id} projectDirectoryHandle={directory} onSaved={() => { refreshPreviews(); onClose(); }} />
   </Overlay>;
 }
