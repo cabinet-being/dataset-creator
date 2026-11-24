@@ -1,6 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
+import NextApp from './next/NextApp'
+import { readUiMode } from './lib/uiMode'
 import { AppErrorBoundary } from './components/AppErrorBoundary'
 import './index.css'
 import { CommandProvider } from './components/workspace/Commands'
@@ -12,6 +14,6 @@ void requestPersistentStorage()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <AppErrorBoundary><CommandProvider><InspectorProvider><App /></InspectorProvider></CommandProvider></AppErrorBoundary>
+    <AppErrorBoundary><CommandProvider><InspectorProvider>{readUiMode() === 'next' ? <NextApp /> : <App />}</InspectorProvider></CommandProvider></AppErrorBoundary>
   </React.StrictMode>,
 )
