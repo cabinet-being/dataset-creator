@@ -5,7 +5,6 @@ import type { Page } from '@playwright/test';
 type Rec = { decision: string };
 declare global { interface Window { __buildFixture: { paths: () => Record<string, string | undefined>; session: () => { view?: string; records: Record<string, Rec> }; setTrigger: (word: string) => void; undo: () => Promise<void>; tags: () => Record<string, string[] | undefined> } } }
 
-const datasetCount = async (page: Page) => Object.values(await page.evaluate(() => window.__buildFixture.paths())).filter((path) => /(^|\/)dataset\//.test(path ?? '')).length;
 const cells = (page: Page) => page.getByTestId('build-grid-cell');
 const toggle = (page: Page, view: string) => page.locator(`[data-testid="build-view-toggle"][data-view="${view}"]`);
 const states = (page: Page) => cells(page).evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-state')));

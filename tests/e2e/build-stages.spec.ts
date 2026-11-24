@@ -5,7 +5,6 @@ import type { Page } from '@playwright/test';
 declare global { interface Window { __buildFixture: { paths: () => Record<string, string | undefined>; session?: () => { stage?: string } } } }
 
 const STAGES = ['add', 'select', 'caption', 'check', 'export'] as const;
-const datasetCount = async (page: Page) => Object.values(await page.evaluate(() => window.__buildFixture.paths())).filter((path) => /(^|\/)dataset\//.test(path ?? '')).length;
 const storedStage = (page: Page) => page.evaluate(() => window.__buildFixture.session!().stage);
 
 test.describe('build stages with materials', () => {

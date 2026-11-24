@@ -15,11 +15,14 @@ const isLocal = (url: string) => {
   } catch { return true; }
 };
 
-export const test = base.extend<{ guard: void }>({
-  guard: [async ({ page }, use, testInfo) => {
+// Per-test allowlist of console.error regex sources (default none). A test that deliberately stubs a
+// resource (e.g. an empty .wasm) opts in via test.use({ expectedConsoleErrors: [...] }).
+export const test = base.extend<{ guard: void; expectedConsoleErrors: string[] }>({
+  expectedConsoleErrors: [[] as string[], { option: true }],
+  guard: [async ({ page, expectedConsoleErrors }, use, testInfo) => {
     const problems: string[] = [];
     page.on('pageerror', error => problems.push(`pageerror: ${error.stack ?? error.message}`));
-    page.on('console', message => { if (message.type() === 'error') problems.push(`console.error: ${message.text()}`); });
+    page.on('console', message => { if (message.type() === 'error' && !expectedConsoleErrors.some(rule => new RegExp(rule).test(message.text()))) problems.push(`console.error: ${message.text()}`); });
     const blocked = (url: string) => !isLocal(url);
     if (!testInfo.title.includes('@network') && !testInfo.titlePath.some(part => part.includes('@network'))) {
       await page.route(url => blocked(url.toString()), route => {

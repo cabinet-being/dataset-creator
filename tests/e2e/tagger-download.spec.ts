@@ -61,6 +61,17 @@ test('Cancel during a stalled response gives cancelled state and saves nothing',
   await expect(page.getByTestId('wd-tagger-download-retry')).toBeVisible();
 });
 
+// These two tests stub every .wasm with an empty body so connecting the model fails on purpose;
+// onnxruntime-web then logs exactly these console errors. Nothing else is tolerated.
+const EMPTY_WASM_ERRORS = [
+  'wasm streaming compile failed: CompileError',
+  'falling back to ArrayBuffer instantiation',
+  'failed to asynchronously prepare wasm: CompileError: .*BufferSource argument is empty',
+  'Aborted\\(CompileError: .*BufferSource argument is empty',
+];
+
+test.describe('empty wasm stub', () => {
+test.use({ expectedConsoleErrors: EMPTY_WASM_ERRORS });
 test('verified download is stored with sha256/source; restore detects tampered bytes', async ({ page }) => {
   await page.route('**/*.wasm', (route) => route.fulfill({ status: 200, body: '', contentType: 'application/wasm' }));
   const bytes = await (async () => { await page.goto(URL_PAGE); return wd(page); })();
@@ -107,6 +118,7 @@ test('wrong bytes fail the integrity check, show Retry and save nothing; Retry w
   await call(page, 'w.download()');
   const saved = await call<{ model: { source: string } | null }>(page, 'w.saved()');
   expect(saved.model?.source).toBe('download');
+});
 });
 
 // Hits the real Hugging Face to confirm the pinned selected_tags.csv matches the manifest.
