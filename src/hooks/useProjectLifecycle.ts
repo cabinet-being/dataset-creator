@@ -1,10 +1,7 @@
 import { useState } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { WorkspaceImage } from '../lib/workspaceImages';
-import type { WorkspaceTab } from '../lib/workspaceTabs';
-import { EXPLORER_VIEW } from '../lib/workspaceLayout';
 import { isAbortError } from '../lib/utils';
-import { rewriteWorkspaceTabPaths } from '../lib/workspacePersistence';
 import { PROJECT_LAYOUT } from '../services/project/projectLayoutService';
 import {
   createProjectDirectory,
@@ -21,33 +18,23 @@ import { LayoutMigrationError, detectLegacyRawLayout, detectProjectLayout, planL
 import { fillAssetHashes, indexProjectAssets } from '../services/project/assetIndexService';
 import { createOperationLogger } from '../services/logging/applicationLog';
 import { createProject, type ProjectState, type ProjectType, type TargetModelId } from '../types';
-import { isOperationRunning, useOperationStore } from '../stores/useOperationStore';
+import { isOperationRunning, PROJECT_OPERATION_VIEW, useOperationStore } from '../stores/useOperationStore';
 import { useHistoryStore } from '../stores/useHistoryStore';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
 import { flushProjectSave, runProjectFileOperation } from './useProjectSave';
 import type { useExplorerTree } from './useExplorerTree';
 import type { useExplorerMutations } from './useExplorerMutations';
-import type { useDockWorkspace } from './useDockWorkspace';
 
 interface UseProjectLifecycleParams {
   workspace: {
-    openTabs: WorkspaceTab[];
     workspaceImages: WorkspaceImage[];
-    dock: Pick<ReturnType<typeof useDockWorkspace>, 'show'>;
-    setOpenMenu: (menu: null) => void;
-    setActiveActivityView: Dispatch<SetStateAction<'explorer' | 'versions'>>;
-    setClosedTabs: Dispatch<SetStateAction<WorkspaceTab[]>>;
     setNavigationRecovery: Dispatch<SetStateAction<boolean>>;
-    applyWorkspaceTabsForProject: (project: ProjectState) => void;
-    confirmClosingTabs: (tabs: WorkspaceTab[]) => Promise<boolean>;
-    focusView: (id: string) => void;
     setIsProjectDirectoryBusy: Dispatch<SetStateAction<boolean>>;
   };
   sessionRefs: {
     projectSessionRef: MutableRefObject<number>;
     projectOperationBusyRef: MutableRefObject<boolean>;
-    persistWorkspaceRef: MutableRefObject<(() => void) | null>;
     projectOperationOriginRef: MutableRefObject<HTMLElement | null>;
   };
   explorer: ReturnType<typeof useExplorerTree>;
@@ -58,10 +45,9 @@ export type NewProjectPreset = { name: string; projectType: ProjectType; targetM
 
 export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplorerMutation }: UseProjectLifecycleParams) {
   const {
-    openTabs, workspaceImages, dock, setOpenMenu, setActiveActivityView, setClosedTabs, setNavigationRecovery,
-    applyWorkspaceTabsForProject, confirmClosingTabs, focusView, setIsProjectDirectoryBusy,
+    workspaceImages, setNavigationRecovery, setIsProjectDirectoryBusy,
   } = workspace;
-  const { projectSessionRef, projectOperationBusyRef, persistWorkspaceRef, projectOperationOriginRef } = sessionRefs;
+  const { projectSessionRef, projectOperationBusyRef, projectOperationOriginRef } = sessionRefs;
   const { refreshExplorer } = explorer;
   const projectName = useProjectStore((state) => state.name);
   const loadProject = useProjectStore((state) => state.loadProject);
@@ -93,21 +79,18 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   };
 
   const activateProjectDirectory = (directory: ProjectDirectoryHandle, project: ProjectState) => {
-    persistWorkspaceRef.current?.();
     setNavigationRecovery(false);
     projectSessionRef.current += 1;
     setProjectDirectory(undefined);
     loadProject(project);
-    setClosedTabs([]);
     useHistoryStore.setState({past:[],future:[]});
-    applyWorkspaceTabsForProject(project);
     setProjectDirectory({handle:directory,name:directory.name});
   };
 
   const indexActiveProject = async (directory: ProjectDirectoryHandle, expectedProjectId: string) => {
     const operations = useOperationStore.getState();
     const operationId = `project-index:${crypto.randomUUID()}`;
-    operations.start({id:operationId,viewId:EXPLORER_VIEW,label:'Index project files'});
+    operations.start({id:operationId,viewId:PROJECT_OPERATION_VIEW,label:'Index project files'});
     try {
       await runProjectFileOperation(async () => {
         await indexProjectAssets(directory, {
@@ -140,8 +123,8 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   const canSwitchProject = async () => {
     if (useHistoryStore.getState().busy) { addNotification('warning', 'Wait for Undo or Redo to finish saving.'); return false; }
     const running = useOperationStore.getState().entries.find(isOperationRunning);
-    if (!running) return confirmClosingTabs(openTabs);
-    addNotification('warning', `Finish or cancel ${running.label} before switching projects.`); focusView(running.viewId); return false;
+    if (!running) return true;
+    addNotification('warning', `Finish or cancel ${running.label} before switching projects.`); return false;
   };
 
   const runNewProject = async (preset?: NewProjectPreset) => {
@@ -150,7 +133,6 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       return;
     }
     const logger = createOperationLogger('Project');
-    setOpenMenu(null);
     if (workspaceImages.length > 0 && !window.confirm('Create a new project and clear the current workspace?')) {
       return;
     }
@@ -256,7 +238,6 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
         logger.warning(`opening ${directory.name} without upgrading`);
       }
     }
-    let reconciledMoves: Array<{ from: string; to: string }> = [];
     const project = await readProjectDirectory(directory, async (name) => {
       const fileCount = await countProjectDirectoryFiles(directory);
       if (!window.confirm(`This folder is not a DatasetCreator project. Create a project here? ${fileCount} file${fileCount === 1 ? '' : 's'} will be indexed. Dataset Creator adds a hidden .datasetcreator folder plus inbox/ and dataset/; your files are not moved.`)) {
@@ -265,21 +246,17 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       const setup = await requestProjectSetup(name, true);
       if (!setup) throw new DOMException('Project opening canceled', 'AbortError');
       return setup.projectType;
-    }, { onAssetsReconciled: (report) => { reconciledMoves = report.pathMoves; } });
+    });
     if (useProjectStore.getState() !== previousProject) {
       throw new Error('The current project changed while opening the folder. Open it again after your changes are saved.');
     }
-    // Files moved outside the app and recognised by content keep their identity; saved tabs follow them like after an Explorer move.
-    if (reconciledMoves.length) rewriteWorkspaceTabPaths(project.id, reconciledMoves);
     if (rawMaterials) {
-      rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
       if (rawMaterials.collisions.length) {
         addNotification('warning', `${rawMaterials.collisions.length} file${rawMaterials.collisions.length === 1 ? ' was' : 's were'} renamed while moving raw materials to ${PROJECT_LAYOUT.rawDir}/ because the name was taken.`);
         for (const { from, to } of rawMaterials.collisions) logger.warning(`renamed ${from} to ${to}`);
       }
     }
     if (captions) {
-      if (captions.pathMoves.length) rewriteWorkspaceTabPaths(project.id, captions.pathMoves);
       if (captions.converted || captions.triggersAdded) logger.info(`captions: ${captions.converted} converted to text files, trigger word added to ${captions.triggersAdded}; replaced files are in ${PROJECT_LAYOUT.backupDir}/${captions.journalId}/captions`);
       if (captions.collisions.length) {
         addNotification('warning', `${captions.collisions.length} image${captions.collisions.length === 1 ? ' was' : 's were'} renamed because another image in the folder had the same name before the extension (captions are stored as <name>.txt).`);
@@ -299,7 +276,6 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     }
     projectOperationBusyRef.current = true;
     projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setOpenMenu(null);
     setIsProjectDirectoryBusy(true);
     try {
       await loadProjectDirectory(await getDirectory());
@@ -328,7 +304,6 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   });
 
   const handleRenameProject = () => {
-    setOpenMenu(null);
     const nextName = window.prompt('Project name', projectName)?.trim();
     if (!nextName || nextName === projectName) {
       return;
@@ -339,8 +314,6 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
   };
 
   const openProjectVersions = async () => {
-    setActiveActivityView('versions');
-    dock.show(EXPLORER_VIEW);
     if (!projectDirectoryHandle) {
       addNotification('warning', 'Open a project directory before managing versions');
       return;
@@ -349,7 +322,6 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       const { currentId, versions } = await listProjectVersions(projectDirectoryHandle);
       setCurrentProjectVersionId(currentId);
       setProjectVersions(versions);
-      setOpenMenu(null);
     } catch (error) {
       addNotification('error', error instanceof Error ? error.message : 'Failed to read project versions');
     }
@@ -382,37 +354,31 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     projectOperationBusyRef.current = true;
     projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setIsProjectDirectoryBusy(true);
-    operations.start({id:operationId,viewId:EXPLORER_VIEW,label:'Restore project version'});
+    operations.start({id:operationId,viewId:PROJECT_OPERATION_VIEW,label:'Restore project version'});
     try {
       await runProjectFileOperation(async () => {
         let restoredOnDisk = false;
-        const restoredMoves: Array<{ from: string; to: string }> = [];
-        const readRestored = () => readProjectDirectory(directory, undefined, { onAssetsReconciled: (report) => { restoredMoves.push(...report.pathMoves); } });
+        const readRestored = () => readProjectDirectory(directory);
         try {
           let project!: ProjectState;
           await restoreProjectVersion(directory, version.id, async () => { project = await readRestored(); });
           restoredOnDisk = true;
           if (await detectProjectLayout(directory) === 'v2') {
-            const report = await runLayoutMigration(directory);
+            await runLayoutMigration(directory);
             project = await readRestored();
-            if (report.rawMaterials) rewriteWorkspaceTabPaths(project.id, report.rawMaterials.pathMoves);
-            if (report.captions?.pathMoves.length) rewriteWorkspaceTabPaths(project.id, report.captions.pathMoves);
             const refreshed = await listProjectVersions(directory);
             setProjectVersions(refreshed.versions);
           } else if (await detectLegacyRawLayout(directory)) {
-            const rawMaterials = await runRawMaterialsMove(directory);
+            await runRawMaterialsMove(directory);
             project = await readRestored();
-            if (rawMaterials) rewriteWorkspaceTabPaths(project.id, rawMaterials.pathMoves);
           }
           if (await detectProjectLayout(directory) === 'v3') {
             const captions = await runCaptionTxtMigration(directory);
             const assets = await runAssetsRegistryMigration(directory);
             if (captions || assets) {
               project = await readRestored();
-              if (captions?.pathMoves.length) rewriteWorkspaceTabPaths(project.id, captions.pathMoves);
             }
           }
-          if (restoredMoves.length) rewriteWorkspaceTabPaths(project.id, restoredMoves);
           activateProjectDirectory(directory, project);
         } catch (error) {
           // Stop the old queue before its finally block can write over a partial restore.

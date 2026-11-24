@@ -19,7 +19,6 @@ await build({
     'src/services/project/assetTypeService.ts',
     'src/services/project/projectPathFilters.ts',
     'src/lib/previewUrlCache.ts',
-    'src/lib/fileNameSelection.ts',
   ],
   platform: 'node', transform: { define: { 'import.meta.env.DEV': 'false' } },
   plugins: [{
@@ -304,15 +303,6 @@ test('legacy filtering affects root folders only, including Windows paths', asyn
   assert.equal(isLegacyProjectRootPath('Project'), false);
   assert.equal(isLegacyProjectRootPath(''), false);
   assert.deepEqual(filterLegacyProjectAssetPaths(), []);
-});
-
-test('rename selects the filename stem without hiding dotfiles or removing compound suffixes', async () => {
-  const { selectFileNameStem } = await load('fileNameSelection');
-  for (const [value, expected] of [['image.png', [0, 5]], ['archive.tar.gz', [0, 11]], ['.env', 'all'], ['README', 'all'], ['', 'all']]) {
-    let selected;
-    selectFileNameStem({ value, select: () => { selected = 'all'; }, setSelectionRange: (...range) => { selected = range; } });
-    assert.deepEqual(selected, expected, value);
-  }
 });
 
 test('preview URL cache reuses identical blobs, revokes replacements and prunes only inactive IDs', async t => {

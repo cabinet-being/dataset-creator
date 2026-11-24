@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ExplorerContextMenuState } from '../components/workspace/WorkspaceTabMenus';
 import { useExplorerMutations } from '../hooks/useExplorerMutations';
 import { useExplorerTree } from '../hooks/useExplorerTree';
 import { useLocalTaggerFilePicker } from '../hooks/useLocalTaggerFilePicker';
@@ -7,7 +6,6 @@ import { useProjectLifecycle } from '../hooks/useProjectLifecycle';
 import { useProjectSave } from '../hooks/useProjectSave';
 import { useWorkspaceAppearance } from '../hooks/useWorkspaceAppearance';
 import { useWorkspaceFileAssets } from '../hooks/useWorkspaceFileAssets';
-import { useWorkspaceTabsState } from '../hooks/useWorkspaceTabs';
 import { selectBuildDatasetItems } from '../lib/buildStageSummary';
 import { toWorkspaceImages, toWorkspaceReviewAssets } from '../lib/workspaceImages';
 import { flushProjectSave } from '../hooks/useProjectSave';
@@ -16,12 +14,9 @@ import { restoreSavedLocalTagger } from '../services/tagging/localTaggerConnecti
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
 
-const NO_STORED_LAYOUT = {};
-const showNothing = () => {};
-
 /**
  * Project runtime for the next UI: save, appearance, Explorer mutations and project lifecycle,
- * without dock, tabs UI or Inspector. The headless tabs state only satisfies Explorer mutations.
+ * without dock, tabs UI or Inspector.
  */
 export function useProjectRuntime() {
   useEffect(() => { void restoreSavedLocalTagger(); }, []);
@@ -71,39 +66,26 @@ export function useProjectRuntime() {
     setProjectDirectory(undefined);
   }, [remember, setProjectDirectory]);
 
-  const tabsState = useWorkspaceTabsState(NO_STORED_LAYOUT);
-  const [, setExplorerContextMenu] = useState<ExplorerContextMenuState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
   const [navigationRecovery, setNavigationRecovery] = useState(false);
-  const persistWorkspaceRef = useRef<(() => void) | null>(null);
   const projectSessionRef = useRef(0);
   const projectOperationBusyRef = useRef(false);
   const projectOperationOriginRef = useRef<HTMLElement | null>(null);
 
   const explorer = useExplorerTree({
-    setOpenTabs: tabsState.setOpenTabs,
-    setExplorerContextMenu,
     openFile: async () => {},
   });
   const explorerMutations = useExplorerMutations({
     explorer,
-    tabs: tabsState,
-    activeTab: null,
-    confirmClosingTabs: async () => true,
     projectOperationBusyRef,
   });
   const lifecycle = useProjectLifecycle({
-    workspace: {
-      openTabs: tabsState.openTabs, workspaceImages, dock: { show: showNothing }, setOpenMenu: showNothing,
-      setActiveActivityView: showNothing, setClosedTabs: tabsState.setClosedTabs, setNavigationRecovery,
-      applyWorkspaceTabsForProject: showNothing, confirmClosingTabs: async () => true, focusView: showNothing,
-      setIsProjectDirectoryBusy,
-    },
-    sessionRefs: { projectSessionRef, projectOperationBusyRef, persistWorkspaceRef, projectOperationOriginRef },
+    workspace: { workspaceImages, setNavigationRecovery, setIsProjectDirectoryBusy },
+    sessionRefs: { projectSessionRef, projectOperationBusyRef, projectOperationOriginRef },
     explorer,
     runExplorerMutation: explorerMutations.runExplorerMutation,
   });

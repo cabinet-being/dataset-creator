@@ -1,5 +1,11 @@
-import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
 import type { ExplorerPathChange } from '../services/project/explorerFileService';
+
+export type ExplorerTreeNode = {
+  name: string;
+  path: string;
+  kind: 'folder' | 'file';
+  children?: ExplorerTreeNode[];
+};
 
 export type ExplorerChanges = { moves: ExplorerPathChange[]; paths: string[] };
 export const emptyExplorerChanges = (): ExplorerChanges => ({ moves: [], paths: [] });

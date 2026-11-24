@@ -2,7 +2,7 @@ import type { ProjectDirectoryHandle } from './projectDirectoryService';
 import { isAssetManifestName, isHiddenExplorerManifestName, isProjectManifestName } from './assetManifestService';
 import { isSupportedProjectAsset, resolveProjectAssetKind } from './assetTypeService';
 import { snapshotFile } from './fileSnapshotService';
-import type { ExplorerTreeNode } from '../../components/workspace/ExplorerTree';
+import type { ExplorerTreeNode } from '../../lib/explorerTreeUpdates';
 import { sortExplorerNodes } from '../../lib/explorerTreeUpdates';
 import { isLegacyDatasetFileName } from './legacyDatasetFileService';
 import { DATASET_MANIFEST_FILE, PROJECT_EXPORTS_DIRECTORY, isInternalProjectEntry } from './projectLayoutService';

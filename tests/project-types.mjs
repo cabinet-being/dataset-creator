@@ -702,7 +702,7 @@ try {
   const entitySource = await readFile('src/types/entities.ts','utf8');
   const datasetType = entitySource.match(/export interface Dataset \{([\s\S]*?)\n\}/)?.[1] ?? '';
   assert.doesNotMatch(datasetType,/assetIds|assetPaths|psdAssetPaths|filePath|parentPath/,'Runtime Dataset contains settings only');
-  const explorerSource = await readFile('src/components/workspace/ExplorerTree.tsx','utf8');
+  const explorerSource = await readFile('src/lib/explorerTreeUpdates.ts','utf8');
   assert.doesNotMatch(explorerSource,/kind:\s*'dataset'|\|\s*'dataset'/,'Explorer has no special Dataset node');
   const storeSource = await readFile('src/stores/useProjectStore.ts','utf8');
   assert.doesNotMatch(storeSource,/addAssetsToDataset:\s*\(|upsertDataset:\s*\(|removeDataset:\s*\(/,'Runtime Dataset membership API was removed');

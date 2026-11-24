@@ -1,5 +1,3 @@
-import type { ToolName } from '../types';
-import { TOOL_DEFINITIONS } from './toolDefinitions';
 // Tools in recommended image preparation order.
 export const WORKFLOW_TOOLS = [
   'build',
@@ -14,12 +12,6 @@ export const WORKFLOW_TOOLS = [
 ] as const;
 
 export const TOOLS = [...WORKFLOW_TOOLS] as const;
-
-// Build is the main path; every other tool stays reachable from the Advanced group.
-export const PRIMARY_TOOLS = TOOLS.filter(tool => TOOL_DEFINITIONS[tool].tier === 'primary');
-export const ADVANCED_TOOLS = TOOLS.filter(tool => TOOL_DEFINITIONS[tool].tier === 'advanced');
-
-export const TOOL_URL_SLUGS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.slug])) as Record<(typeof TOOLS)[number], string>;
 
 export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
   'build-dataset': 'build',
@@ -39,8 +31,6 @@ export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
   tagging: 'tagging',
   export: 'export',
 };
-
-export const TOOL_LABELS = Object.fromEntries(Object.entries(TOOL_DEFINITIONS).map(([id, tool]) => [id, tool.label])) as Record<string, string>;
 
 // Aspect ratios
 export const ASPECT_RATIOS = ['2:3', '3:2', '1:1'] as const;
@@ -82,25 +72,3 @@ export const WORKER_TIMEOUT = 30000; // 30s worker timeout
 export const SIMILARITY_HIGH_THRESHOLD = 0.85;
 export const SIMILARITY_MEDIUM_THRESHOLD = 0.65;
 export const SIMILARITY_LOW_THRESHOLD = 0.45;
-
-export const isToolName = (value: string | null): value is ToolName =>
-  Boolean(value && (TOOLS as readonly string[]).includes(value));
-
-export const getToolFromUrlSlug = (value: string | null): ToolName | null => {
-  if (!value) {
-    return null;
-  }
-
-  return (URL_TOOL_ALIASES[value] ?? null) as ToolName | null;
-};
-
-export const getUrlSlugForTool = (tool: ToolName): string => TOOL_URL_SLUGS[tool] ?? tool;
-
-export const readToolFromUrl = (): ToolName | null => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const tool = new URL(window.location.href).searchParams.get('tool');
-  return getToolFromUrlSlug(tool) ?? (isToolName(tool) ? tool : null);
-};

@@ -9,9 +9,6 @@ import { DEFAULT_FRAME_SELECTION } from '../src/services/video/types';
 import { frameDistance } from '../src/services/video/frameSelection';
 import { videoFrameBatches, getVideoMeta } from '../src/services/video/videoCache';
 import { VideoClient } from '../src/services/video/videoClient';
-import { DockWorkspace } from '../src/components/workspace/DockWorkspace';
-import { migrateDockLayout } from '../src/lib/workspaceLayout';
-import { Video, PanelRight } from 'lucide-react';
 import '../src/index.css';
 
 const timestamps = [0, 0.08, 0.24, 0.3, 0.7, 1, 1.2, 1.9];
@@ -53,7 +50,6 @@ const Harness = () => {
   const [file, setFile] = useState<File>();
   const [status, setStatus] = useState('Ready');
   const [paths, setPaths] = useState<string[]>([]);
-  const [layout, setLayout] = useState(() => migrateDockLayout({ leftPanelOpen: false, bottomPanelOpen: false }, ['tool:video']));
   const run = async (operation: () => Promise<void>) => { try { await operation(); } catch (error) { setStatus(`FAIL: ${error instanceof Error ? error.stack : error}`); } };
   const fixture = async (rotated = false) => {
     const video = await makeFixture(rotated);
@@ -129,11 +125,9 @@ const Harness = () => {
       <span>Saved files: {paths.join(', ') || 'none'}</span>
     </div>
     <pre className="max-h-32 overflow-auto whitespace-pre-wrap p-2 text-xs" role="status">{status}</pre>
-    <DockWorkspace layout={layout} onLayout={setLayout} onFocus={() => {}} onClose={() => {}} onContextMenu={() => {}} onOpenTool={() => {}}
-      views={[
-        { id: 'tool:video', title: 'Video Frames', icon: Video, content: <VideoFramesTool key={file?.name} tabId="test-video" file={file} fileName={file?.name} projectDirectoryHandle={directory} onSaved={() => setPaths([...saved.keys()])} /> },
-        { id: 'window:inspector', title: 'Inspector', icon: PanelRight, content: <div className="p-3">Drag Video Frames here to verify docking preserves the player and analysis.</div> },
-      ]} />
+    <div className="relative min-h-0 flex-1 overflow-auto" data-dock-view="tool:video">
+      <VideoFramesTool key={file?.name} tabId="test-video" file={file} fileName={file?.name} projectDirectoryHandle={directory} onSaved={() => setPaths([...saved.keys()])} />
+    </div>
   </div>;
 };
 const root = createRoot(document.getElementById('root')!);

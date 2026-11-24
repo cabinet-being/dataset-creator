@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import type { Dispatch, SetStateAction } from 'react';
-import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
-import type { ExplorerContextMenuState } from '../components/workspace/WorkspaceTabMenus';
-import type { ExplorerItemEntry } from './useWorkspaceCommands';
-import type { WorkspaceTab } from '../lib/workspaceTabs';
+import type { ExplorerItemEntry } from './useExplorerMutations';
 import {
   buildEmptyExplorerTree,
+  type ExplorerTreeNode,
   sanitizeExplorerTree,
   findExplorerTreeNode,
   moveExplorerTreeNodes,
@@ -32,8 +29,6 @@ import { useUIStore } from '../stores/useUIStore';
 import { getCaptionPathForImage } from '../services/caption/captionFileService';
 
 interface UseExplorerTreeOptions {
-  setOpenTabs: Dispatch<SetStateAction<WorkspaceTab[]>>;
-  setExplorerContextMenu: Dispatch<SetStateAction<ExplorerContextMenuState | null>>;
   openFile: (node: ExplorerTreeNode) => Promise<void>;
 }
 

@@ -1,20 +1,14 @@
 import { useEffect, useState } from 'react';
 import type { DragEvent, MutableRefObject } from 'react';
-import type { ExplorerTreeNode } from '../components/workspace/ExplorerTree';
-import { moveToolViewScope, pruneToolViewScope } from '../lib/workspaceToolScope';
-import type { WorkspaceTab } from '../lib/workspaceTabs';
 import type { SourceImage } from '../types';
-import { isFileBackedTab, moveFileTab } from '../lib/workspaceFileTabs';
 import { addWorkspacePathsToDataset } from '../lib/assetActions';
-import { isOperationRunning, useOperationStore } from '../stores/useOperationStore';
-import type { ExplorerItemEntry, ExplorerClipboard } from './useWorkspaceCommands';
+import { isOperationRunning, PROJECT_OPERATION_VIEW, useOperationStore } from '../stores/useOperationStore';
 import { flushProjectSave, runProjectFileOperation } from './useProjectSave';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
 import { toProjectRelativePath } from '../lib/workspaceImages';
-import { emptyExplorerChanges } from '../lib/explorerTreeUpdates';
+import { emptyExplorerChanges, type ExplorerTreeNode } from '../lib/explorerTreeUpdates';
 import type { useExplorerTree } from './useExplorerTree';
-import type { useWorkspaceTabsState } from './useWorkspaceTabs';
 import { clearLegacyExclusionAtPath } from '../services/project/legacyDatasetExclusionService';
 import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
 import { getImportFilesFromDataTransfer, createImportBatcher, importImageFiles, pickImportDirectory, pickImportFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from '../services/import/importService';
@@ -33,10 +27,8 @@ import {
   createExplorerDirectory,
   deleteExplorerEntry,
   duplicateExplorerEntries,
-  getExplorerFileKind,
   isExplorerImageFileName,
   moveExplorerEntries,
-  readExplorerFile,
   renameExplorerEntry,
   ExplorerBatchError,
   ExplorerRecoveryError,
@@ -45,8 +37,19 @@ import {
 import { reconcileTriggerAfterMove } from '../services/caption/captionFileService';
 import { PROJECT_DATASET_DIRECTORY, PROJECT_INBOX_DIRECTORY } from '../services/project/projectLayoutService';
 import { isProjectDatasetPath } from '../services/dataset/datasetFolderService';
-import { EXPLORER_VIEW } from '../lib/workspaceLayout';
 import { isAbortError } from '../lib/utils';
+
+export type ExplorerItemEntry = {
+  path: string;
+  name: string;
+  kind: ExplorerTreeNode['kind'];
+  workspaceImageId?: string;
+};
+
+export type ExplorerClipboard = {
+  mode: 'copy' | 'cut';
+  entries: ExplorerItemEntry[];
+};
 
 type FilesystemExplorerItemEntry = ExplorerItemEntry & { kind: 'folder' | 'file' };
 
@@ -55,20 +58,13 @@ export const isFilesystemExplorerEntry = (entry: ExplorerItemEntry): entry is Fi
 
 interface UseExplorerMutationsOptions {
   explorer: ReturnType<typeof useExplorerTree>;
-  tabs: ReturnType<typeof useWorkspaceTabsState>;
-  activeTab: WorkspaceTab | null;
-  confirmClosingTabs: (tabs: WorkspaceTab[]) => Promise<boolean>;
   projectOperationBusyRef: MutableRefObject<boolean>;
 }
 
 export function useExplorerMutations({
   explorer,
-  tabs: tabsState,
-  activeTab,
-  confirmClosingTabs,
   projectOperationBusyRef,
 }: UseExplorerMutationsOptions) {
-  const { openTabs, openTabsRef, setOpenTabs, setActiveTabId, setClosedTabs } = tabsState;
   const {
     explorerMutationChanges, getContextEntries, getSelectedExplorerEntries, refreshChangedExplorer, refreshExplorer,
     setCurrentDraggedExplorerEntries, setExpandedExplorerPaths, setFocusedExplorerPath, setSelectedExplorerPaths,
@@ -144,7 +140,7 @@ export function useExplorerMutations({
     const directory = projectDirectoryHandle;
     const changes = emptyExplorerChanges();
     explorerMutationChanges.current = changes;
-    operations.start({ id, viewId: EXPLORER_VIEW, label });
+    operations.start({ id, viewId: PROJECT_OPERATION_VIEW, label });
     try {
       const result = await runProjectFileOperation(action);
       operations.finish(id, 'completed');
@@ -159,38 +155,6 @@ export function useExplorerMutations({
         try { await refreshChangedExplorer(directory, changes); }
         catch (error) { addNotification('warning', error instanceof Error ? error.message : 'Could not refresh changed files'); }
       }
-    }
-  };
-
-  const updateFileTabsForPathMoves = (moves: Array<{ from: string; to: string }>) => {
-    const movedTabs = openTabsRef.current.flatMap(tab => {
-      if (!isFileBackedTab(tab)) return [];
-      const moved = moveFileTab(tab, moves);
-      return moved === tab ? [] : [{id: tab.id, path: moved.path}];
-    });
-    setOpenTabs(tabs => tabs.map(tab => moveToolViewScope(moveFileTab(tab, moves), moves)));
-    setClosedTabs(tabs => tabs.map(tab => moveToolViewScope(moveFileTab(tab, moves), moves)));
-    if (projectDirectoryHandle && movedTabs.length > 0) {
-      void Promise.all(
-        movedTabs.map(async ({ id, path }) => ({ id, path, file: await readExplorerFile(projectDirectoryHandle, path) }))
-      ).then((refreshedTabs) => {
-        setOpenTabs((tabs) =>
-          tabs.map((tab) => {
-            if (!isFileBackedTab(tab)) {
-              return tab;
-            }
-            const refreshed = refreshedTabs.find((candidate) => candidate.id === tab.id && candidate.path === tab.path);
-            if (!refreshed?.file) {
-              return tab;
-            }
-            return {
-              ...tab,
-              file: refreshed.file,
-              fileKind: getExplorerFileKind(tab.name, 'type' in refreshed.file ? refreshed.file.type : undefined),
-            };
-          })
-        );
-      }).catch(error => addNotification('warning', error instanceof Error ? error.message : 'Could not refresh the moved file'));
     }
   };
 
@@ -265,7 +229,6 @@ export function useExplorerMutations({
     const handleDatasetFolderMoves = (event: Event) => {
       const moves = (event as CustomEvent<ExplorerPathMove[]>).detail;
       if (!Array.isArray(moves) || moves.length === 0) return;
-      updateFileTabsForPathMoves(moves);
       updateExplorerClipboardForPathMoves(moves);
       if (explorerMutationChanges.current) explorerMutationChanges.current.moves.push(...moves);
       else if (projectDirectoryHandle) void refreshChangedExplorer(projectDirectoryHandle, { moves, paths: [] })
@@ -297,7 +260,6 @@ export function useExplorerMutations({
         setSelectionAnchorPath(nextPath);
         setFocusedExplorerPath(nextPath);
         setInlineExplorerEdit(null);
-        updateFileTabsForPathMoves(moves);
         await updateWorkspacePathsForPathMoves(moves);
         updateExplorerClipboardForPathMoves(moves);
 
@@ -310,7 +272,6 @@ export function useExplorerMutations({
   const removeWorkspaceReferencesForDeletedEntries = async (entries: ExplorerClipboardEntry[]) => {
     if (projectDirectoryHandle) await removeAssetRegistryPaths(projectDirectoryHandle, entries.map((entry) => entry.path));
     const deletedPaths = entries.map((entry) => toProjectRelativePath(entry.path));
-    const previousEdited = Object.values(useProjectStore.getState().datasetItems);
     const removedSourceIds: string[] = [];
     for (const source of Object.values(useProjectStore.getState().sourceImages)) {
       const sourcePath = source.originalFilePath;
@@ -322,18 +283,9 @@ export function useExplorerMutations({
         removedSourceIds.push(source.id);
       }
     }
-    const removedIds = new Set([
-      ...removedSourceIds.map(id => `source:${id}`),
-      ...previousEdited.filter(item => removedSourceIds.includes(item.sourceImageId)).map(item => `edited:${item.id}`),
-    ]);
     const explorerPaths = entries.map(entry => entry.path);
     updateBuildSession((session) => removeBuildSessionSources(session, explorerPaths));
     const isDeletedExplorerPath = (path: string) => explorerPaths.some(root => path === root || path.startsWith(`${root}/`));
-    const keepViews = (tabs: WorkspaceTab[]) => tabs
-      .filter(tab => !isFileBackedTab(tab) || !explorerPaths.some(path => tab.path === path || tab.path.startsWith(`${path}/`)))
-      .map(tab => pruneToolViewScope(tab, explorerPaths, removedIds));
-    setOpenTabs(keepViews);
-    setClosedTabs(keepViews);
     clearExplorerClipboardForDeletedPaths(entries);
     setSelectedExplorerPaths(paths => new Set([...paths].filter(path => !isDeletedExplorerPath(path))));
     setFocusedExplorerPath(path => path && isDeletedExplorerPath(path) ? null : path);
@@ -362,7 +314,6 @@ export function useExplorerMutations({
         // Moving across dataset/ adds or removes the trigger word in the captions, inside this same exclusive operation.
         await reconcileTriggerAfterMove(directory, move, useProjectStore.getState().dataset.triggerWord);
         explorerMutationChanges.current?.moves.push(move);
-        updateFileTabsForPathMoves([move]);
         await updateWorkspacePathsForPathMoves([move]);
         updateExplorerClipboardForPathMoves([move]);
       });
@@ -395,8 +346,6 @@ export function useExplorerMutations({
     if (!window.confirm(confirmation)) {
       return;
     }
-    const affectedTabs = openTabs.filter(tab => isFileBackedTab(tab) && entries.some(entry => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`)));
-    if (!await confirmClosingTabs(affectedTabs)) return;
 
     try {
       await runExplorerMutation('Delete files', async () => {
@@ -410,27 +359,11 @@ export function useExplorerMutations({
           await moveWorkspaceEntries(directory!, filesToReturnToShared, `Project/${PROJECT_INBOX_DIRECTORY}`);
         }
         const deletedFilesystemEntries = filesystemEntries.filter((entry) => !filesToReturnToShared.some((moved) => moved.path === entry.path));
-        const activeFileTabDeleted =
-          activeTab &&
-          isFileBackedTab(activeTab) &&
-          deletedFilesystemEntries.some((entry) => activeTab.path === entry.path || activeTab.path.startsWith(`${entry.path}/`));
         for (const entry of deletedFilesystemEntries) {
           await deleteExplorerEntry(directory!, entry.path, true, async () => {
             explorerMutationChanges.current?.paths.push(entry.path);
             await removeWorkspaceReferencesForDeletedEntries([entry]);
           });
-        }
-        setOpenTabs((tabs) =>
-          tabs.filter(
-            (tab) =>
-              (isFileBackedTab(tab) &&
-                !deletedFilesystemEntries.some((entry) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`))) ||
-              tab.kind === 'dataset' || tab.kind === 'dataset-tool' ||
-              tab.kind === 'tool' || tab.kind === 'window'
-          )
-        );
-        if (activeFileTabDeleted) {
-          setActiveTabId(null);
         }
         clearExplorerClipboardForDeletedPaths(entries);
         setSelectedExplorerPaths(new Set());

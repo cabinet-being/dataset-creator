@@ -4,6 +4,8 @@ export type Operation = {
   status: 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
   completed?: number; total?: number; message?: string; cancel?: () => void;
 };
+/** Operation view id for project file work (Explorer mutations, indexing, version restore). */
+export const PROJECT_OPERATION_VIEW = 'project-files';
 export const isOperationRunning = (operation: Operation) => operation.status === 'running' || operation.status === 'cancelling';
 type Operations = {
   entries: Operation[];

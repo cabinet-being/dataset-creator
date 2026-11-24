@@ -29,7 +29,6 @@
 | Серіалізація, формат v3, міграція layout (знімок, журнал, resume), реєстр ресурсів і rebind, експорт, індексація, Explorer, Dataset-файли, версії | `npm run test:project-types` |
 | TXT-підписи, trigger word, пакетний перезапис, sidecar → TXT | `npm run test:caption-txt` |
 | Риси персонажа й правила тегера | `npm run test:character-traits` |
-| Docking, геометрія, вкладки й відновлення layout | `npm run test:workspace-layout` |
 | Вибір кадрів, індекс, скасування, fingerprints, запис PNG | `npm run test:video-frames` |
 | Команди, підписи, імпорт/експорт, save queue, навігація | `npm run test:ui-workflows` |
 | Кандидати, coverage, формування Dataset, міграція підписів | `npm run test:dataset-assembly` |
