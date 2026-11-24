@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import { ChevronDown, ChevronRight, FilePlus2, FolderInput, FolderPlus, Pencil, Video } from 'lucide-react';
+import { ChevronDown, ChevronRight, FilePlus2, FolderInput, FolderPlus, Pencil, Trash2, Video } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import {
   collectInboxFolders, countInboxFolders, inboxFolderOf, INBOX_PREFIX, isInboxFolderInSources, isInboxItem, isInFolder, toggleSourceFolder,
@@ -86,6 +86,11 @@ export function SourcesPanel({ runtime, items, sources, onSourcesChange }: {
   const startRename = (folder: string) => {
     const node = nodeOf(folder);
     if (node && folder !== INBOX_ROOT) void explorerMutations.handleExplorerRename(node);
+  };
+
+  const deleteFolder = (folder: string) => {
+    const node = nodeOf(folder);
+    if (node && folder !== INBOX_ROOT) void explorerMutations.deleteExplorerEntries([explorer.createExplorerEntryForNode(node)]);
   };
 
   const dropInto = (event: DragEvent, folder: string) => {
@@ -175,6 +180,9 @@ export function SourcesPanel({ runtime, items, sources, onSourcesChange }: {
             {!isRoot && <button type="button" aria-label={`Rename ${row.name}`} title="Rename" disabled={busy} onClick={() => startRename(row.path)}
               className={cn('flex h-11 w-9 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground', focusRing)}>
               <Pencil className="h-3.5 w-3.5" /></button>}
+            {!isRoot && <button type="button" aria-label={`Delete ${row.name}`} title="Delete folder" disabled={busy} onClick={() => deleteFolder(row.path)}
+              className={cn('flex h-11 w-9 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-destructive', focusRing)}>
+              <Trash2 className="h-3.5 w-3.5" /></button>}
           </div>}
           {creatingHere && editInput('New folder name', row.depth + 1)}
         </div>;

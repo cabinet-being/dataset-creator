@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Inbox, Pin, Ban, Pencil, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Inbox, Pin, Ban, Pencil, TextCursorInput, Trash2, X } from 'lucide-react';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 import { CaptionEditor } from '../../components/caption/CaptionEditor';
 import { parseTags, sameTags } from '../../components/build/buildCaptionTags';
@@ -10,6 +10,7 @@ import { isDatasetEntry, overrideKeyAction, type FrameEntry } from './frameEntri
 import type { BoardActions } from './useBoardPipeline';
 import { StatusBadge } from './StatusBadge';
 import { useBoardTools } from './toolOverlays';
+import { canChangeFrameFile, useFrameFiles } from './frameFiles';
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -65,6 +66,9 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
   const dialog = useRef<HTMLDivElement>(null);
   const entry = entries[index];
   const tools = useBoardTools();
+  const files = useFrameFiles();
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const last = entries.length - 1;
   const pendingSave = useRef<(() => Promise<void>) | null>(null);
   // Navigation first persists the unsaved caption draft of the shown frame.
@@ -123,6 +127,7 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
   const url = previews[entry.id];
   const size = [`${item.width} × ${item.height}`, formatBytes(item.byteSize)].filter(Boolean).join(' · ');
   const caption = item.tags === undefined ? null : item.tags.join(', ');
+  const renaming = Boolean(files?.rename && files.rename.path === item.assetPath);
 
   return <div ref={dialog} role="dialog" aria-modal="true" aria-label={`Frame ${entry.name}`} data-lightbox onKeyDown={trapTab}
     className="fixed inset-0 z-[2000] flex flex-col bg-background/95 text-foreground backdrop-blur-sm md:flex-row">
@@ -139,7 +144,16 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
     </div>
     <aside className="max-h-[45%] w-full shrink-0 space-y-4 overflow-auto border-t border-border bg-card p-4 md:max-h-none md:w-80 md:border-l md:border-t-0">
       <div className="flex items-start gap-2">
-        <h2 data-lightbox-name className="min-w-0 flex-1 break-words text-base font-semibold">{entry.name}</h2>
+        {renaming && files?.rename
+          ? <input aria-label="File name" data-lightbox-rename-input autoFocus value={files.rename.value}
+            onFocus={event => event.currentTarget.select()} onChange={event => files.setRenameValue(event.target.value)}
+            onBlur={() => void files.commitRename()}
+            onKeyDown={event => {
+              if (event.key === 'Enter') { event.preventDefault(); void files.commitRename(); }
+              if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); files.cancelRename(); }
+            }}
+            className={cn('min-h-[44px] min-w-0 flex-1 rounded-md border border-primary bg-background px-2 text-sm', focusRing)} />
+          : <h2 data-lightbox-name className="min-w-0 flex-1 break-words text-base font-semibold">{entry.name}</h2>}
         <button type="button" aria-label="Close" data-lightbox-close onClick={onClose}
           className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border hover:bg-secondary', focusRing)}>
           <X aria-hidden className="h-5 w-5" /></button>
@@ -157,6 +171,16 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
             : <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
               {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd>}</div>
       </dl>
+      {files && canChangeFrameFile(item) && <div data-lightbox-files className="space-y-2">
+        <button type="button" data-action="rename" disabled={files.busy} onClick={() => files.startRename(item)}
+          className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>
+          <TextCursorInput aria-hidden className="h-4 w-4" />Rename file</button>
+        <button type="button" data-action="delete" disabled={files.busy} onClick={() => void files.deleteFrames([item]).then(() => {
+          if (!entriesRef.current.some(candidate => candidate.id === entry.id)) closeRef.current();
+        })}
+          className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-destructive/60 px-3 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50', focusRing)}>
+          <Trash2 aria-hidden className="h-4 w-4" />Delete file</button>
+      </div>}
       {tools && <button type="button" data-action="photopea" onClick={() => tools.editInPhotopea(item)}
         className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary', focusRing)}>
         <Pencil aria-hidden className="h-4 w-4" />Edit in Photopea</button>}

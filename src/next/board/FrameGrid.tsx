@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
-import { Ban, Check, ImageIcon, Inbox, Pin, PinOff, X } from 'lucide-react';
+import { Ban, Check, ImageIcon, Inbox, Pin, PinOff, Trash2, X } from 'lucide-react';
 import { BOARD_FILTERS, matchesBoardFilter, type BoardFilter } from '../../lib/imageStatusLabels';
 import { INBOX_PREFIX } from '../../lib/inboxFolders';
 import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
@@ -10,6 +10,7 @@ import type { BuildSession } from '../../types';
 import type { BuildClusterResult } from '../../services/build/buildClusterService';
 import { buildFrameEntries, countBoardFilters, groupFrameEntries, groupFrameEntriesByClusters, isDatasetEntry, moveFrameCursor, overrideKeyAction, type CursorMove, type FrameEntry } from './frameEntries';
 import { Lightbox } from './Lightbox';
+import { canChangeFrameFile, useFrameFiles } from './frameFiles';
 import { StatusBadge } from './StatusBadge';
 import type { BoardActions } from './useBoardPipeline';
 import { VirtualTileGrid } from './VirtualTileGrid';
@@ -107,6 +108,10 @@ export function FrameGrid({ candidates, effectiveItems, session, clusters, idFil
     void (kind === 'pin' ? actions.pinImages(items) : kind === 'ban' ? actions.banImages(items) : kind === 'clear' ? actions.clearOverride(items) : actions.returnToInbox(items));
   };
 
+  const files = useFrameFiles();
+  const deletable = actionTargets.filter(entry => canChangeFrameFile(entry.item));
+  const deleteTargets = () => { if (!files || files.busy || !deletable.length) return; setSelected(new Set()); void files.deleteFrames(deletable.map(entry => entry.item)); };
+
   const onKeyDown = (event: KeyboardEvent) => {
     const hotkey = event.key.toLowerCase();
     if (actions && !openId && (hotkey === 'p' || hotkey === 'b') && !event.repeat && !isTextField(event.target) && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -197,6 +202,10 @@ export function FrameGrid({ candidates, effectiveItems, session, clusters, idFil
         className={cn('inline-flex min-h-[44px] items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>
         <Icon aria-hidden className="h-4 w-4" />{label}
       </button>)}
+      {files && <button type="button" data-bulk-action="delete" disabled={files.busy || !deletable.length} onClick={deleteTargets}
+        className={cn('inline-flex min-h-[44px] items-center gap-2 rounded-md border border-destructive/60 px-3 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50', focusRing)}>
+        <Trash2 aria-hidden className="h-4 w-4" />Delete files
+      </button>}
     </div>}
     {visible.length === 0
       ? <p data-grid-empty className="m-6 rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">

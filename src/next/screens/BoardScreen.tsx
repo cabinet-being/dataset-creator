@@ -22,6 +22,7 @@ import { ExportDialog } from '../board/ExportDialog';
 import { FrameGrid } from '../board/FrameGrid';
 import { HealthPanel } from '../board/HealthPanel';
 import { useBoardPipeline } from '../board/useBoardPipeline';
+import { FrameFilesContext, useFrameFilesValue } from '../board/frameFiles';
 import { SourcesPanel } from '../board/SourcesPanel';
 import { BoardToolsContext, PhotopeaOverlay, VideoOverlay, type BoardTools } from '../board/toolOverlays';
 import type { useProjectRuntime } from '../useProjectRuntime';
@@ -114,12 +115,13 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
 
   const boardTools = useMemo<BoardTools>(() => ({ openVideo: setVideo, editInPhotopea: setPhotopea }), []);
   const directory = runtime.projectDirectoryHandle;
+  const frameFiles = useFrameFilesValue(runtime);
 
   const assemble = <AssembleControls pipeline={pipeline} session={reconciled} sourceCount={sourceItems.length} exportCount={exportCount}
     busy={busy || runtime.isProjectDirectoryBusy} onSizeModeChange={changeSizeMode} onStrictnessChange={changeStrictness}
     onExport={() => setExportOpen(true)} />;
 
-  return <BoardToolsContext.Provider value={boardTools}><div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
+  return <BoardToolsContext.Provider value={boardTools}><FrameFilesContext.Provider value={frameFiles}><div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
     <BoardHeader runtime={runtime} assemble={assemble} mode={mode} onModeChange={setMode} />
     {mode === 'caption'
       ? <CaptionMode runtime={runtime} candidates={candidates} effectiveItems={effectiveItems} session={reconciled} pipeline={pipeline} patchSession={patchSession} report={quality.report} />
@@ -138,5 +140,5 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     {photopea && directory && <PhotopeaOverlay item={photopea} directory={directory} onClose={() => setPhotopea(null)} />}
     {video && directory && <VideoOverlay item={video} directory={directory} onClose={() => setVideo(null)}
       onSaved={() => runtime.explorerMutations.indexProjectWorkspaceAssets()} />}
-  </div></BoardToolsContext.Provider>;
+  </div></FrameFilesContext.Provider></BoardToolsContext.Provider>;
 }

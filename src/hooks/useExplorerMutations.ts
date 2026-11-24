@@ -374,8 +374,12 @@ export function useExplorerMutations({
     if (node.path === 'Project') {
       return;
     }
-    const entries = getContextEntries(node);
-    if (entries.length === 0) {
+    await deleteExplorerEntries(getContextEntries(node));
+  };
+
+  /** Confirms and deletes the given entries (Dataset images return to inbox instead); shared by the Explorer and the next UI. */
+  const deleteExplorerEntries = async (entries: ExplorerItemEntry[]) => {
+    if (entries.length === 0 || entries.some(entry => entry.path === 'Project')) {
       return;
     }
     const datasetFiles = entries.filter(
@@ -675,7 +679,7 @@ export function useExplorerMutations({
 
 
   return {
-    addToDatasetFromExplorer, cancelInlineExplorerEdit, commitInlineExplorerEdit, explorerClipboard, handleExplorerDelete,
+    addToDatasetFromExplorer, cancelInlineExplorerEdit, commitInlineExplorerEdit, explorerClipboard, handleExplorerDelete, deleteExplorerEntries,
     handleExplorerDrop, handleExplorerDuplicate, handleExplorerImport, handleExplorerNewFolder, handleExplorerPaste,
     handleExplorerRename, importExternalFilesIntoExplorer, indexProjectWorkspaceAssets, inlineExplorerEdit,
     runExplorerMutation, setExplorerClipboard, setInlineExplorerEdit,
