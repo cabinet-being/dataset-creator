@@ -32,7 +32,6 @@ import {
   getBuildAssetId,
   getBuildRecordForItem,
   getBuildCounts,
-  reconcileBuildSession,
   selectBuildQueue,
   nextBuildCursor,
   updateBuildDecision,
@@ -46,9 +45,10 @@ import { BuildProfileControls } from './BuildProfileControls';
 import { BuildStepper, BuildNextStageFooter } from './BuildStepper';
 import { BuildCaptionStage } from './BuildCaptionStage';
 import { parseTags } from './buildCaptionTags';
-import { getBuildStageSummary, mergeBuildItems, selectBuildCandidates, selectBuildDatasetItems } from '../../lib/buildStageSummary';
+import { getBuildStageSummary, selectBuildDatasetItems } from '../../lib/buildStageSummary';
 import { useQualityActions } from './useQualityActions';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
+import { useBuildModel } from './useBuildModel';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
 import { useApplyMembership } from './useApplyMembership';
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
@@ -77,7 +77,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const projectId = useProjectStore((state) => state.id);
   const projectType = useProjectStore((state) => state.projectType);
   const targetModel = useProjectStore((state) => state.targetModel);
-  const session = useProjectStore((state) => state.buildSession);
   const dataset = useProjectStore((state) => state.dataset);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateSession = useProjectStore((state) => state.updateBuildSession);
@@ -96,17 +95,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const [batchMode, setBatchMode] = useState<'add' | 'remove' | 'replace'>('add');
   const operation = useOperation('Build review', root, viewId);
 
-  // Depend on the registered images themselves, not on the session: typing a caption draft or deciding
-  // an item changes the session but not these, and merging thousands of items per keystroke is what lagged.
-  const registeredSources = useProjectStore((state) => state.sourceImages);
-  const registeredDatasetItems = useProjectStore((state) => state.datasetItems);
-  const effectiveItems = useMemo(
-    () => mergeBuildItems(items, Object.values(registeredSources), Object.values(registeredDatasetItems)),
-    [items, registeredSources, registeredDatasetItems]
-  );
-  const candidates = useMemo(() => selectBuildCandidates(effectiveItems, session), [effectiveItems, session.records]);
-  const reconciled = useMemo(() => busy ? session : reconcileBuildSession(session, candidates, undefined, effectiveItems), [busy, candidates, effectiveItems, session]);
-  useEffect(() => { if (reconciled !== session) updateSession(reconciled); }, [reconciled, session, updateSession]);
+  const { session, effectiveItems, candidates, reconciled, counts, patchSession } = useBuildModel(items, { busy, writeBack: true });
   const view: BuildReviewView = reconciled.view ?? 'list';
   const queue = useMemo(() => selectBuildQueue(reconciled, candidates),
     [candidates, reconciled.order, reconciled.records, reconciled.filter, reconciled.profile]);
@@ -215,7 +204,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     };
   }, [current, currentId, currentRecord, effectiveItems, reconciled.profile]);
   usePublishInspectorSelection(active, viewId, inspectorPayload);
-  const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled.order, reconciled.records, reconciled.profile]);
   const stage: BuildStage = reconciled.stage ?? 'select';
   const setStage = useCallback((next: BuildStage) => updateSession((value) => value.stage === next ? value : { ...value, stage: next }), [updateSession]);
   const quality = useDatasetQualityReport({
@@ -256,7 +244,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   useEffect(() => { setDraft(currentRecord?.draft ?? current?.tags?.join(', ') ?? ''); }, [currentId, current?.tags, currentRecord?.draft]);
   useEffect(() => { setSelected((ids) => new Set([...ids].filter((id) => reconciled.order.includes(id)))); }, [reconciled.order]);
 
-  const patchSession = useCallback((patch: (value: BuildSession) => BuildSession) => updateSession(patch), [updateSession]);
   const setView = useCallback((next: BuildReviewView) => patchSession((value) => (value.view ?? 'list') === next ? value : { ...value, view: next }), [patchSession]);
   const captionSuggestions = useMemo(() => [...new Set([
     ...effectiveItems.flatMap(item => item.tags ?? []), ...(localTagger?.tags ?? []),
