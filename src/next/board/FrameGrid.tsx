@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
-import { Ban, Check, ImageIcon, Inbox, Pin, PinOff } from 'lucide-react';
+import { Ban, Check, ImageIcon, Inbox, Pin, PinOff, X } from 'lucide-react';
 import { BOARD_FILTERS, matchesBoardFilter, type BoardFilter } from '../../lib/imageStatusLabels';
 import { INBOX_PREFIX } from '../../lib/inboxFolders';
 import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { cn } from '../../lib/utils';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { BuildSession } from '../../types';
-import { buildFrameEntries, countBoardFilters, groupFrameEntries, isDatasetEntry, moveFrameCursor, overrideKeyAction, type CursorMove, type FrameEntry } from './frameEntries';
+import type { BuildClusterResult } from '../../services/build/buildClusterService';
+import { buildFrameEntries, countBoardFilters, groupFrameEntries, groupFrameEntriesByClusters, isDatasetEntry, moveFrameCursor, overrideKeyAction, type CursorMove, type FrameEntry } from './frameEntries';
 import { Lightbox } from './Lightbox';
 import { StatusBadge } from './StatusBadge';
 import type { BoardActions } from './useBoardPipeline';
@@ -27,6 +28,11 @@ type Props = {
   /** Every merged image; resolves transformed outputs. */
   effectiveItems: readonly WorkspaceImage[];
   session: BuildSession;
+  /** Similarity clusters of the candidates, once their features are ready; the grid then offers grouping by theme. */
+  clusters?: Pick<BuildClusterResult, 'themes' | 'nearDuplicateGroups'> | null;
+  /** Local filter from Health: only these frames (workspace image ids or Build asset ids) are shown. */
+  idFilter?: { label: string; ids: ReadonlySet<string> } | null;
+  onClearIdFilter?: () => void;
   /** Pin, Ban, Clear and Return; absent means the grid only browses. */
   actions?: BoardActions;
   /** Starts a drag of inbox frames; the owner puts them into the Explorer drag state. */
@@ -38,8 +44,9 @@ type Props = {
  * Frame grid of the Board: statuses computed once, folder groups, local filter chips, local selection and cursor.
  * Thumbnails exist only for the rendered window of the virtual grid.
  */
-export function FrameGrid({ candidates, effectiveItems, session, actions, onDragFrames, onDragFramesEnd }: Props) {
+export function FrameGrid({ candidates, effectiveItems, session, clusters, idFilter, onClearIdFilter, actions, onDragFrames, onDragFramesEnd }: Props) {
   const [filter, setFilter] = useState<BoardFilter>('all');
+  const [grouping, setGrouping] = useState<'themes' | 'folders'>('themes');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [cursorId, setCursorId] = useState<string | null>(null);
   const [columns, setColumns] = useState(1);
@@ -50,9 +57,12 @@ export function FrameGrid({ candidates, effectiveItems, session, actions, onDrag
   const root = useRef<HTMLDivElement>(null);
 
   const entries = useMemo(() => buildFrameEntries(candidates, effectiveItems, session), [candidates, effectiveItems, session]);
-  const counts = useMemo(() => countBoardFilters(entries), [entries]);
-  const visible = useMemo(() => filter === 'all' ? entries : entries.filter(entry => matchesBoardFilter(filter, entry.status, entry.record)), [entries, filter]);
-  const groups = useMemo(() => groupFrameEntries(visible), [visible]);
+  const scoped = useMemo(() => idFilter ? entries.filter(entry => idFilter.ids.has(entry.id) || idFilter.ids.has(entry.assetId)) : entries, [entries, idFilter]);
+  const counts = useMemo(() => countBoardFilters(scoped), [scoped]);
+  const visible = useMemo(() => filter === 'all' ? scoped : scoped.filter(entry => matchesBoardFilter(filter, entry.status, entry.record)), [scoped, filter]);
+  const hasClusters = Boolean(clusters && (clusters.themes.length || clusters.nearDuplicateGroups.length));
+  const byTheme = hasClusters && grouping === 'themes';
+  const groups = useMemo(() => byTheme && clusters ? groupFrameEntriesByClusters(visible, clusters) : groupFrameEntries(visible), [byTheme, clusters, visible]);
   const visibleIds = useMemo(() => new Set(visible.map(entry => entry.id)), [visible]);
   const activeSelection = useMemo(() => new Set([...selected].filter(id => visibleIds.has(id))), [selected, visibleIds]);
   const tabStopId = cursorId && visibleIds.has(cursorId) ? cursorId : visible[0]?.id ?? null;
@@ -161,6 +171,16 @@ export function FrameGrid({ candidates, effectiveItems, session, actions, onDrag
           filter === option ? 'border-primary bg-primary/15 text-foreground' : 'border-border text-muted-foreground hover:bg-secondary hover:text-foreground')}>
         {FILTER_LABELS[option]}<span data-filter-count className="text-xs tabular-nums">{counts[option]}</span>
       </button>)}
+      {hasClusters && <div role="group" aria-label="Group frames by" className="ml-2 flex overflow-hidden rounded-md border border-border">
+        {(['themes', 'folders'] as const).map(option => <button key={option} type="button" data-grouping={option} aria-pressed={grouping === option} onClick={() => setGrouping(option)}
+          className={cn('min-h-[44px] px-3 text-sm', focusRing, grouping === option ? 'bg-primary/15 text-foreground' : 'text-muted-foreground hover:bg-secondary')}>
+          {option === 'themes' ? 'Themes' : 'Folders'}</button>)}
+      </div>}
+      {idFilter && <span data-id-filter className="inline-flex min-h-[44px] items-center gap-2 rounded-md border border-primary bg-primary/10 pl-3 text-sm">
+        Showing: {idFilter.label}
+        <button type="button" data-clear-id-filter aria-label="Clear this filter" onClick={onClearIdFilter}
+          className={cn('flex h-11 w-11 items-center justify-center rounded-md hover:bg-secondary', focusRing)}><X aria-hidden className="h-4 w-4" /></button>
+      </span>}
       {activeSelection.size > 0 && <button type="button" data-clear-selection onClick={() => setSelected(new Set())}
         className={cn('ml-auto min-h-[44px] rounded-md px-3 text-sm text-muted-foreground hover:text-foreground', focusRing)}>
         {activeSelection.size} selected · Clear

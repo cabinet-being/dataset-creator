@@ -36,6 +36,8 @@ export type QualityBucket = {
   id: string; label: string; count: number; recommended?: number;
   /** How `recommended` was derived, with the actual numbers. */
   recommendedFrom?: string;
+  /** Ids of the files counted in this bucket (the `ids` of `QualityItemInput`), so a UI can show exactly them. */
+  ids?: string[];
 };
 
 export type QualityMetric = {

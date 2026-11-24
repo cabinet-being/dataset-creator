@@ -12,6 +12,7 @@ import { createSemanticFeatureEncoder, isModelDownloadRequired } from '../../ser
 import { predictLocalTags } from '../../services/tagging/localTaggerService';
 import { TAGGER_MEMORY_MESSAGE } from '../../services/tagging/taggerWorkerClient';
 import type { LocalTaggerBundle } from '../../services/tagging/localTaggerService';
+import { getStrictnessThreshold } from '../../services/similarity/similarityLevels';
 import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '../../services/quality/imageQuality';
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
 import { clearBuildShortlist, createBuildShortlist, getActiveShortlist, getBuildAssetId, getBuildAssetRevision, getBuildContentRevision, getBuildRecordForItem, setBuildShortlistNarrowed } from '../../services/build/buildSessionService';
@@ -279,6 +280,8 @@ export function useBuildAutoPipeline(input: Input) {
       return [...merged.values()];
     });
   };
+  /** Cutoff for "the same group" from the project's Strictness; Balanced equals the former fixed `SELECTION_DUPLICATE_SIMILARITY`. */
+  const duplicateThresholdOf = (session: BuildSession) => getStrictnessThreshold(session.profile.similarityStrictness ?? 'balanced', 'dinov2');
   const qualityOf = (session: BuildSession) => (item: WorkspaceImage) => {
     const summary = session.records[getBuildAssetId(item)]?.triage?.quality;
     return summary ? qualityScoreFromSummary(summary) : undefined;
@@ -290,7 +293,7 @@ export function useBuildAutoPipeline(input: Input) {
     let result: ShortlistResult | null = null;
     await withEncoder(ctx, assemblyOperation, async (encoder) => {
       result = await computeShortlist({
-        baselineItems: args.baseline, poolItems: args.pool, needed: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(args.session),
+        baselineItems: args.baseline, poolItems: args.pool, needed: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(args.session), duplicateThreshold: duplicateThresholdOf(args.session),
         onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setStep('understanding'); setProgress({ completed, total: count }); },
         onProgress: ({ phase, completed, total: count }) => { setStep(phase === 'selecting' ? 'selecting' : 'similarity'); setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
         onSkip: (entry) => args.unreadable.push(entry),
@@ -309,7 +312,7 @@ export function useBuildAutoPipeline(input: Input) {
       result = await computeNarrowing({
         baselineItems: args.baseline, shortlistItems: args.items, target: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
         tagsOf: narrowTagsOf(args.session, characterTraits), ignoredTags: [dataset.triggerWord, ...characterTraits.map((trait) => trait.tag)],
-        qualityOf: qualityOf(args.session),
+        qualityOf: qualityOf(args.session), duplicateThreshold: duplicateThresholdOf(args.session),
         onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setStep('understanding'); setProgress({ completed, total: count }); },
         onProgress: ({ completed, total: count }) => { setStep('selecting'); setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Picking the most varied'); },
         onSkip: (entry) => args.unreadable.push(entry),

@@ -3,6 +3,7 @@ import type { BuildAssemblyStep, useBuildAutoPipeline } from '../../components/b
 import { ModelDownloadPrompt } from '../../components/workspace/ModelDownloadPrompt';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../lib/utils';
+import { SIMILARITY_STRICTNESS, type SimilarityStrictnessId } from '../../services/similarity/similarityLevels';
 import type { BuildSession } from '../../types';
 
 type Pipeline = ReturnType<typeof useBuildAutoPipeline>;
@@ -29,11 +30,12 @@ type Props = {
   exportCount: number;
   busy: boolean;
   onSizeModeChange: (mode: 'auto' | 'target', target?: number) => void;
+  onStrictnessChange: (strictness: SimilarityStrictnessId) => void;
   onExport: () => void;
 };
 
 /** The primary action of the Board header: Assemble, its progress with Cancel, and Re-assemble + Export afterwards. */
-export function AssembleControls({ pipeline, session, sourceCount, exportCount, busy, onSizeModeChange, onExport }: Props) {
+export function AssembleControls({ pipeline, session, sourceCount, exportCount, busy, onSizeModeChange, onStrictnessChange, onExport }: Props) {
   const work = describePipelineWork(pipeline.phase, pipeline.step);
   const assembled = Boolean(session.auto?.assembledAt);
   const auto = session.profile.sizeMode === 'auto';
@@ -66,6 +68,13 @@ export function AssembleControls({ pipeline, session, sourceCount, exportCount, 
               onChange={event => onSizeModeChange('target', Math.max(1, Math.floor(Number(event.target.value) || 1)))}
               className={cn('min-h-[44px] w-20 rounded-md border border-input bg-background px-2 text-foreground', focusRing)} />
           </label>}
+          <label className="flex items-center gap-1 text-muted-foreground" title="How alike two images must be to count as the same group; Assemble keeps one of each group.">Strictness
+            <select data-strictness value={session.profile.similarityStrictness ?? 'balanced'} disabled={disabled}
+              onChange={event => onStrictnessChange(event.target.value as SimilarityStrictnessId)}
+              className={cn('min-h-[44px] rounded-md border border-input bg-background px-2 text-foreground', focusRing)}>
+              {SIMILARITY_STRICTNESS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+          </label>
         </div>
         {assembled
           ? <>

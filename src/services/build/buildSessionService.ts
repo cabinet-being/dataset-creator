@@ -1,6 +1,7 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { isProjectDatasetPath } from '../dataset/datasetFolderService';
 import { inboxFolderOfPath } from '../../lib/inboxFolders';
+import { SIMILARITY_STRICTNESS } from '../similarity/similarityLevels';
 import type {
   BuildAssemblyOutcome,
   BuildImageOverride,
@@ -98,6 +99,7 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   const migrate = input.version === 1;
   const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record, migrate)]));
   const sources = Array.isArray(input.profile?.sources) ? [...new Set(input.profile.sources.filter((path): path is string => typeof path === 'string' && Boolean(path)))] : undefined;
+  const strictness = SIMILARITY_STRICTNESS.find((entry) => entry.id === input.profile?.similarityStrictness)?.id;
   const filter = BUILD_FILTERS.find((value) => value === input.filter) ?? 'all';
   const reviewMode = input.profile?.reviewMode === 'uncertain-only' ? 'uncertain-only' : 'every-item';
   // Sessions saved before stages existed resume in Select when they already hold items, otherwise in Add.
@@ -114,6 +116,7 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
       autoPipeline: input.profile?.autoPipeline !== false,
       ...(input.profile?.sizeMode === 'auto' ? { sizeMode: 'auto' as const } : {}),
       ...(sources ? { sources } : {}),
+      ...(strictness ? { similarityStrictness: strictness } : {}),
     },
     cursor: Math.max(0, Math.floor(Number(input.cursor) || 0)),
     filter,

@@ -2,6 +2,11 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useBuildModel } from '../../components/build/useBuildModel';
 import { useUIStore } from '../../stores/useUIStore';
+import { useBuildClusters } from '../../components/build/useBuildClusters';
+import { useQualityActions } from '../../components/build/useQualityActions';
+import { useDatasetQualityReport } from '../../components/quality/useDatasetQualityReport';
+import { getBuildAssetId } from '../../services/build/buildSessionService';
+import type { SimilarityStrictnessId } from '../../services/similarity/similarityLevels';
 import { selectBuildDatasetItems } from '../../lib/buildStageSummary';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import type { BuildSession } from '../../types';
@@ -13,6 +18,7 @@ import { getMinShortSide } from '../../services/quality/imageQuality';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { AssembleControls, AssembleSummary } from '../board/AssembleControls';
 import { FrameGrid } from '../board/FrameGrid';
+import { HealthPanel } from '../board/HealthPanel';
 import { useBoardPipeline } from '../board/useBoardPipeline';
 import { SourcesPanel } from '../board/SourcesPanel';
 import type { useProjectRuntime } from '../useProjectRuntime';
@@ -60,6 +66,37 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     return { ...session, profile: { ...profile, ...(mode === 'auto' ? { sizeMode: 'auto' as const } : {}), ...(target !== undefined ? { target } : {}) } };
   }), [patchSession]);
 
+  const changeStrictness = useCallback((strictness: SimilarityStrictnessId) => patchSession((session: BuildSession) =>
+    session.profile.similarityStrictness === strictness ? session : { ...session, profile: { ...session.profile, similarityStrictness: strictness } }), [patchSession]);
+
+  // Health and the theme grouping need image features: they are computed only after the first Assemble.
+  const assembled = Boolean(reconciled.auto?.assembledAt);
+  const dataset = useProjectStore(state => state.dataset);
+  const projectType = useProjectStore(state => state.projectType);
+  const targetModel = useProjectStore(state => state.targetModel);
+  const quality = useDatasetQualityReport({ featuresActive: assembled, items: effectiveItems, candidates, session: reconciled, triggerWord: dataset.triggerWord, projectType, targetModel });
+  const candidateIds = useMemo(() => candidates.filter(item => item.kind !== 'video').map(item => item.id), [candidates]);
+  const clusters = useBuildClusters({ active: assembled, ids: candidateIds, features: quality.features, strictness: reconciled.profile.similarityStrictness ?? 'balanced' });
+
+  // Local grid filter from a Health item. Report ids are workspace image ids; a transformed output stands for its source frame.
+  const [idFilter, setIdFilter] = useState<{ label: string; ids: ReadonlySet<string> } | null>(null);
+  const showIds = useCallback((label: string, ids: string[]) => {
+    const byId = new Map(effectiveItems.map(item => [item.id, item]));
+    const records = Object.values(useProjectStore.getState().buildSession.records);
+    const expanded = new Set(ids);
+    for (const id of ids) {
+      const item = byId.get(id);
+      if (!item) continue;
+      const assetId = getBuildAssetId(item);
+      expanded.add(assetId);
+      const source = records.find(record => record.outputAssetId === assetId)?.assetId;
+      if (source) expanded.add(source);
+    }
+    setIdFilter({ label, ids: expanded });
+  }, [effectiveItems]);
+  const clearIdFilter = useCallback(() => setIdFilter(null), []);
+  const qualityActions = useQualityActions({ datasetItems: quality.datasetItems, directory: runtime.projectDirectoryHandle, onSelectIds: (ids, action) => showIds(action.label, ids) });
+
   const { explorer } = runtime;
   // Dragging frames from the grid onto an inbox folder moves their files through the Explorer mutations.
   const dragFrames = useCallback((items: WorkspaceImage[]) => explorer.setCurrentDraggedExplorerEntries(items.flatMap(item => item.assetPath
@@ -67,7 +104,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
   const endFrameDrag = useCallback(() => explorer.setCurrentDraggedExplorerEntries(null), [explorer]);
 
   const assemble = <AssembleControls pipeline={pipeline} session={reconciled} sourceCount={sourceItems.length} exportCount={exportCount}
-    busy={busy || runtime.isProjectDirectoryBusy} onSizeModeChange={changeSizeMode}
+    busy={busy || runtime.isProjectDirectoryBusy} onSizeModeChange={changeSizeMode} onStrictnessChange={changeStrictness}
     onExport={() => notify('info', 'The export dialog arrives in the next step.')} />;
 
   return <div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
@@ -76,9 +113,10 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
       <SourcesPanel runtime={runtime} items={effectiveItems} sources={sources} onSourcesChange={setSources} />
       <main data-board-grid className="flex min-h-[320px] min-w-0 flex-1 flex-col">
         <AssembleSummary session={reconciled} />
-        <FrameGrid candidates={candidates} effectiveItems={effectiveItems} session={reconciled} actions={actions} onDragFrames={dragFrames} onDragFramesEnd={endFrameDrag} />
+        <FrameGrid candidates={candidates} effectiveItems={effectiveItems} session={reconciled} actions={actions} clusters={clusters.result} idFilter={idFilter} onClearIdFilter={clearIdFilter} onDragFrames={dragFrames} onDragFramesEnd={endFrameDrag} />
       </main>
-      {/* The Health column (step 3.3) goes here. */}
+      <HealthPanel assembled={assembled} report={quality.report} datasetCount={quality.datasetItems.length} features={quality.features}
+        onShowIds={showIds} onApplyAction={(hint, action) => void qualityActions.apply(hint, action)} canApplyAction={qualityActions.canApply} />
     </div>
   </div>;
 }

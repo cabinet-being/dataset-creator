@@ -67,12 +67,14 @@ const axisMetric = (spec: CoverageAxisSpec, input: CoverageInput): QualityMetric
     ? [...TARGET_MODEL_PRESETS[model].buckets.map((bucket) => ({ id: bucket.id, label: `${bucket.width}×${bucket.height}` })), { id: 'other', label: 'Other aspect ratios' }]
     : spec.buckets.map((bucket) => ({ id: bucket.id, label: bucket.label }));
   const counts = new Map<string, number>();
+  const members = new Map<string, string[]>();
   let labeled = 0;
   for (const item of items) {
     const bucket = assign(item);
     if (bucket === null) continue;
     labeled += 1;
     counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+    members.set(bucket, [...(members.get(bucket) ?? []), item.id]);
   }
   const unlabeled = items.length - labeled;
   if (labeled / items.length < cfg.minLabeledFraction) {
@@ -84,10 +86,11 @@ const axisMetric = (spec: CoverageAxisSpec, input: CoverageInput): QualityMetric
   const basisText = `max(${countFiles(items.length)}, target ${input.target?.min ?? T.count.defaultTarget.min})`;
   const buckets: QualityBucket[] = bucketDefs.map((def) => {
     const share = shares[def.id];
-    if (!share) return { id: def.id, label: def.label, count: counts.get(def.id) ?? 0 };
+    const ids = members.get(def.id) ?? [];
+    if (!share) return { id: def.id, label: def.label, count: counts.get(def.id) ?? 0, ids };
     const recommended = Math.ceil(share * basis);
     return {
-      id: def.id, label: def.label, count: counts.get(def.id) ?? 0, recommended,
+      id: def.id, label: def.label, count: counts.get(def.id) ?? 0, ids, recommended,
       recommendedFrom: `recommended ceil(${percent(share)} × ${basis}) = ${recommended}, where ${basis} = ${basisText}`,
     };
   });

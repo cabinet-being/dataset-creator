@@ -3,6 +3,7 @@ import { getWorkspaceDisplayName, type WorkspaceImage } from '../../lib/workspac
 import { getBuildAssetId, getBuildRecordForItem, getImageStatus, type ImageStatus } from '../../services/build/buildSessionService';
 import type { BuildReviewRecord, BuildSession } from '../../types';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
+import type { BuildClusterResult } from '../../services/build/buildClusterService';
 import type { TileGroup } from './VirtualTileGrid';
 
 /** One frame of the Board with its status, computed once. */
@@ -61,6 +62,27 @@ export const groupFrameEntries = (entries: readonly FrameEntry[]): TileGroup<Fra
     const last = groups[groups.length - 1];
     if (last?.key === entry.folder) last.items.push(entry); else groups.push({ key: entry.folder, label: entry.folder, items: [entry] });
   }
+  return groups;
+};
+
+/**
+ * Groups entries (any order) by the similarity clusters of the candidates: themes at the project's Strictness, or the groups of
+ * repeats when that Strictness has no themes. Entries in no cluster come last. Inside a group the entry order is kept.
+ */
+export const groupFrameEntriesByClusters = (entries: readonly FrameEntry[], result: Pick<BuildClusterResult, 'themes' | 'nearDuplicateGroups'>): TileGroup<FrameEntry>[] => {
+  const themes = result.themes.length > 0;
+  const clusters = themes ? result.themes : result.nearDuplicateGroups;
+  const clusterOf = new Map<string, number>();
+  clusters.forEach((cluster, index) => cluster.memberIds.forEach(id => { if (!clusterOf.has(id)) clusterOf.set(id, index); }));
+  const buckets = clusters.map((): FrameEntry[] => []);
+  const rest: FrameEntry[] = [];
+  for (const entry of entries) {
+    const index = clusterOf.get(entry.id);
+    if (index === undefined) rest.push(entry); else buckets[index].push(entry);
+  }
+  const groups: TileGroup<FrameEntry>[] = [];
+  buckets.forEach((items, index) => { if (items.length) groups.push({ key: clusters[index].id, label: `${themes ? 'Theme' : 'Repeats'} ${index + 1}`, items }); });
+  if (rest.length) groups.push({ key: 'unclustered', label: groups.length ? 'Other frames' : 'All frames', items: rest });
   return groups;
 };
 

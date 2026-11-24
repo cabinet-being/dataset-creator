@@ -11,6 +11,8 @@ type Options = {
   datasetItems: readonly WorkspaceImage[];
   directory?: ProjectDirectoryHandle | null;
   onSelectId?: (id: string) => void;
+  /** Receives every flagged id. When set it is used instead of `onSelectId` (which only gets the first one). */
+  onSelectIds?: (ids: string[], action: QualityAction) => void;
 };
 
 /** Whether a quality action has a handler here: tag removal, or selecting files (never deleting them). */
@@ -19,7 +21,7 @@ export const canApplyQualityAction = (_source: unknown, action: QualityAction) =
   ((action.kind === 'remove' || action.kind === 'review') && Boolean(action.ids?.length));
 
 /** Applies quality-report actions in Build. Tag removal is one undoable history step; nothing is rewritten automatically. */
-export function useQualityActions({ datasetItems, directory, onSelectId }: Options) {
+export function useQualityActions({ datasetItems, directory, onSelectId, onSelectIds }: Options) {
   const notify = useUIStore((state) => state.addNotification);
   const apply = useCallback(async (_source: unknown, action: QualityAction) => {
     if (action.kind === 'remove' && action.tags?.length) {
@@ -39,9 +41,13 @@ export function useQualityActions({ datasetItems, directory, onSelectId }: Optio
       return;
     }
     if ((action.kind === 'remove' || action.kind === 'review') && action.ids?.length) {
+      if (onSelectIds) {
+        onSelectIds(action.ids, action);
+        return;
+      }
       onSelectId?.(action.ids[0]);
       notify('info', `${action.ids.length} file${action.ids.length === 1 ? '' : 's'} flagged; showing the first. Nothing was deleted.`);
     }
-  }, [datasetItems, directory, notify, onSelectId]);
+  }, [datasetItems, directory, notify, onSelectId, onSelectIds]);
   return { apply, canApply: canApplyQualityAction };
 }

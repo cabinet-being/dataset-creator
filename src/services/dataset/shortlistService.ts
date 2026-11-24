@@ -138,10 +138,12 @@ const createLazyGreedy = (indexes: readonly number[], total: number, score: (ind
 
 export async function buildShortlist(options: {
   baseline: AssemblyInputAsset[]; candidates: AssemblyInputAsset[]; needed: number | 'auto'; factor?: number;
+  /** Cosine similarity from which two images count as the same group; defaults to `SHORTLIST_DUPLICATE_THRESHOLD`. */
+  duplicateThreshold?: number;
   signal?: AbortSignal; onProgress?: (progress: ShortlistProgress) => void;
 }): Promise<ShortlistResult> {
   const slice = createSlicer(options.signal);
-  const threshold = SHORTLIST_DUPLICATE_THRESHOLD;
+  const threshold = options.duplicateThreshold ?? SHORTLIST_DUPLICATE_THRESHOLD;
   const sorted = [...options.candidates].sort((left, right) => stableKey(left).localeCompare(stableKey(right), undefined, { numeric: true, sensitivity: 'base' }));
   const baselineCount = options.baseline.length;
   const assets = [...options.baseline, ...sorted];
@@ -238,10 +240,12 @@ export async function narrowShortlist(options: {
   baseline: AssemblyInputAsset[]; baselineTags?: ReadonlyArray<readonly string[]>; items: NarrowInput[]; target: number;
   /** Trigger word and character trait tags: they carry no variety and are ignored. */
   ignoredTags?: Iterable<string>;
+  /** Same meaning as in `buildShortlist`. */
+  duplicateThreshold?: number;
   signal?: AbortSignal; onProgress?: (progress: ShortlistProgress) => void;
 }): Promise<NarrowResult> {
   const slice = createSlicer(options.signal);
-  const threshold = SHORTLIST_DUPLICATE_THRESHOLD;
+  const threshold = options.duplicateThreshold ?? SHORTLIST_DUPLICATE_THRESHOLD;
   const ignored = new Set([...(options.ignoredTags ?? [])].map(normalizeNarrowTag));
   const entries = [...options.items].sort((left, right) => stableKey(left.asset).localeCompare(stableKey(right.asset), undefined, { numeric: true, sensitivity: 'base' }));
   const baselineCount = options.baseline.length;
@@ -312,6 +316,7 @@ export async function computeShortlist(options: {
   baselineItems: WorkspaceImage[]; poolItems: WorkspaceImage[]; needed: number | 'auto'; triggerWord: string;
   encoder: { encode(item: WorkspaceImage, caption: string): Promise<SemanticFeature> };
   qualityOf?: (item: WorkspaceImage) => number | undefined;
+  duplicateThreshold?: number;
   signal?: AbortSignal; onEncodeProgress?: (completed: number, total: number) => void; onProgress?: (progress: ShortlistProgress) => void;
   onSkip?: (skipped: SkippedAssemblyItem) => void;
 }): Promise<ShortlistResult> {
@@ -322,7 +327,7 @@ export async function computeShortlist(options: {
   const withQuality = (asset: AssemblyInputAsset) => ({ ...asset, quality: options.qualityOf?.(asset.item) ?? asset.quality });
   return buildShortlist({
     baseline: features.filter((entry) => baselineSet.has(entry.item)), candidates: features.filter((entry) => !baselineSet.has(entry.item)).map(withQuality),
-    needed: options.needed, signal: options.signal, onProgress: options.onProgress,
+    needed: options.needed, duplicateThreshold: options.duplicateThreshold, signal: options.signal, onProgress: options.onProgress,
   });
 }
 
@@ -332,6 +337,7 @@ export async function computeNarrowing(options: {
   tagsOf: (item: WorkspaceImage) => readonly string[]; ignoredTags?: Iterable<string>;
   encoder: { encode(item: WorkspaceImage, caption: string): Promise<SemanticFeature> };
   qualityOf?: (item: WorkspaceImage) => number | undefined;
+  duplicateThreshold?: number;
   signal?: AbortSignal; onEncodeProgress?: (completed: number, total: number) => void; onProgress?: (progress: ShortlistProgress) => void;
   onSkip?: (skipped: SkippedAssemblyItem) => void;
 }): Promise<NarrowResult> {
@@ -343,6 +349,6 @@ export async function computeNarrowing(options: {
   return narrowShortlist({
     baseline, baselineTags: baseline.map((entry) => options.tagsOf(entry.item)),
     items: features.filter((entry) => !baselineSet.has(entry.item)).map((asset) => ({ asset: { ...asset, quality: options.qualityOf?.(asset.item) ?? asset.quality }, tags: options.tagsOf(asset.item) })),
-    target: options.target, ignoredTags: options.ignoredTags, signal: options.signal, onProgress: options.onProgress,
+    target: options.target, ignoredTags: options.ignoredTags, duplicateThreshold: options.duplicateThreshold, signal: options.signal, onProgress: options.onProgress,
   });
 }

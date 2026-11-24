@@ -239,6 +239,8 @@ export interface BuildPreparationProfile {
   sizeMode?: 'auto';
   /** Selected inbox folders (explorer paths; subfolders are included). Absent means the whole inbox; folders added later are not selected automatically. */
   sources?: string[];
+  /** How alike two images must be to count as the same group when Assemble picks one of them. Absent means Balanced (the former fixed cutoff). */
+  similarityStrictness?: 'strict' | 'balanced' | 'loose';
 }
 
 export type BuildReviewView = 'list' | 'grid' | 'clusters';
