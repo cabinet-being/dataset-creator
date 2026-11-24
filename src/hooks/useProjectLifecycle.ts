@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
-import type { WorkspaceMenu } from '../components/workspace/WorkspaceMenus';
 import type { WorkspaceImage } from '../lib/workspaceImages';
 import type { WorkspaceTab } from '../lib/workspaceTabs';
 import { EXPLORER_VIEW } from '../lib/workspaceLayout';
@@ -35,8 +34,8 @@ interface UseProjectLifecycleParams {
   workspace: {
     openTabs: WorkspaceTab[];
     workspaceImages: WorkspaceImage[];
-    dock: ReturnType<typeof useDockWorkspace>;
-    setOpenMenu: Dispatch<SetStateAction<WorkspaceMenu | null>>;
+    dock: Pick<ReturnType<typeof useDockWorkspace>, 'show'>;
+    setOpenMenu: (menu: null) => void;
     setActiveActivityView: Dispatch<SetStateAction<'explorer' | 'versions'>>;
     setClosedTabs: Dispatch<SetStateAction<WorkspaceTab[]>>;
     setNavigationRecovery: Dispatch<SetStateAction<boolean>>;

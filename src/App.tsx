@@ -65,10 +65,9 @@ import {
   findWorkspaceImageIdForPath,
   toWorkspaceImages,
   toWorkspaceReviewAssets,
-  type WorkspaceFileAsset,
   type WorkspaceImage,
 } from './lib/workspaceImages';
-import { collectWorkspaceFileAssets, generateMissingWorkspacePsdPreviews } from './lib/workspaceFileAssets';
+import { useWorkspaceFileAssets } from './hooks/useWorkspaceFileAssets';
 import { useExplorerTree } from './hooks/useExplorerTree';
 import { useExplorerShortcuts } from './hooks/useExplorerShortcuts';
 import { useProjectLifecycle } from './hooks/useProjectLifecycle';
@@ -144,7 +143,6 @@ function App() {
   const operationLogs = useUIStore(state => state.operationLogs);
   const projectDirectoryHandle = useUIStore(state => state.projectDirectoryHandle);
   const projectDirectoryName = useUIStore(state => state.projectDirectoryName);
-  const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const [openMenu, setOpenMenu] = useState<WorkspaceMenu | null>(null);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
   const [isProjectDirectoryBusy, setIsProjectDirectoryBusy] = useState(false);
@@ -191,7 +189,7 @@ function App() {
     caption: true,
   });
   const [fileInspectorMetadata, setFileInspectorMetadata] = useState<FileInspectorMetadata | null>(null);
-  const [workspaceFileAssets, setWorkspaceFileAssets] = useState<WorkspaceFileAsset[]>([]);
+  const workspaceFileAssets = useWorkspaceFileAssets();
   const [dismissedEmptyDatasetSuggestionSignatures, setDismissedEmptyDatasetSuggestionSignatures] = useState<Set<string>>(
     () => new Set()
   );
@@ -417,51 +415,6 @@ function App() {
       )
     );
   };
-
-  useEffect(() => {
-    let canceled = false;
-
-    if (!projectDirectoryHandle) {
-      setWorkspaceFileAssets([]);
-      return;
-    }
-
-    const loadDatasetWorkspaceFileAssets = async () => {
-      try {
-        const assets = await collectWorkspaceFileAssets(projectDirectoryHandle);
-        const pendingAssets = assets.map((asset) =>
-          asset.kind === 'psd' && !asset.previewUrl ? { ...asset, previewStatus: 'queued' as const } : asset
-        );
-
-        if (canceled) {
-          return;
-        }
-
-        setWorkspaceFileAssets(pendingAssets);
-        void generateMissingWorkspacePsdPreviews(
-          projectDirectoryHandle,
-          pendingAssets,
-          (path, update) => {
-            setWorkspaceFileAssets((currentAssets) =>
-              currentAssets.map((asset) => (asset.path === path ? { ...asset, ...update } : asset))
-            );
-          },
-          () => canceled
-        );
-      } catch (error) {
-        if (!canceled) {
-          setWorkspaceFileAssets([]);
-          addNotification('warning', error instanceof Error ? error.message : 'Unable to read Dataset file assets');
-        }
-      }
-    };
-
-    void loadDatasetWorkspaceFileAssets();
-
-    return () => {
-      canceled = true;
-    };
-  }, [addNotification, assetPreviewRefreshKey, projectDirectoryHandle]);
 
   useEffect(() => {
     if (!activeTab || !isFileBackedTab(activeTab)) {
