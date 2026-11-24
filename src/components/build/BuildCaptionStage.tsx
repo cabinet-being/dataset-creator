@@ -4,7 +4,7 @@ import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useWorkspacePreviewUrls } from '../../lib/previewUrlCache';
 import { runHistoryTransaction } from '../../stores/useHistoryStore';
 import { flushProjectSave } from '../../hooks/useProjectSave';
-import { persistCaptionTagsForItems } from '../../services/caption/captionMutationService';
+import { applyCaptionTagBatch, persistCaptionTagsForItems } from '../../services/caption/captionMutationService';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
 import { useUIStore } from '../../stores/useUIStore';
 import { useProjectStore } from '../../stores/useProjectStore';
@@ -95,17 +95,9 @@ export function BuildCaptionStage({ active = true, items, suggestions, directory
   const applyBatch = async (mode: 'add' | 'remove') => {
     const tag = batchTag.trim();
     if (!tag || !markedItems.length || saving) return;
-    const key = tag.toLocaleLowerCase();
     setSaving(true);
     try {
-      await runHistoryTransaction(mode === 'add' ? 'Add caption tag' : 'Remove caption tag', async (historyWriter) => {
-        await persistCaptionTagsForItems({
-          items: markedItems, directory, flush: flushProjectSave, historyWriter,
-          resolveTags: (item) => mode === 'add'
-            ? [...(item.tags ?? []).filter((value) => value.toLocaleLowerCase() !== key), tag]
-            : (item.tags ?? []).filter((value) => value.toLocaleLowerCase() !== key),
-        });
-      });
+      await applyCaptionTagBatch({ items: markedItems, tags: [tag], mode, directory, flush: flushProjectSave });
       setBatchTag('');
     } catch (error) {
       notify('error', error instanceof Error ? error.message : 'Could not update the captions.');

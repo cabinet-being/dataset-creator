@@ -1,5 +1,5 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
-import { useHistoryStore, captureHistoryEpoch, isHistoryEpochCurrent } from '../../stores/useHistoryStore';
+import { useHistoryStore, captureHistoryEpoch, isHistoryEpochCurrent, runHistoryTransaction } from '../../stores/useHistoryStore';
 import { useProjectStore } from '../../stores/useProjectStore';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { invalidateWorkspaceFileAssetCache } from '../../lib/workspaceFileAssets';
@@ -139,6 +139,26 @@ export async function persistCaptionTagsForItems(options: {
   });
   return targets.length;
 }
+
+type CaptionBatchOptions = Omit<Parameters<typeof persistCaptionTagsForItems>[0], 'historyWriter' | 'resolveTags'>;
+
+/** Adds (appends) or removes tags, compared case-insensitively, on many captions as one undoable history step. */
+export async function applyCaptionTagBatch(options: CaptionBatchOptions & { tags: string[]; mode: 'add' | 'remove' }): Promise<number> {
+  const keys = new Set(options.tags.map((tag) => tag.toLocaleLowerCase()));
+  const { tags, mode, ...rest } = options;
+  const plural = tags.length === 1 ? 'tag' : 'tags';
+  return runHistoryTransaction(mode === 'add' ? `Add caption ${plural}` : `Remove caption ${plural}`, (historyWriter) => persistCaptionTagsForItems({
+    ...rest, historyWriter,
+    resolveTags: (item) => {
+      const kept = (item.tags ?? []).filter((value) => !keys.has(value.toLocaleLowerCase()));
+      return mode === 'add' ? [...kept, ...tags] : kept;
+    },
+  }));
+}
+
+/** Replaces the caption of each item with `resolveTags(item)` as one undoable history step named `label`. */
+export const persistCaptionBatch = (label: string, options: CaptionBatchOptions & { resolveTags: (item: WorkspaceImage) => string[] }): Promise<number> =>
+  runHistoryTransaction(label, (historyWriter) => persistCaptionTagsForItems({ ...options, historyWriter }));
 
 export type TriggerRewriteResult = { rewritten: number; skipped: number };
 
