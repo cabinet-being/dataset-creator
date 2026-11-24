@@ -22,6 +22,7 @@ import { FrameGrid } from '../board/FrameGrid';
 import { HealthPanel } from '../board/HealthPanel';
 import { useBoardPipeline } from '../board/useBoardPipeline';
 import { SourcesPanel } from '../board/SourcesPanel';
+import { BoardToolsContext, VideoOverlay, type BoardTools } from '../board/toolOverlays';
 import type { useProjectRuntime } from '../useProjectRuntime';
 
 type Runtime = ReturnType<typeof useProjectRuntime>;
@@ -57,6 +58,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<BoardMode>('select');
   const [exportOpen, setExportOpen] = useState(false);
+  const [video, setVideo] = useState<WorkspaceImage | null>(null);
   const model = useBuildModel(runtime.workspaceReviewItems, { writeBack: true, busy: busy || runtime.isProjectDirectoryBusy });
   const { effectiveItems, candidates, reconciled, patchSession } = model;
   const sources = reconciled.profile.sources;
@@ -107,11 +109,14 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     ? [{ path: item.assetPath, name: item.assetPath.split('/').pop() ?? item.fileName, kind: 'file' as const, workspaceImageId: item.id }] : [])), [explorer]);
   const endFrameDrag = useCallback(() => explorer.setCurrentDraggedExplorerEntries(null), [explorer]);
 
+  const boardTools = useMemo<BoardTools>(() => ({ openVideo: setVideo }), []);
+  const directory = runtime.projectDirectoryHandle;
+
   const assemble = <AssembleControls pipeline={pipeline} session={reconciled} sourceCount={sourceItems.length} exportCount={exportCount}
     busy={busy || runtime.isProjectDirectoryBusy} onSizeModeChange={changeSizeMode} onStrictnessChange={changeStrictness}
     onExport={() => setExportOpen(true)} />;
 
-  return <div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
+  return <BoardToolsContext.Provider value={boardTools}><div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
     <BoardHeader runtime={runtime} assemble={assemble} mode={mode} onModeChange={setMode} />
     {mode === 'caption'
       ? <CaptionMode runtime={runtime} candidates={candidates} effectiveItems={effectiveItems} session={reconciled} pipeline={pipeline} patchSession={patchSession} report={quality.report} />
@@ -126,5 +131,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     </div>}
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} pairCount={exportCount} report={quality.report} targetModel={targetModel}
       onExportComplete={plan => patchSession(session => ({ ...session, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} />
-  </div>;
+    {video && directory && <VideoOverlay item={video} directory={directory} onClose={() => setVideo(null)}
+      onSaved={() => runtime.explorerMutations.indexProjectWorkspaceAssets()} />}
+  </div></BoardToolsContext.Provider>;
 }

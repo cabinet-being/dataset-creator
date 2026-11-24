@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import { ChevronDown, ChevronRight, FilePlus2, FolderInput, FolderPlus, Pencil } from 'lucide-react';
+import { ChevronDown, ChevronRight, FilePlus2, FolderInput, FolderPlus, Pencil, Video } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import {
-  collectInboxFolders, countInboxFolders, INBOX_PREFIX, isInboxFolderInSources, isInFolder, toggleSourceFolder,
+  collectInboxFolders, countInboxFolders, inboxFolderOf, INBOX_PREFIX, isInboxFolderInSources, isInboxItem, isInFolder, toggleSourceFolder,
 } from '../../lib/inboxFolders';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { cn } from '../../lib/utils';
 import type { useProjectRuntime } from '../useProjectRuntime';
+import { useBoardTools } from './toolOverlays';
 
 type Runtime = ReturnType<typeof useProjectRuntime>;
 
@@ -34,6 +35,23 @@ export function SourcesPanel({ runtime, items, sources, onSourcesChange }: {
   const [active, setActive] = useState(INBOX_ROOT);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const committing = useRef(false);
+  const tools = useBoardTools();
+
+  // Videos are not frames: they stay out of the grid and the counts, are listed here and open Video Frames.
+  const videos = useMemo(() => items.filter(item => item.kind === 'video' && isInboxItem(item)), [items]);
+  const videosByFolder = useMemo(() => {
+    const byFolder = new Map<string, number>();
+    for (const video of videos) byFolder.set(inboxFolderOf(video), (byFolder.get(inboxFolderOf(video)) ?? 0) + 1);
+    return byFolder;
+  }, [videos]);
+  // A video dropped here opens Video Frames as soon as the import has made it appear in the project.
+  const awaitedVideos = useRef<ReadonlySet<string> | null>(null);
+  useEffect(() => {
+    const known = awaitedVideos.current;
+    if (!known) return;
+    const added = videos.find(video => !known.has(video.id));
+    if (added) { awaitedVideos.current = null; tools?.openVideo(added); }
+  }, [videos, tools]);
 
   const emptyFolders = useMemo(() => collectInboxFolders(explorer.explorerTree), [explorer.explorerTree]);
   const counts = useMemo(() => countInboxFolders(items, emptyFolders, sources), [items, emptyFolders, sources]);
@@ -75,6 +93,8 @@ export function SourcesPanel({ runtime, items, sources, onSourcesChange }: {
     event.stopPropagation();
     setDropTarget(null);
     if (busy) return;
+    const droppingVideo = [...event.dataTransfer.items].some(entry => entry.kind === 'file' && entry.type.startsWith('video/'));
+    awaitedVideos.current = droppingVideo ? new Set(videos.map(video => video.id)) : null;
     const dragged = explorer.draggedExplorerEntriesRef.current;
     const destination = explorerPath(folder);
     // A folder cannot move into itself or its own subfolder; everything else is moved or imported by the Explorer owner.
@@ -149,6 +169,7 @@ export function SourcesPanel({ runtime, items, sources, onSourcesChange }: {
               onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); startRename(row.path); } }}
               className={cn('flex h-11 min-w-0 flex-1 items-center gap-2 rounded px-1 text-left text-sm', focusRing)}>
               <span className="min-w-0 flex-1 truncate">{row.name}</span>
+              {!!videosByFolder.get(row.path) && <span data-source-videos className="shrink-0 text-xs text-muted-foreground">{videosByFolder.get(row.path)} {videosByFolder.get(row.path) === 1 ? 'video' : 'videos'}</span>}
               <span data-source-count className="shrink-0 text-xs tabular-nums text-muted-foreground">{row.count}</span>
             </button>
             {!isRoot && <button type="button" aria-label={`Rename ${row.name}`} title="Rename" disabled={busy} onClick={() => startRename(row.path)}
@@ -159,6 +180,13 @@ export function SourcesPanel({ runtime, items, sources, onSourcesChange }: {
         </div>;
       })}
     </div>
+
+    {videos.length > 0 && <section data-sources-videos aria-label="Videos" className="max-h-40 overflow-auto border-t border-border px-3 py-2">
+      <h3 className="mb-1 text-xs font-semibold text-muted-foreground">{videos.length} {videos.length === 1 ? 'video' : 'videos'}</h3>
+      {videos.map(video => <button key={video.id} type="button" data-video-item={video.id} title={`Cut frames from ${video.fileName}`} onClick={() => tools?.openVideo(video)}
+        className={cn('flex min-h-[44px] w-full items-center gap-2 rounded px-1 text-left text-sm hover:bg-secondary', focusRing)}>
+        <Video aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{video.fileName}</span></button>)}
+    </section>}
 
     <dl data-sources-summary className="space-y-1 border-t border-border px-3 py-3 text-xs text-muted-foreground">
       <div className="flex justify-between"><dt>Inbox</dt><dd data-count-inbox className="tabular-nums text-foreground">{counts.inbox}</dd></div>

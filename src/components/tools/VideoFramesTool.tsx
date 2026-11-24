@@ -12,7 +12,7 @@ import { isProjectPathIncluded } from '../../lib/projectCategories';
 import { VideoClient, setVideoTabBusy, hasBusyVideoTasks } from '../../services/video/videoClient';
 import { inspectVideo, readVideoFrame, findFrameIndex } from '../../services/video/videoReader';
 import { clearVideoCache, hasVideoModel, getVideoThumbnail } from '../../services/video/videoCache';
-import { listFrameDirectories, saveVideoFrame } from '../../services/video/frameExport';
+import { listFrameDirectories, saveVideoFrame, validateFrameDirectory } from '../../services/video/frameExport';
 import { DEFAULT_FRAME_SELECTION, frameTimecode, type FrameReference, type FrameSelectionOptions, type VideoInfo, type VideoProgress } from '../../services/video/types';
 import { PROJECT_LAYOUT } from '../../services/project/projectLayoutService';
 
@@ -23,6 +23,8 @@ type Props = {
   fileName?: string;
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   onSaved?: () => void | Promise<void>;
+  /** Explorer path to save frames to first (for example `Project/inbox/clip`); created on the first save when missing. */
+  defaultDestination?: string;
 };
 const buttonClass = 'inline-flex items-center justify-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-secondary disabled:opacity-40';
 const inputClass = 'rounded border border-border bg-background px-2 py-1 text-xs';
@@ -42,7 +44,7 @@ const FrameThumbnail = ({ run, frame }: { run: string; frame: FrameReference }) 
   return url ? <img src={url} alt={`Frame at ${frameTimecode(frame.timestamp)}`} className="h-28 w-full object-contain" /> : <div className="h-28 bg-secondary" />;
 };
 
-export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileName, projectDirectoryHandle, onSaved }: Props) => {
+export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileName, projectDirectoryHandle, onSaved, defaultDestination }: Props) => {
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const assetPreviewRefreshKey = useUIStore((state) => state.assetPreviewRefreshKey);
   const [file, setFile] = useState<Blob | undefined>(initialFile);
@@ -70,7 +72,7 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
   const [savedPaths, setSavedPaths] = useState<string[]>([]);
   const [directories, setDirectories] = useState<string[]>([]);
   const [projectVideos, setProjectVideos] = useState<Array<{ path:string; name:string; file:Blob }>>([]);
-  const [destination, setDestination] = useState(`Project/${PROJECT_LAYOUT.rawDir}`);
+  const [destination, setDestination] = useState(defaultDestination ?? `Project/${PROJECT_LAYOUT.rawDir}`);
   const [replacement, setReplacement] = useState<number>();
   const commandRoot = useRef<HTMLDivElement>(null);
   const task = useOperation('Video Frames', commandRoot, tabId);
@@ -101,10 +103,10 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
     let disposed = false;
     setDirectories([]);
     if (projectDirectoryHandle) void listFrameDirectories(projectDirectoryHandle).then((paths) => {
-      if (!disposed) { setDirectories(paths); setDestination((current) => paths.includes(current) ? current : paths[0] ?? 'Project'); }
+      if (!disposed) { setDirectories(paths); setDestination((current) => paths.includes(current) || current === defaultDestination ? current : paths[0] ?? 'Project'); }
     }).catch((reason) => { if (!disposed) setError(String(reason)); });
     return () => { disposed = true; };
-  }, [projectDirectoryHandle]);
+  }, [defaultDestination, projectDirectoryHandle]);
   useEffect(() => {
     let disposed = false;
     if (!projectDirectoryHandle || initialFile) { setProjectVideos([]); return; }
@@ -230,6 +232,12 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
     const current = decoded.current;
     void perform(async (signal) => {
       let saved = 0;
+      if (!directories.includes(destination)) {
+        validateFrameDirectory(destination);
+        let directory = projectDirectoryHandle;
+        for (const part of destination.split('/').slice(1)) directory = await directory.getDirectoryHandle(part, { create: true });
+        if (mounted.current) setDirectories(await listFrameDirectories(projectDirectoryHandle));
+      }
       const timestamps = references?.map((frame) => frame.timestamp) ?? [current.timestamp];
       try {
         for (const timestamp of timestamps) {
@@ -327,7 +335,7 @@ export const VideoFramesTool = ({ active = true, tabId, file: initialFile, fileN
       </div>
     </>}
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-      <label>Save to <select aria-label="Frame destination" className={inputClass} value={destination} disabled={!projectDirectoryHandle || busy} onChange={(event) => setDestination(event.target.value)}>{directories.map((path) => <option key={path}>{path}</option>)}</select></label>
+      <label>Save to <select aria-label="Frame destination" className={inputClass} value={destination} disabled={!projectDirectoryHandle || busy} onChange={(event) => setDestination(event.target.value)}>{(directories.includes(destination) ? directories : [...directories, destination]).map((path) => <option key={path}>{path}</option>)}</select></label>
       <button className={buttonClass} disabled={!projectDirectoryHandle || busy} onClick={() => {
         if (projectDirectoryHandle) void listFrameDirectories(projectDirectoryHandle).then(setDirectories).catch(reportError);
       }}>Refresh folders</button>
