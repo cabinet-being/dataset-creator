@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
-import { captionShortlist, counter, datasetNames, expandPanel, filterRadio, openStep, flow, idleStatus, markShortlist, panel, selectFilter, step, waitForTriage } from './buildFlow';
+import { captionShortlist, counter, datasetNames, expandPanel, filterRadio, openStep, flow, idleStatus, markShortlist, panel, selectFilter, step, waitForTriage, switchToTargetMode } from './buildFlow';
 
 type Session = { filter: string; records: Record<string, { decision: string }>; auto?: { shortlist?: { entries: unknown[]; narrowed?: unknown } } };
 declare global { interface Window { __buildFixture: { session: () => Session; undo: () => Promise<void>; connectFakeTagger: () => void } } }
@@ -12,6 +12,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/tests/build-browser.html');
   await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
   await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await switchToTargetMode(page);
   // Triage finishes on its own; Find candidates stays locked until the analysis is done.
   await waitForTriage(page);
 });

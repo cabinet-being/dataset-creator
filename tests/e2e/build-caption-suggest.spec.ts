@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
-import { suggestAndApply, waitForTriage } from './buildFlow';
+import { suggestAndApply, waitForTriage, switchToTargetMode } from './buildFlow';
 
 declare global { interface Window { __buildFixture: { connectFakeTagger: () => void } } }
 
@@ -11,6 +11,7 @@ test.describe('build caption stage suggestions', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await switchToTargetMode(page);
     await waitForTriage(page);
     await suggestAndApply(page);
     await page.getByTestId('build-stage-caption').click();

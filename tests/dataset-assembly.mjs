@@ -25,6 +25,8 @@ try {
       'src/lib/projectProfilePresets.ts',
       'src/services/build/buildTriageService.ts',
       'src/lib/buildStageSummary.ts',
+      'src/services/build/buildClusterService.ts',
+      'src/services/quality/metrics/thresholds.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -44,6 +46,8 @@ try {
   const presets = await import(pathToFileURL(join(temp, 'projectProfilePresets.mjs')));
   const triage = await import(pathToFileURL(join(temp, 'buildTriageService.mjs')));
   const stageSummary = await import(pathToFileURL(join(temp, 'buildStageSummary.mjs')));
+  const clusterSvc = await import(pathToFileURL(join(temp, 'buildClusterService.mjs')));
+  const thresholds = await import(pathToFileURL(join(temp, 'thresholds.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/inbox/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -701,6 +705,308 @@ try {
       assert.equal(result.items[0].path, 'Project/inbox/zz.png');
       for (const entry of result.items) assert.ok(!entry.newTags.includes('common'));
     }
+  }
+  {
+    // Auto size mode: one representative per group of similar images; lazy greedy (CELF) equals the old full-scan greedy in Target mode.
+    const DIM = 80;
+    const unit = (parts, dim = DIM) => { const v = new Float32Array(dim); for (const [axis, w] of parts) v[axis] += w; const n = Math.hypot(...v); return v.map((x) => x / n); };
+    const input = (path, parts, extra = {}) => ({
+      item: { id: `asset:${path}`, sourceImageId: path, assetPath: path, kind: 'image', imageData: new Blob(['x']) },
+      feature: { imageHash: `h:${path}`, image: unit(parts), text: unit(parts), caption: '', contexts: [] }, caption: '', quality: 0.5, ...extra,
+    });
+    const dot = (a, b) => a.feature.image.reduce((sum, x, i) => sum + x * b.feature.image[i], 0);
+    const cutoff = shortlist.SHORTLIST_DUPLICATE_THRESHOLD;
+
+    // 200 identical images collapse into one candidate; so do 200 images that are >= 0.995 similar.
+    for (const make of [() => [[0, 1]], (n) => [[0, 1], [1 + (n % 50), 0.05]]]) {
+      const pool = Array.from({ length: 200 }, (_, n) => input(`Project/inbox/same_${String(n).padStart(3, '0')}.png`, make(n)));
+      assert.ok(dot(pool[0], pool[1]) >= 0.995 || make(0).length === 1);
+      const result = await shortlist.buildShortlist({ baseline: [], candidates: pool, needed: 'auto' });
+      assert.equal(result.items.length, 1);
+      assert.equal(result.mode, 'auto'); assert.equal(result.needed, 0); assert.equal(result.eligibleCount, 200); assert.equal(result.poolCount, 200);
+      assert.deepEqual(result.clusters, []);
+      assert.equal(result.items[0].reason, 'Group of 200 similar');
+      assert.equal(result.duplicates.filter((entry) => entry.against === 'shortlist').length, 199);
+    }
+
+    // 60 pairwise different images: Auto keeps all of them, Target 20 stays limited to its shortlist size.
+    {
+      const pool = Array.from({ length: 60 }, (_, n) => input(`Project/inbox/diff_${String(n).padStart(2, '0')}.png`, [[n, 1]]));
+      const auto = await shortlist.buildShortlist({ baseline: [], candidates: pool, needed: 'auto' });
+      assert.equal(auto.items.length, 60);
+      assert.ok(auto.items.every((entry) => entry.reason === 'Unique image'));
+      assert.equal(auto.duplicates.length, 0);
+      const target = await shortlist.buildShortlist({ baseline: [], candidates: pool, needed: 20 });
+      assert.equal(target.mode, undefined);
+      assert.equal(target.items.length, shortlist.getShortlistSize(20));
+      assert.ok(target.items.length < auto.items.length);
+      assert.ok(target.items.every((entry) => /^Cluster c\d+ \(/.test(entry.reason)));
+      assert.deepEqual(new Set(auto.items.map((entry) => entry.cluster)).size, 60, 'Auto items carry their own group ids');
+    }
+
+    // Mixed pool: group sizes show up in the reasons.
+    {
+      const groupA = [0, 1, 2, 3, 4].map((n) => input(`Project/inbox/a_${n}.png`, [[0, 1], [10 + n, 0.1]]));
+      const groupB = [0, 1, 2].map((n) => input(`Project/inbox/b_${n}.png`, [[1, 1], [20 + n, 0.1]]));
+      const singles = [30, 31, 32, 33].map((axis) => input(`Project/inbox/s_${axis}.png`, [[axis, 1]]));
+      const result = await shortlist.buildShortlist({ baseline: [], candidates: [...singles, ...groupB, ...groupA], needed: 'auto' });
+      assert.equal(result.items.length, 6);
+      assert.deepEqual(result.items.map((entry) => entry.reason).sort(), ['Group of 3 similar', 'Group of 5 similar', ...Array(4).fill('Unique image')].sort());
+      assert.equal(result.duplicates.filter((entry) => entry.against === 'shortlist').length, 6);
+      assert.equal(result.items.filter((entry) => entry.path.includes('/a_')).length, 1);
+      assert.equal(result.items.filter((entry) => entry.path.includes('/b_')).length, 1);
+      assert.deepEqual(result.items.map((entry) => entry.rank), [1, 2, 3, 4, 5, 6]);
+    }
+
+    // A group whose members are similar to a Dataset image yields nothing; Auto with an empty pool is empty.
+    {
+      const base = input('Project/dataset/base.png', [[0, 1]]);
+      const group = [0, 1, 2].map((n) => input(`Project/inbox/g_${n}.png`, [[0, 1], [10 + n, 0.1]]));
+      const other = input('Project/inbox/other.png', [[40, 1]]);
+      const result = await shortlist.buildShortlist({ baseline: [base], candidates: [...group, other], needed: 'auto' });
+      assert.deepEqual(result.items.map((entry) => entry.path), ['Project/inbox/other.png']);
+      assert.equal(result.duplicates.filter((entry) => entry.against === 'dataset').length, 3);
+      assert.equal(result.items[0].reason, 'Unique image');
+      const empty = await shortlist.buildShortlist({ baseline: [], candidates: [], needed: 'auto' });
+      assert.equal(empty.items.length, 0); assert.equal(empty.mode, 'auto');
+    }
+
+    // computeShortlist forwards 'auto'.
+    {
+      const feature = (n) => ({ imageHash: `h${n}`, image: unit([[n < 3 ? 0 : n, 1], [20 + n, 0.1]]), text: unit([[0, 1]]), caption: '', contexts: [] });
+      const pool = [0, 1, 2, 3, 4].map((n) => ({ id: `source:${n}`, sourceImageId: String(n), assetPath: `Project/inbox/c${n}.png`, kind: 'image', imageData: new Blob(['x']), tags: ['hero'], width: 64, height: 64 }));
+      const result = await shortlist.computeShortlist({
+        baselineItems: [], poolItems: pool, needed: 'auto', triggerWord: 'hero',
+        encoder: { encode: async (entry) => feature(Number(entry.sourceImageId)) },
+      });
+      assert.equal(result.mode, 'auto'); assert.equal(result.items.length, 3);
+    }
+
+    // Seeded random data.
+    const rng = (seed) => () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    const randomPool = (seed, count, { dim = 14, centers = 12, noise = 0.3, prefix = 'p', withUndefinedQuality = true } = {}) => {
+      const random = rng(seed);
+      const hubs = Array.from({ length: centers }, () => Array.from({ length: dim }, () => random() - 0.5));
+      return Array.from({ length: count }, (_, n) => {
+        const hub = hubs[Math.floor(random() * centers)];
+        const raw = hub.map((x) => x + (random() - 0.5) * noise * (random() < 0.3 ? 0.1 : 1));
+        const v = unit(raw.map((w, axis) => [axis, w]), dim);
+        const duplicateOf = n > 3 && random() < 0.08;
+        const asset = { item: { id: `asset:${prefix}${n}`, sourceImageId: `${prefix}${n}`, assetPath: `Project/inbox/${prefix}${String(n).padStart(3, '0')}.png`, kind: 'image', imageData: new Blob(['x']) },
+          feature: { imageHash: duplicateOf ? `${prefix}-dup` : `h:${prefix}${n}`, image: v, text: v, caption: '', contexts: [] }, caption: '',
+          quality: withUndefinedQuality && random() < 0.2 ? undefined : Math.round(random() * 4) / 4 };
+        return asset;
+      });
+    };
+
+    // Reference: the previous full-scan greedy loops, copied from the code before the lazy rewrite.
+    const slice = assembly.createSlicer();
+    const compare = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    const pathOf = (asset) => asset.item.assetPath ?? asset.item.id;
+    const refCluster = (members, matrix, size, count) => {
+      const k = Math.max(1, Math.min(count, members.length));
+      let densest = members[0]; let densestSum = -Infinity;
+      for (const member of members) { let sum = 0; for (const other of members) sum += matrix[member * size + other]; if (sum > densestSum + 1e-9) { densestSum = sum; densest = member; } }
+      let medoids = [densest];
+      const nearest = new Float64Array(members.length);
+      members.forEach((member, index) => { nearest[index] = matrix[densest * size + member]; });
+      while (medoids.length < k) {
+        let pick = -1; let lowest = Infinity;
+        members.forEach((member, index) => { if (!medoids.includes(member) && nearest[index] < lowest - 1e-9) { lowest = nearest[index]; pick = index; } });
+        if (pick < 0) break;
+        medoids.push(members[pick]);
+        members.forEach((member, index) => { nearest[index] = Math.max(nearest[index], matrix[members[pick] * size + member]); });
+      }
+      let groups = [];
+      for (let round = 0; round < 6; round += 1) {
+        groups = medoids.map(() => []);
+        for (const member of members) {
+          let best = 0; let bestSimilarity = -Infinity;
+          medoids.forEach((medoid, index) => { const similarity = member === medoid ? 2 : matrix[member * size + medoid]; if (similarity > bestSimilarity + 1e-9) { bestSimilarity = similarity; best = index; } });
+          groups[best].push(member);
+        }
+        const next = groups.map((group, index) => group.length ? clusterSvc.findMedoid(group, matrix, size) : medoids[index]);
+        if (next.every((medoid, index) => medoid === medoids[index])) break;
+        medoids = next;
+      }
+      return groups.filter((group) => group.length);
+    };
+    const refBuild = async ({ baseline, candidates, needed }) => {
+      const threshold = shortlist.SHORTLIST_DUPLICATE_THRESHOLD;
+      const sorted = [...candidates].sort((l, r) => compare(assembly.stableKey(l), assembly.stableKey(r)));
+      const baselineCount = baseline.length; const assets = [...baseline, ...sorted]; const total = assets.length;
+      const matrix = await assembly.pairwiseSimilarity(assets.map((a) => a.feature.image), slice);
+      const duplicates = [];
+      const duplicate = (target, kept, similarity, against) => duplicates.push({ key: assembly.stableKey(assets[target]), keptKey: assembly.stableKey(assets[kept]), similarity, against });
+      const best = new Float64Array(total);
+      for (let index = 0; index < baselineCount; index += 1) for (let target = 0; target < total; target += 1) best[target] = Math.max(best[target], matrix[index * total + target]);
+      const alive = new Uint8Array(total); let eligibleCount = 0;
+      for (let index = baselineCount; index < total; index += 1) {
+        let nearest = -1; let nearestSimilarity = -Infinity;
+        for (let member = 0; member < baselineCount; member += 1) { const s = assets[member].feature.imageHash === assets[index].feature.imageHash ? 1 : matrix[index * total + member]; if (s > nearestSimilarity) { nearestSimilarity = s; nearest = member; } }
+        if (nearest >= 0 && nearestSimilarity >= threshold) duplicate(index, nearest, nearestSimilarity, 'dataset'); else { alive[index] = 1; eligibleCount += 1; }
+      }
+      const requested = shortlist.getShortlistSize(needed); const size = Math.min(requested, eligibleCount);
+      if (size <= 0) return { items: [], duplicates, clusters: [] };
+      const eligible = Array.from({ length: total - baselineCount }, (_, index) => baselineCount + index).filter((index) => alive[index]);
+      const groups = refCluster(eligible, matrix, total, shortlist.planShortlistClusters(size, eligible.length))
+        .map((members) => ({ members, medoidKey: assembly.stableKey(assets[clusterSvc.findMedoid(members, matrix, total)]) }))
+        .sort((l, r) => r.members.length - l.members.length || l.medoidKey.localeCompare(r.medoidKey));
+      const weightSum = groups.reduce((sum, group) => sum + Math.sqrt(group.members.length), 0);
+      const clusters = groups.map((group, index) => ({ id: `c${index + 1}`, size: group.members.length, quota: Math.max(1, Math.ceil(size * Math.sqrt(group.members.length) / weightSum)), selected: 0 }));
+      const clusterOf = new Int32Array(total).fill(-1);
+      groups.forEach((group, index) => group.members.forEach((member) => { clusterOf[member] = index; }));
+      const items = [];
+      for (let round = 1; round <= 2 && items.length < size; round += 1) {
+        while (items.length < size) {
+          let pick = -1; let pickScore = -Infinity; let pickGain = 0;
+          for (const index of eligible) {
+            if (!alive[index] || clusters[clusterOf[index]].selected >= clusters[clusterOf[index]].quota * round) continue;
+            let gain = 0;
+            for (let target = 0; target < total; target += 1) { const delta = matrix[index * total + target] - best[target]; if (delta > 0) gain += delta; }
+            gain /= total;
+            const score = gain * (1 + 0.15 * (assets[index].quality ?? 0.5));
+            if (score > pickScore + 1e-12 || (Math.abs(score - pickScore) <= 1e-12 && pick >= 0 && assembly.stableKey(assets[index]).localeCompare(assembly.stableKey(assets[pick])) < 0)) { pick = index; pickScore = score; pickGain = gain; }
+          }
+          if (pick < 0) break;
+          const cluster = clusters[clusterOf[pick]]; cluster.selected += 1; alive[pick] = 0;
+          for (let target = 0; target < total; target += 1) best[target] = Math.max(best[target], matrix[pick * total + target]);
+          for (const index of eligible) {
+            if (!alive[index]) continue;
+            const similarity = assets[index].feature.imageHash === assets[pick].feature.imageHash ? 1 : matrix[pick * total + index];
+            if (similarity >= threshold) { alive[index] = 0; duplicate(index, pick, similarity, 'shortlist'); }
+          }
+          items.push({ key: assembly.stableKey(assets[pick]), cluster: cluster.id, gain: pickGain, rank: items.length + 1, reason: `Cluster ${cluster.id} (${cluster.size} similar, quota ${cluster.quota}): +${(pickGain * 100).toFixed(1)}% coverage` });
+        }
+      }
+      return { items, duplicates, clusters };
+    };
+    const refNarrow = async ({ baseline, baselineTags = [], items: input, target, ignoredTags = [] }) => {
+      const threshold = shortlist.SHORTLIST_DUPLICATE_THRESHOLD;
+      const ignored = new Set(ignoredTags.map(shortlist.normalizeNarrowTag));
+      const entries = [...input].sort((l, r) => compare(assembly.stableKey(l.asset), assembly.stableKey(r.asset)));
+      const baselineCount = baseline.length; const assets = [...baseline, ...entries.map((e) => e.asset)]; const total = assets.length;
+      const matrix = await assembly.pairwiseSimilarity(assets.map((a) => a.feature.image), slice);
+      const tagSets = entries.map((e) => new Set(e.tags.map(shortlist.normalizeNarrowTag).filter((t) => t && !ignored.has(t))));
+      const df = new Map(); for (const tags of tagSets) for (const tag of tags) df.set(tag, (df.get(tag) ?? 0) + 1);
+      const weights = new Map();
+      for (const [tag, files] of df) { if (entries.length >= 3 && files / entries.length >= thresholds.QUALITY_THRESHOLDS.tags.commonFraction) continue; weights.set(tag, Math.log(1 + entries.length / files)); }
+      const weightTotal = Math.max([...weights.values()].reduce((s, v) => s + v, 0), 1e-9);
+      const counts = new Map();
+      for (const tags of baselineTags) for (const tag of new Set(tags.map(shortlist.normalizeNarrowTag))) if (weights.has(tag)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      const best = new Float64Array(total);
+      for (let index = 0; index < baselineCount; index += 1) for (let t = 0; t < total; t += 1) best[t] = Math.max(best[t], matrix[index * total + t]);
+      const alive = new Uint8Array(total);
+      for (let index = baselineCount; index < total; index += 1) {
+        let nearestSimilarity = -Infinity;
+        for (let member = 0; member < baselineCount; member += 1) if (matrix[index * total + member] > nearestSimilarity) nearestSimilarity = matrix[index * total + member];
+        if (baselineCount && nearestSimilarity >= threshold) continue; alive[index] = 1;
+      }
+      const out = []; const want = Math.max(0, Math.min(target, entries.length));
+      while (out.length < want) {
+        let pick = -1; let pickScore = -Infinity; let pickGain = 0;
+        for (let index = baselineCount; index < total; index += 1) {
+          if (!alive[index]) continue;
+          let tagGain = 0;
+          for (const tag of tagSets[index - baselineCount]) { const weight = weights.get(tag); if (weight) tagGain += weight * 0.5 ** ((counts.get(tag) ?? 0) + 1); }
+          let visualGain = 0;
+          for (let t = 0; t < total; t += 1) { const delta = matrix[index * total + t] - best[t]; if (delta > 0) visualGain += delta; }
+          const gain = tagGain / weightTotal + shortlist.NARROW_VISUAL_WEIGHT * (visualGain / total);
+          const score = gain * (1 + 0.05 * (assets[index].quality ?? 0.5));
+          if (score > pickScore + 1e-12 || (Math.abs(score - pickScore) <= 1e-12 && pick >= 0 && assembly.stableKey(assets[index]).localeCompare(assembly.stableKey(assets[pick])) < 0)) { pick = index; pickScore = score; pickGain = gain; }
+        }
+        if (pick < 0) break;
+        alive[pick] = 0;
+        const newTags = [...tagSets[pick - baselineCount]].filter((tag) => weights.has(tag) && !counts.get(tag));
+        for (const tag of tagSets[pick - baselineCount]) if (weights.has(tag)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        for (let t = 0; t < total; t += 1) best[t] = Math.max(best[t], matrix[pick * total + t]);
+        for (let index = baselineCount; index < total; index += 1) if (alive[index] && matrix[pick * total + index] >= threshold) alive[index] = 0;
+        out.push({ key: assembly.stableKey(assets[pick]), gain: pickGain, rank: out.length + 1, newTags });
+      }
+      return out;
+    };
+    const summarize = (result) => result.items.map((entry) => ({ key: entry.key, cluster: entry.cluster, gain: entry.gain, rank: entry.rank, reason: entry.reason }));
+
+    // Target mode: the lazy greedy picks exactly what the full-scan greedy picked, in the same order.
+    for (const [seed, count, needed, baselineSize, noise] of [[1, 120, 10, 0, 0.3], [2, 200, 25, 6, 0.2], [3, 250, 40, 0, 0.15], [4, 90, 60, 3, 0.4], [5, 160, 8, 10, 0.1], [6, 60, 100, 0, 0.3]]) {
+      const all = randomPool(seed, count + baselineSize, { noise, prefix: 't' });
+      const baseline = all.slice(0, baselineSize); const candidates = all.slice(baselineSize);
+      const actual = await shortlist.buildShortlist({ baseline, candidates, needed });
+      const expected = await refBuild({ baseline, candidates, needed });
+      assert.ok(expected.items.length > 0, `seed ${seed}: reference selects something`);
+      assert.deepEqual(summarize(actual), expected.items, `buildShortlist seed ${seed} matches the full-scan greedy`);
+      assert.deepEqual(actual.clusters, expected.clusters, `seed ${seed}: clusters`);
+      const shape = (list) => list.map((entry) => [entry.key, entry.keptKey, entry.similarity, entry.against]);
+      assert.deepEqual(shape(actual.duplicates), shape(expected.duplicates), `seed ${seed}: duplicates`);
+    }
+
+    const vocabulary = Array.from({ length: 25 }, (_, n) => `tag${n}`);
+    for (const [seed, count, target, baselineSize] of [[11, 80, 12, 0], [12, 120, 30, 5], [13, 100, 100, 0], [14, 70, 5, 8], [15, 150, 40, 0]]) {
+      const all = randomPool(seed, count + baselineSize, { noise: 0.25, prefix: 'n' });
+      const random = rng(seed * 7);
+      const tagsFor = () => Array.from({ length: Math.floor(random() * 6) }, () => vocabulary[Math.floor(random() ** 2 * vocabulary.length)]);
+      const baseline = all.slice(0, baselineSize);
+      const baselineTags = baseline.map(tagsFor);
+      const items = all.slice(baselineSize).map((asset) => ({ asset, tags: tagsFor() }));
+      const options = { baseline, baselineTags, items, target, ignoredTags: ['tag0'] };
+      const actual = await shortlist.narrowShortlist(options);
+      const expected = await refNarrow(options);
+      assert.ok(expected.length > 0);
+      const pick = (list) => list.map((entry) => ({ key: entry.key, gain: entry.gain, rank: entry.rank, newTags: entry.newTags }));
+      assert.deepEqual(pick(actual.items), expected, `narrowShortlist seed ${seed} matches the full-scan greedy`);
+    }
+
+    // Auto invariants on random data: representatives are pairwise below the cutoff and cover every other eligible image.
+    for (const [seed, count, baselineSize] of [[21, 150, 0], [22, 250, 8], [23, 300, 0]]) {
+      const all = randomPool(seed, count + baselineSize, { noise: 0.2, prefix: 'a' });
+      const baseline = all.slice(0, baselineSize); const candidates = all.slice(baselineSize);
+      const result = await shortlist.buildShortlist({ baseline, candidates, needed: 'auto' });
+      const byPath = new Map(all.map((asset) => [pathOf(asset), asset]));
+      const sim = (a, b) => (a.feature.imageHash === b.feature.imageHash ? 1 : dot(a, b));
+      const picked = result.items.map((entry) => byPath.get(entry.path));
+      assert.equal(new Set(picked).size, picked.length);
+      for (const a of picked) for (const b of picked) if (a !== b) assert.ok(sim(a, b) < cutoff, 'representatives are not similar to each other');
+      for (const a of picked) for (const member of baseline) assert.ok(sim(a, member) < cutoff, 'no representative is similar to the Dataset');
+      const skipped = new Set(result.duplicates.map((entry) => entry.path));
+      assert.equal(picked.length + skipped.size, count, 'every image is either a representative or a skipped duplicate');
+      for (const entry of result.duplicates) assert.ok(entry.against === 'dataset' || sim(byPath.get(entry.path), byPath.get(entry.keptPath)) >= cutoff);
+      assert.equal(result.items.length, result.eligibleCount - result.duplicates.filter((entry) => entry.against === 'shortlist').length);
+      const reverse = await shortlist.buildShortlist({ baseline, candidates: [...candidates].reverse(), needed: 'auto' });
+      assert.deepEqual(reverse.items.map((entry) => entry.path), result.items.map((entry) => entry.path), 'Auto ignores input order');
+    }
+
+    // Performance guard: ~1500 low-dimensional vectors in Auto mode finish quickly (generous bound; the old full rescan was the bottleneck).
+    {
+      const pool = randomPool(99, 1500, { dim: 8, centers: 40, noise: 0.5, prefix: 'z' });
+      const started = Date.now();
+      const result = await shortlist.buildShortlist({ baseline: [], candidates: pool, needed: 'auto' });
+      const elapsed = Date.now() - started;
+      assert.ok(result.items.length > 1 && result.items.length < 1500);
+      assert.ok(elapsed < 20000, `Auto on 1500 vectors took ${elapsed} ms`);
+      console.log(`  auto 1500 vectors: ${result.items.length} groups in ${elapsed} ms`);
+    }
+  }
+  {
+    // Build session size mode.
+    const fresh = buildSession.createBuildSession();
+    assert.equal(fresh.profile.sizeMode, 'auto', 'new sessions start in Auto mode');
+    assert.equal(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(fresh))).profile.sizeMode, 'auto', 'sizeMode survives normalize');
+    const legacy = JSON.parse(JSON.stringify(fresh));
+    delete legacy.profile.sizeMode; legacy.profile.target = 42;
+    const migrated = buildSession.normalizeBuildSession(legacy);
+    assert.equal(migrated.profile.sizeMode, undefined, 'a session without sizeMode stays in Target mode');
+    assert.equal(migrated.profile.target, 42);
+    for (const bogus of ['target', 'AUTO', true, null, 1]) assert.equal(buildSession.normalizeBuildSession({ ...JSON.parse(JSON.stringify(fresh)), profile: { ...fresh.profile, sizeMode: bogus } }).profile.sizeMode, undefined, `sizeMode ${JSON.stringify(bogus)} is not Auto`);
+    const reconciled = buildSession.reconcileBuildSession(fresh, [], '2026-10-21T00:00:00.000Z');
+    assert.equal(reconciled.profile.sizeMode, 'auto', 'reconcile keeps the size mode');
+    assert.equal(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(reconciled))).profile.sizeMode, 'auto');
+    // Clearing the shortlist keeps the mode; the shortlist stores mode and compared count.
+    const a = item('source:a', 'a', 'Project/inbox/a.png', { byteSize: 1, modifiedAt: 1 });
+    let session = buildSession.reconcileBuildSession(fresh, [a], '2026-10-21T00:00:00.000Z');
+    session = buildSession.createBuildShortlist(session, { needed: 0, requested: 1, duplicates: 3, mode: 'auto', poolCount: 4, items: [{ item: a, cluster: 'g1', gain: 0.2, rank: 1 }] });
+    assert.equal(session.auto.shortlist.mode, 'auto'); assert.equal(session.auto.shortlist.poolCount, 4); assert.equal(session.auto.shortlist.entries.length, 1);
+    assert.equal(buildSession.clearBuildShortlist(session).profile.sizeMode, 'auto');
+    assert.equal(buildSession.clearBuildShortlist(session).auto.shortlist, undefined);
   }
   console.log('dataset assembly contracts: ok');
 } finally {

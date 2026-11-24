@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { counter, filterRadio, idleStatus, markShortlist, panel, selectFilter, step, suggestAndApply } from './buildFlow';
+import { counter, filterRadio, idleStatus, markShortlist, panel, selectFilter, step, suggestAndApply, switchToTargetMode } from './buildFlow';
 
 test('build workspace shows two candidate frames', async ({ page }) => {
   await page.goto('/tests/build-browser.html');
@@ -29,6 +29,7 @@ test.describe('build auto pipeline', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await switchToTargetMode(page);
     // Pass 1 shortlist -> captions -> Narrow -> Apply: 3 files reach the Dataset in one batch.
     await suggestAndApply(page);
   });
@@ -165,6 +166,7 @@ test.describe('build without auto assembly', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await switchToTargetMode(page);
   });
 
   test('entering Select runs triage only; Find candidates only marks candidates', async ({ page }) => {

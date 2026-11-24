@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { selectFilter, suggestAndApply } from './buildFlow';
+import { selectFilter, suggestAndApply, switchToTargetMode } from './buildFlow';
 import type { Page } from '@playwright/test';
 
 type Record = { decision: string; application?: string; triage?: { group: string } };
@@ -20,6 +20,7 @@ test.describe('build clusters view', () => {
     await page.goto('/tests/build-browser.html');
     await page.getByRole('button', { name: 'Prepare auto pipeline fixture' }).click();
     await expect(page.getByRole('heading', { name: 'Build Dataset' })).toBeVisible({ timeout: 20_000 });
+    await switchToTargetMode(page);
     await suggestAndApply(page);
     await expect(page.getByRole('status').filter({ hasText: /Analyzing|Finding|Describing|Picking|Adding|Working/ })).toHaveCount(0, { timeout: 30_000 });
     await toggle(page, 'clusters').click();

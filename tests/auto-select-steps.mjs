@@ -122,6 +122,41 @@ try {
   assert.equal(result.undescribed, 0);
   assert.equal(result.pickCount, 0);
 
+  // Auto mode: no target, so nothing is blocked by it.
+  {
+    const auto = (patch = {}) => steps({ auto: true, ...patch });
+    let r = auto();
+    assert.equal(r.needed, 0);
+    assert.equal(r.by.find.state, 'ready');
+    assert.equal(r.by.find.reason, undefined);
+    r = auto({ datasetCount: 500, target: 3 });
+    assert.equal(r.by.find.state, 'ready', 'a Dataset above the target never blocks Find in Auto');
+    // The other Find locks still apply.
+    assert.equal(auto({ folderImages: 0, analyzed: 0, poolSize: 0 }).by.find.reason, 'No images in the selected folders');
+    assert.equal(auto({ pendingAnalysis: 2 }).by.find.reason, 'Waiting for quality analysis (2 left)');
+    assert.equal(auto({ taskRunning: true }).by.find.reason, 'Another task is running');
+    assert.equal(auto({ poolSize: 0 }).by.find.reason, 'No usable images in the selected folders');
+    // Pick takes every candidate and does not need Describe.
+    r = auto({ ...withCandidates });
+    assert.equal(r.pickCount, 4);
+    assert.equal(r.by.describe.state, 'ready');
+    assert.equal(r.by.pick.state, 'ready');
+    assert.match(r.by.pick.reason, /compared by appearance only/, 'undescribed candidates only produce a hint');
+    assert.equal(auto({ ...withCandidates, described: 4 }).by.pick.reason, undefined);
+    assert.equal(r.undescribed, 4);
+    r = auto({ ...withCandidates, datasetCount: 500, target: 3 });
+    assert.equal(r.by.pick.state, 'ready', 'no "Target reached" lock in Auto');
+    assert.equal(r.pickCount, 4);
+    assert.equal(auto({ ...withCandidates, taskRunning: true, task: 'find' }).by.pick.reason, 'Another task is running');
+    assert.equal(auto({ ...withCandidates, picks: 3 }).by.pick.state, 'done');
+    assert.equal(auto({ ...withCandidates, picks: 3, taskRunning: true, task: 'apply' }).by.pick.state, 'running');
+    assert.equal(auto({ hasCandidates: true, candidates: 0 }).by.pick.state, 'done');
+    assert.equal(auto().by.pick.reason, 'Find candidates first');
+    // Target mode is unchanged when `auto` is false or absent.
+    assert.equal(steps({ auto: false, datasetCount: 3 }).by.find.state, 'locked');
+    assert.equal(steps({ ...withCandidates, described: 0 }).by.pick.reason, 'Describe candidates first');
+  }
+
   // inboxFolders helpers.
   const item = (assetPath) => ({ assetPath });
   assert.equal(folders.INBOX_PREFIX.startsWith('Project/'), true);

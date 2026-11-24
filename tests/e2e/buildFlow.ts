@@ -27,6 +27,23 @@ export const openStep = async (page: Page, id: 'sources' | 'find' | 'describe' |
   const toggle = step(page, id).getByRole('button', { name: /^(Change|Open)$/ });
   if (await toggle.count()) await toggle.click();
 };
+/** The fixture session starts in Auto (the default); the Target-mode flows switch to Target through the Sources step first. Retries because the step re-lays out while triage finishes. */
+export const switchToTargetMode = async (page: Page) => {
+  await expect(async () => {
+    if (!(await panel(page).innerText()).includes('Dataset 0 of 3')) {
+      await expandPanel(page);
+      await openStep(page, 'sources');
+      await page.getByRole('radio', { name: 'Target' }).click({ timeout: 3_000 });
+    }
+    await expect(panel(page)).toContainText('Dataset 0 of 3', { timeout: 2_000 });
+  }).toPass({ timeout: 60_000 });
+  // Close the Sources step again so the current step is the open one.
+  await expect(async () => {
+    const close = step(page, 'sources').getByRole('button', { name: 'Close' });
+    if (await close.count()) await close.click({ timeout: 2_000 });
+    await expect(step(page, 'sources').getByRole('radio', { name: 'Target' })).toHaveCount(0, { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+};
 export const filterRadio = (page: Page, filter: string) => page.locator(`[role="radio"][data-filter="${filter}"]`);
 /** Counter of the queue filter (for example `Flagged 1`); the radio name is "<label> <count>". */
 export const counter = (page: Page, label: string) => page.getByRole('radiogroup', { name: 'Queue filter' }).getByRole('radio', { name: new RegExp(`^${label} \\d+$`) });
