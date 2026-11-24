@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 import { expect } from './fixtures';
 
 // Helpers for tests/next-browser.tsx (the real NextApp over OPFS with a substituted folder picker).
-export type Kind = 'sources' | 'grid' | 'big' | 'assemble' | 'caption' | 'advice' | 'export' | 'video';
+export type Kind = 'sources' | 'grid' | 'big' | 'assemble' | 'caption' | 'advice' | 'export' | 'video' | 'psd' | 'legacy';
 export type Status = 'pin' | 'ban' | 'quality' | 'not-selected' | { duplicateOf: string };
 export type SessionView = { sources?: string[]; strictness?: string; assembledAt?: string; lastExport?: { fingerprint: string; completedAt: string; entries: number }; records: Record<string, { override?: string; origin?: string; locator?: string }> };
 

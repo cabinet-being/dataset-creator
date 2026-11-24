@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
-import { flushSave, openPrepared, sessionOf } from './nextFlow';
+import { flushSave, next, openPrepared, sessionOf, tileOf } from './nextFlow';
 
 // Sources panel of the next UI: folder counts (including empty folders), ticked sources persisted across a reload,
 // create / rename, and moves of folders and frames updating profile.sources and origin.
@@ -120,4 +120,65 @@ test('moving a frame between inbox folders updates its origin', async ({ page })
 test('moving a frame keeps its file name', async ({ page }) => {
   await dragA(page);
   await expect.poll(async () => (await sessionOf(page)).records['a.png']?.locator).toBe('Project/inbox/other/a.png');
+});
+
+// Several files at once: the native file picker is replaced by handles that return small generated PNGs (as the old Explorer import test did).
+const fakePicker = (page: Page, names: string[]) => page.evaluate(async fileNames => {
+  const files = await Promise.all(fileNames.map(async (name, index) => {
+    const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16;
+    const context = canvas.getContext('2d')!; context.fillStyle = `rgb(${index * 30}, 90, 160)`; context.fillRect(0, 0, 16, 16);
+    const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), 'image/png'));
+    return new File([blob], name, { type: 'image/png' });
+  }));
+  (window as unknown as { showOpenFilePicker: () => Promise<unknown[]> }).showOpenFilePicker = async () => files.map(file => ({ kind: 'file', name: file.name, getFile: async () => file }));
+}, names);
+// The grid is virtualised and grouped by folder: scroll it until the tile is rendered.
+const reveal = (page: Page, name: string) => expect(async () => {
+  if (await tileOf(page, name).count() === 0) { await page.locator('[data-frame-grid]').hover(); await page.mouse.wheel(0, 400); }
+  await expect(tileOf(page, name)).toBeVisible({ timeout: 1_000 });
+}, name).toPass({ timeout: 20_000 });
+const inboxPaths = async (page: Page) => (await next<string[]>(page, api => api.files() as Promise<string[]>)).filter(path => path.startsWith('inbox/'));
+
+test('Add files imports several files at once into the selected folder: all are on disk and in the grid', async ({ page }) => {
+  const names = Array.from({ length: 7 }, (_, index) => `imported-${index}.png`);
+  await fakePicker(page, names);
+  await folder(page, 'inbox/other').click();
+  await page.getByRole('button', { name: 'Add files' }).click();
+  await expect.poll(() => inboxPaths(page), { timeout: 30_000 }).toEqual(expect.arrayContaining(names.map(name => `inbox/other/${name}`)));
+  await expect(countOf(page, 'inbox/other')).toHaveText('7', { timeout: 30_000 });
+  await expect(countOf(page, 'inbox')).toHaveText('10');
+  await expect(page.locator('[data-count-inbox]')).toHaveText('10');
+  await expect(page.locator('[data-frame-grid] [data-filter="all"] [data-filter-count]')).toHaveText(String(4 + names.length), { timeout: 30_000 });
+  for (const name of names) await reveal(page, name);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect((await inboxPaths(page)).filter(path => path.startsWith('inbox/other/'))).toHaveLength(7);
+});
+
+test('Add files with the inbox root active puts the files directly into inbox/', async ({ page }) => {
+  const names = ['root-a.png', 'root-b.png', 'root-c.png'];
+  await fakePicker(page, names);
+  await page.getByRole('button', { name: 'Add files' }).click();
+  await expect.poll(() => inboxPaths(page), { timeout: 30_000 }).toEqual(expect.arrayContaining(names.map(name => `inbox/${name}`)));
+  await expect(page.locator('[data-count-inbox]')).toHaveText('6', { timeout: 30_000 });
+  await expect(page.locator('[data-frame-grid] [data-filter="all"] [data-filter-count]')).toHaveText(String(4 + names.length), { timeout: 30_000 });
+  for (const name of names) await reveal(page, name);
+});
+
+test('dropping several files on a folder row imports them all into that folder', async ({ page }) => {
+  const names = ['drop-a.png', 'drop-b.png', 'drop-c.png'];
+  await page.evaluate(async fileNames => {
+    const transfer = new DataTransfer();
+    for (const [index, name] of fileNames.entries()) {
+      const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16;
+      const context = canvas.getContext('2d')!; context.fillStyle = `rgb(${index * 60}, 120, 40)`; context.fillRect(0, 0, 16, 16);
+      transfer.items.add(new File([await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), 'image/png'))], name, { type: 'image/png' }));
+    }
+    const row = document.querySelector('[data-source-folder="inbox/day1"]')!;
+    row.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    row.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, names);
+  await expect.poll(() => inboxPaths(page), { timeout: 30_000 }).toEqual(expect.arrayContaining(names.map(name => `inbox/day1/${name}`)));
+  await expect(countOf(page, 'inbox/day1')).toHaveText('5', { timeout: 30_000 });
+  await expect(page.locator('[data-frame-grid] [data-filter="all"] [data-filter-count]')).toHaveText(String(4 + names.length), { timeout: 30_000 });
+  for (const name of names) await reveal(page, name);
 });

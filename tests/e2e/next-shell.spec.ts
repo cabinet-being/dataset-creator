@@ -36,6 +36,17 @@ test('creating a project writes name, type and model, opens the Board and lists 
   await expect(row).toContainText('0 frames in dataset');
 });
 
+test('a new project is written with Size Auto and a v2 session', async ({ page }) => {
+  await createProject(page, 'Fresh', 'character', 'sdxl');
+  await expect.poll(() => page.evaluate(async () => {
+    try { return JSON.stringify((await (window as unknown as { __next: { manifest: (name: string) => Promise<{ project: { buildSession: unknown } }> } }).__next.manifest('Fresh')).project.buildSession); } catch { return 'pending'; }
+  }), { timeout: 20_000 }).not.toBe('pending');
+  const session = await page.evaluate(async () => (await (window as unknown as { __next: { manifest: (name: string) => Promise<{ project: { buildSession: { version: number; profile: { sizeMode?: string }; stage?: unknown; cursor?: unknown; filter?: unknown } } }> } }).__next.manifest('Fresh')).project.buildSession);
+  expect(session.version).toBe(2);
+  expect(session.profile.sizeMode).toBe('auto');
+  for (const stale of ['stage', 'cursor', 'filter']) expect(session, stale).not.toHaveProperty(stale);
+});
+
 test('the Projects button returns to the list and a recent project reopens, also after a reload', async ({ page }) => {
   await createProject(page, 'Reopen Me', 'concept', 'flux');
   await page.getByRole('button', { name: 'Projects' }).click();

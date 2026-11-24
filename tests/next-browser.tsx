@@ -15,6 +15,8 @@ import { writeImageFeature } from '../src/services/analysis/semanticFeatureCache
 import { setVideoMeta } from '../src/services/video/videoCache';
 import { useDocumentStateStore } from '../src/stores/useDocumentStateStore';
 import JSZip from 'jszip';
+import { writePsd } from 'ag-psd';
+import { cleanupLegacyStorage } from '../src/lib/legacyStorageCleanup';
 import { BufferTarget, CanvasSource, Output, WebMOutputFormat } from 'mediabunny';
 import '../src/index.css';
 
@@ -89,7 +91,7 @@ const makeWebm = async () => {
   return new Blob([target.buffer!], { type: 'video/webm' });
 };
 
-type Kind = 'sources' | 'grid' | 'big' | 'assemble' | 'caption' | 'advice' | 'export' | 'video';
+type Kind = 'sources' | 'grid' | 'big' | 'assemble' | 'caption' | 'advice' | 'export' | 'video' | 'psd' | 'legacy';
 // Project-relative file paths per fixture kind. `emptyFolders` are created on disk without images; `captions` are TXT files written next to them.
 const LAYOUTS: Record<Kind, { files: string[]; emptyFolders: string[]; captions?: Record<string, string>; size?: [number, number]; trigger?: string }> = {
   // Caption mode: c1-c3 tagged, c4 an empty caption file, c5 no caption file, inbox/i1 is not in the dataset.
@@ -108,6 +110,10 @@ const LAYOUTS: Record<Kind, { files: string[]; emptyFolders: string[]; captions?
     captions: { 'dataset/e1.txt': 'hero, one', 'dataset/e2.txt': 'hero, two' },
   },
   video: { files: ['inbox/shot.png'], emptyFolders: [] },
+  // One PSD in the dataset (written by `prepare`, not a SourceImage) with a caption.
+  psd: { files: [], emptyFolders: [], trigger: 'sentinel' },
+  // A project saved by the old UI (v1 session with stale fields): s1 was skipped (inbox), m1 accepted by hand and a1 by the auto flow (both applied: in dataset/), u1 untouched (inbox).
+  legacy: { files: ['inbox/s1.png', 'dataset/m1.png', 'dataset/a1.png', 'inbox/u1.png'], emptyFolders: [] },
   sources: { files: ['inbox/day1/a.png', 'inbox/day1/b.png', 'inbox/c.png', 'dataset/d.png'], emptyFolders: ['inbox/empty', 'inbox/other'] },
   grid: {
     files: ['dataset/in1.png', 'dataset/pin1.png', 'inbox/q1.png', 'inbox/dup1.png', 'inbox/ns1.png', 'inbox/ban1.png', 'inbox/new1.png'],
@@ -166,7 +172,7 @@ const api = {
     const project = createProject(projectName, 'character', kind === 'assemble' ? 'sd15' : 'sdxl');
     if (layout.trigger) project.dataset = { ...project.dataset, triggerWord: layout.trigger };
     // Export is offered after an Assemble: the Export fixture is a project that was assembled before.
-    if (kind === 'export') project.buildSession = { ...createBuildSession(), auto: { assembledAt: new Date().toISOString() } };
+    if (kind === 'export' || kind === 'psd') project.buildSession = { ...createBuildSession(), auto: { assembledAt: new Date().toISOString() } };
     if (kind === 'assemble') project.buildSession = { ...createBuildSession(), profile: { ...createBuildSession().profile, sizeMode: 'auto' } };
     const sources = await Promise.all(layout.files.map(async (path, index) => {
       // tiny.png is portrait (200x300) and below the minimum; every other Assemble frame is a 512x512 square.
@@ -185,6 +191,28 @@ const api = {
     }
     for (const [path, text] of Object.entries(layout.captions ?? {})) await writeAt(directory, path, text);
     if (kind === 'video') await writeAt(directory, 'inbox/clip.webm', await makeWebm());
+    if (kind === 'psd') {
+      const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 24;
+      const context = canvas.getContext('2d')!; context.fillStyle = '#ff0000'; context.fillRect(0, 0, 16, 24); context.fillStyle = '#0000ff'; context.fillRect(16, 0, 16, 24);
+      await writeAt(directory, 'dataset/sentinel.psd', new Blob([writePsd({ width: 32, height: 24, canvas, children: [{ name: 'Color sentinel', canvas }] })]));
+      await writeAt(directory, 'dataset/sentinel.txt', 'sentinel, psd');
+    }
+    if (kind === 'legacy') {
+      // Rewrites the manifest the way the old UI left it: a v1 session with stage / cursor / filter, auto.shortlist and decisions, plus currentTool.
+      const idOf = (name: string) => `source:${sources.find(source => source.originalFilePath?.endsWith(`/${name}`))!.id}`;
+      const record = (name: string, extra: Record<string, unknown>) => ({ assetId: idOf(name), locator: sources.find(source => source.originalFilePath?.endsWith(`/${name}`))!.originalFilePath!.replace(/^/, 'Project/'), decision: 'unreviewed', application: 'idle', validation: 'pending', origin: 'Project/inbox', updatedAt: new Date().toISOString(), ...extra });
+      const records = Object.fromEntries([
+        record('s1.png', { decision: 'skipped', provenance: 'manual' }), record('m1.png', { decision: 'accepted', provenance: 'manual' }),
+        record('a1.png', { decision: 'accepted', provenance: 'auto' }), record('u1.png', {}),
+      ].map(entry => [entry.assetId, entry]));
+      const manifest = JSON.parse(await (await fileAt(directory, '.datasetcreator/project.json')).text());
+      manifest.project.currentTool = 'build';
+      manifest.project.buildSession = {
+        version: 1, stage: 'pick', cursor: 2, filter: 'all', profile: { target: 40, captionRequired: true }, order: Object.keys(records), records,
+        auto: { assembledAt: '2026-01-01T00:00:00.000Z', shortlist: Object.keys(records).slice(0, 2) },
+      };
+      await writeAt(directory, '.datasetcreator/project.json', JSON.stringify(manifest, null, 2));
+    }
     projectRoot = directory;
     pickerWindow.showDirectoryPicker = async () => directory as unknown as ProjectDirectoryHandle;
     return directory.name;
@@ -325,6 +353,8 @@ const api = {
   forgetRecent: (id: string) => forgetRecentProject(id),
 };
 (window as unknown as Record<string, unknown>).__next = api;
+// main.tsx does this on start; the stand mirrors it so a test can plant old keys and reload.
+cleanupLegacyStorage();
 
 const root = createRoot(document.getElementById('root')!);
 root.render(<React.StrictMode><CommandProvider><NextApp encoderFactory={fakeEncoderFactory} /></CommandProvider></React.StrictMode>);
