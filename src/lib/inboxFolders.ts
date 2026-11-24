@@ -28,3 +28,37 @@ export const toggleFolderSelection = (rows: FolderRow[], deselected: ReadonlySet
 
 /** An image is selected unless its own folder was unchecked (subfolders are unchecked together with their parent). */
 export const isInboxItemSelected = (item: WorkspaceImage, deselected: ReadonlySet<string>) => !deselected.has(inboxFolderOf(item));
+
+/** Explorer path (`Project/inbox/day1`) of the inbox folder that holds `path`, or undefined outside the inbox. */
+export const inboxFolderOfPath = (path: string | undefined): string | undefined => {
+  const normalized = (path ?? '').replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^Project\//, '');
+  const root = INBOX_PREFIX.replace(/^Project\//, '');
+  if (!normalized.startsWith(root)) return undefined;
+  const folder = normalized.split('/').slice(0, -1).join('/');
+  return `Project/${folder}`;
+};
+
+const asExplorerPath = (path: string) => path.startsWith('Project/') ? path : `Project/${path}`;
+
+/** Build Sources: `undefined` means the whole inbox; otherwise a folder is selected when it or one of its ancestors is listed. */
+export const isInboxFolderInSources = (folder: string, sources: readonly string[] | undefined): boolean =>
+  !sources || sources.some((source) => isInFolder(asExplorerPath(source), asExplorerPath(folder)));
+
+export const isInboxItemInSources = (item: WorkspaceImage, sources: readonly string[] | undefined): boolean =>
+  isInboxFolderInSources(inboxFolderOfPath(item.assetPath) ?? '', sources);
+
+/**
+ * Toggles a folder (with its subfolders) in the Sources list and returns the new list of explorer paths.
+ * `rows` are the current inbox folders (see `buildFolderRows`). The list is stored as the topmost fully selected folders;
+ * images directly inside a partly selected parent cannot be expressed and become unselected.
+ */
+export const toggleSourceFolder = (rows: FolderRow[], sources: readonly string[] | undefined, folder: string): string[] => {
+  const paths = rows.map((row) => asExplorerPath(row.path));
+  const target = asExplorerPath(folder);
+  const selected = new Set(paths.filter((path) => isInboxFolderInSources(path, sources)));
+  const family = paths.filter((path) => isInFolder(target, path));
+  if (family.every((path) => selected.has(path))) family.forEach((path) => selected.delete(path)); else family.forEach((path) => selected.add(path));
+  const full = (path: string) => paths.filter((other) => isInFolder(path, other)).every((other) => selected.has(other));
+  return paths.filter((path) => selected.has(path) && full(path)
+    && !paths.some((other) => other !== path && isInFolder(other, path) && selected.has(other) && full(other)));
+};

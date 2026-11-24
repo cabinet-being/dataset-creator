@@ -15,7 +15,7 @@ import {
 import { PROJECT_DATASET_DIRECTORY, PROJECT_INBOX_DIRECTORY } from '../project/projectLayoutService';
 import type { ProjectDirectoryHandle } from '../project/projectDirectoryService';
 import { clearLegacyExclusionAtPath } from '../project/legacyDatasetExclusionService';
-import { applyBuildSessionPathMoves } from '../build/buildSessionService';
+import { applyBuildSessionPathMoves, getBuildRecordForItem } from '../build/buildSessionService';
 import { getCaptionFileName, reconcileTriggerAfterMove, renderCaptionText } from '../caption/captionFileService';
 
 export const DATASET_EXPLORER_PATH = `Project/${PROJECT_DATASET_DIRECTORY}`;
@@ -151,8 +151,26 @@ const moveItems = async (
 export const addItemsToDatasetFolder = async (root: ProjectDirectoryHandle, items: WorkspaceImage[]) =>
   moveItems(root, items, DATASET_EXPLORER_PATH);
 
-export const removeItemsFromDatasetFolder = async (root: ProjectDirectoryHandle, items: WorkspaceImage[]) =>
-  moveItems(root, items, `Project/${PROJECT_INBOX_DIRECTORY}`);
+/** Images go back to the inbox folder they came from (the build record's origin); without a known, still existing origin they go to the inbox root. */
+export const removeItemsFromDatasetFolder = async (root: ProjectDirectoryHandle, items: WorkspaceImage[]): Promise<DatasetFolderOperationResult> => {
+  const inboxRoot = `Project/${PROJECT_INBOX_DIRECTORY}`;
+  const session = useProjectStore.getState().buildSession;
+  const groups = new Map<string, WorkspaceImage[]>();
+  for (const item of items) {
+    const origin = getBuildRecordForItem(session, item)?.origin;
+    let destination = inboxRoot;
+    if (origin && (origin === inboxRoot || origin.startsWith(`${inboxRoot}/`)) && await pathExists(root, origin)) destination = origin;
+    groups.set(destination, [...(groups.get(destination) ?? []), item]);
+  }
+  if (groups.size <= 1) return moveItems(root, items, [...groups.keys()][0] ?? inboxRoot);
+  const result: DatasetFolderOperationResult = { operationId: crypto.randomUUID(), completed: [], unchanged: [], failed: [] };
+  for (const [destination, group] of groups) {
+    const part = await moveItems(root, group, destination);
+    result.completed.push(...part.completed); result.unchanged.push(...part.unchanged); result.failed.push(...part.failed);
+    if (part.failed.length) break;
+  }
+  return result;
+};
 
 export const reverseDatasetFolderChanges = async (root: ProjectDirectoryHandle, changes: ExplorerPathChange[]) => {
   const completed: ExplorerPathChange[] = [];

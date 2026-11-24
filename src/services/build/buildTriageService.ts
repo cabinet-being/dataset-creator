@@ -1,4 +1,4 @@
-import type { BuildReviewRecord, BuildSession, BuildTriageGroup, BuildTriageProposal, BuildTriageReason } from '../../types';
+import type { BuildAssemblyOutcome, BuildReviewRecord, BuildSession, BuildTriageGroup, BuildTriageProposal, BuildTriageReason } from '../../types';
 import { isProjectDatasetPath } from '../dataset/datasetFolderService';
 import type { DatasetAssemblyPlan } from '../dataset/datasetAssemblyService';
 import { summarizeImageQuality, type ImageQualityReport } from '../quality/imageQuality';
@@ -73,20 +73,32 @@ export const applyAssemblyTriage = (
     saturated: 'coverage saturated', exhausted: 'pool exhausted', 'insufficient-pool': 'pool too small',
   };
   const handled = new Set<string>();
+  /** Records why the last Assemble left an image out (a cache); a selected image has no such outcome. */
+  const setOutcome = (assetId: string, outcome: BuildAssemblyOutcome | undefined) => {
+    const record = next.records[assetId];
+    if (!record) return;
+    const { assembly: _previous, ...rest } = record;
+    void _previous;
+    next = { ...next, records: { ...next.records, [assetId]: { ...rest, ...(outcome ? { assembly: outcome } : {}) } } };
+  };
+  const revisionOf = (assetId: string) => next.records[assetId]?.triage?.revision ?? '';
   for (const step of plan.selected) {
     const assetId = assetIdByKey.get(step.key);
     if (!assetId) continue;
     handled.add(assetId);
     next = make(assetId, { group: 'accepted', reasons: [{ code: 'selected', message: step.reason }] });
+    setOutcome(assetId, undefined);
   }
   for (const pair of plan.duplicatePairs) {
     const assetId = assetIdByKey.get(pair.rejected);
     if (!assetId || handled.has(assetId)) continue;
     handled.add(assetId);
     const duplicateOf = assetIdByKey.get(pair.kept) ?? pair.kept;
+    const revision = revisionOf(assetId);
     next = pair.kind === 'exact'
       ? make(assetId, { group: 'rejected', reasons: [{ code: 'exact-duplicate', message: 'Exact duplicate of another image' }], duplicateOf, similarity: pair.similarity })
       : make(assetId, { group: 'rejected', reasons: [{ code: 'near-duplicate', message: `Near duplicate (${Math.round(pair.similarity * 100)}% similar)` }], duplicateOf, similarity: pair.similarity });
+    setOutcome(assetId, { outcome: 'duplicate', of: duplicateOf, similarity: pair.similarity, revision });
   }
   for (const entry of plan.rejectedCandidates) {
     if (entry.reason !== 'not-selected') continue;
@@ -94,6 +106,7 @@ export const applyAssemblyTriage = (
     if (!assetId || handled.has(assetId)) continue;
     handled.add(assetId);
     next = make(assetId, { group: 'rejected', reasons: [{ code: 'not-selected', message: `Not selected: ${reasonText[plan.stoppedBecause] ?? plan.stoppedBecause}` }] });
+    setOutcome(assetId, { outcome: 'not-selected', revision: revisionOf(assetId) });
   }
   return next;
 };
@@ -127,18 +140,28 @@ export const selectTriageTargets = <T extends BuildCandidate>(session: BuildSess
   inOrder(session, items).filter(({ record }) => record.decision === 'unreviewed' && !record.triage).map(({ item }) => item);
 
 /**
- * The only owner of the candidate pool for "Find candidates": images the user has not rejected and quality triage
- * has not rejected, outside the Dataset. `sources` is already limited to the folders chosen in the panel; images
- * without a quality verdict yet are not in the pool.
+ * The only owner of the candidate pool for Assemble: images in the selected Sources (already limited by the caller
+ * through `sources`), not banned, not video, outside the Dataset, with a quality verdict that is not "rejected".
+ * A pin overrides a quality rejection (pinned images are part of the baseline instead, see `selectAssemblyBaseline`).
  */
 export const selectAssemblyCandidates = <T extends BuildCandidate>(session: BuildSession, sources: T[]): T[] =>
   inOrder(session, sources)
-    .filter(({ item, record }) => item.kind !== 'video' && (record.decision === 'unreviewed' || record.decision === 'deferred')
-      && record.triage?.stage === 'quality' && record.triage.group !== 'rejected' && !isProjectDatasetPath(item.assetPath))
-    .map(({ item }) => item);
+    .filter(({ item, record }) => item.kind !== 'video' && record.override !== 'ban' && !isProjectDatasetPath(item.assetPath)
+      && record.triage?.stage === 'quality' && (record.triage.group !== 'rejected' || record.override === 'pin'))
+    .map(({ item }) => item)
+    .filter((item) => session.records[getBuildAssetId(item)]?.override !== 'pin');
 
-export const createAssemblyKey = (target: number | 'auto', items: BuildCandidate[], session: BuildSession): string =>
+/** Baseline for Assemble: Dataset members plus pinned images that are still outside the Dataset. */
+export const selectAssemblyBaseline = <T extends BuildCandidate>(session: BuildSession, datasetMembers: T[], items: T[]): T[] => {
+  const members = new Set(datasetMembers);
+  const pinned = inOrder(session, items).filter(({ item, record }) =>
+    record.override === 'pin' && item.kind !== 'video' && !members.has(item) && !isProjectDatasetPath(item.assetPath)).map(({ item }) => item);
+  return [...datasetMembers, ...pinned];
+};
+
+export const createAssemblyKey = (target: number | 'auto', items: BuildCandidate[], session: BuildSession, baseline: BuildCandidate[] = []): string =>
   `${target}|${items.map((item) => {
     const assetId = getBuildAssetId(item);
-    return `${assetId}:${session.records[assetId]?.triage?.revision ?? session.records[assetId]?.revision ?? ''}`;
-  }).sort().join(',')}`;
+    const record = session.records[assetId];
+    return `${assetId}:${record?.triage?.revision ?? record?.revision ?? ''}${record?.override ? `:${record.override}` : ''}`;
+  }).sort().join(',')}${baseline.length ? `|${baseline.map(getBuildAssetId).sort().join(',')}` : ''}`;

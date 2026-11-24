@@ -1,6 +1,9 @@
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { isProjectDatasetPath } from '../dataset/datasetFolderService';
+import { inboxFolderOfPath } from '../../lib/inboxFolders';
 import type {
+  BuildAssemblyOutcome,
+  BuildImageOverride,
   BuildReviewDecision,
   BuildTriageGroup,
   BuildTriageProposal,
@@ -29,7 +32,7 @@ export type BuildCounts = {
 export const BUILD_STAGES: readonly BuildStage[] = ['add', 'select', 'caption', 'check', 'export'];
 
 export const createBuildSession = (): BuildSession => ({
-  version: 1,
+  version: 2,
   stage: 'add',
   profile: { target: 60, reviewMode: 'every-item', captionRequired: true, sizeMode: 'auto' },
   cursor: 0,
@@ -39,7 +42,8 @@ export const createBuildSession = (): BuildSession => ({
 });
 
 const TRIAGE_GROUPS = ['accepted', 'rejected', 'needs-decision'];
-const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected', 'shortlisted', 'picked'] as const;
+const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected', 'shortlisted', 'picked',
+  'status-inbox', 'status-out', 'status-in-dataset', 'status-pinned', 'status-banned'] as const;
 
 /** Triage is derived data: drop it unless it has a recognisable shape. */
 const normalizeTriage = (value: unknown): BuildTriageProposal | undefined => {
@@ -48,12 +52,30 @@ const normalizeTriage = (value: unknown): BuildTriageProposal | undefined => {
     ? triage as BuildTriageProposal : undefined;
 };
 
-const normalizeRecord = (record: BuildReviewRecord): BuildReviewRecord => {
-  if (record.triage === undefined) return record;
-  if (normalizeTriage(record.triage)) return record;
-  const { triage: _discarded, ...rest } = record;
-  void _discarded;
-  return rest;
+const normalizeAssembly = (value: unknown): BuildAssemblyOutcome | undefined => {
+  const assembly = value as Partial<BuildAssemblyOutcome> | null | undefined;
+  return assembly && typeof assembly === 'object' && (assembly.outcome === 'duplicate' || assembly.outcome === 'not-selected') && typeof assembly.revision === 'string'
+    ? assembly as BuildAssemblyOutcome : undefined;
+};
+
+/** One-time v1 -> v2 migration: a manual accept becomes Pin, a skip becomes Ban; everything else is computed. `decision` is kept untouched. */
+const migrateOverride = (record: BuildReviewRecord): BuildImageOverride | undefined =>
+  record.decision === 'skipped' ? 'ban' : record.decision === 'accepted' && record.provenance === 'manual' ? 'pin' : undefined;
+
+const normalizeRecord = (record: BuildReviewRecord, migrate: boolean): BuildReviewRecord => {
+  const { override: rawOverride, assembly: rawAssembly, origin: rawOrigin, ...base } = record;
+  const override: BuildImageOverride | undefined = migrate ? migrateOverride(record) : rawOverride === 'pin' || rawOverride === 'ban' ? rawOverride : undefined;
+  const assembly = normalizeAssembly(rawAssembly);
+  const triage = base.triage === undefined || normalizeTriage(base.triage) ? base.triage : undefined;
+  const { triage: _triage, ...rest } = base;
+  void _triage;
+  return {
+    ...rest,
+    ...(triage ? { triage } : {}),
+    ...(override ? { override } : {}),
+    ...(assembly ? { assembly } : {}),
+    ...(typeof rawOrigin === 'string' && rawOrigin ? { origin: rawOrigin } : {}),
+  };
 };
 
 /** Manual decisions win; otherwise the automatic triage proposal (or `pending` when none). */
@@ -72,14 +94,16 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   const defaults = createBuildSession();
   if (!value || typeof value !== 'object') return defaults;
   const input = value as Partial<BuildSession>;
-  if (input.version !== 1) return defaults;
-  const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record)]));
+  if (input.version !== 1 && input.version !== 2) return defaults;
+  const migrate = input.version === 1;
+  const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record, migrate)]));
+  const sources = Array.isArray(input.profile?.sources) ? [...new Set(input.profile.sources.filter((path): path is string => typeof path === 'string' && Boolean(path)))] : undefined;
   const filter = BUILD_FILTERS.find((value) => value === input.filter) ?? 'all';
   const reviewMode = input.profile?.reviewMode === 'uncertain-only' ? 'uncertain-only' : 'every-item';
   // Sessions saved before stages existed resume in Select when they already hold items, otherwise in Add.
   const stage = BUILD_STAGES.find((value) => value === input.stage) ?? (Object.keys(records).length ? 'select' : 'add');
   return {
-    version: 1,
+    version: 2,
     stage,
     ...(input.view === 'grid' || input.view === 'clusters' ? { view: input.view } : {}),
     profile: {
@@ -89,6 +113,7 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
       transform: input.profile?.transform,
       autoPipeline: input.profile?.autoPipeline !== false,
       ...(input.profile?.sizeMode === 'auto' ? { sizeMode: 'auto' as const } : {}),
+      ...(sources ? { sources } : {}),
     },
     cursor: Math.max(0, Math.floor(Number(input.cursor) || 0)),
     filter,
@@ -148,6 +173,12 @@ export const nextBuildCursor = (previousQueue: BuildCandidate[], nextQueue: Buil
   return Math.min(previousCursor, nextQueue.length - 1);
 };
 
+/** Remembers the inbox folder of an image that sits in the inbox; images elsewhere keep what they had. */
+const originPatch = (item: BuildCandidate, previous?: string): { origin?: string } => {
+  const folder = inboxFolderOfPath(item.assetPath);
+  return folder ? { origin: folder } : previous ? { origin: previous } : {};
+};
+
 const createRecord = (item: BuildCandidate, now: string, transform?: BuildTransformRecipe): BuildReviewRecord => ({
   assetId: getBuildAssetId(item),
   locator: item.assetPath,
@@ -155,6 +186,7 @@ const createRecord = (item: BuildCandidate, now: string, transform?: BuildTransf
   application: 'idle',
   validation: 'pending',
   revision: getBuildAssetRevision(item, item.tags, transform),
+  ...originPatch(item),
   updatedAt: now,
 });
 
@@ -192,12 +224,18 @@ export const reconcileBuildSession = (
       (!output || !previous.outputRevision || previous.outputRevision !== getBuildAssetRevision(output, output.tags, transform) ||
         !isProjectDatasetPath(output.assetPath) || getBuildValidation(output, session.profile.captionRequired) !== 'valid');
     const validation = (stale || outputStale) && previous.decision === 'accepted' ? 'stale' : previous.validation;
-    const staleTriage = previous.triage !== undefined && previous.triage.revision !== getBuildContentRevision(item, transform);
-    if (previous.locator !== item.assetPath || previous.revision !== revision || previous.validation !== validation || staleTriage) {
-      const { triage: _staleTriage, ...kept } = previous;
-      void _staleTriage;
+    const contentRevision = getBuildContentRevision(item, transform);
+    const staleTriage = previous.triage !== undefined && previous.triage.revision !== contentRevision;
+    const staleAssembly = previous.assembly !== undefined && previous.assembly.revision !== contentRevision;
+    const origin = originPatch(item, previous.origin).origin;
+    if (previous.locator !== item.assetPath || previous.revision !== revision || previous.validation !== validation || staleTriage || staleAssembly || origin !== previous.origin) {
+      const { triage: _staleTriage, assembly: _staleAssembly, origin: _origin, ...kept } = previous;
+      void _staleTriage; void _staleAssembly; void _origin;
       records[assetId] = {
-        ...(staleTriage ? kept : previous),
+        ...kept,
+        ...(!staleTriage && previous.triage ? { triage: previous.triage } : {}),
+        ...(!staleAssembly && previous.assembly ? { assembly: previous.assembly } : {}),
+        ...(origin ? { origin } : {}),
         locator: item.assetPath,
         revision,
         validation,
@@ -312,6 +350,7 @@ export const selectBuildQueue = <T extends BuildCandidate>(session: BuildSession
     const record = session.records[id];
     if (!item || !record) return [];
     if (shortlisted && !shortlisted.has(id)) return [];
+    if (isStatusFilter(session.filter) && !matchesStatusFilter(session.filter, getImageStatus(record, item, record.outputAssetId ? byId.get(record.outputAssetId) : undefined), record)) return [];
     if (session.filter === 'errors' && record.application !== 'failed' && record.validation !== 'error') return [];
     if (session.filter === 'unresolved' && record.decision !== 'unreviewed' && record.decision !== 'deferred' && record.validation !== 'stale' && !(record.decision === 'accepted' && record.validation === 'pending')) return [];
     if (session.filter === 'unresolved' && record.decision === 'unreviewed' && record.triage?.group === 'rejected') return [];
@@ -354,17 +393,58 @@ export const getBuildCounts = (session: BuildSession, items: BuildCandidate[]): 
 export const applyBuildSessionPathMoves = (session: BuildSession, moves: ExplorerPathMove[]): BuildSession => {
   let changed = false;
   const records = Object.fromEntries(Object.entries(session.records).map(([id, record]) => {
-    if (!record.locator) return [id, record];
-    const locator = applyExplorerPathMoves(record.locator, moves);
-    if (locator === record.locator) return [id, record];
+    const locator = record.locator ? applyExplorerPathMoves(record.locator, moves) : record.locator;
+    const origin = record.origin ? applyExplorerPathMoves(record.origin, moves) : record.origin;
+    if (locator === record.locator && origin === record.origin) return [id, record];
     changed = true;
-    return [id, { ...record, locator }];
+    return [id, { ...record, ...(locator ? { locator } : {}), ...(origin ? { origin } : {}) }];
   }));
-  return changed ? { ...session, records } : session;
+  const sources = session.profile.sources?.map((path) => applyExplorerPathMoves(path, moves));
+  const sourcesChanged = Boolean(sources && sources.some((path, index) => path !== session.profile.sources![index]));
+  return changed || sourcesChanged
+    ? { ...session, records, ...(sourcesChanged ? { profile: { ...session.profile, sources: [...new Set(sources)] } } : {}) } : session;
 };
 
 export const getBuildValidation = (item: BuildCandidate, captionRequired: boolean): BuildValidationStatus => {
   if (item.kind === 'video') return 'pending';
   if (captionRequired && !(item.tags?.length)) return 'pending';
   return 'valid';
+};
+
+export type ImageStatus =
+  | { kind: 'in'; pinned: boolean }
+  | { kind: 'out'; reason: 'ban' | 'quality' | 'duplicate' | 'not-selected'; of?: string; similarity?: number }
+  | { kind: 'inbox'; pending?: boolean; needsFrames?: boolean };
+
+/**
+ * The single status of an image. Only `record.override` is set by the user; the rest is derived. First match wins:
+ * Dataset membership, Ban, no verdict yet, quality rejection (unless pinned), the last Assemble outcome, otherwise inbox.
+ * `outputItem` is the transformed output Build created for the image, if any.
+ */
+export const getImageStatus = (record: BuildReviewRecord | undefined, item: BuildCandidate, outputItem?: BuildCandidate): ImageStatus => {
+  const pinned = record?.override === 'pin';
+  if (isProjectDatasetPath(item.assetPath) || isProjectDatasetPath(outputItem?.assetPath)) return { kind: 'in', pinned };
+  if (record?.override === 'ban') return { kind: 'out', reason: 'ban' };
+  if (item.kind === 'video') return { kind: 'inbox', needsFrames: true };
+  const triage = record?.triage;
+  if (!triage) return { kind: 'inbox', pending: true };
+  // An assembly-stage proposal replaced the quality verdict; the assembly outcome explains it instead.
+  if (triage.group === 'rejected' && triage.stage === 'quality' && !pinned) return { kind: 'out', reason: 'quality' };
+  const assembly = record?.assembly;
+  if (assembly && !pinned && assembly.revision === triage.revision) {
+    return { kind: 'out', reason: assembly.outcome, ...(assembly.of ? { of: assembly.of } : {}), ...(assembly.similarity !== undefined ? { similarity: assembly.similarity } : {}) };
+  }
+  return { kind: 'inbox' };
+};
+
+const isStatusFilter = (filter: BuildSession['filter']): filter is Extract<BuildSession['filter'], `status-${string}`> => filter.startsWith('status-');
+
+const matchesStatusFilter = (filter: Extract<BuildSession['filter'], `status-${string}`>, status: ImageStatus, record: BuildReviewRecord): boolean => {
+  switch (filter) {
+    case 'status-inbox': return status.kind === 'inbox';
+    case 'status-out': return status.kind === 'out';
+    case 'status-in-dataset': return status.kind === 'in';
+    case 'status-pinned': return record.override === 'pin';
+    case 'status-banned': return record.override === 'ban';
+  }
 };

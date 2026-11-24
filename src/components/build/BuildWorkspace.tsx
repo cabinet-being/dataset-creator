@@ -180,7 +180,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
       ? effectiveItems.find((item) => getBuildAssetId(item) === currentRecord.outputAssetId)
       : isProjectDatasetPath(current.assetPath) ? current : undefined;
     const ready = currentRecord ? getBuildCounts({
-      version: 1, profile: reconciled.profile, cursor: 0, filter: 'all',
+      version: 2, profile: reconciled.profile, cursor: 0, filter: 'all',
       order: [currentId],
       records: { [currentId]: currentRecord },
     }, effectiveItems).ready > 0 : false;

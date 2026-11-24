@@ -208,7 +208,23 @@ export interface BuildReviewRecord {
   proposal?: { tags: string[]; revision: string };
   draft?: string;
   triage?: BuildTriageProposal;
+  /** The only user-set image status: Pin keeps the image in the Dataset baseline, Ban keeps it out of everything. */
+  override?: BuildImageOverride;
+  /** Explanation of the last Assemble for an image it left out. A cache, not membership; dropped when the image changes. */
+  assembly?: BuildAssemblyOutcome;
+  /** Inbox folder (explorer path) the image came from, so removing it from the Dataset returns it there. */
+  origin?: string;
   updatedAt: string;
+}
+
+export type BuildImageOverride = 'pin' | 'ban';
+export interface BuildAssemblyOutcome {
+  outcome: 'duplicate' | 'not-selected';
+  /** Asset id of the kept image for a duplicate. */
+  of?: string;
+  similarity?: number;
+  /** Content revision the outcome was computed for. */
+  revision: string;
 }
 
 export interface BuildPreparationProfile {
@@ -221,20 +237,24 @@ export interface BuildPreparationProfile {
   autoPipeline?: boolean;
   /** Auto-select without a target size: one image per group of similar ones. Absent means Target mode (older sessions). */
   sizeMode?: 'auto';
+  /** Selected inbox folders (explorer paths; subfolders are included). Absent means the whole inbox; folders added later are not selected automatically. */
+  sources?: string[];
 }
 
 export type BuildReviewView = 'list' | 'grid' | 'clusters';
 export type BuildStage = 'add' | 'select' | 'caption' | 'check' | 'export';
 
 export interface BuildSession {
-  version: 1;
+  /** 2 adds record overrides; version 1 sessions are migrated once on load. */
+  version: 1 | 2;
   /** Current Build stage; absent in sessions saved before stages existed (normalized on load). */
   stage?: BuildStage;
   /** Select-stage view mode; absent means list. */
   view?: BuildReviewView;
   profile: BuildPreparationProfile;
   cursor: number;
-  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected' | 'shortlisted' | 'picked';
+  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected' | 'shortlisted' | 'picked'
+    | 'status-inbox' | 'status-out' | 'status-in-dataset' | 'status-pinned' | 'status-banned';
   order: string[];
   records: Record<string, BuildReviewRecord>;
   lastExport?: { fingerprint: string; completedAt: string; entries: number };
