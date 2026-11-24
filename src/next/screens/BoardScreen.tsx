@@ -46,7 +46,7 @@ export function BoardScreen({ runtime }: { runtime: Runtime }) {
   const { explorer } = runtime;
   // Dragging frames from the grid onto an inbox folder moves their files through the Explorer mutations.
   const dragFrames = useCallback((items: WorkspaceImage[]) => explorer.setCurrentDraggedExplorerEntries(items.flatMap(item => item.assetPath
-    ? [{ path: item.assetPath, name: item.fileName, kind: 'file' as const, workspaceImageId: item.id }] : [])), [explorer]);
+    ? [{ path: item.assetPath, name: item.assetPath.split('/').pop() ?? item.fileName, kind: 'file' as const, workspaceImageId: item.id }] : [])), [explorer]);
   const endFrameDrag = useCallback(() => explorer.setCurrentDraggedExplorerEntries(null), [explorer]);
 
   return <div data-board className="flex min-h-0 flex-1 flex-col">

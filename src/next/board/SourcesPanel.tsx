@@ -11,7 +11,8 @@ import type { useProjectRuntime } from '../useProjectRuntime';
 
 type Runtime = ReturnType<typeof useProjectRuntime>;
 
-const INBOX_ROOT = INBOX_PREFIX.slice(0, -1);
+// Rows use project-relative paths (`inbox`); `explorerPath` adds the `Project/` prefix.
+const INBOX_ROOT = INBOX_PREFIX.replace(/^Project\//, '').slice(0, -1);
 const explorerPath = (folder: string) => `Project/${folder}`;
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 

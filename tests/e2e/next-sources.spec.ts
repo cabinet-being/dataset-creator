@@ -53,7 +53,6 @@ test('a ticked source is saved and restored after a reload', async ({ page }) =>
 // initial active folder matches no row: New folder / Add files do nothing until a row is clicked, and the inbox root row is
 // treated as a regular folder (Rename and drag are offered). test.fail() turns green when this is fixed: then remove it.
 test('New folder, Add files and the root row work from the initial state (nothing clicked yet)', async ({ page }) => {
-  test.fail(true, 'DEFECT: SourcesPanel INBOX_ROOT lacks the Project/ strip, the initial active folder matches no row');
   await expect(page.getByRole('button', { name: 'Rename inbox' }), 'the inbox root itself cannot be renamed').toHaveCount(0);
   await expect(folder(page, 'inbox')).toHaveAttribute('draggable', 'false');
   await page.getByRole('button', { name: 'New folder' }).click();
@@ -122,7 +121,6 @@ test('moving a frame between inbox folders updates its origin', async ({ page })
 });
 
 test('moving a frame keeps its file name', async ({ page }) => {
-  test.fail(true, 'DEFECT: BoardScreen.dragFrames passes item.fileName (internal name) as the Explorer entry name, so the moved file is renamed');
   await dragA(page);
   await expect.poll(async () => (await sessionOf(page)).records['a.png']?.locator).toBe('Project/inbox/other/a.png');
 });
