@@ -49,9 +49,6 @@ test('a ticked source is saved and restored after a reload', async ({ page }) =>
   expect((await sessionOf(page)).sources).toEqual(['Project/inbox/day1']);
 });
 
-// DEFECT (see report): SourcesPanel.tsx INBOX_ROOT is 'Project/inbox' while rows use project-relative paths ('inbox'), so the
-// initial active folder matches no row: New folder / Add files do nothing until a row is clicked, and the inbox root row is
-// treated as a regular folder (Rename and drag are offered). test.fail() turns green when this is fixed: then remove it.
 test('New folder, Add files and the root row work from the initial state (nothing clicked yet)', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Rename inbox' }), 'the inbox root itself cannot be renamed').toHaveCount(0);
   await expect(folder(page, 'inbox')).toHaveAttribute('draggable', 'false');

@@ -258,7 +258,21 @@ export interface BuildSession {
   order: string[];
   records: Record<string, BuildReviewRecord>;
   lastExport?: { fingerprint: string; completedAt: string; entries: number };
-  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string; shortlist?: BuildShortlist };
+  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string; shortlist?: BuildShortlist; assemblySummary?: BuildAssemblySummary };
+}
+
+/** Numbers of the last Assemble, written in the same Undo step as its result. */
+export interface BuildAssemblySummary {
+  /** Images that took part: the compared pool plus the ones the quality check left out. */
+  images: number;
+  /** Groups of similar images, one representative each (Auto size only). */
+  groups?: number;
+  /** Images this Assemble moved into the Dataset. */
+  added: number;
+  /** Images left out by the quality check. */
+  outOnQuality: number;
+  /** Images left out as duplicates of a kept image. */
+  duplicates: number;
 }
 
 /** Pass-1 result of Auto-select: marks candidates only; nothing moves into the Dataset until pass 2 is applied. */

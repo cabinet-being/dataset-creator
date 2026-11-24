@@ -82,9 +82,6 @@ test('Escape and the close button close the overlay and focus returns to the til
   await expect.poll(() => focusedTile(page)).toBe(order[0]);
 });
 
-// DEFECT (see report), expectation taken from FrameGrid.closeLightbox, which sets the cursor and the reveal to the frame that is
-// shown when the overlay closes. Instead Lightbox's unmount focuses the original opener (its `opener?.focus()`), and the grid's
-// focus effect does not re-run because cursorId already equals the shown frame. Remove test.fail() when this is settled.
 test('after browsing with arrows, Escape puts focus on the frame that was shown last', async ({ page }) => {
   const order = await names(page);
   await tileButton(page, order[1]).click();

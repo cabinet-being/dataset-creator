@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import type { BuildReviewDecision, BuildSession, CharacterTrait, Dataset, TargetModelId } from '../../types';
+import type { BuildAssemblySummary, BuildReviewDecision, BuildSession, CharacterTrait, Dataset, TargetModelId } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { useOperation } from '../../hooks/useOperation';
@@ -23,6 +23,8 @@ import { captureHistoryEpoch, isHistoryEpochCurrent } from '../../stores/useHist
 import type { ApplyMembershipOptions, MembershipEntry } from './useApplyMembership';
 
 export type BuildAutoPipelinePhase = 'idle' | 'triage' | 'assembly' | 'tagging';
+/** Finer step of a running assembly, for progress text. */
+export type BuildAssemblyStep = 'understanding' | 'similarity' | 'selecting' | 'applying';
 
 type Input = {
   active: boolean;
@@ -70,6 +72,7 @@ export function useBuildAutoPipeline(input: Input) {
   const [phase, setPhase] = useState<BuildAutoPipelinePhase>('idle');
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [paused, setPaused] = useState(false);
+  const [step, setStep] = useState<BuildAssemblyStep | null>(null);
   const [tick, setTick] = useState(0);
   const [modelDownloadFor, setModelDownloadFor] = useState<'find' | 'pick' | null>(null);
   const [skipped, setSkipped] = useState<SkippedAssemblyItem[]>([]);
@@ -128,7 +131,7 @@ export function useBuildAutoPipeline(input: Input) {
       latest.current.notify('error', error instanceof Error ? error.message : failure);
     }).finally(() => {
       running.current = false; abortRef.current = null; phaseRef.current = 'idle';
-      setPhase('idle'); setProgress({ completed: 0, total: 0 });
+      setPhase('idle'); setStep(null); setProgress({ completed: 0, total: 0 });
       setTick((value) => value + 1);
     });
     return true;
@@ -287,8 +290,8 @@ export function useBuildAutoPipeline(input: Input) {
     await withEncoder(ctx, assemblyOperation, async (encoder) => {
       result = await computeShortlist({
         baselineItems: args.baseline, poolItems: args.pool, needed: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(args.session),
-        onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
-        onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
+        onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setStep('understanding'); setProgress({ completed, total: count }); },
+        onProgress: ({ phase, completed, total: count }) => { setStep(phase === 'selecting' ? 'selecting' : 'similarity'); setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
         onSkip: (entry) => args.unreadable.push(entry),
       });
       ctx.signal.throwIfAborted();
@@ -306,8 +309,8 @@ export function useBuildAutoPipeline(input: Input) {
         baselineItems: args.baseline, shortlistItems: args.items, target: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
         tagsOf: narrowTagsOf(args.session, characterTraits), ignoredTags: [dataset.triggerWord, ...characterTraits.map((trait) => trait.tag)],
         qualityOf: qualityOf(args.session),
-        onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
-        onProgress: ({ completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Picking the most varied'); },
+        onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setStep('understanding'); setProgress({ completed, total: count }); },
+        onProgress: ({ completed, total: count }) => { setStep('selecting'); setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Picking the most varied'); },
         onSkip: (entry) => args.unreadable.push(entry),
       });
       ctx.signal.throwIfAborted();
@@ -471,11 +474,16 @@ export function useBuildAutoPipeline(input: Input) {
     };
     const assetIdByKey = new Map([...baseline, ...evaluated].map((item) => [keyOf(item), getBuildAssetId(item)]));
     const now = new Date().toISOString();
+    // Only numbers the pipeline itself has: the compared pool, the quality rejections among the sources, what it added and left out.
+    const outOnQuality = sources.filter((item) => { const record = fresh.records[getBuildAssetId(item)]; return item.kind !== 'video' && record?.override !== 'pin' && record?.triage?.stage === 'quality' && record.triage.group === 'rejected'; }).length;
+    const summary: BuildAssemblySummary = {
+      images: pool.length + outOnQuality, ...(auto ? { groups: picked.length } : {}), added: chosen.length, outOnQuality, duplicates: duplicates.size,
+    };
     const prepare = (value: BuildSession): BuildSession => {
       const next = clearBuildShortlist(applyAssemblyTriage(value, plan, assetIdByKey, now));
       return {
         ...next, cursor: 0, filter: next.filter === 'shortlisted' || next.filter === 'picked' ? 'all' : next.filter,
-        auto: { ...next.auto, assemblyKey, assembledAt: now, assemblyError: undefined },
+        auto: { ...next.auto, assemblyKey, assembledAt: now, assemblyError: undefined, assemblySummary: summary },
       };
     };
     const entries: MembershipEntry[] = [
@@ -483,6 +491,7 @@ export function useBuildAutoPipeline(input: Input) {
       ...pinsOutside.filter((item) => fresh.records[getBuildAssetId(item)]?.override === 'pin' && allowed(item))
         .map((item) => ({ item, decision: 'accepted' as const, provenance: 'manual' as const })),
     ];
+    setStep('applying');
     try {
       if (entries.length) {
         const applied = await latest.current.applyDecisions(entries, { propagateError: true, prepare, label: `Assemble: add ${entries.length} image${entries.length === 1 ? '' : 's'}` });
@@ -610,7 +619,7 @@ export function useBuildAutoPipeline(input: Input) {
   const clearSkipped = () => setSkipped([]);
 
   return {
-    phase, task, progress, cancel, resume, paused, skipped, clearSkipped, startShortlist, startNarrow, startAssemble, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets,
+    phase, step, task, progress, cancel, resume, paused, skipped, clearSkipped, startShortlist, startNarrow, startAssemble, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets,
     modelDownloadFor, dismissModelDownload: () => setModelDownloadFor(null),
   };
 }

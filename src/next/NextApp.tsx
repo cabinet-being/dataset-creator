@@ -5,13 +5,14 @@ import { useCommandPalette } from '../components/workspace/Commands';
 import { AppShell } from '../components/workspace/AppShell';
 import { WorkspaceNotifications } from '../components/workspace/WorkspaceNotifications';
 import { WorkspaceStatusBar } from '../components/workspace/WorkspaceStatusBar';
+import type { createSemanticFeatureEncoder } from '../services/analysis/semanticFeatureService';
 import { BoardScreen } from './screens/BoardScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
 import { useNextCommands } from './useNextCommands';
 import { useProjectRuntime } from './useProjectRuntime';
 
 /** Root of the rewritten UI. It is mounted instead of the classic App, never next to it. */
-export default function NextApp() {
+export default function NextApp({ encoderFactory }: { encoderFactory?: typeof createSemanticFeatureEncoder } = {}) {
   const runtime = useProjectRuntime();
   const openCommands = useCommandPalette();
   useNextCommands(runtime, () => openCommands(true));
@@ -37,7 +38,7 @@ export default function NextApp() {
     </>}
   >
     {projectDirectoryHandle
-      ? <div data-next-app className="flex min-h-0 flex-1 flex-col"><BoardScreen key={projectId} runtime={runtime} /></div>
+      ? <div data-next-app className="flex min-h-0 flex-1 flex-col"><BoardScreen key={projectId} runtime={runtime} encoderFactory={encoderFactory} /></div>
       : <div data-next-app className="flex min-h-0 flex-1 flex-col"><ProjectsScreen runtime={runtime} /></div>}
   </AppShell>;
 }
