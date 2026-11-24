@@ -11,17 +11,6 @@ export type WorkspaceImageKind = 'image' | 'edited' | 'video' | 'psd';
 
 export type AugmentationType = 'flip_h' | 'flip_v' | 'color' | 'rotate';
 
-export type ToolName =
-  | 'build'
-  | 'import'
-  | 'video'
-  | 'select'
-  | 'clean'
-  | 'analysis'
-  | 'review'
-  | 'tagging'
-  | 'export';
-
 // ============ SOURCE IMAGE ============
 
 export interface SourceImage {
@@ -138,7 +127,8 @@ export interface Dataset {
 export type BrickColumnCount = 'auto' | 1 | 2 | 3 | 4 | 5;
 
 export interface WorkspaceSettings {
-  brickColumnCount: BrickColumnCount;
+  /** Read for old projects only; the setting was removed from the UI. */
+  brickColumnCount?: BrickColumnCount;
   localTaggerModelPath?: string;
   localTaggerTagsPath?: string;
   excludedProjectCategories?: string[];
@@ -150,7 +140,6 @@ export interface WorkspaceSettings {
 export type BuildReviewDecision = 'unreviewed' | 'accepted' | 'skipped' | 'deferred';
 export type BuildApplicationStatus = 'idle' | 'pending' | 'failed' | 'applied';
 export type BuildValidationStatus = 'pending' | 'valid' | 'stale' | 'error';
-export type BuildReviewMode = 'every-item' | 'uncertain-only';
 
 export type BuildTransformRecipe = {
   mode: 'fit' | 'crop';
@@ -229,12 +218,10 @@ export interface BuildAssemblyOutcome {
 
 export interface BuildPreparationProfile {
   target: number;
-  reviewMode: BuildReviewMode;
   captionRequired: boolean;
   transform?: BuildTransformRecipe;
   /** Legacy: read only to migrate to `ProjectState.targetModel`; no longer written. */
   minShortSide?: number;
-  autoPipeline?: boolean;
   /** Auto-select without a target size: one image per group of similar ones. Absent means Target mode (older sessions). */
   sizeMode?: 'auto';
   /** Selected inbox folders (explorer paths; subfolders are included). Absent means the whole inbox; folders added later are not selected automatically. */
@@ -243,24 +230,14 @@ export interface BuildPreparationProfile {
   similarityStrictness?: 'strict' | 'balanced' | 'loose';
 }
 
-export type BuildReviewView = 'list' | 'grid' | 'clusters';
-export type BuildStage = 'add' | 'select' | 'caption' | 'check' | 'export';
-
 export interface BuildSession {
   /** 2 adds record overrides; version 1 sessions are migrated once on load. */
   version: 1 | 2;
-  /** Current Build stage; absent in sessions saved before stages existed (normalized on load). */
-  stage?: BuildStage;
-  /** Select-stage view mode; absent means list. */
-  view?: BuildReviewView;
   profile: BuildPreparationProfile;
-  cursor: number;
-  filter: 'all' | 'unresolved' | 'errors' | 'needs-decision' | 'accepted' | 'rejected' | 'shortlisted' | 'picked'
-    | 'status-inbox' | 'status-out' | 'status-in-dataset' | 'status-pinned' | 'status-banned';
   order: string[];
   records: Record<string, BuildReviewRecord>;
   lastExport?: { fingerprint: string; completedAt: string; entries: number };
-  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string; shortlist?: BuildShortlist; assemblySummary?: BuildAssemblySummary };
+  auto?: { assemblyKey?: string; assembledAt?: string; assemblyError?: string; assemblySummary?: BuildAssemblySummary };
 }
 
 /** Numbers of the last Assemble, written in the same Undo step as its result. */
@@ -275,32 +252,6 @@ export interface BuildAssemblySummary {
   outOnQuality: number;
   /** Images left out as duplicates of a kept image. */
   duplicates: number;
-}
-
-/** Pass-1 result of Auto-select: marks candidates only; nothing moves into the Dataset until pass 2 is applied. */
-export interface BuildShortlistEntry {
-  /** Build asset id. */
-  id: string;
-  /** Content revision when the entry was created; a changed image drops the entry. */
-  revision: string;
-  cluster: string;
-  gain: number;
-  rank: number;
-}
-export interface BuildShortlist {
-  createdAt: string;
-  /** Images the Dataset still needed when the shortlist was made. */
-  needed: number;
-  /** Wanted shortlist size (the entries may be fewer when the pool is small). */
-  size: number;
-  duplicatesRejected: number;
-  /** `auto`: made without a target size. */
-  mode?: 'auto';
-  /** Images that were compared (the Find pool), used to explain Auto results. */
-  poolCount?: number;
-  entries: BuildShortlistEntry[];
-  /** Pass-2 result: Build asset ids to add, in rank order. */
-  narrowed?: { createdAt: string; target: number; ids: string[] };
 }
 
 // ============ SIMILARITY ============
@@ -338,8 +289,6 @@ export interface ProjectState {
   datasetItems: Record<string, EditedAsset>;
   dataset: Dataset;
   cleanupOverlays: Record<string, CleanupOverlay>;
-  currentTool: ToolName;
-  toolState: Record<ToolName, unknown>;
   taggingConfig: TaggingConfig;
   workspaceSettings: WorkspaceSettings;
   buildSession: BuildSession;
@@ -446,6 +395,14 @@ export const createDataset = (name = 'New Dataset'): Dataset => ({
   updatedAt: new Date(),
 });
 
+/** A fresh Build session (version 2, Auto size). Lives next to `createProject` so the types module has no dependency on services. */
+export const createBuildSession = (): BuildSession => ({
+  version: 2,
+  profile: { target: 60, captionRequired: true, sizeMode: 'auto' },
+  order: [],
+  records: {},
+});
+
 export const createProject = (name: string, projectType: ProjectType = 'general', targetModel: TargetModelId = 'sdxl'): ProjectState => ({
   projectType,
   targetModel,
@@ -458,18 +415,6 @@ export const createProject = (name: string, projectType: ProjectType = 'general'
     triggerWord: PROJECT_TYPE_PROFILES[projectType].defaults.triggerWord,
   },
   cleanupOverlays: {},
-  currentTool: 'build',
-  toolState: {
-    build: {},
-    import: {},
-    video: {},
-    select: {},
-    clean: {},
-    analysis: {},
-    review: {},
-    tagging: {},
-    export: {},
-  },
   taggingConfig: {
     threshold: 0.5,
     maxTags: 15,
@@ -477,23 +422,10 @@ export const createProject = (name: string, projectType: ProjectType = 'general'
     blacklist: [],
   },
   workspaceSettings: {
-    brickColumnCount: 'auto',
     localTaggerModelPath: undefined,
     localTaggerTagsPath: undefined,
   },
-  buildSession: {
-    version: 1,
-    stage: 'add',
-    profile: {
-      target: 60,
-      reviewMode: 'every-item',
-      captionRequired: true,
-    },
-    cursor: 0,
-    filter: 'all',
-    order: [],
-    records: {},
-  },
+  buildSession: createBuildSession(),
   lastModified: new Date(),
   createdAt: new Date(),
 });

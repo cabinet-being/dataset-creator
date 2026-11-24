@@ -106,9 +106,6 @@ export const CleanupTool = ({
   const [projectPsdPaths, setProjectPsdPaths] = useState<string[]>([]);
   const runCommand = useCommandRunner();
   const runCommandRef = useRef(runCommand); runCommandRef.current = runCommand;
-  const initialSelectedImageId = useProjectStore(
-    (state) => (state.toolState.clean as { selectedImageId?: string } | undefined)?.selectedImageId
-  );
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const phaseRef = useRef<PhotopeaPhase>('waiting-ready');
@@ -193,12 +190,12 @@ export const CleanupTool = ({
       return;
     }
 
-    const nextSelectedImageId = selectedImageId ?? initialSelectedImageId;
+    const nextSelectedImageId = selectedImageId;
     if (nextSelectedImageId && nextSelectedImageId !== selectedImageKey) {
       setSelectedImageKey(nextSelectedImageId);
       setHasPhotopeaMounted(true);
     }
-  }, [initialSelectedImageId, selectedImageId, selectedImageKey]);
+  }, [selectedImageId, selectedImageKey]);
 
   const resetEditorState = useCallback((status = 'Loading Photopea...', resetPhotopea = true) => {
     documentState.reset();

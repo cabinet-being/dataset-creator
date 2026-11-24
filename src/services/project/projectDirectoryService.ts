@@ -1,13 +1,11 @@
 import { normalizeCharacterTraits } from '../tagging/characterTraits';
 import { normalizeProjectType, resolveProjectType, resolveTargetModel, type ProjectTypeResolver } from '../../lib/projectProfiles';
-import { URL_TOOL_ALIASES } from '../../lib/constants';
 import {
   createProject,
   type ProjectState,
   type ProjectType,
   type TargetModelId,
   type SourceImage,
-  type ToolName,
   type EditedAsset,
   type TaggingConfig,
   type WorkspaceSettings,
@@ -124,7 +122,8 @@ type DirectoryProjectManifest = {
     projectType?: ProjectType;
     targetModel?: TargetModelId;
     characterTraits?: ProjectState['characterTraits'];
-    currentTool: ToolName;
+    /** Written by older versions; ignored on read. */
+    currentTool?: string;
     taggingConfig: Omit<TaggingConfig, 'autoTaggingEndpoint'>;
     workspaceSettings: WorkspaceSettings;
     buildSession?: ProjectState['buildSession'];
@@ -342,9 +341,6 @@ const getFileExtension = (fileName: string, mimeType: string): string => {
   return mimeType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
 };
 
-const getToolFromSlug = (value: string | undefined): ToolName =>
-  ((value ? URL_TOOL_ALIASES[value] : undefined) ?? 'import') as ToolName;
-
 const serializeSourceManifest = (
   source: SourceImage,
   originalFileNameOnDisk: string,
@@ -407,7 +403,6 @@ const getProjectManifest = (
     projectType: project.projectType,
     targetModel: project.targetModel,
     ...(project.characterTraits?.length ? { characterTraits: project.characterTraits } : {}),
-    currentTool: project.currentTool,
     taggingConfig: {
       threshold: project.taggingConfig.threshold,
       maxTags: project.taggingConfig.maxTags,
@@ -1733,16 +1728,11 @@ export const readProjectDirectory = async (
     );
   }
 
-  const projectRecord = manifest.project as Record<string, unknown>;
-  const legacyCurrentTool = projectRecord[`currentSta${'ge'}`];
-  const currentTool = manifest.project.currentTool ?? (typeof legacyCurrentTool === 'string' ? getToolFromSlug(legacyCurrentTool) : 'import');
-
   const loadedProject: ProjectState = {
     ...defaults,
     characterTraits: normalizeCharacterTraits(manifest.project.characterTraits),
     id: manifest.project.id,
     name: manifest.project.name,
-    currentTool,
     sourceImages: Object.fromEntries(sources.map(({ manifestPath: _manifest, ...source }) => [source.id, source as SourceImage])),
     datasetItems: Object.fromEntries(edited.map(({ manifestPath: _manifest, ...item }) => [item.id, item as EditedAsset])),
     dataset: {

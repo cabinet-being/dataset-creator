@@ -1,37 +1,3 @@
-// Tools in recommended image preparation order.
-export const WORKFLOW_TOOLS = [
-  'build',
-  'import',
-  'video',
-  'select',
-  'clean',
-  'analysis',
-  'review',
-  'tagging',
-  'export',
-] as const;
-
-export const TOOLS = [...WORKFLOW_TOOLS] as const;
-
-export const URL_TOOL_ALIASES: Record<string, (typeof TOOLS)[number]> = {
-  'build-dataset': 'build',
-  build: 'build',
-  import: 'import',
-  'video-frames': 'video',
-  video: 'video',
-  'remove-duplicates': 'select',
-  select: 'select',
-  photopea: 'clean',
-  edit: 'clean',
-  clean: 'clean',
-  clear: 'clean',
-  analysis: 'analysis',
-  review: 'review',
-  caption: 'tagging',
-  tagging: 'tagging',
-  export: 'export',
-};
-
 // Aspect ratios
 export const ASPECT_RATIOS = ['2:3', '3:2', '1:1'] as const;
 

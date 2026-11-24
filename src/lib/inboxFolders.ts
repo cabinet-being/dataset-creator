@@ -19,17 +19,6 @@ export const buildFolderRows = (folders: string[]): FolderRow[] => {
     .map((path) => ({ path, name: path.split('/').pop() ?? path, depth: path.split('/').length - 1, count: folders.filter((folder) => isInFolder(path, folder)).length }));
 };
 
-/** Toggles a folder together with its subfolders: all checked becomes unchecked, otherwise everything becomes checked. */
-export const toggleFolderSelection = (rows: FolderRow[], deselected: ReadonlySet<string>, folder: string): Set<string> => {
-  const family = rows.filter((row) => isInFolder(folder, row.path)).map((row) => row.path);
-  const next = new Set(deselected);
-  if (family.every((path) => !deselected.has(path))) family.forEach((path) => next.add(path)); else family.forEach((path) => next.delete(path));
-  return next;
-};
-
-/** An image is selected unless its own folder was unchecked (subfolders are unchecked together with their parent). */
-export const isInboxItemSelected = (item: WorkspaceImage, deselected: ReadonlySet<string>) => !deselected.has(inboxFolderOf(item));
-
 /** Explorer path (`Project/inbox/day1`) of the inbox folder that holds `path`, or undefined outside the inbox. */
 export const inboxFolderOfPath = (path: string | undefined): string | undefined => {
   const normalized = (path ?? '').replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^Project\//, '');

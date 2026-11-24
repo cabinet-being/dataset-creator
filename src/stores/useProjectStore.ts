@@ -1,4 +1,4 @@
-import { PROJECT_TYPE_PROFILES, resolveTargetModel } from '../lib/projectProfiles';
+import { resolveTargetModel } from '../lib/projectProfiles';
 import type { CharacterTrait, ProjectType, TargetModelId } from '../types';
 import { normalizeCharacterTraits } from '../services/tagging/characterTraits';
 import { create } from 'zustand';
@@ -7,7 +7,6 @@ import {
   ProjectState,
   SourceImage,
   EditedAsset,
-  ToolName,
   TaggingConfig,
   WorkspaceSettings,
   BuildSession,
@@ -58,7 +57,6 @@ interface ProjectStore extends ProjectState {
   setCharacterTraits: (traits: CharacterTrait[]) => void;
   loadProject: (project: ProjectState) => void;
   renameProject: (name: string) => void;
-  setCurrentTool: (tool: ToolName) => void;
   
   // Source images
   addSourceImage: (image: SourceImage) => void;
@@ -84,9 +82,6 @@ interface ProjectStore extends ProjectState {
   updateCleanupOverlay: (id: string, updates: Partial<CleanupOverlay>) => void;
   removeCleanupOverlay: (id: string) => void;
   
-  // Tool runtime state
-  setToolState: (tool: ToolName, state: unknown) => void;
-  getToolState: (tool: ToolName) => unknown;
   
   // Tagging
   updateTaggingConfig: (updates: Partial<TaggingConfig>) => void;
@@ -180,13 +175,6 @@ export const useProjectStore = create<ProjectStore>()(
           set((state) => ({
             ...state,
             name,
-            lastModified: new Date(),
-          })),
-        
-        setCurrentTool: (tool: ToolName) =>
-          set((state) => ({
-            ...state,
-            currentTool: PROJECT_TYPE_PROFILES[state.projectType].enabledTools.includes(tool) ? tool : state.currentTool,
             lastModified: new Date(),
           })),
         
@@ -457,15 +445,6 @@ export const useProjectStore = create<ProjectStore>()(
             const { [id]: _, ...rest } = state.cleanupOverlays;
             return { ...state, cleanupOverlays: rest };
           }),
-        
-        setToolState: (tool: ToolName, toolState: unknown) =>
-          set((state) => ({
-            ...state,
-            toolState: { ...state.toolState, [tool]: toolState },
-            lastModified: new Date(),
-          })),
-        
-        getToolState: (tool: ToolName) => get().toolState[tool],
         
         updateTaggingConfig: (updates: Partial<any>) =>
           set((state) => ({

@@ -1,17 +1,15 @@
-import { useCallback, useMemo, type RefObject } from 'react';
+import { useMemo, type RefObject } from 'react';
 import { useApplyMembership } from '../../components/build/useApplyMembership';
 import { useBuildAutoPipeline } from '../../components/build/useBuildAutoPipeline';
 import type { useBuildModel } from '../../components/build/useBuildModel';
 import { useOperation } from '../../hooks/useOperation';
 import { isInboxItem, isInboxItemInSources } from '../../lib/inboxFolders';
-import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { getBuildAssetId } from '../../services/build/buildSessionService';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { selectActiveCharacterTraits, useProjectStore } from '../../stores/useProjectStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import { useUIStore } from '../../stores/useUIStore';
-import type { BuildReviewDecision } from '../../types';
 import type { useProjectRuntime } from '../useProjectRuntime';
 
 const VIEW_ID = 'next-board';
@@ -45,20 +43,15 @@ export function useBoardPipeline({ runtime, model, busy, setBusy, root, encoderF
   const membership = useApplyMembership({ directory: runtime.projectDirectoryHandle, operation, busy, setBusy });
   const { applyDecisions } = membership;
 
-  const commitDecision = useCallback(async (decision: BuildReviewDecision, targets: WorkspaceImage[] = [], provenance: 'manual' | 'auto' = 'manual', propagateError = false) => {
-    if (!targets.length) return;
-    await applyDecisions(targets.map(item => ({ item, decision })), { provenance, propagateError });
-  }, [applyDecisions]);
-
   // Assemble works on the frames in the ticked Sources folders that the user has not banned or rejected.
   const sources = reconciled.profile.sources;
   const sourceItems = useMemo(() => candidates.filter(item => item.kind !== 'video' && isInboxItem(item) && !isProjectDatasetPath(item.assetPath)
     && isInboxItemInSources(item, sources) && reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped'), [candidates, reconciled.records, sources]);
 
   const pipeline = useBuildAutoPipeline({
-    // No background triage: Assemble runs the quality check itself, so statuses change only when the user asks.
-    active: false, busy, candidates, sources: sourceItems, effectiveItems, session: reconciled, targetModel, patchSession, dataset,
-    commitDecision, applyDecisions, localTagger, taggingConfig, root, viewId: VIEW_ID, notify, encoderFactory, characterTraits,
+    // Assemble runs the quality check itself, so statuses change only when the user asks.
+    busy, candidates, sources: sourceItems, effectiveItems, session: reconciled, targetModel, patchSession, dataset,
+    applyDecisions, localTagger, taggingConfig, root, viewId: VIEW_ID, notify, encoderFactory, characterTraits,
   });
   const { pinImages, banImages, clearOverride, returnToInbox } = membership;
   const actions = useMemo<BoardActions>(() => ({ pinImages, banImages, clearOverride, returnToInbox, busy }), [banImages, busy, clearOverride, pinImages, returnToInbox]);

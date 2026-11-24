@@ -34,22 +34,6 @@ try {
   assert.deepEqual(folders.buildFolderRows([]), []);
   assert.deepEqual(folders.buildFolderRows(['inbox/d10', 'inbox/d2']).map((row) => row.name), ['inbox', 'd2', 'd10']);
 
-  // Toggle: all checked -> unchecked family; any unchecked -> everything checked.
-  let off = folders.toggleFolderSelection(rows, new Set(), 'inbox/b');
-  assert.deepEqual([...off].sort(), ['inbox/b', 'inbox/b/c']);
-  off = folders.toggleFolderSelection(rows, off, 'inbox/b');
-  assert.equal(off.size, 0);
-  off = folders.toggleFolderSelection(rows, new Set(['inbox/b/c']), 'inbox/b');
-  assert.equal(off.size, 0);
-  const original = new Set();
-  folders.toggleFolderSelection(rows, original, 'inbox');
-  assert.equal(original.size, 0, 'input set is not mutated');
-  assert.equal(folders.toggleFolderSelection(rows, new Set(), 'inbox').size, 4);
-
-  assert.equal(folders.isInboxItemSelected(item('Project/inbox/a/x.png'), new Set()), true);
-  assert.equal(folders.isInboxItemSelected(item('Project/inbox/a/x.png'), new Set(['inbox/a'])), false);
-  assert.equal(folders.isInboxItemSelected(item('Project/inbox/a/x.png'), new Set(['inbox'])), true);
-
   // Build Sources helpers.
   assert.equal(folders.inboxFolderOfPath('Project/inbox/day1/a.png'), 'Project/inbox/day1');
   assert.equal(folders.inboxFolderOfPath('Project/inbox/a.png'), 'Project/inbox');

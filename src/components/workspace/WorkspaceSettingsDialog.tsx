@@ -1,7 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import type { BrickColumnCount, WorkspaceSettings } from '../../types';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
 import { hasVideoModel } from '../../services/video/videoCache';
@@ -10,8 +9,6 @@ import { SIMILARITY_STRICTNESS, type SimilarityStrictnessId } from '../../servic
 type Props = {
   open: boolean; onOpenChange: (open: boolean) => void;
   theme: 'system' | 'light' | 'dark'; onThemeChange: (theme: Props['theme']) => void;
-  density: string; onDensityChange: (density: string) => void;
-  settings: WorkspaceSettings; onSettingsChange: (settings: Partial<WorkspaceSettings>) => void;
   onPickTaggerFile: (kind: 'model' | 'tags') => void;
   onRestoreTaggerAccess: () => void;
   onShortcuts: () => void;
@@ -20,7 +17,7 @@ type Props = {
   /** Similarity strictness of the open project (`profile.similarityStrictness`); shown only when a project is open. */
   strictness?: { value: SimilarityStrictnessId; onChange: (value: SimilarityStrictnessId) => void };
 };
-export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChange, density, onDensityChange, settings, onSettingsChange, onPickTaggerFile, onRestoreTaggerAccess, onShortcuts, onOpenTool, strictness }: Props) {
+export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChange, onPickTaggerFile, onRestoreTaggerAccess, onShortcuts, onOpenTool, strictness }: Props) {
   const taggerStatus = useLocalTaggerStore(state => state.status);
   const taggerMessage = useLocalTaggerStore(state => state.message);
   const savedFileNames = useLocalTaggerStore(state => state.savedFileNames);
@@ -41,7 +38,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
       <Dialog.Description className="sr-only">Appearance, shortcuts and local models</Dialog.Description>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-2 text-sm">Theme<select className={control} value={theme} onChange={event => onThemeChange(event.target.value as Props['theme'])}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-        <label className="grid gap-2 text-sm">Density<select className={control} value={density} onChange={event => onDensityChange(event.target.value)}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
       </div>
       <button className={`${control} mt-3`} onClick={() => closeThen(onShortcuts)}>Keyboard shortcuts</button>
       <section className="mt-5 border-t border-border pt-4">
@@ -50,7 +46,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
           <select aria-label="Similarity strictness" className={control} value={strictness.value} onChange={event => strictness.onChange(event.target.value as SimilarityStrictnessId)}>
             {SIMILARITY_STRICTNESS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>}
       </section>
-      <details className="mt-4 text-sm"><summary>Layout options</summary><label className="mt-3 grid gap-2">Masonry columns<select className={control} value={settings.brickColumnCount ?? 'auto'} onChange={event => onSettingsChange({ brickColumnCount: event.target.value === 'auto' ? 'auto' : Number(event.target.value) as BrickColumnCount })}>{['auto', 1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value === 'auto' ? 'Auto' : `${value} columns`}</option>)}</select></label></details>
       <section className="mt-5 border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Caption model</h2><span role="status" className="text-xs text-muted-foreground">{captionState}</span></div>
         {taggerStatus === 'not-ready' && <p className="mt-2 text-sm text-destructive">{taggerMessage}</p>}

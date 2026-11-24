@@ -1,12 +1,12 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Search, X } from 'lucide-react';
-import { captureShortcut, isTextEntry, matchesShortcut, shortcutLabel } from '../../lib/keyboard';
+import { isTextEntry, matchesShortcut, shortcutLabel } from '../../lib/keyboard';
 import { useUIStore } from '../../stores/useUIStore';
 import { createCommandRegistry, type Command } from '../../lib/commandRegistry';
 export type { Command } from '../../lib/commandRegistry';
 
-type CommandPreferences = { singles: boolean; bindings: Record<string, string> };
+type CommandPreferences = { singles: boolean };
 const Context = createContext<(ReturnType<typeof createCommandRegistry> & { open: (help?: boolean) => void }) | null>(null);
 const storageKey = 'dataset-creator-shortcuts-v1';
 export function useCommands(commands: Command[], scope?: () => HTMLElement | null) {
@@ -34,22 +34,20 @@ export function CommandProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<'commands' | 'help' | null>(null);
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
-  const [recording, setRecording] = useState<string | null>(null);
-  const [bindingError, setBindingError] = useState('');
   const [prefs, setPrefs] = useState<CommandPreferences>(() => {
     try { const saved = JSON.parse(localStorage.getItem(storageKey) ?? 'null');
-      if (saved && typeof saved.singles === 'boolean' && saved.bindings && typeof saved.bindings === 'object') return { singles: saved.singles, bindings: Object.fromEntries(Object.entries(saved.bindings).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) };
-    } catch {} return { singles: true, bindings: {} };
+      if (saved && typeof saved.singles === 'boolean') return { singles: saved.singles };
+    } catch {} return { singles: true };
   });
   const prefsRef = useRef(prefs); prefsRef.current = prefs;
   const modeRef = useRef(mode); modeRef.current = mode;
   const focusBefore = useRef<HTMLElement | null>(null);
   const [api] = useState(() => ({
     ...registry,
-    open: (help = false) => { focusBefore.current = document.activeElement as HTMLElement; setQuery(''); setIndex(0); setRecording(null); setMode(help ? 'help' : 'commands'); },
+    open: (help = false) => { focusBefore.current = document.activeElement as HTMLElement; setQuery(''); setIndex(0); setMode(help ? 'help' : 'commands'); },
   }));
   const getCommands = () => {
-    return registry.commands().map(command => ({ ...command, shortcut: command.shortcutEnabled === false ? undefined : prefsRef.current.bindings[command.id] ?? command.shortcut }));
+    return registry.commands().map(command => ({ ...command, shortcut: command.shortcutEnabled === false ? undefined : command.shortcut }));
   };
   const [, refresh] = useState(0);
   useEffect(() => mode ? registry.subscribe(() => refresh(value => value + 1)) : undefined, [mode, registry]);
@@ -103,29 +101,16 @@ export function CommandProvider({ children }: { children: ReactNode }) {
             <Dialog.Close aria-label="Close commands" className="rounded p-1"><X size={16} /></Dialog.Close></div>
           {mode === 'help' && <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3 text-xs">
             <label className="flex items-center gap-2"><input type="checkbox" checked={prefs.singles} onChange={e => setPrefs({ ...prefs, singles: e.target.checked })} />Single-key shortcuts</label>
-            <button className="ml-auto" onClick={() => setPrefs({ singles: true, bindings: {} })}>Reset shortcuts</button>
             <p className="w-full text-muted-foreground">Ctrl / Cmd + K · Commands. Tab · Next control. Escape · Back. Arrow keys · Navigate.</p>
-            {bindingError && <p role="alert" className="w-full text-destructive">{bindingError}</p>}
           </div>}
           <div id="command-results" role={mode === 'help' ? 'group' : 'listbox'} aria-label="Commands" className="min-h-0 overflow-auto p-2">
             {commands.map((command, i) => <div key={command.id} id={`command-${i}`} role={mode === 'help' ? undefined : 'option'} aria-selected={mode === 'help' ? undefined : currentIndex === i} aria-disabled={mode === 'help' ? undefined : command.disabled} onMouseDown={event => { if (mode !== 'help') event.preventDefault(); }} onClick={() => { if (mode !== 'help') execute(command); }}
               className={`flex items-center gap-2 rounded-lg ${currentIndex === i ? 'bg-secondary' : ''}`}>
               <div title={command.disabled ? command.reason : undefined} className={`flex min-w-0 flex-1 items-center justify-between gap-4 px-3 py-3 text-left text-sm ${command.disabled ? 'opacity-40' : 'cursor-pointer'}`}><span className="flex min-w-0 items-baseline gap-2"><span className="truncate">{command.label}</span>{command.group && <span className="shrink-0 text-xs text-muted-foreground">{command.group}</span>}</span><kbd className="shrink-0 text-xs text-muted-foreground">{shortcutLabel(command.shortcut)}</kbd></div>
-              {mode === 'help' && <button aria-label={`Change shortcut for ${command.label}`} className="mr-2 rounded px-2 py-1 text-xs text-muted-foreground" onClick={() => { setRecording(command.id); setBindingError(''); }}
-                onKeyDown={event => {
-                  if (recording !== command.id) return;
-                  event.preventDefault(); event.stopPropagation();
-                  if (event.key === 'Escape') { setRecording(null); return; }
-                  if (event.key === 'Backspace') { setPrefs({ ...prefs, bindings: { ...prefs.bindings, [command.id]: '' } }); setRecording(null); return; }
-                  const binding = captureShortcut(event.nativeEvent); if (!binding) return;
-                  const conflict = getCommands().find(other => other.id !== command.id && other.shortcut?.toLowerCase() === binding.toLowerCase());
-                  if (conflict || ['mod+k', '?'].includes(binding.toLowerCase())) { setBindingError(`Already used: ${conflict?.label ?? 'Commands / help'}`); return; }
-                  setPrefs({ ...prefs, bindings: { ...prefs.bindings, [command.id]: binding } }); setRecording(null);
-                }}>{recording === command.id ? 'Press keys…' : 'Edit'}</button>}
             </div>)}
             {!commands.length && <p className="p-6 text-center text-sm text-muted-foreground">No commands found</p>}
           </div>
-          <div className="flex justify-between border-t border-border px-4 py-2 text-xs text-muted-foreground"><span>{mode === 'help' ? 'Click Edit to record · Backspace to clear' : '↑ ↓ Navigate · Enter Run'}</span><button onClick={() => { setMode(mode === 'help' ? 'commands' : 'help'); setQuery(''); }}> {mode === 'help' ? 'Commands' : 'Keyboard shortcuts'}</button></div>
+          <div className="flex justify-between border-t border-border px-4 py-2 text-xs text-muted-foreground"><span>{mode === 'help' ? 'Single-key shortcuts can be turned off above' : '↑ ↓ Navigate · Enter Run'}</span><button onClick={() => { setMode(mode === 'help' ? 'commands' : 'help'); setQuery(''); }}> {mode === 'help' ? 'Commands' : 'Keyboard shortcuts'}</button></div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

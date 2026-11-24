@@ -429,9 +429,6 @@ try {
     useProjectStore.getState().loadProject(project);
     assert.equal(useProjectStore.getState().projectType, type);
     assert.equal('datasetKeyword' in project.taggingConfig, false, 'The trigger word lives only in dataset.triggerWord');
-    assert.equal(PROJECT_TYPE_PROFILES[type].enabledTools.length, 9);
-    assert.ok(PROJECT_TYPE_PROFILES[type].enabledTools.includes('build'));
-    assert.ok(PROJECT_TYPE_PROFILES[type].enabledTools.includes('video'));
     project.buildSession = {
       ...project.buildSession,
       profile:{...project.buildSession.profile,target:42,reviewMode:'uncertain-only'},

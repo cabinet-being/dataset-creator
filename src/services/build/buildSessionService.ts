@@ -10,11 +10,12 @@ import type {
   BuildTriageProposal,
   BuildReviewRecord,
   BuildSession,
-  BuildShortlistEntry,
-  BuildStage,
   BuildTransformRecipe,
   BuildValidationStatus,
 } from '../../types';
+import { createBuildSession } from '../../types';
+
+export { createBuildSession };
 import type { ExplorerPathMove } from '../../lib/datasetAssets';
 import { applyExplorerPathMoves } from '../../lib/datasetAssets';
 
@@ -22,29 +23,7 @@ export type BuildCandidate = Pick<WorkspaceImage,
   'id' | 'sourceImageId' | 'editedAssetId' | 'assetPath' | 'fileName' | 'kind' | 'tags' | 'byteSize' | 'modifiedAt'
 > & { stableId?: string };
 
-export type BuildCounts = {
-  ready: number;
-  target: number;
-  saving: number;
-  unresolved: number;
-  errors: number;
-};
-
-export const BUILD_STAGES: readonly BuildStage[] = ['add', 'select', 'caption', 'check', 'export'];
-
-export const createBuildSession = (): BuildSession => ({
-  version: 2,
-  stage: 'add',
-  profile: { target: 60, reviewMode: 'every-item', captionRequired: true, sizeMode: 'auto' },
-  cursor: 0,
-  filter: 'all',
-  order: [],
-  records: {},
-});
-
 const TRIAGE_GROUPS = ['accepted', 'rejected', 'needs-decision'];
-const BUILD_FILTERS = ['all', 'unresolved', 'errors', 'needs-decision', 'accepted', 'rejected', 'shortlisted', 'picked',
-  'status-inbox', 'status-out', 'status-in-dataset', 'status-pinned', 'status-banned'] as const;
 
 /** Triage is derived data: drop it unless it has a recognisable shape. */
 const normalizeTriage = (value: unknown): BuildTriageProposal | undefined => {
@@ -91,6 +70,13 @@ const isRecord = (value: unknown): value is BuildReviewRecord => Boolean(
   value && typeof value === 'object' && typeof (value as BuildReviewRecord).assetId === 'string'
 );
 
+/** `auto.shortlist` belonged to the removed pick flow; it is dropped on load. */
+const normalizeAuto = (auto: NonNullable<BuildSession['auto']>): NonNullable<BuildSession['auto']> => {
+  const { shortlist: _shortlist, ...rest } = auto as NonNullable<BuildSession['auto']> & { shortlist?: unknown };
+  void _shortlist;
+  return rest;
+};
+
 export const normalizeBuildSession = (value: unknown): BuildSession => {
   const defaults = createBuildSession();
   if (!value || typeof value !== 'object') return defaults;
@@ -100,30 +86,20 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
   const records = Object.fromEntries(Object.entries(input.records ?? {}).filter(([, record]) => isRecord(record)).map(([id, record]) => [id, normalizeRecord(record, migrate)]));
   const sources = Array.isArray(input.profile?.sources) ? [...new Set(input.profile.sources.filter((path): path is string => typeof path === 'string' && Boolean(path)))] : undefined;
   const strictness = SIMILARITY_STRICTNESS.find((entry) => entry.id === input.profile?.similarityStrictness)?.id;
-  const filter = BUILD_FILTERS.find((value) => value === input.filter) ?? 'all';
-  const reviewMode = input.profile?.reviewMode === 'uncertain-only' ? 'uncertain-only' : 'every-item';
-  // Sessions saved before stages existed resume in Select when they already hold items, otherwise in Add.
-  const stage = BUILD_STAGES.find((value) => value === input.stage) ?? (Object.keys(records).length ? 'select' : 'add');
   return {
     version: 2,
-    stage,
-    ...(input.view === 'grid' || input.view === 'clusters' ? { view: input.view } : {}),
     profile: {
       target: Math.max(0, Math.floor(Number(input.profile?.target) || defaults.profile.target)),
-      reviewMode,
       captionRequired: input.profile?.captionRequired !== false,
       transform: input.profile?.transform,
-      autoPipeline: input.profile?.autoPipeline !== false,
       ...(input.profile?.sizeMode === 'auto' ? { sizeMode: 'auto' as const } : {}),
       ...(sources ? { sources } : {}),
       ...(strictness ? { similarityStrictness: strictness } : {}),
     },
-    cursor: Math.max(0, Math.floor(Number(input.cursor) || 0)),
-    filter,
     order: [...new Set((input.order ?? []).filter((id): id is string => typeof id === 'string'))],
     records,
     lastExport: input.lastExport,
-    ...(input.auto && typeof input.auto === 'object' ? { auto: input.auto } : {}),
+    ...(input.auto && typeof input.auto === 'object' ? { auto: normalizeAuto(input.auto) } : {}),
   };
 };
 
@@ -164,16 +140,6 @@ export const assertBuildSourceCurrent = <T extends BuildCandidate & { imageData:
   if (!latest || latest.imageData !== expected.imageData ||
     getBuildContentRevision(latest, transform) !== getBuildContentRevision(expected, transform))
     throw new Error('The source changed while applying the review decision. Review it again.');
-};
-
-export const nextBuildCursor = (previousQueue: BuildCandidate[], nextQueue: BuildCandidate[], previousCursor: number, reviewedId: string): number => {
-  if (!nextQueue.length) return 0;
-  const nextIds = new Set(nextQueue.map(getBuildAssetId));
-  const successor = previousQueue.slice(previousCursor + 1).find((item) => nextIds.has(getBuildAssetId(item)));
-  if (successor) return nextQueue.findIndex((item) => getBuildAssetId(item) === getBuildAssetId(successor));
-  const reviewedIndex = nextQueue.findIndex((item) => getBuildAssetId(item) === reviewedId);
-  if (reviewedIndex >= 0) return Math.min(reviewedIndex + 1, nextQueue.length - 1);
-  return Math.min(previousCursor, nextQueue.length - 1);
 };
 
 /** Remembers the inbox folder of an image that sits in the inbox; images elsewhere keep what they had. */
@@ -246,10 +212,9 @@ export const reconcileBuildSession = (
       };
     }
   }
-  const cursor = Math.min(session.cursor, Math.max(0, order.length - 1));
-  if (order.length === session.order.length && cursor === session.cursor && order.every((id, index) => id === session.order[index]) &&
+  if (order.length === session.order.length && order.every((id, index) => id === session.order[index]) &&
     Object.keys(records).every((id) => records[id] === session.records[id])) return current;
-  return { ...session, order, records, cursor };
+  return { ...session, order, records };
 };
 
 export const updateBuildDecision = (
@@ -285,112 +250,6 @@ export const updateBuildDecision = (
 export const getBuildRecordForItem = (session: BuildSession, item: BuildCandidate): BuildReviewRecord | undefined => {
   const id = getBuildAssetId(item);
   return session.records[id] ?? Object.values(session.records).find((record) => record.outputAssetId === id);
-};
-
-export type ActiveShortlist<T extends BuildCandidate> = {
-  /** Still valid and undecided, in rank order. */
-  entries: Array<{ entry: BuildShortlistEntry; item: T }>;
-  /** Pass-2 result restricted to entries that are still valid. */
-  narrowed: T[];
-  size: number;
-};
-
-/** The shortlist without entries whose image changed, moved into the Dataset or was decided by hand. */
-export const getActiveShortlist = <T extends BuildCandidate>(session: BuildSession, items: readonly T[] | ReadonlyMap<string, T>): ActiveShortlist<T> | null => {
-  const shortlist = session.auto?.shortlist;
-  if (!shortlist) return null;
-  const byId: ReadonlyMap<string, T> = Array.isArray(items) ? new Map((items as readonly T[]).map((item) => [getBuildAssetId(item), item])) : items as ReadonlyMap<string, T>;
-  const entries = shortlist.entries.flatMap((entry) => {
-    const item = byId.get(entry.id); const record = session.records[entry.id];
-    if (!item || !record || isProjectDatasetPath(item.assetPath)) return [];
-    if (record.decision !== 'unreviewed' && record.decision !== 'deferred') return [];
-    if (entry.revision !== getBuildContentRevision(item, record.transform ?? session.profile.transform)) return [];
-    return [{ entry, item }];
-  }).sort((left, right) => left.entry.rank - right.entry.rank);
-  const active = new Map(entries.map(({ entry, item }) => [entry.id, item]));
-  const narrowed = (shortlist.narrowed?.ids ?? []).flatMap((id) => active.get(id) ?? []);
-  return { entries, narrowed, size: shortlist.size };
-};
-
-export const createBuildShortlist = (
-  session: BuildSession,
-  result: { needed: number; requested: number; duplicates: number; mode?: 'auto'; poolCount?: number; items: Array<{ item: BuildCandidate; cluster: string; gain: number; rank: number }> },
-  now = new Date().toISOString()
-): BuildSession => ({
-  ...session,
-  auto: {
-    ...session.auto, assembledAt: now, assemblyError: undefined,
-    shortlist: {
-      createdAt: now, needed: result.needed, size: result.requested, duplicatesRejected: result.duplicates,
-      ...(result.mode ? { mode: result.mode } : {}), ...(result.poolCount !== undefined ? { poolCount: result.poolCount } : {}),
-      entries: result.items.flatMap(({ item, cluster, gain, rank }) => {
-        const id = getBuildAssetId(item); const record = session.records[id];
-        return record ? [{ id, revision: getBuildContentRevision(item, record.transform ?? session.profile.transform), cluster, gain, rank }] : [];
-      }),
-    },
-  },
-});
-
-export const setBuildShortlistNarrowed = (session: BuildSession, ids: string[], target: number, now = new Date().toISOString()): BuildSession => {
-  const shortlist = session.auto?.shortlist;
-  return shortlist ? { ...session, auto: { ...session.auto, shortlist: { ...shortlist, narrowed: { createdAt: now, target, ids } } } } : session;
-};
-
-export const clearBuildShortlist = (session: BuildSession): BuildSession => {
-  if (!session.auto?.shortlist) return session;
-  const { shortlist: _removed, ...auto } = session.auto;
-  void _removed;
-  return { ...session, auto };
-};
-
-export const selectBuildQueue = <T extends BuildCandidate>(session: BuildSession, items: T[]): T[] => {
-  const byId = new Map(items.map((item) => [getBuildAssetId(item), item]));
-  const active = session.filter === 'shortlisted' || session.filter === 'picked' ? getActiveShortlist(session, byId) : null;
-  const shortlisted = session.filter === 'shortlisted' ? new Set(active?.entries.map(({ entry }) => entry.id))
-    : session.filter === 'picked' ? new Set(active?.narrowed.map(getBuildAssetId)) : null;
-  return session.order.flatMap<T>((id) => {
-    const item = byId.get(id);
-    const record = session.records[id];
-    if (!item || !record) return [];
-    if (shortlisted && !shortlisted.has(id)) return [];
-    if (isStatusFilter(session.filter) && !matchesStatusFilter(session.filter, getImageStatus(record, item, record.outputAssetId ? byId.get(record.outputAssetId) : undefined), record)) return [];
-    if (session.filter === 'errors' && record.application !== 'failed' && record.validation !== 'error') return [];
-    if (session.filter === 'unresolved' && record.decision !== 'unreviewed' && record.decision !== 'deferred' && record.validation !== 'stale' && !(record.decision === 'accepted' && record.validation === 'pending')) return [];
-    if (session.filter === 'unresolved' && record.decision === 'unreviewed' && record.triage?.group === 'rejected') return [];
-    if (session.filter === 'needs-decision' && !['needs-decision', 'pending'].includes(getBuildTriageGroup(record))) return [];
-    if (session.filter === 'accepted' && getBuildTriageGroup(record) !== 'accepted') return [];
-    if (session.filter === 'rejected' && getBuildTriageGroup(record) !== 'rejected') return [];
-    if (session.profile.reviewMode === 'uncertain-only' && session.filter === 'all' && record.decision === 'accepted' && record.validation === 'valid') return [];
-    if (session.profile.reviewMode === 'uncertain-only' && session.filter === 'all' && record.decision === 'unreviewed' && record.triage?.group === 'rejected') return [];
-    return [item];
-  });
-};
-
-export const getBuildCounts = (session: BuildSession, items: BuildCandidate[]): BuildCounts => {
-  const byId = new Map(items.map((item) => [getBuildAssetId(item), item]));
-  const firstById = firstItemById(items);
-  let ready = 0; let saving = 0; let unresolved = 0; let errors = 0;
-  for (const id of session.order) {
-    const item = byId.get(id); const record = session.records[id];
-    if (!record) { errors += 1; continue; }
-    if (!item) { if (record.decision !== 'skipped') errors += 1; continue; }
-    if (record.application === 'pending') saving += 1;
-    if (record.application === 'failed' || record.validation === 'error') errors += 1;
-    const physicalItem = record.outputAssetId
-      ? firstById.get(record.outputAssetId)
-      : item;
-    const outputValid = !record.outputAssetId || Boolean(physicalItem && record.outputRevision &&
-      record.outputRevision === getBuildAssetRevision(physicalItem, physicalItem.tags, record.transform ?? session.profile.transform));
-    const isReady = record.decision === 'accepted' && record.application === 'applied' && record.validation === 'valid' &&
-      record.acceptedRevision === record.revision && isProjectDatasetPath(physicalItem?.assetPath) &&
-      getBuildValidation(physicalItem ?? item, session.profile.captionRequired) === 'valid' &&
-      outputValid;
-    if (isReady) ready += 1;
-    const triageRejected = record.decision === 'unreviewed' && record.triage?.group === 'rejected';
-    if ((record.decision === 'unreviewed' && !triageRejected) || record.decision === 'deferred' || record.validation === 'stale' ||
-      (record.decision === 'accepted' && record.application !== 'failed' && !isReady)) unresolved += 1;
-  }
-  return { ready, target: session.profile.target, saving, unresolved, errors };
 };
 
 export const applyBuildSessionPathMoves = (session: BuildSession, moves: ExplorerPathMove[]): BuildSession => {
@@ -446,16 +305,4 @@ export const getImageStatus = (record: BuildReviewRecord | undefined, item: Buil
     return { kind: 'out', reason: assembly.outcome, ...(assembly.of ? { of: assembly.of } : {}), ...(assembly.similarity !== undefined ? { similarity: assembly.similarity } : {}) };
   }
   return { kind: 'inbox' };
-};
-
-const isStatusFilter = (filter: BuildSession['filter']): filter is Extract<BuildSession['filter'], `status-${string}`> => filter.startsWith('status-');
-
-const matchesStatusFilter = (filter: Extract<BuildSession['filter'], `status-${string}`>, status: ImageStatus, record: BuildReviewRecord): boolean => {
-  switch (filter) {
-    case 'status-inbox': return status.kind === 'inbox';
-    case 'status-out': return status.kind === 'out';
-    case 'status-in-dataset': return status.kind === 'in';
-    case 'status-pinned': return record.override === 'pin';
-    case 'status-banned': return record.override === 'ban';
-  }
 };

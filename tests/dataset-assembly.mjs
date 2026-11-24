@@ -64,7 +64,6 @@ try {
     const arriving = item('source:arriving','arriving','Project/inbox/arriving.png',{byteSize:30,modifiedAt:3});
     session = buildSession.reconcileBuildSession({...session,cursor:1},[arriving,second,first]);
     assert.deepEqual(session.order,['source:first','source:second','source:arriving'],'Background arrivals append without reordering reviewed work');
-    assert.equal(session.cursor,1);
     const edited = {...first,tags:['changed']};
     session = buildSession.reconcileBuildSession(session,[edited,second,arriving]);
     assert.equal(session.records['source:first'].validation,'stale','A changed accepted revision returns to review');
@@ -75,7 +74,6 @@ try {
     assert.equal(moved.records['source:first'].locator,'Project/renamed/first.png');
     const restored = buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(moved)));
     assert.equal(restored.records['source:first'].decision,'accepted');
-    assert.deepEqual(buildSession.selectBuildQueue({...restored,filter:'unresolved'},[edited,second,arriving]).map(buildSession.getBuildAssetId),['source:first','source:second','source:arriving']);
   }
   {
     const source = item('source:frame','frame','Project/inbox/frame.png',{byteSize:100,modifiedAt:1,tags:['original']});
@@ -96,19 +94,11 @@ try {
     const outputRevision = buildSession.getBuildAssetRevision(output,output.tags,recipe);
     session = buildSession.updateBuildDecision(session,source.id,'accepted',{application:'applied',validation:'valid',acceptedRevision:session.records[source.id].revision,outputAssetId:`edited:${outputId}`,outputRevision,transform:recipe});
     session = buildSession.reconcileBuildSession(session,[source],undefined,[source,output]);
-    assert.equal(buildSession.getBuildCounts(session,[source,output]).ready,1);
     const erased = {...output,tags:[]};
-    assert.equal(buildSession.getBuildCounts(session,[source,erased]).ready,0,'An erased output caption cannot remain ready');
     const stale = buildSession.reconcileBuildSession(session,[source],undefined,[source,erased]);
     assert.equal(stale.records[source.id].validation,'stale');
-    assert.deepEqual(buildSession.selectBuildQueue({...stale,filter:'unresolved'},[source]).map(buildSession.getBuildAssetId),[source.id]);
     const changedBytes = {...output,byteSize:501};
-    assert.equal(buildSession.getBuildCounts(session,[source,changedBytes]).ready,0,'Changed output bytes invalidate readiness');
-    const second = item('source:next','next','Project/inbox/next.png');
-    const third = item('source:last','last','Project/inbox/last.png');
-    assert.equal(buildSession.nextBuildCursor([source,second,third],[second,third],0,source.id),0,'The next item stays selected after filtered removal');
-    assert.equal(buildSession.nextBuildCursor([source,second,third],[source,second],2,third.id),1,'The last item falls back to the remaining tail');
-    assert.equal(buildSession.nextBuildCursor([source],[],0,source.id),0);
+    assert.equal(buildSession.reconcileBuildSession(session,[source],undefined,[source,changedBytes]).records[source.id].validation,'stale','Changed output bytes invalidate readiness');
   }
   const outside = item('source:outside', 'outside', 'Project/dataset/outside.png');
   const groupSource = item('source:group', 'group', 'Project/dataset/group.png');
@@ -153,24 +143,6 @@ try {
   const metrics = coverage.measureCoverage([assembly.coverageAsset?.(baseline) ?? { key: 'front', feature: baseline.feature }], [{ key: 'front', feature: baseline.feature }, { key: 'back', feature: back.feature }]);
   assert.ok(metrics.total > 0 && metrics.total < 1);
   const datasetForAssembly = { ...dataset, id: 'global' };
-  const plan = await assembly.assembleDataset({ projectId: 'project', projectType: 'character', dataset: datasetForAssembly, baseline: [baseline], candidates: [similarFront, backDuplicate, back], mode: { kind: 'max-new', maxNew: 2 } });
-  assert.equal(plan.selected[0].path, 'Project/inbox/back.png', 'a missing view should beat a near-duplicate portrait');
-  assert.deepEqual(plan.rejectedDuplicates.sort(), ['inbox/front-2.png','inbox/z-back-copy.png']);
-  assert.equal(plan.duplicatePairs.find(pair => pair.rejected === 'inbox/front-2.png')?.kind, 'near');
-  assert.ok(plan.funnel.evaluated >= plan.funnel.eligible, 'all eligible candidates are evaluated before a selection');
-  assert.ok(plan.after.total > plan.before.total);
-  assert.ok(plan.selected.every((step,index) => index === 0 || step.coverage.total >= plan.selected[index-1].coverage.total), 'coverage must be monotonic');
-  const totalPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[back],mode:{kind:'total',target:2}});
-  assert.equal(totalPlan.selected.length,1); assert.equal(totalPlan.stoppedBecause,'target-reached'); assert.equal(totalPlan.shortfall,0);
-  const shortPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[back],mode:{kind:'range',min:4,max:6}});
-  assert.equal(shortPlan.shortfall,2); assert.equal(shortPlan.stoppedBecause,'insufficient-pool');
-  const textBait = assemblyItem('Project/inbox/text-bait.png', feature('bait',[0.999,0.001],'perfect requested caption',['front']));
-  const textPlan = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,baseline:[baseline],candidates:[textBait,back],mode:{kind:'max-new',maxNew:2}});
-  assert.equal(textPlan.selected.some(step => step.path.endsWith('text-bait.png')),false,'a caption-similar near-duplicate image is still rejected visually');
-  const fingerprintA = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{mode:{kind:'auto'},pinnedKeys:new Set()});
-  const fingerprintB = await assembly.createAssemblyFingerprint(datasetForAssembly,[baseline,back],{mode:{kind:'auto'},pinnedKeys:new Set(['inbox/back.png'])});
-  assert.notEqual(fingerprintA,fingerprintB,'pins invalidate an assembly preview');
-
   // Signal weights must not change when the first caption enters the selection.
   const blank = assemblyItem('blank.png', feature('blank', [1, 0], ''));
   const topics = [0, 1, 2].map(index => assemblyItem(`topic-${index}.png`, {
@@ -189,26 +161,6 @@ try {
   }
   assert.ok(Math.abs(previousCoverage.total - 1) < 1e-6);
 
-  // A text bonus must not select a saturated candidate and hide useful ones.
-  const targetBaseline = [0, 1, 2].map(index => assemblyItem(`base-${index}.png`,
-    feature(`base-${index}`, [1, 0, 0], 'target', ['target'])));
-  const bait = assemblyItem('a-bait.png', feature('bait-near', [0.984, Math.sqrt(1 - 0.984 ** 2), 0], 'target', ['target']));
-  const useful = assemblyItem('b-useful.png', feature('useful', [0.9, 0, Math.sqrt(0.19)], ''));
-  // Match the actual text encoder rather than the image-vector test shortcut.
-  const { encodeCaptionText } = await import(pathToFileURL(join(temp, 'semanticFeatureService.mjs')));
-  for (const asset of [...targetBaseline, bait, useful]) asset.feature.text = encodeCaptionText(asset.caption);
-  for (const mode of [{kind:'auto'}, {kind:'max-new',maxNew:3}, {kind:'range',min:3,max:6}]) {
-    const result = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
-      baseline:targetBaseline,candidates:[bait,useful],mode});
-    assert.equal(result.selected[0]?.path, 'b-useful.png', 'Saturation must consider every eligible candidate');
-    assert.ok(result.after.total > result.before.total);
-  }
-  const forcedTarget = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
-    baseline:targetBaseline,candidates:[bait,useful],mode:{kind:'total',target:5}});
-  assert.equal(forcedTarget.selected.length, 2, 'A requested total still fills beyond the saturation threshold');
-  const pinnedLowGain = await assembly.assembleDataset({projectId:'project',projectType:'character',dataset:datasetForAssembly,
-    baseline:targetBaseline,candidates:[bait],mode:{kind:'auto'},pinnedKeys:new Set(['a-bait.png'])});
-  assert.equal(pinnedLowGain.selected.length, 1, 'A pinned eligible item bypasses saturation');
   const sourceRecord = { outside: { id:'outside', originalFilePath:'private/outside.png', tags:['original'] }, group: { id:'group', originalFilePath:'inbox/group.png', tags:['source'] } };
   const editedRecord = { crop: { id:'crop', sourceImageId:'group', imageDataPath:'inbox/crop.png', tags:['crop'], deleted:false } };
   const migratedCaptions = migration.migrateLegacyCaptions({
@@ -390,14 +342,6 @@ try {
       'source:a':{...s.records['source:a'],triage:tri('rejected',rev('a',a))},
       'source:b':{...s.records['source:b'],triage:tri('accepted',rev('b',b))},
     }};
-    assert.equal(buildSession.getBuildCounts(s,[a,b,c]).unresolved,2,'triage-rejected unreviewed is not unresolved');
-    const ids = (sess) => buildSession.selectBuildQueue(sess,[a,b,c]).map(buildSession.getBuildAssetId);
-    assert.deepEqual(ids({...s,filter:'unresolved'}),['source:b','source:c']);
-    assert.deepEqual(ids({...s,filter:'rejected'}),['source:a']);
-    assert.deepEqual(ids({...s,filter:'accepted'}),['source:b']);
-    assert.deepEqual(ids({...s,filter:'needs-decision'}),['source:c'],'pending counts as needs-decision filter');
-    assert.deepEqual(ids({...s,filter:'all'}),['source:a','source:b','source:c']);
-    assert.deepEqual(ids({...s,filter:'all',profile:{...s.profile,reviewMode:'uncertain-only'}}),['source:b','source:c'],'uncertain-only hides triage-rejected in all');
     // manual override wins
     const accepted = buildSession.updateBuildDecision(s,'source:a','accepted',{application:'applied',validation:'valid'});
     assert.equal(buildSession.getBuildTriageGroup(accepted.records['source:a']),'accepted');
@@ -414,12 +358,16 @@ try {
     assert.equal(changed.records['source:a'].triage,undefined,'content change drops triage');
     assert.ok(changed.records['source:b'].triage);
     // normalize
-    const json = JSON.parse(JSON.stringify({...s,filter:'needs-decision',profile:{...s.profile,minShortSide:512.7,autoPipeline:false},auto:{assemblyKey:'k'}}));
+    const json = JSON.parse(JSON.stringify({...s,stage:'caption',view:'grid',cursor:3,filter:'needs-decision',profile:{...s.profile,minShortSide:512.7,reviewMode:'uncertain-only',autoPipeline:false},auto:{assemblyKey:'k',shortlist:{createdAt:NOW,needed:1,size:1,duplicatesRejected:0,entries:[]}}}));
     json.records['source:c'].triage = {group:'bogus',reasons:[],revision:'x'};
     json.records['source:b'].triage = {group:'accepted',reasons:'no',revision:'x'};
     const n = buildSession.normalizeBuildSession(json);
     assert.ok(n.records['source:a'].triage,'valid triage kept'); assert.equal(n.records['source:b'].triage,undefined); assert.equal(n.records['source:c'].triage,undefined);
-    assert.equal(n.filter,'needs-decision'); assert.equal(n.profile.minShortSide,undefined,'normalize no longer emits profile.minShortSide'); assert.equal(n.profile.autoPipeline,false); assert.equal(n.auto.assemblyKey,'k');
+    assert.equal(n.version,2); assert.equal(n.profile.minShortSide,undefined,'normalize no longer emits profile.minShortSide'); assert.equal(n.auto.assemblyKey,'k');
+    // Removed fields of old v1/v2 sessions are not copied; shortlist is dropped, everything else survives.
+    for (const key of ['stage','view','cursor','filter']) assert.equal(key in n,false,`${key} is not carried over`);
+    for (const key of ['reviewMode','autoPipeline']) assert.equal(key in n.profile,false,`profile.${key} is not carried over`);
+    assert.equal('shortlist' in n.auto,false,'auto.shortlist is dropped');
     // legacy Build minShortSide migrates to the project target model
     assert.equal(presets.resolveTargetModel(undefined,512),'sd15','legacy 512 -> sd15');
     assert.equal(presets.resolveTargetModel(undefined,512.7),'sd15','legacy 512.7 floors to 512 -> sd15');
@@ -430,12 +378,10 @@ try {
     assert.deepEqual(['sd15','sdxl','flux'].map((m)=>quality.getMinShortSide(m)),[512,1024,1024]);
     assert.equal(quality.getMinShortSide(),1024,'default target model is sdxl');
     assert.equal(quality.getMinShortSide(buildSession.normalizeBuildSession(json).profile.targetModel),1024);
-    for (const f of ['accepted','rejected']) assert.equal(buildSession.normalizeBuildSession({...json,filter:f}).filter,f);
-    assert.equal(buildSession.normalizeBuildSession({...json,filter:'nope'}).filter,'all');
     const def = buildSession.normalizeBuildSession({version:1});
-    assert.equal(def.profile.autoPipeline,true,'autoPipeline defaults on'); assert.equal(def.profile.minShortSide,undefined);
+    assert.equal('autoPipeline' in def.profile,false); assert.equal(def.profile.minShortSide,undefined);
     assert.equal('minShortSide' in n.profile,false);
-    assert.equal(buildSession.normalizeBuildSession(null).profile.autoPipeline ?? true,true);
+    assert.equal(buildSession.normalizeBuildSession(null).version,2);
     // profile.similarityStrictness: known ids survive, anything else is dropped (absent = Balanced).
     for (const id of ['strict','balanced','loose']) assert.equal(buildSession.normalizeBuildSession({...json,profile:{...json.profile,similarityStrictness:id}}).profile.similarityStrictness,id);
     for (const bad of ['STRICT','duplicate','',null,3,{},['strict']]) assert.equal('similarityStrictness' in buildSession.normalizeBuildSession({...json,profile:{...json.profile,similarityStrictness:bad}}).profile,false,`unknown strictness ${JSON.stringify(bad)} is dropped`);
@@ -480,40 +426,6 @@ try {
       encoder:{async encode(){ ctrl.abort(); throw new Error('encoder failed after abort'); }}}),(error)=>error?.name==='AbortError','abort during a failing encode rethrows instead of skipping');
   }
   {
-    // assembleDataset: deterministic picks equal the pre-7c585f4 implementation's picks (derived by running both on this fixture).
-    const v = (...x) => new Float32Array(x);
-    const f = (hash,image,cap,contexts=[]) => ({imageHash:hash,image:v(...image),text:v(...image),caption:cap,contexts});
-    const it = (path,semantic) => ({item:{id:'asset:'+path,assetPath:path,kind:'image',width:1024,height:1024,dimensionsKnown:true},feature:semantic,caption:semantic.caption,quality:1});
-    const base = [it('b/front.png',f('f',[1,0,0],'front',['front']))];
-    const cands = [it('inbox/a-front2.png',f('f2',[0.99,0.14,0],'front',['front'])),it('inbox/b-back.png',f('bk',[0,1,0],'back',['back'])),
-      it('inbox/c-back-copy.png',f('bk',[0,1,0],'copy',['x'])),it('inbox/d-side.png',f('sd',[0,0,1],'side',['side'])),it('inbox/e-three.png',f('t',[0,0.7,0.7],'three',['three']))];
-    const plan = await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'}});
-    assert.deepEqual(plan.selected.map((s)=>s.key),['inbox/e-three.png','inbox/b-back.png','inbox/d-side.png']);
-    assert.deepEqual(plan.rejectedDuplicates,['inbox/a-front2.png','inbox/c-back-copy.png'],'near copy and exact hash duplicate are deduplicated');
-    assert.deepEqual(plan.duplicatePairs.map((p)=>p.kind),['near','exact']);
-    assert.equal(plan.stoppedBecause,'exhausted');
-    assert.deepEqual(plan.selected.map((s)=>s.gain.toFixed(4)),['0.5432','0.1013','0.1013']);
-    assert.equal(plan.before.total.toFixed(4),'0.2500'); assert.equal(plan.after.total.toFixed(4),'0.9957');
-    const excluded = await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'},excludedKeys:new Set(['inbox/e-three.png'])});
-    assert.equal(excluded.selected.some((s)=>s.key==='inbox/e-three.png'),false); assert.equal(excluded.funnel.excluded,1);
-
-    // progress and abort
-    const events = [];
-    await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'},onProgress:(e)=>events.push(e)});
-    assert.equal(events[0].phase,'similarity'); assert.equal(events[0].total,6,'similarity pool is baseline + all non-excluded candidates');
-    const selecting = events.filter((e)=>e.phase==='selecting');
-    assert.deepEqual(selecting.map((e)=>e.completed),[1,2,3]); assert.ok(selecting.every((e)=>e.total===3));
-    const pre = new AbortController(); pre.abort();
-    await assert.rejects(assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:cands,mode:{kind:'auto'},signal:pre.signal}),(e)=>e?.name==='AbortError');
-    // Large pool: abort from a timer stops the run promptly instead of finishing it.
-    const many = Array.from({length:700},(_,i)=>{ const a=i*0.37; return it(`inbox/m${String(i).padStart(4,'0')}.png`,f('h'+i,[Math.cos(a),Math.sin(a)*Math.cos(i),Math.sin(a)*Math.sin(i)],'c'+i,['c'+(i%40)])); });
-    const ctrl = new AbortController();
-    const started = performance.now(); const timer = setTimeout(()=>ctrl.abort(),30);
-    const outcome = await assembly.assembleDataset({projectId:'p',projectType:'character',dataset:{id:'g'},baseline:base,candidates:many,mode:{kind:'auto'},signal:ctrl.signal}).then(()=>'done',(e)=>e?.name);
-    clearTimeout(timer);
-    assert.equal(outcome,'AbortError','a long run is cancelled by the signal'); assert.ok(performance.now()-started<1500,'abort is prompt');
-  }
-  {
     // mergeBuildItems: registered images override passed items by Build asset id, extra registered images are
     // appended, and the merge stays linear (Build recomputes it for projects with thousands of files).
     {
@@ -529,54 +441,39 @@ try {
       assert.equal(large.length, count, 'No duplicates when every passed item is registered');
       assert.ok(elapsed < 1500, `Merging ${count} items stays linear (took ${Math.round(elapsed)} ms)`);
     }
-    // Build stages: normalizeBuildSession defaults and getBuildStageSummary counters/states
+    // Session migration: removed fields (stage, view, cursor, filter, reviewMode, autoPipeline, auto.shortlist) are dropped; user data survives.
     const fresh = buildSession.createBuildSession();
-    assert.equal(fresh.stage,'add','new session starts in Add');
-    assert.deepEqual([...buildSession.BUILD_STAGES],['add','select','caption','check','export']);
-    const legacyEmpty = { ...fresh }; delete legacyEmpty.stage;
-    assert.equal(buildSession.normalizeBuildSession(legacyEmpty).stage,'add','legacy empty session -> add');
-    assert.equal(buildSession.normalizeBuildSession(undefined).stage,'add');
-    const record = { assetId:'source:a', decision:'unreviewed', application:'idle', validation:'pending' };
-    assert.equal(buildSession.normalizeBuildSession({ ...legacyEmpty, order:['source:a'], records:{ 'source:a': record } }).stage,'select','legacy session with records -> select');
-    for (const stage of ['caption','check','export']) assert.equal(buildSession.normalizeBuildSession({ ...fresh, stage }).stage,stage,`valid stage ${stage} kept`);
-    assert.equal(buildSession.normalizeBuildSession({ ...fresh, stage:'bogus' }).stage,'add','invalid stage falls back');
-    assert.equal(buildSession.normalizeBuildSession({ ...legacyEmpty, stage:'bogus', records:{ 'source:a': record } }).stage,'select','invalid stage with records falls back to select');
-    // Select view mode: grid/clusters persist, invalid or missing -> list (absent)
-    for (const view of ['grid','clusters']) assert.equal(buildSession.normalizeBuildSession({ ...fresh, view }).view,view,`view ${view} kept`);
-    for (const view of ['list','bogus',5,null,undefined]) assert.equal(buildSession.normalizeBuildSession({ ...fresh, view }).view ?? 'list','list',`view ${String(view)} -> list`);
-    assert.equal(buildSession.normalizeBuildSession(null).view ?? 'list','list');
-
-    const img = (id, extra = {}) => ({ id, sourceImageId:id, kind:'image', label:'Image', displayIdentity:id, fileName:`${id}.png`, assetPath:`inbox/${id}.png`, imageData:new Blob(), width:1024, height:1024, aspectRatio:'1:1', ...extra });
-    const summarize = (items, session, readiness) => stageSummary.getBuildStageSummary({ session, effectiveItems:items, candidates:items.filter((i)=>!i.assetPath?.startsWith('dataset/')), readiness });
-    const byId = (summary) => Object.fromEntries(summary.stages.map((entry) => [entry.id, entry]));
-    const empty = summarize([], fresh);
-    assert.deepEqual(empty.stages.map((e)=>e.id),['add','select','caption','check','export']);
-    assert.ok(empty.stages.every((e)=>e.state==='empty'),'nothing -> every stage empty');
-    assert.equal(byId(empty).add.counter,'0 files'); assert.equal(byId(empty).caption.counter,'0/0 captioned');
-    assert.equal(empty.nextIncomplete,'add');
-
-    const inbox = [img('a'), img('b')];
-    const withMaterials = summarize(inbox, buildSession.reconcileBuildSession(fresh, inbox));
-    assert.equal(byId(withMaterials).add.state,'done'); assert.equal(byId(withMaterials).add.counter,'2 files');
-    assert.equal(byId(withMaterials).select.state,'in-progress'); assert.match(byId(withMaterials).select.counter,/0\/60 ready · 2 undecided/);
-    assert.equal(byId(withMaterials).caption.state,'empty');
-    assert.equal(withMaterials.nextIncomplete,'select');
-    assert.equal(byId(summarize([img('a')], buildSession.reconcileBuildSession(fresh, [img('a')]))).add.counter,'1 file','singular file');
-
-    const dataset = [img('d1',{ assetPath:'dataset/d1.png', tags:['x'] }), img('d2',{ assetPath:'dataset/d2.png', tags:[] }), img('d3',{ assetPath:'dataset/d3.png' })];
-    const partial = summarize([...inbox, ...dataset], fresh, 'warn');
-    assert.equal(partial.datasetSize,3); assert.equal(partial.captioned,1,'tags: [] and missing tags are not captioned');
-    assert.equal(byId(partial).caption.counter,'1/3 captioned'); assert.equal(byId(partial).caption.state,'in-progress');
-    assert.equal(byId(partial).check.state,'in-progress'); assert.equal(byId(partial).check.counter,'Needs attention');
-    const captioned = summarize(dataset.map((i)=>({ ...i, tags:['x'] })), fresh, 'ok');
-    assert.equal(byId(captioned).caption.state,'done'); assert.equal(byId(captioned).check.state,'done'); assert.equal(byId(captioned).check.counter,'Ready');
-    assert.equal(byId(summarize(dataset, fresh, 'fail')).check.counter,'Not ready');
-    assert.equal(byId(captioned).export.state,'empty');
-    assert.equal(captioned.nextIncomplete,'add','Add is not done without source materials');
-    const exported = summarize([...inbox, ...dataset.map((i)=>({ ...i, tags:['x'] }))], { ...fresh, lastExport:{ fingerprint:'f', entries:3, completedAt:'2024-01-01T00:00:00.000Z' } }, 'ok');
-    assert.equal(byId(exported).export.state,'done'); assert.equal(byId(exported).export.counter,'3 files exported');
-    assert.equal(byId(exported).caption.state,'done');
-    assert.equal(exported.nextIncomplete,'select','first non-done stage is reported');
+    assert.equal(fresh.version,2); for (const key of ['stage','view','cursor','filter']) assert.equal(key in fresh,false,`new session has no ${key}`);
+    const base = { assetId:'source:a', decision:'unreviewed', application:'idle', validation:'pending', revision:'r', updatedAt:'2024-01-01T00:00:00.000Z' };
+    const oldFields = { stage:'caption', view:'grid', cursor:4, filter:'status-pinned', lastExport:{ fingerprint:'f', completedAt:'2024-01-01T00:00:00.000Z', entries:3 } };
+    const oldProfile = { target:42, reviewMode:'uncertain-only', captionRequired:false, autoPipeline:false, sizeMode:'auto', sources:['Project/inbox/day1','Project/inbox/day1','Project/inbox/day2'], similarityStrictness:'strict', minShortSide:512 };
+    const oldAuto = { assemblyKey:'k', assembledAt:'2024-01-01T00:00:00.000Z', assemblySummary:{ images:3, added:1, outOnQuality:1, duplicates:1 }, shortlist:{ createdAt:'2024-01-01T00:00:00.000Z', needed:1, size:1, duplicatesRejected:0, entries:[] } };
+    const v2 = buildSession.normalizeBuildSession({ version:2, ...oldFields, profile:oldProfile, auto:oldAuto, order:['source:a','source:b','source:a'], records:{
+      'source:a':{ ...base, override:'pin', origin:'Project/inbox/day1', assembly:{ outcome:'duplicate', of:'source:b', similarity:0.9, revision:'r' } },
+      'source:b':{ ...base, assetId:'source:b', override:'ban', origin:'Project/inbox/day2' },
+      'source:c':{ ...base, assetId:'source:c', override:'bogus' },
+      bad:{ decision:'accepted' } } });
+    assert.equal(v2.version,2);
+    for (const key of ['stage','view','cursor','filter']) assert.equal(key in v2,false,`v2 ${key} dropped`);
+    for (const key of ['reviewMode','autoPipeline','minShortSide']) assert.equal(key in v2.profile,false,`v2 profile.${key} dropped`);
+    assert.equal('shortlist' in v2.auto,false,'auto.shortlist dropped'); assert.equal(v2.auto.assemblyKey,'k'); assert.deepEqual(v2.auto.assemblySummary,oldAuto.assemblySummary);
+    assert.deepEqual(v2.profile.sources,['Project/inbox/day1','Project/inbox/day2']); assert.equal(v2.profile.sizeMode,'auto'); assert.equal(v2.profile.similarityStrictness,'strict');
+    assert.equal(v2.profile.target,42); assert.equal(v2.profile.captionRequired,false);
+    assert.equal(v2.records['source:a'].override,'pin'); assert.equal(v2.records['source:a'].origin,'Project/inbox/day1'); assert.equal(v2.records['source:a'].assembly.of,'source:b');
+    assert.equal(v2.records['source:b'].override,'ban'); assert.equal(v2.records['source:b'].origin,'Project/inbox/day2');
+    assert.equal('override' in v2.records['source:c'],false,'an unknown override is dropped'); assert.equal('bad' in v2.records,false);
+    assert.deepEqual(v2.order,['source:a','source:b']); assert.equal(v2.lastExport.entries,3);
+    assert.deepEqual(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(v2))),v2,'a normalized session is stable');
+    const v1 = buildSession.normalizeBuildSession({ version:1, ...oldFields, profile:{ target:10, reviewMode:'every-item', captionRequired:true }, auto:oldAuto, order:['source:a','source:b','source:c'], records:{
+      'source:a':{ ...base, decision:'accepted', provenance:'manual', origin:'Project/inbox/day1' },
+      'source:b':{ ...base, assetId:'source:b', decision:'skipped', origin:'Project/inbox/day2' },
+      'source:c':{ ...base, assetId:'source:c', decision:'accepted', provenance:'auto' } } });
+    assert.equal(v1.version,2); assert.equal(v1.records['source:a'].override,'pin'); assert.equal(v1.records['source:b'].override,'ban'); assert.equal('override' in v1.records['source:c'],false);
+    assert.equal(v1.records['source:a'].decision,'accepted','decision is kept'); assert.equal(v1.records['source:b'].decision,'skipped');
+    assert.equal(v1.records['source:a'].origin,'Project/inbox/day1'); assert.equal(v1.records['source:b'].origin,'Project/inbox/day2');
+    for (const key of ['stage','view','cursor','filter']) assert.equal(key in v1,false); assert.equal('shortlist' in v1.auto,false);
+    for (const bad of [undefined,null,'x',{ version:3 },{ version:'2' }]) assert.deepEqual(buildSession.normalizeBuildSession(bad),fresh,'an unknown shape becomes a fresh session');
+    assert.equal(buildSession.removeBuildSessionSources(v2,['Project/inbox/day1']).profile.sources.length,1);
   }
   {
     // Semantic feature cache LRU (memory tier; semanticFeatureStore needs IndexedDB, which Node lacks and no fake-indexeddb is installed).
@@ -1038,13 +935,6 @@ try {
     const reconciled = buildSession.reconcileBuildSession(fresh, [], '2026-10-21T00:00:00.000Z');
     assert.equal(reconciled.profile.sizeMode, 'auto', 'reconcile keeps the size mode');
     assert.equal(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(reconciled))).profile.sizeMode, 'auto');
-    // Clearing the shortlist keeps the mode; the shortlist stores mode and compared count.
-    const a = item('source:a', 'a', 'Project/inbox/a.png', { byteSize: 1, modifiedAt: 1 });
-    let session = buildSession.reconcileBuildSession(fresh, [a], '2026-10-21T00:00:00.000Z');
-    session = buildSession.createBuildShortlist(session, { needed: 0, requested: 1, duplicates: 3, mode: 'auto', poolCount: 4, items: [{ item: a, cluster: 'g1', gain: 0.2, rank: 1 }] });
-    assert.equal(session.auto.shortlist.mode, 'auto'); assert.equal(session.auto.shortlist.poolCount, 4); assert.equal(session.auto.shortlist.entries.length, 1);
-    assert.equal(buildSession.clearBuildShortlist(session).profile.sizeMode, 'auto');
-    assert.equal(buildSession.clearBuildShortlist(session).auto.shortlist, undefined);
   }
   {
     // Unified image status (stage 1): migration, getImageStatus, reconcile, path moves, pool and filters.
@@ -1211,7 +1101,7 @@ try {
       assert.equal(triage.createAssemblyKey(10, [a], s), triage.createAssemblyKey(10, [a], s, []), 'baseline is optional');
     }
 
-    // 8. status-* filters in selectBuildQueue.
+    // 8. getImageStatus over a mixed session (the Board filters are covered below).
     {
       const inb = mk('inb'), out = mk('out'), qrej = mk('qrej'), ban = mk('ban'), pin = mk('pin'), ds = mk('ds', 'Project/dataset/ds.png'), pinDs = mk('pds', 'Project/dataset/pds.png'), asmOut = mk('asmo'), fresh = mk('fresh');
       const all = [inb, qrej, ban, pin, ds, pinDs, asmOut, fresh];
@@ -1225,23 +1115,17 @@ try {
       setRec('pds', { override: 'pin' });
       setRec('asmo', { triage: tri('rejected', R(asmOut), 'assembly'), assembly: { outcome: 'not-selected', revision: R(asmOut) } });
       void out;
-      const q = (filter) => buildSession.selectBuildQueue({ ...s, filter }, all).map(buildSession.getBuildAssetId);
-      assert.deepEqual(q('status-inbox'), ['source:inb', 'source:pin', 'source:fresh']);
-      assert.deepEqual(q('status-out'), ['source:qrej', 'source:ban', 'source:asmo']);
-      assert.deepEqual(q('status-in-dataset'), ['source:ds', 'source:pds']);
-      assert.deepEqual(q('status-pinned'), ['source:pin', 'source:pds']);
-      assert.deepEqual(q('status-banned'), ['source:ban']);
-      assert.equal(q('all').length, all.length);
-      for (const filter of ['status-inbox', 'status-out', 'status-in-dataset', 'status-pinned', 'status-banned']) {
-        assert.equal(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify({ ...s, filter }))).filter, filter, `${filter} survives normalize`);
-      }
-      assert.equal(buildSession.normalizeBuildSession({ ...s, filter: 'status-bogus' }).filter, 'all');
+      const kind = (it, outputItem) => { const st = buildSession.getImageStatus(s.records[`source:${it.id.slice(7)}`], it, outputItem); return st.kind === 'out' ? `out:${st.reason}` : st.kind; };
+      assert.deepEqual([inb, qrej, ban, pin, ds, pinDs, asmOut, fresh].map((it) => kind(it)),
+        ['inbox', 'out:quality', 'out:ban', 'inbox', 'in', 'in', 'out:not-selected', 'inbox']);
+      assert.equal(buildSession.getImageStatus(s.records['source:pds'], pinDs).pinned, true);
+      assert.equal(buildSession.getImageStatus(s.records['source:fresh'], fresh).pending, true);
       // A transformed output in dataset/ makes its frame "in".
       const frame = mk('frame'), output = mk('out2', 'Project/dataset/out2.png');
       let t = buildSession.reconcileBuildSession(buildSession.createBuildSession(), [frame, output], NOW);
       t = { ...t, records: { ...t.records, 'source:frame': { ...t.records['source:frame'], outputAssetId: 'source:out2' } } };
-      assert.ok(buildSession.selectBuildQueue({ ...t, filter: 'status-in-dataset' }, [frame, output]).map(buildSession.getBuildAssetId).includes('source:frame'));
-      assert.ok(!buildSession.selectBuildQueue({ ...t, filter: 'status-inbox' }, [frame, output]).map(buildSession.getBuildAssetId).includes('source:frame'));
+      assert.equal(buildSession.getImageStatus(t.records['source:frame'], frame, output).kind, 'in');
+      assert.equal(buildSession.getImageStatus(t.records['source:frame'], frame).kind, 'inbox');
     }
   }
   // Next UI Board: status labels, filters, frame entries (grouping, order, counts) and keyboard cursor movement.

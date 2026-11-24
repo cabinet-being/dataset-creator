@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import type { BuildSession } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { mergeBuildItems, selectBuildCandidates } from '../../lib/buildStageSummary';
-import { getBuildCounts, reconcileBuildSession } from '../../services/build/buildSessionService';
+import { reconcileBuildSession } from '../../services/build/buildSessionService';
 import { useProjectStore } from '../../stores/useProjectStore';
 
 interface BuildModelOptions {
@@ -30,7 +30,6 @@ export function useBuildModel(items: WorkspaceImage[], { busy = false, writeBack
   const candidates = useMemo(() => selectBuildCandidates(effectiveItems, session), [effectiveItems, session.records]);
   const reconciled = useMemo(() => busy ? session : reconcileBuildSession(session, candidates, undefined, effectiveItems), [busy, candidates, effectiveItems, session]);
   useEffect(() => { if (writeBack && reconciled !== session) updateSession(reconciled); }, [writeBack, reconciled, session, updateSession]);
-  const counts = useMemo(() => getBuildCounts(reconciled, effectiveItems), [effectiveItems, reconciled.order, reconciled.records, reconciled.profile]);
   const patchSession = useCallback((patch: (value: BuildSession) => BuildSession) => updateSession(patch), [updateSession]);
-  return { session, effectiveItems, candidates, reconciled, counts, patchSession };
+  return { session, effectiveItems, candidates, reconciled, patchSession };
 }
