@@ -31,7 +31,8 @@ export function useBuildClusters(input: {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!active) return;
+    // An inactive hook (e.g. after Undo of Assemble) must not keep showing stale clusters.
+    if (!active) { setComputed(null); setState('idle'); return; }
     const known = cache.get(key);
     if (known) { setComputed(known); setState('ready'); return; }
     if (!readyIds.length) { setComputed(null); setState('idle'); return; }
@@ -50,6 +51,6 @@ export function useBuildClusters(input: {
     return () => controller.abort();
   }, [active, basis, embeddings, key, readyIds, sha256ById, strictness]);
 
-  const result = computed?.key === key ? computed : null;
+  const result = active && computed?.key === key ? computed : null;
   return { result, state: result ? 'ready' as const : state, progress: { total: readyIds.length }, error };
 }
