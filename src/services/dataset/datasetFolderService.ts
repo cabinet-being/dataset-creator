@@ -80,6 +80,11 @@ const pathExists = async (root: ProjectDirectoryHandle, path: string): Promise<b
   catch { return false; }
 };
 
+const directoryExists = async (root: ProjectDirectoryHandle, path: string): Promise<boolean> => {
+  try { const { directory, name } = await getExplorerParentDirectory(root, path); await directory.getDirectoryHandle(name); return true; }
+  catch { return false; }
+};
+
 const writeUnsavedItem = async (root: ProjectDirectoryHandle, item: WorkspaceImage, destinationPath: string): Promise<ExplorerPathChange> => {
   const directory = await getDirectoryAtExplorerPath(root, destinationPath);
   const targetName = await getUniqueExplorerName(directory, item.fileName);
@@ -159,7 +164,7 @@ export const removeItemsFromDatasetFolder = async (root: ProjectDirectoryHandle,
   for (const item of items) {
     const origin = getBuildRecordForItem(session, item)?.origin;
     let destination = inboxRoot;
-    if (origin && (origin === inboxRoot || origin.startsWith(`${inboxRoot}/`)) && await pathExists(root, origin)) destination = origin;
+    if (origin && (origin === inboxRoot || origin.startsWith(`${inboxRoot}/`)) && await directoryExists(root, origin)) destination = origin;
     groups.set(destination, [...(groups.get(destination) ?? []), item]);
   }
   if (groups.size <= 1) return moveItems(root, items, [...groups.keys()][0] ?? inboxRoot);
