@@ -1,4 +1,4 @@
-import { FolderOpen, FolderPlus } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { ProjectSetupDialog } from '../components/ProjectSetupDialog';
 import { ProjectUpgradeDialog } from '../components/ProjectUpgradeDialog';
 import { PhotopeaPsdPreviewWorker } from '../components/photopea/PhotopeaFrame';
@@ -7,6 +7,7 @@ import { useCommandPalette } from '../components/workspace/Commands';
 import { AppShell } from '../components/workspace/AppShell';
 import { WorkspaceNotifications } from '../components/workspace/WorkspaceNotifications';
 import { WorkspaceStatusBar } from '../components/workspace/WorkspaceStatusBar';
+import { ProjectsScreen } from './screens/ProjectsScreen';
 import { useNextCommands } from './useNextCommands';
 import { useProjectRuntime } from './useProjectRuntime';
 
@@ -28,8 +29,6 @@ export default function NextApp() {
     backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
     header={<header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
       <h1 className="mr-auto text-base font-semibold tracking-tight">Dataset Creator</h1>
-      <Button variant="outline" size="sm" onClick={() => void lifecycle.handleOpenProject()}><FolderOpen className="h-4 w-4" />Open project</Button>
-      <Button size="sm" onClick={() => void lifecycle.handleNewProject()}><FolderPlus className="h-4 w-4" />New project</Button>
     </header>}
     footer={<WorkspaceStatusBar projectName={projectName} save={projectSave}
       onFocusOperation={() => {}} onOutput={() => {}} onHelp={() => openCommands(true)} />}
@@ -38,13 +37,14 @@ export default function NextApp() {
       <WorkspaceNotifications />
     </>}
   >
-    <div data-next-app className="flex flex-1 items-center justify-center p-6">
-      {projectDirectoryHandle
-        ? <div className="space-y-1 text-center">
+    {projectDirectoryHandle
+      ? <div data-next-app className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
+        <div className="space-y-1 text-center">
           <h2 data-next-project-name className="text-xl font-semibold">{projectDirectoryName ?? projectName}</h2>
           <p data-next-image-count className="text-sm text-muted-foreground">{workspaceImages.length} {workspaceImages.length === 1 ? 'image' : 'images'}</p>
         </div>
-        : <p className="text-sm text-muted-foreground">Open or create a project to begin.</p>}
-    </div>
+        <Button variant="outline" className="min-h-[44px]" disabled={isProjectDirectoryBusy} onClick={() => void runtime.closeProject()}><ArrowLeft className="h-4 w-4" />Projects</Button>
+      </div>
+      : <div data-next-app className="flex min-h-0 flex-1 flex-col"><ProjectsScreen runtime={runtime} /></div>}
   </AppShell>;
 }

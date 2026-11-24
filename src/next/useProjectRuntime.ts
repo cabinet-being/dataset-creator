@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ExplorerContextMenuState } from '../components/workspace/WorkspaceTabMenus';
 import { useExplorerMutations } from '../hooks/useExplorerMutations';
 import { useExplorerTree } from '../hooks/useExplorerTree';
@@ -8,7 +8,10 @@ import { useProjectSave } from '../hooks/useProjectSave';
 import { useWorkspaceAppearance } from '../hooks/useWorkspaceAppearance';
 import { useWorkspaceFileAssets } from '../hooks/useWorkspaceFileAssets';
 import { useWorkspaceTabsState } from '../hooks/useWorkspaceTabs';
+import { selectBuildDatasetItems } from '../lib/buildStageSummary';
 import { toWorkspaceImages, toWorkspaceReviewAssets } from '../lib/workspaceImages';
+import { flushProjectSave } from '../hooks/useProjectSave';
+import { rememberRecentProject } from '../services/project/recentProjectsService';
 import { restoreSavedLocalTagger } from '../services/tagging/localTaggerConnectionService';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useUIStore } from '../stores/useUIStore';
@@ -40,6 +43,33 @@ export function useProjectRuntime() {
     () => toWorkspaceReviewAssets(sourceImages, workspaceFileAssets, {}, datasetItems),
     [datasetItems, sourceImages, workspaceFileAssets]
   );
+
+  const projectType = useProjectStore(state => state.projectType);
+  const targetModel = useProjectStore(state => state.targetModel);
+  const setProjectDirectory = useUIStore(state => state.setProjectDirectory);
+  const datasetCount = useMemo(() => selectBuildDatasetItems(workspaceImages).length, [workspaceImages]);
+
+  // The open project is remembered for the Projects screen; its edit time moves when a save completes.
+  const recentSummary = useRef({ name: projectName, projectType, targetModel, datasetCount });
+  recentSummary.current = { name: projectName, projectType, targetModel, datasetCount };
+  const remember = useCallback((edited: boolean) => {
+    if (!projectDirectoryHandle) return;
+    void rememberRecentProject(projectDirectoryHandle, { ...recentSummary.current, ...(edited ? { lastEditedAt: new Date().toISOString() } : {}) })
+      .catch(() => {});
+  }, [projectDirectoryHandle]);
+  useEffect(() => { remember(false); }, [projectId, remember]);
+  const previousSaveStatus = useRef(projectSave.status);
+  useEffect(() => {
+    const previous = previousSaveStatus.current;
+    previousSaveStatus.current = projectSave.status;
+    if (projectSave.status === 'saved' && (previous === 'pending' || previous === 'saving')) remember(true);
+  }, [projectSave.status, remember]);
+  const closeProject = useCallback(async () => {
+    if (projectOperationBusyRef.current) return;
+    await flushProjectSave();
+    remember(false);
+    setProjectDirectory(undefined);
+  }, [remember, setProjectDirectory]);
 
   const tabsState = useWorkspaceTabsState(NO_STORED_LAYOUT);
   const [, setExplorerContextMenu] = useState<ExplorerContextMenuState | null>(null);
@@ -77,6 +107,6 @@ export function useProjectRuntime() {
   return {
     projectId, projectName, projectDirectoryHandle, projectDirectoryName,
     projectSave, appearance, localTaggerPicker, workspaceFileAssets, workspaceImages, workspaceReviewItems,
-    explorer, explorerMutations, lifecycle, isProjectDirectoryBusy, navigationRecovery,
+    explorer, explorerMutations, lifecycle, closeProject, datasetCount, isProjectDirectoryBusy, navigationRecovery,
   };
 }

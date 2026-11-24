@@ -54,6 +54,8 @@ interface UseProjectLifecycleParams {
   runExplorerMutation: ReturnType<typeof useExplorerMutations>['runExplorerMutation'];
 }
 
+export type NewProjectPreset = { name: string; projectType: ProjectType; targetModel: TargetModelId };
+
 export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplorerMutation }: UseProjectLifecycleParams) {
   const {
     openTabs, workspaceImages, dock, setOpenMenu, setActiveActivityView, setClosedTabs, setNavigationRecovery,
@@ -142,7 +144,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     addNotification('warning', `Finish or cancel ${running.label} before switching projects.`); focusView(running.viewId); return false;
   };
 
-  const handleNewProject = async () => {
+  const runNewProject = async (preset?: NewProjectPreset) => {
     if (!await canSwitchProject()) return;
     if (projectOperationBusyRef.current) {
       return;
@@ -157,7 +159,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     projectOperationOriginRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setIsProjectDirectoryBusy(true);
     try {
-      const setup = await requestProjectSetup('Untitled Project', false);
+      const setup = preset ?? await requestProjectSetup('Untitled Project', false);
       if (!setup) {
         logger.warning('new project canceled');
         return;
@@ -202,7 +204,11 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     }
   };
 
-  const openProjectDirectory = async (directory: ProjectDirectoryHandle) => {
+  const handleNewProject = () => runNewProject();
+  /** Creates a project from a ready name, type and model; only the folder is asked for. */
+  const createProjectFromPreset = (preset: NewProjectPreset) => runNewProject(preset);
+
+  const loadProjectDirectory = async (directory: ProjectDirectoryHandle) => {
     const logger = createOperationLogger('Project');
     logger.info(`opening project directory ${directory.name}`);
     await flushProjectSave();
@@ -286,7 +292,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     addNotification('success', 'Project directory opened');
   };
 
-  const handleOpenProject = async () => {
+  const runOpenProject = async (getDirectory: () => Promise<ProjectDirectoryHandle>) => {
     if (!await canSwitchProject()) return;
     if (projectOperationBusyRef.current) {
       return;
@@ -296,8 +302,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
     setOpenMenu(null);
     setIsProjectDirectoryBusy(true);
     try {
-      const directory = await pickProjectDirectory();
-      await openProjectDirectory(directory);
+      await loadProjectDirectory(await getDirectory());
     } catch (error) {
       if (!isAbortError(error)) {
         createOperationLogger('Project').error(
@@ -310,6 +315,17 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
       setIsProjectDirectoryBusy(false);
     }
   };
+
+  const handleOpenProject = () => runOpenProject(pickProjectDirectory);
+
+  /** Opens a remembered folder (for example a recent project); the browser may ask to grant access again. */
+  const openProjectDirectory = (directory: ProjectDirectoryHandle) => runOpenProject(async () => {
+    const handle = directory as ProjectDirectoryHandle & { requestPermission?: (descriptor: { mode: 'readwrite' }) => Promise<PermissionState> };
+    if (handle.requestPermission && await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') {
+      throw new DOMException('Access to the project folder was not granted', 'AbortError');
+    }
+    return directory;
+  });
 
   const handleRenameProject = () => {
     setOpenMenu(null);
@@ -422,7 +438,7 @@ export function useProjectLifecycle({ workspace, sessionRefs, explorer, runExplo
 
   return {
     projectSetup, layoutUpgrade, projectVersions, currentProjectVersionId, newVersionName, setNewVersionName,
-    handleNewProject, handleOpenProject, handleRenameProject, openProjectVersions,
+    handleNewProject, createProjectFromPreset, handleOpenProject, openProjectDirectory, handleRenameProject, openProjectVersions,
     handleCreateProjectVersion, handleRestoreProjectVersion,
   };
 }
