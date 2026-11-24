@@ -345,6 +345,47 @@ try {
     }
   }
 
+  // 5c. Removing from dataset/ returns each image to the inbox folder it came from (record origin); a missing, unknown or non-inbox origin means the inbox root.
+  {
+    const root = directory();
+    const project = createProject('Origin', 'character'); project.dataset = { ...project.dataset, triggerWord: 'T' };
+    await createProjectDirectory(root, project);
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    for (const name of names) { await put(root, `dataset/${name}.png`, png(name)); await put(root, `dataset/${name}.txt`, `T, cap-${name}\n`); }
+    await put(root, 'inbox/day1/keep.png', png('k1')); await put(root, 'inbox/day2/deep/keep.png', png('k2'));
+    useProjectStore.getState().loadProject(project);
+    const original = { addSourceImage: useProjectStore.getState().addSourceImage, updateSourceImage: useProjectStore.getState().updateSourceImage };
+    useProjectStore.setState({
+      addSourceImage: (image) => useProjectStore.setState((state) => ({ sourceImages: { ...state.sourceImages, [image.id]: image } })),
+      updateSourceImage: (id, updates) => useProjectStore.setState((state) => ({ sourceImages: { ...state.sourceImages, [id]: { ...state.sourceImages[id], ...updates } } })),
+    });
+    useUIStore.getState().setProjectDirectory({ handle: root, name: project.name });
+    const sources = Object.fromEntries(names.map((name) => [`s-${name}`, { id: `s-${name}`, originalFilePath: `dataset/${name}.png`, fileName: `${name}.png` }]));
+    useProjectStore.setState((state) => ({ sourceImages: { ...state.sourceImages, ...sources } }));
+    const record = (name, origin) => [`source:s-${name}`, { assetId: `source:s-${name}`, decision: 'unreviewed', application: 'idle', validation: 'pending', revision: 'r', updatedAt: 'now', ...(origin ? { origin } : {}) }];
+    const session = { ...useProjectStore.getState().buildSession, records: Object.fromEntries([
+      record('a', 'Project/inbox/day1'), record('b', 'Project/inbox/day2/deep'), record('c', 'Project/inbox/gone'),
+      record('d', 'Project/other/day1'), record('e'), record('g', 'Project/inbox/day1'),
+    ]) };
+    useProjectStore.setState({ buildSession: session }); // f has no record at all
+    const items = (list) => list.map((name) => ({ id: `asset:${name}`, sourceImageId: `s-${name}`, kind: 'image', label: 'Image', displayIdentity: '1', fileName: `${name}.png`, assetPath: `Project/dataset/${name}.png`, imageData: png(name), width: 1, height: 1, aspectRatio: '1:1' }));
+    try {
+      const removed = await removeItemsFromDatasetFolder(root, items(['a', 'b', 'c', 'd', 'e', 'f']));
+      assert.deepEqual(removed.failed, []);
+      assert.equal(removed.completed.length, 6, 'several destination folders are processed in one result');
+      assert.equal(await read(root, 'inbox/day1/a.png'), 'a', 'known existing origin: back to its folder');
+      assert.equal(await read(root, 'inbox/day2/deep/b.png'), 'b', 'a nested origin is used as is');
+      for (const name of ['c', 'd', 'e', 'f']) assert.equal(await read(root, `inbox/${name}.png`), name, `${name}: unknown, missing or non-inbox origin goes to the inbox root`);
+      for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) assert.equal(await read(root, `dataset/${name}.png`), null);
+      assert.equal(await read(root, 'inbox/day1/a.txt'), 'cap-a\n', 'the trigger word is removed on the way out');
+      // A batch with one folder is a single move; an origin equal to the inbox root stays there.
+      useProjectStore.setState({ buildSession: { ...useProjectStore.getState().buildSession, records: { ...useProjectStore.getState().buildSession.records, ...Object.fromEntries([record('g', 'Project/inbox')]) } } });
+      const single = await removeItemsFromDatasetFolder(root, items(['g']));
+      assert.deepEqual(single.failed, []);
+      assert.equal(await read(root, 'inbox/g.png'), 'g');
+    } finally { useProjectStore.setState(original); }
+  }
+
   // 6. Dataset export copies the TXT byte for byte; images without a TXT get none.
   {
     const root = directory();

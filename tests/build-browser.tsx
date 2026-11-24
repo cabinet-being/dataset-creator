@@ -6,7 +6,7 @@ import { createProject, createSourceImage } from '../src/types';
 import { DatasetAssemblyDialog } from '../src/components/workspace/DatasetAssemblyDialog';
 import { useLocalTaggerStore } from '../src/stores/useLocalTaggerStore';
 import type { LocalTaggerBundle } from '../src/services/tagging/localTaggerService';
-import { createBuildSession } from '../src/services/build/buildSessionService';
+import { createBuildSession, reconcileBuildSession } from '../src/services/build/buildSessionService';
 import type { SemanticFeature } from '../src/services/analysis/semanticFeatureService';
 import type { WorkspaceImage } from '../src/lib/workspaceImages';
 import { toWorkspaceImages } from '../src/lib/workspaceImages';
@@ -14,6 +14,8 @@ import { useProjectStore } from '../src/stores/useProjectStore';
 import { useUIStore } from '../src/stores/useUIStore';
 import { useHistoryStore } from '../src/stores/useHistoryStore';
 import { useProjectSave } from '../src/hooks/useProjectSave';
+import { useOperation } from '../src/hooks/useOperation';
+import { useApplyMembership } from '../src/components/build/useApplyMembership';
 import { createProjectDirectory, type ProjectDirectoryHandle } from '../src/services/project/projectDirectoryService';
 import '../src/index.css';
 
@@ -53,11 +55,48 @@ const fakeEncoderFactory = async () => ({
   dispose: async () => undefined,
 });
 
+/** Drives useApplyMembership (Pin / Ban / clear override / Return to inbox) without the Build UI, which does not expose these actions yet. */
+function MembershipProbe() {
+  const root = useUIStore((state) => state.projectDirectoryHandle);
+  const [busy, setBusy] = useState(false);
+  const operation = useOperation('Membership probe', root, 'fixture:membership');
+  const membership = useApplyMembership({ directory: root, operation, busy, setBusy });
+  const latest = React.useRef(membership); latest.current = membership;
+  React.useEffect(() => {
+    const nameOf = (source: { originalFilePath?: string; fileName: string }) => (source.originalFilePath ?? source.fileName).split('/').pop()!;
+    const items = (names: string[]) => {
+      const state = useProjectStore.getState();
+      return toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems)).filter((item) => names.includes((item.assetPath ?? item.fileName).split('/').pop()!));
+    };
+    (window as unknown as Record<string, unknown>).__membership = {
+      pin: (names: string[]) => latest.current.pinImages(items(names)),
+      ban: (names: string[]) => latest.current.banImages(items(names)),
+      clear: (names: string[]) => latest.current.clearOverride(items(names)),
+      returnToInbox: (names: string[]) => latest.current.returnToInbox(items(names)),
+      undo: () => useHistoryStore.getState().undo(),
+      historyDepth: () => useHistoryStore.getState().past.length,
+      paths: () => {
+        const state = useProjectStore.getState();
+        return Object.fromEntries(toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems)).map((item) => [(item.assetPath ?? item.fileName).split('/').pop()!, item.assetPath]));
+      },
+      records: () => {
+        const state = useProjectStore.getState();
+        return Object.fromEntries(Object.values(state.sourceImages).map((source) => {
+          const record = state.buildSession.records[`source:${source.id}`];
+          return [nameOf(source), { decision: record?.decision, override: record?.override, origin: record?.origin }];
+        }));
+      },
+    };
+  }, []);
+  return <div data-testid="membership-probe">Membership probe</div>;
+}
+
 function Harness() {
   useProjectSave();
   const [ready, setReady] = useState(false);
   const [auto, setAuto] = useState(false);
   const [dialog, setDialog] = useState(false);
+  const [probe, setProbe] = useState(false);
   const sources = useProjectStore((state) => state.sourceImages);
   const edits = useProjectStore((state) => state.datasetItems);
   const items = useMemo(() => toWorkspaceImages(Object.values(sources), Object.values(edits)), [edits, sources]);
@@ -122,6 +161,25 @@ function Harness() {
     };
     setAuto(true); setReady(true);
   };
+  const prepareMembership = async () => {
+    // Four tiny images: inbox/day1/p.png, inbox/day1/q.png, inbox/r.png and dataset/s.png (already a member, no remembered origin).
+    const names = ['inbox/day1/p.png', 'inbox/day1/q.png', 'inbox/r.png', 'dataset/s.png'];
+    const sourceImages = Object.fromEntries(await Promise.all(names.map(async (path, index) => {
+      const source = createSourceImage(await detailed(16, 16, index + 1), path.split('/').pop()!, 16, 16);
+      source.originalFilePath = path;
+      return [source.id, source] as const;
+    })));
+    const project = createProject('Build membership fixture', 'character'); project.sourceImages = sourceImages;
+    const storage = await navigator.storage.getDirectory();
+    const directory = await storage.getDirectoryHandle(`build-membership-fixture-${crypto.randomUUID()}`, { create:true }) as unknown as ProjectDirectoryHandle;
+    await createProjectDirectory(directory, project);
+    useProjectStore.getState().loadProject(project);
+    useUIStore.setState({ projectDirectoryHandle:directory });
+    const state = useProjectStore.getState();
+    const registered = toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems));
+    state.updateBuildSession((session) => reconcileBuildSession(session, registered));
+    setProbe(true); setReady(true);
+  };
   const prepareEmpty = async () => {
     const project = createProject('Build empty fixture', 'character');
     const storage = await navigator.storage.getDirectory();
@@ -185,11 +243,11 @@ function Harness() {
     setReady(true);
   };
   const dialogState = useProjectStore.getState();
-  return <CommandProvider><main className="h-screen">{ready && dialog
+  return <CommandProvider><main className="h-screen">{ready && probe ? <MembershipProbe /> : ready && dialog
     ? <DatasetAssemblyDialog open onOpenChange={() => undefined} dataset={dialogState.dataset} items={items} directory={useUIStore.getState().projectDirectoryHandle ?? undefined} projectId={dialogState.id} projectType={dialogState.projectType} excludedCategories={[]} includedCategories={[]} />
     : ready
     ? <BuildWorkspace active viewId="fixture:build" items={items} directory={useUIStore.getState().projectDirectoryHandle} semanticEncoderFactory={auto ? fakeEncoderFactory : undefined} />
-    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareFolders()}>Prepare folders fixture</button><button onClick={() => void prepareFolders(true)}>Prepare assembly dialog fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button><button onClick={() => void prepareStyle()}>Prepare style fixture</button></>}</main></CommandProvider>;
+    : <><button onClick={() => void prepare()}>Prepare Build fixture</button><button onClick={() => void prepareAuto()}>Prepare auto pipeline fixture</button><button onClick={() => void prepareCoverage()}>Prepare coverage fixture</button><button onClick={() => void prepareFolders()}>Prepare folders fixture</button><button onClick={() => void prepareFolders(true)}>Prepare assembly dialog fixture</button><button onClick={() => void prepareMembership()}>Prepare membership fixture</button><button onClick={() => void prepareEmpty()}>Prepare empty fixture</button><button onClick={() => void prepareStyle()}>Prepare style fixture</button></>}</main></CommandProvider>;
 }
 
 const root = createRoot(document.getElementById('root')!); root.render(<Harness />);
