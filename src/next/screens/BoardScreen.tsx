@@ -3,9 +3,11 @@ import { ArrowLeft, Wand2 } from 'lucide-react';
 import { useBuildModel } from '../../components/build/useBuildModel';
 import { Button } from '../../components/ui/button';
 import { PROJECT_TYPE_PROFILES, TARGET_MODEL_PRESETS } from '../../lib/projectProfiles';
+import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { cn } from '../../lib/utils';
 import { getMinShortSide } from '../../services/quality/imageQuality';
 import { useProjectStore } from '../../stores/useProjectStore';
+import { FrameGrid } from '../board/FrameGrid';
 import { SourcesPanel } from '../board/SourcesPanel';
 import type { useProjectRuntime } from '../useProjectRuntime';
 
@@ -37,15 +39,23 @@ function BoardHeader({ runtime }: { runtime: Runtime }) {
 
 /** Board of the next UI: Sources on the left, the frame grid in the middle, room for Health on the right. Mount with `key={projectId}`. */
 export function BoardScreen({ runtime }: { runtime: Runtime }) {
-  const { effectiveItems, reconciled, patchSession } = useBuildModel(runtime.workspaceReviewItems, { writeBack: true, busy: runtime.isProjectDirectoryBusy });
+  const { effectiveItems, candidates, reconciled, patchSession } = useBuildModel(runtime.workspaceReviewItems, { writeBack: true, busy: runtime.isProjectDirectoryBusy });
   const sources = reconciled.profile.sources;
   const setSources = useCallback((next: string[]) => patchSession(session => ({ ...session, profile: { ...session.profile, sources: next } })), [patchSession]);
+
+  const { explorer } = runtime;
+  // Dragging frames from the grid onto an inbox folder moves their files through the Explorer mutations.
+  const dragFrames = useCallback((items: WorkspaceImage[]) => explorer.setCurrentDraggedExplorerEntries(items.flatMap(item => item.assetPath
+    ? [{ path: item.assetPath, name: item.fileName, kind: 'file' as const, workspaceImageId: item.id }] : [])), [explorer]);
+  const endFrameDrag = useCallback(() => explorer.setCurrentDraggedExplorerEntries(null), [explorer]);
 
   return <div data-board className="flex min-h-0 flex-1 flex-col">
     <BoardHeader runtime={runtime} />
     <div className="flex min-h-0 flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
       <SourcesPanel runtime={runtime} items={effectiveItems} sources={sources} onSourcesChange={setSources} />
-      <main data-board-grid className="flex min-h-[320px] min-w-0 flex-1 flex-col" />
+      <main data-board-grid className="flex min-h-[320px] min-w-0 flex-1 flex-col">
+        <FrameGrid candidates={candidates} effectiveItems={effectiveItems} session={reconciled} onDragFrames={dragFrames} onDragFramesEnd={endFrameDrag} />
+      </main>
       {/* The Health column (stage 3) goes here. */}
     </div>
   </div>;
