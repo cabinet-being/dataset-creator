@@ -6,7 +6,6 @@ import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
 import { hasVideoModel } from '../../services/video/videoCache';
 import { SIMILARITY_STRICTNESS, type SimilarityStrictnessId } from '../../services/similarity/similarityLevels';
-import { readUiMode, setUiMode } from '../../lib/uiMode';
 
 type Props = {
   open: boolean; onOpenChange: (open: boolean) => void;
@@ -33,7 +32,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
     return () => { cancelled = true; };
   }, [open]);
   const captionState = taggerStatus === 'running' ? 'Running' : taggerStatus === 'ready' ? 'Ready' : taggerStatus === 'loading' ? 'Connecting…' : taggerStatus === 'not-ready' ? 'Needs attention' : savedFileNames.model && savedFileNames.tags ? 'Saved files available' : 'Not configured';
-  const nextUi = readUiMode() === 'next';
   const closeThen = (action: () => void) => { onOpenChange(false); action(); };
   const control = 'rounded-md border border-border bg-background px-3 py-2 text-sm';
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal>
@@ -51,10 +49,6 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
         {strictness && <label className="mt-3 grid gap-2 text-sm">Similarity strictness (this project)
           <select aria-label="Similarity strictness" className={control} value={strictness.value} onChange={event => strictness.onChange(event.target.value as SimilarityStrictnessId)}>
             {SIMILARITY_STRICTNESS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>}
-        <label className="mt-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" role="switch" aria-label={nextUi ? 'Classic UI' : 'Try the new UI'} checked={false} onChange={() => setUiMode(nextUi ? 'classic' : 'next')} />
-          {nextUi ? 'Classic UI' : 'Try the new UI'}</label>
-        <p className="mt-1 text-xs text-muted-foreground">The page reloads when the interface changes.</p>
       </section>
       <details className="mt-4 text-sm"><summary>Layout options</summary><label className="mt-3 grid gap-2">Masonry columns<select className={control} value={settings.brickColumnCount ?? 'auto'} onChange={event => onSettingsChange({ brickColumnCount: event.target.value === 'auto' ? 'auto' : Number(event.target.value) as BrickColumnCount })}>{['auto', 1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value === 'auto' ? 'Auto' : `${value} columns`}</option>)}</select></label></details>
       <section className="mt-5 border-t border-border pt-4">

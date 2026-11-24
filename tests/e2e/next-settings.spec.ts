@@ -2,12 +2,9 @@ import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { filterCount, flushSave, openPrepared, sessionOf } from './nextFlow';
 
-// Settings of the next UI (tests/next-browser.tsx): the header button and the command open the shared dialog, the project's Similarity strictness is
-// written to the profile, and the interface switch stores the choice in localStorage and reloads. The stand always mounts NextApp, so after the
-// reload only the stored mode and the URL are observable, not the other UI.
-const STORAGE_KEY = 'dataset-creator-ui-mode';
+// Settings of the next UI (tests/next-browser.tsx): the header button and the command open the shared dialog, and the project's Similarity
+// strictness is written to the profile.
 const dialog = (page: Page) => page.getByRole('dialog').filter({ hasText: 'Interface' });
-const stored = (page: Page) => page.evaluate(key => localStorage.getItem(key), STORAGE_KEY);
 
 async function projectsScreen(page: Page, search = '') {
   await page.goto(`/tests/next-browser.html${search}`);
@@ -32,43 +29,6 @@ test.describe('on the Projects screen', () => {
     await page.getByRole('combobox').or(page.getByRole('textbox')).first().fill('Settings');
     await page.keyboard.press('Enter');
     await expect(dialog(page)).toBeVisible();
-  });
-
-  test('Classic UI stores the choice, drops ?ui= from the URL and reloads', async ({ page }) => {
-    await projectsScreen(page, '?ui=next');
-    expect(await stored(page)).toBeNull();
-    await page.getByRole('button', { name: 'Settings' }).click();
-    const marker = await page.evaluate(() => { (window as unknown as { __marker: number }).__marker = 1; return 1; });
-    expect(marker).toBe(1);
-    const reloaded = page.waitForEvent('load');
-    await page.getByRole('switch', { name: 'Classic UI' }).click();
-    await reloaded;
-    await expect(page.locator('[data-projects-screen]')).toBeVisible({ timeout: 20_000 });
-    expect(await page.evaluate(() => (window as unknown as { __marker?: number }).__marker), 'the page really reloaded').toBeUndefined();
-    expect(await stored(page)).toBe('classic');
-    expect(new URL(page.url()).search, '?ui=next would override the stored choice').toBe('');
-    // The dialog now offers the way back.
-    await page.getByRole('button', { name: 'Settings' }).click();
-    await expect(page.getByRole('switch', { name: 'Try the new UI' })).toBeVisible();
-  });
-
-  test('with the new UI stored (no URL parameter) the switch says Classic UI; "Try the new UI" stores next', async ({ page }) => {
-    await projectsScreen(page);
-    await page.evaluate(key => localStorage.setItem(key, 'next'), STORAGE_KEY);
-    await page.reload();
-    await expect(page.locator('[data-projects-screen]')).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: 'Settings' }).click();
-    await expect(page.getByRole('switch', { name: 'Classic UI' })).toBeVisible();
-    const reloaded = page.waitForEvent('load');
-    await page.getByRole('switch', { name: 'Classic UI' }).click();
-    await reloaded;
-    expect(await stored(page)).toBe('classic');
-    await expect(page.locator('[data-projects-screen]')).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: 'Settings' }).click();
-    const again = page.waitForEvent('load');
-    await page.getByRole('switch', { name: 'Try the new UI' }).click();
-    await again;
-    expect(await stored(page)).toBe('next');
   });
 });
 
@@ -118,18 +78,4 @@ test.describe('on the Board', () => {
     await expect(page.getByLabel('Similarity strictness')).toHaveValue('strict');
   });
 
-});
-
-test('Classic UI on the Board stores the choice, reloads to the Projects screen and keeps the project in the recent list', async ({ page }) => {
-  await page.addInitScript(key => { try { if (!localStorage.getItem(key)) localStorage.setItem(key, 'next'); } catch { /* cross-origin frame */ } }, STORAGE_KEY);
-  await openPrepared(page, 'grid', 'Switch Project');
-  await expect(filterCount(page, 'all')).toHaveText('7', { timeout: 30_000 });
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await flushSave(page);
-  const reloaded = page.waitForEvent('load');
-  await page.getByRole('switch', { name: 'Classic UI' }).click();
-  await reloaded;
-  expect(await stored(page)).toBe('classic');
-  await expect(page.locator('[data-projects-screen]')).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('[data-recent-project="Switch Project"]')).toBeVisible({ timeout: 20_000 });
 });
