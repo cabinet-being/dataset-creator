@@ -6,6 +6,7 @@ import { AppShell } from '../components/workspace/AppShell';
 import { WorkspaceNotifications } from '../components/workspace/WorkspaceNotifications';
 import { WorkspaceStatusBar } from '../components/workspace/WorkspaceStatusBar';
 import type { createSemanticFeatureEncoder } from '../services/analysis/semanticFeatureService';
+import { ActivityDialog } from './board/ActivityDialog';
 import { NextSettingsDialog } from './board/NextSettingsDialog';
 import { Settings } from 'lucide-react';
 import { BoardScreen } from './screens/BoardScreen';
@@ -35,10 +36,11 @@ export default function NextApp({ encoderFactory }: { encoderFactory?: typeof cr
         className="flex h-11 w-11 items-center justify-center rounded-md border border-border hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Settings aria-hidden className="h-4 w-4" /></button>
     </header>}
     footer={<WorkspaceStatusBar projectName={projectName} save={projectSave}
-      onFocusOperation={() => {}} onOutput={() => {}} onHelp={() => openCommands(true)} />}
+      onFocusOperation={() => {}} onOutput={() => runtime.setActivityOpen(true)} onHelp={() => openCommands(true)} />}
     overlays={<>
       {runtime.localTaggerPicker.inputs}
       {!projectDirectoryHandle && <NextSettingsDialog runtime={runtime} />}
+      <ActivityDialog open={runtime.activityOpen} onOpenChange={runtime.setActivityOpen} />
       <WorkspaceNotifications />
     </>}
   >
