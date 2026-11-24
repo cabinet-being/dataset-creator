@@ -1,6 +1,6 @@
 import type { BuildAssemblyOutcome, BuildReviewRecord, BuildSession, BuildTriageGroup, BuildTriageProposal, BuildTriageReason } from '../../types';
 import { isProjectDatasetPath } from '../dataset/datasetFolderService';
-import type { DatasetAssemblyPlan } from '../dataset/datasetAssemblyService';
+import type { AssemblyStep, DatasetAssemblyPlan } from '../dataset/datasetAssemblyService';
 import { summarizeImageQuality, type ImageQualityReport } from '../quality/imageQuality';
 import { getBuildAssetId, getBuildTriageGroup, type BuildCandidate } from './buildSessionService';
 
@@ -56,7 +56,7 @@ export const applyTriageProposal = (session: BuildSession, assetId: string, prop
 
 export const applyAssemblyTriage = (
   session: BuildSession,
-  plan: Pick<DatasetAssemblyPlan, 'selected' | 'duplicatePairs' | 'rejectedCandidates' | 'stoppedBecause'>,
+  plan: Pick<DatasetAssemblyPlan, 'duplicatePairs' | 'rejectedCandidates' | 'stoppedBecause'> & { selected: Array<Pick<AssemblyStep, 'key' | 'reason'>> },
   assetIdByKey: Map<string, string>,
   now: string
 ): BuildSession => {
@@ -143,11 +143,13 @@ export const selectTriageTargets = <T extends BuildCandidate>(session: BuildSess
  * The only owner of the candidate pool for Assemble: images in the selected Sources (already limited by the caller
  * through `sources`), not banned, not video, outside the Dataset, with a quality verdict that is not "rejected".
  * A pin overrides a quality rejection (pinned images are part of the baseline instead, see `selectAssemblyBaseline`).
+ * Images the last Assemble left out (assembly-stage triage: duplicate / not selected) return to the pool every time, because
+ * assembly-stage triage is only ever given to images that passed the quality check; their outcome is recomputed.
  */
 export const selectAssemblyCandidates = <T extends BuildCandidate>(session: BuildSession, sources: T[]): T[] =>
   inOrder(session, sources)
     .filter(({ item, record }) => item.kind !== 'video' && record.override !== 'ban' && !isProjectDatasetPath(item.assetPath)
-      && record.triage?.stage === 'quality' && (record.triage.group !== 'rejected' || record.override === 'pin'))
+      && record.triage && (record.triage.stage === 'assembly' || record.triage.group !== 'rejected' || record.override === 'pin'))
     .map(({ item }) => item)
     .filter((item) => session.records[getBuildAssetId(item)]?.override !== 'pin');
 

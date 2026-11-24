@@ -5,7 +5,7 @@ import { useProjectStore } from '../../stores/useProjectStore';
 import { useOperation } from '../../hooks/useOperation';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { resolveDatasetMembership, normalizeDatasetPath } from '../../services/dataset/datasetMembershipResolver';
-import type { SkippedAssemblyItem } from '../../services/dataset/datasetAssemblyService';
+import type { DuplicatePair, RejectedCandidate, SkippedAssemblyItem } from '../../services/dataset/datasetAssemblyService';
 import { computeNarrowing, computeShortlist, qualityScoreFromSummary, type NarrowResult, type ShortlistResult } from '../../services/dataset/shortlistService';
 import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { createSemanticFeatureEncoder, isModelDownloadRequired } from '../../services/analysis/semanticFeatureService';
@@ -16,9 +16,11 @@ import { getMinShortSide, measureImageQuality, type ImageQualityReport } from '.
 import { getBuildImageDigest } from '../../services/build/buildTransformService';
 import { clearBuildShortlist, createBuildShortlist, getActiveShortlist, getBuildAssetId, getBuildAssetRevision, getBuildContentRevision, getBuildRecordForItem, setBuildShortlistNarrowed } from '../../services/build/buildSessionService';
 import {
-  applyTriageProposal, classifyQualityTriage, createAssemblyKey, findExactDuplicates,
-  getBuildTriageGroup, selectAssemblyCandidates, selectTriageTargets,
+  applyAssemblyTriage, applyTriageProposal, classifyQualityTriage, createAssemblyKey, findExactDuplicates,
+  getBuildTriageGroup, selectAssemblyBaseline, selectAssemblyCandidates, selectTriageTargets,
 } from '../../services/build/buildTriageService';
+import { captureHistoryEpoch, isHistoryEpochCurrent } from '../../stores/useHistoryStore';
+import type { ApplyMembershipOptions, MembershipEntry } from './useApplyMembership';
 
 export type BuildAutoPipelinePhase = 'idle' | 'triage' | 'assembly' | 'tagging';
 
@@ -34,6 +36,8 @@ type Input = {
   patchSession: (patch: (value: BuildSession) => BuildSession) => void;
   dataset: Dataset;
   commitDecision: (decision: BuildReviewDecision, targets?: WorkspaceImage[], provenance?: 'manual' | 'auto', propagateError?: boolean) => Promise<void>;
+  /** One history transaction for the entries; returns false when nothing was applied. */
+  applyDecisions: (entries: MembershipEntry[], options?: ApplyMembershipOptions) => Promise<boolean>;
   localTagger: LocalTaggerBundle | null | undefined;
   taggingConfig: { threshold: number; maxTags: number };
   root: RefObject<HTMLElement>;
@@ -74,7 +78,7 @@ export function useBuildAutoPipeline(input: Input) {
   const latest = useRef(input);
   const running = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
-  const lastRequest = useRef<{ kind: 'shortlist' } | { kind: 'narrow'; apply?: boolean }>({ kind: 'shortlist' });
+  const lastRequest = useRef<{ kind: 'shortlist' } | { kind: 'assemble' } | { kind: 'narrow'; apply?: boolean }>({ kind: 'shortlist' });
   const attempted = useRef(new Set<string>());
   const assemblyTask = useRef<'find' | 'pick' | 'apply'>('find');
   const triageOperation = useOperation('Build triage', input.root, input.viewId);
@@ -276,6 +280,42 @@ export function useBuildAutoPipeline(input: Input) {
     return summary ? qualityScoreFromSummary(summary) : undefined;
   };
 
+  /** Pass 1 with the shared encoder; throws on failure (the callers decide how to report it). */
+  const shortlistStep = async (ctx: Ctx, args: { baseline: WorkspaceImage[]; pool: WorkspaceImage[]; needed: number | 'auto'; session: BuildSession; unreadable: SkippedAssemblyItem[] }): Promise<ShortlistResult> => {
+    const { dataset } = latest.current;
+    let result: ShortlistResult | null = null;
+    await withEncoder(ctx, assemblyOperation, async (encoder) => {
+      result = await computeShortlist({
+        baselineItems: args.baseline, poolItems: args.pool, needed: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(args.session),
+        onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
+        onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
+        onSkip: (entry) => args.unreadable.push(entry),
+      });
+      ctx.signal.throwIfAborted();
+      if (!ctx.isCurrent()) throw abortError();
+    }, args.baseline.length + args.pool.length);
+    return result as unknown as ShortlistResult;
+  };
+
+  /** Pass 2 with the shared encoder; throws on failure. */
+  const narrowStep = async (ctx: Ctx, args: { baseline: WorkspaceImage[]; items: WorkspaceImage[]; needed: number; session: BuildSession; unreadable: SkippedAssemblyItem[] }): Promise<NarrowResult> => {
+    const { dataset, characterTraits } = latest.current;
+    let result: NarrowResult | null = null;
+    await withEncoder(ctx, assemblyOperation, async (encoder) => {
+      result = await computeNarrowing({
+        baselineItems: args.baseline, shortlistItems: args.items, target: args.needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
+        tagsOf: narrowTagsOf(args.session, characterTraits), ignoredTags: [dataset.triggerWord, ...characterTraits.map((trait) => trait.tag)],
+        qualityOf: qualityOf(args.session),
+        onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
+        onProgress: ({ completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Picking the most varied'); },
+        onSkip: (entry) => args.unreadable.push(entry),
+      });
+      ctx.signal.throwIfAborted();
+      if (!ctx.isCurrent()) throw abortError();
+    }, args.baseline.length + args.items.length);
+    return result as unknown as NarrowResult;
+  };
+
   /** Pass 1: marks a visually diverse shortlist; never changes decisions or Dataset membership. */
   const runShortlist = (ctx: Ctx) => guarded(ctx, assemblyOperation, async () => {
     const { session: startSession, sources, effectiveItems, dataset } = latest.current;
@@ -290,16 +330,7 @@ export function useBuildAutoPipeline(input: Input) {
     let result: ShortlistResult | null = null;
     const unreadable: SkippedAssemblyItem[] = [];
     try {
-      await withEncoder(ctx, assemblyOperation, async (encoder) => {
-        result = await computeShortlist({
-          baselineItems: baseline, poolItems: pool, needed: auto ? 'auto' : needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(startSession),
-          onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
-          onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
-          onSkip: (entry) => unreadable.push(entry),
-        });
-        ctx.signal.throwIfAborted();
-        if (!ctx.isCurrent()) throw abortError();
-      }, baseline.length + pool.length);
+      result = await shortlistStep(ctx, { baseline, pool, needed: auto ? 'auto' : needed, session: startSession, unreadable });
     } catch (error) {
       if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
       if (askForModelDownload(ctx, error, 'find', assemblyOperation)) return;
@@ -328,7 +359,7 @@ export function useBuildAutoPipeline(input: Input) {
 
   /** Pass 2: narrows the shortlist to the target; with `apply` the result is moved into the Dataset in one batch. */
   const runNarrow = (ctx: Ctx & { apply?: boolean }) => guarded(ctx, assemblyOperation, async () => {
-    const { session: startSession, candidates, effectiveItems, dataset, characterTraits } = latest.current;
+    const { session: startSession, candidates, effectiveItems, dataset } = latest.current;
     const active = getActiveShortlist(startSession, candidates);
     if (!active?.entries.length) { latest.current.notify('info', 'There are no candidates to pick from.'); return; }
     const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
@@ -339,18 +370,7 @@ export function useBuildAutoPipeline(input: Input) {
     let result: NarrowResult | null = null;
     const unreadable: SkippedAssemblyItem[] = [];
     try {
-      await withEncoder(ctx, assemblyOperation, async (encoder) => {
-        result = await computeNarrowing({
-          baselineItems: baseline, shortlistItems: active.entries.map(({ item }) => item), target: needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal,
-          tagsOf: narrowTagsOf(startSession, characterTraits), ignoredTags: [dataset.triggerWord, ...characterTraits.map((trait) => trait.tag)],
-          qualityOf: qualityOf(startSession),
-          onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
-          onProgress: ({ completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, 'Picking the most varied'); },
-          onSkip: (entry) => unreadable.push(entry),
-        });
-        ctx.signal.throwIfAborted();
-        if (!ctx.isCurrent()) throw abortError();
-      }, baseline.length + active.entries.length);
+      result = await narrowStep(ctx, { baseline, items: active.entries.map(({ item }) => item), needed, session: startSession, unreadable });
     } catch (error) {
       if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
       if (askForModelDownload(ctx, error, 'pick', assemblyOperation)) return;
@@ -368,6 +388,115 @@ export function useBuildAutoPipeline(input: Input) {
     assemblyOperation.finish('completed', `${narrowedItems.length} image${narrowedItems.length === 1 ? '' : 's'} picked`);
     if (!ctx.apply) return;
     await applyNarrowedItems(ctx, narrowedItems);
+  });
+
+  /**
+   * Assemble: triage (if needed) -> shortlist -> [Target: describe + narrow] -> one apply. The Dataset plus pinned images are the baseline;
+   * the outcome of every pool image is written to its record and everything that changes membership is one history transaction.
+   * Auto size needs no narrowing: pass 1 already keeps one image per group of similar ones, so pass 2 would only re-pick the same set.
+   */
+  const runAssemble = (ctx: Ctx) => guarded(ctx, assemblyOperation, async () => {
+    const epoch = captureHistoryEpoch();
+    {
+      const { session, candidates, targetModel } = latest.current;
+      if (selectTriageTargets(session, candidates).some((item) => !attempted.current.has(triageKey(session, item, targetModel)))) await runTriage(ctx);
+      ctx.signal.throwIfAborted();
+    }
+    const { sources, candidates, effectiveItems, dataset, localTagger } = latest.current;
+    const session = useProjectStore.getState().buildSession;
+    const auto = session.profile.sizeMode === 'auto';
+    const pool = selectAssemblyCandidates(session, sources);
+    const members = resolveDatasetMembership(dataset, effectiveItems).effective;
+    const baseline = selectAssemblyBaseline(session, members, candidates);
+    const memberSet = new Set(members);
+    const pinsOutside = baseline.filter((item) => !memberSet.has(item));
+    const needed = auto ? pool.length : Math.max(0, session.profile.target - baseline.length);
+    if (!pool.length && !pinsOutside.length) { latest.current.notify('info', 'No analyzed images are available in the selected folders yet.'); return; }
+    if (!auto && !needed && !pinsOutside.length) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
+    const assemblyKey = createAssemblyKey(auto ? 'auto' : session.profile.target, pool, session, baseline);
+    assemblyOperation.start(() => cancel());
+    const unreadable: SkippedAssemblyItem[] = [];
+    let shortlist: ShortlistResult | null = null;
+    let picked: WorkspaceImage[] = [];
+    let narrowDuplicates: ShortlistResult['duplicates'] = [];
+    try {
+      if (pool.length && needed > 0) {
+        shortlist = await shortlistStep(ctx, { baseline, pool, needed: auto ? 'auto' : needed, session, unreadable });
+        picked = shortlist.items.map(({ item }) => item);
+        if (!auto && picked.length > needed) {
+          if (localTagger) {
+            assemblyOperation.progress(0, picked.length, 'Describing images');
+            try { await runTagging({ ...ctx, scope: picked }); } catch (error) { if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error; }
+            ctx.signal.throwIfAborted();
+          }
+          const narrowed = await narrowStep(ctx, { baseline, items: picked, needed, session: useProjectStore.getState().buildSession, unreadable });
+          const byKey = new Map(shortlist.items.map((entry) => [entry.key, entry.item]));
+          picked = narrowed.items.flatMap((entry) => byKey.get(entry.key) ?? []);
+          narrowDuplicates = narrowed.duplicates;
+        }
+      }
+    } catch (error) {
+      if (ctx.signal.aborted || !ctx.isCurrent() || isAbort(error)) throw error;
+      if (askForModelDownload(ctx, error, 'find', assemblyOperation)) return;
+      const message = error instanceof Error ? error.message : 'unknown error';
+      assemblyOperation.finish('failed', message);
+      latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: message } }));
+      latest.current.notify('warning', `Assemble failed: ${message}.`);
+      return;
+    }
+    recordSkipped(ctx, unreadable, true);
+
+    // The project may have changed while the model ran: re-check bans, rejections and the epoch right before applying.
+    await waitIdle(ctx.signal);
+    if (!ctx.isCurrent() || !isHistoryEpochCurrent(epoch)) throw abortError();
+    const fresh = useProjectStore.getState().buildSession;
+    const allowed = (item: WorkspaceImage) => { const record = fresh.records[getBuildAssetId(item)]; return !!record && record.override !== 'ban' && record.decision !== 'skipped'; };
+    const keyOf = (item: WorkspaceImage) => normalizeDatasetPath(item.assetPath ?? item.id);
+    const unreadableIds = new Set(unreadable.map((entry) => entry.item.id));
+    const evaluated = pool.filter((item) => !unreadableIds.has(item.id) && allowed(item));
+    const chosen = picked.filter((item) => allowed(item) && !isProjectDatasetPath(item.assetPath));
+    const chosenKeys = new Set(chosen.map(keyOf));
+    const duplicates = new Map<string, DuplicatePair>();
+    for (const entry of [...(shortlist?.duplicates ?? []), ...narrowDuplicates]) {
+      if (chosenKeys.has(entry.key) || duplicates.has(entry.key)) continue;
+      duplicates.set(entry.key, { kept: entry.keptKey, rejected: entry.key, kind: entry.kind, similarity: entry.similarity });
+    }
+    const reasonByKey = new Map((shortlist?.items ?? []).map((entry) => [entry.key, entry.reason]));
+    const rejectedCandidates: RejectedCandidate[] = evaluated.filter((item) => !chosenKeys.has(keyOf(item)) && !duplicates.has(keyOf(item)))
+      .map((item) => ({ path: keyOf(item), reason: 'not-selected' as const }));
+    const plan = {
+      selected: chosen.map((item) => ({ key: keyOf(item), reason: reasonByKey.get(keyOf(item)) ?? 'Selected' })),
+      duplicatePairs: [...duplicates.values()], rejectedCandidates,
+      stoppedBecause: auto || chosen.length >= needed ? 'target-reached' as const : 'exhausted' as const,
+    };
+    const assetIdByKey = new Map([...baseline, ...evaluated].map((item) => [keyOf(item), getBuildAssetId(item)]));
+    const now = new Date().toISOString();
+    const prepare = (value: BuildSession): BuildSession => {
+      const next = clearBuildShortlist(applyAssemblyTriage(value, plan, assetIdByKey, now));
+      return {
+        ...next, cursor: 0, filter: next.filter === 'shortlisted' || next.filter === 'picked' ? 'all' : next.filter,
+        auto: { ...next.auto, assemblyKey, assembledAt: now, assemblyError: undefined },
+      };
+    };
+    const entries: MembershipEntry[] = [
+      ...chosen.map((item) => ({ item, decision: 'accepted' as const, provenance: 'auto' as const })),
+      ...pinsOutside.filter((item) => fresh.records[getBuildAssetId(item)]?.override === 'pin' && allowed(item))
+        .map((item) => ({ item, decision: 'accepted' as const, provenance: 'manual' as const })),
+    ];
+    try {
+      if (entries.length) {
+        const applied = await latest.current.applyDecisions(entries, { propagateError: true, prepare, label: `Assemble: add ${entries.length} image${entries.length === 1 ? '' : 's'}` });
+        if (!applied) throw new Error('Could not apply the selection.');
+      } else latest.current.patchSession(prepare);
+    } catch (error) {
+      if (!ctx.isCurrent()) return;
+      const message = error instanceof Error ? error.message : 'Could not apply the selection.';
+      assemblyOperation.finish('failed', message);
+      latest.current.patchSession((value) => ({ ...value, auto: { ...value.auto, assemblyKey, assemblyError: message } }));
+      return;
+    }
+    assemblyOperation.finish('completed', `${entries.length} image${entries.length === 1 ? '' : 's'} added`);
+    latest.current.notify(entries.length ? 'success' : 'info', entries.length ? `Added ${entries.length} image${entries.length === 1 ? '' : 's'} to the Dataset.` : 'Nothing new to add to the Dataset.');
   });
 
   /** The only place the pipeline changes Dataset membership: one batch, one Undo. */
@@ -447,6 +576,12 @@ export function useBuildAutoPipeline(input: Input) {
     assemblyTask.current = 'find';
     if (!launch('assembly', (ctx) => runShortlist({ ...ctx, allowDownload: options.allowDownload }), 'Finding candidates failed.')) latest.current.notify('info', 'Another background task is still running.');
   };
+  /** Explicit Assemble: finds, picks and adds in one pass (one Undo). */
+  const startAssemble = (options: { allowDownload?: boolean } = {}) => {
+    lastRequest.current = { kind: 'assemble' };
+    assemblyTask.current = 'find';
+    if (!launch('assembly', (ctx) => runAssemble({ ...ctx, allowDownload: options.allowDownload }), 'Assemble failed.')) latest.current.notify('info', 'Another background task is still running.');
+  };
   /** Explicit "Pick": chooses the most varied candidates; `apply` also adds the result to the Dataset. */
   const startNarrow = (options: { allowDownload?: boolean; apply?: boolean } = {}) => {
     lastRequest.current = { kind: 'narrow', apply: options.apply };
@@ -460,7 +595,8 @@ export function useBuildAutoPipeline(input: Input) {
   };
   /** Repeats the request that stopped at the model-download prompt, now allowed to download. */
   const confirmModelDownload = () => {
-    if (lastRequest.current.kind === 'narrow') startNarrow({ allowDownload: true, apply: lastRequest.current.apply }); else startShortlist({ allowDownload: true });
+    const request = lastRequest.current;
+    if (request.kind === 'narrow') startNarrow({ allowDownload: true, apply: request.apply }); else if (request.kind === 'assemble') startAssemble({ allowDownload: true }); else startShortlist({ allowDownload: true });
   };
   /** Describes the scope (default: accepted images) with the local caption model. */
   const startTagging = (scope?: WorkspaceImage[]) => {
@@ -474,7 +610,7 @@ export function useBuildAutoPipeline(input: Input) {
   const clearSkipped = () => setSkipped([]);
 
   return {
-    phase, task, progress, cancel, resume, paused, skipped, clearSkipped, startShortlist, startNarrow, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets,
+    phase, task, progress, cancel, resume, paused, skipped, clearSkipped, startShortlist, startNarrow, startAssemble, confirmModelDownload, startApplyNarrowed, startTagging, countTaggingTargets,
     modelDownloadFor, dismissModelDownload: () => setModelDownloadFor(null),
   };
 }

@@ -3,15 +3,14 @@ import { BuildGridView } from './BuildGridView';
 import { CaptionEditor } from '../caption/CaptionEditor';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, HelpCircle, ImageIcon, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
-import type { BuildReviewDecision, BuildReviewView, BuildSession, BuildStage, EditedAsset } from '../../types';
+import type { BuildReviewDecision, BuildReviewView, BuildSession, BuildStage } from '../../types';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { usePublishInspectorSelection, type InspectorSelectionPayload } from '../../stores/useInspectorSelectionStore';
 import { useUIStore } from '../../stores/useUIStore';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
-import { runHistoryTransaction, captureHistoryEpoch, isHistoryEpochCurrent, type HistoryTransactionWriter } from '../../stores/useHistoryStore';
-import { toWorkspaceImages } from '../../lib/workspaceImages';
+import { runHistoryTransaction } from '../../stores/useHistoryStore';
 import { useCommands } from '../workspace/Commands';
 import { ImportTool } from '../tools/ImportTool';
 import { ExportTool } from '../tools/ExportTool';
@@ -23,7 +22,6 @@ import { useOperation } from '../../hooks/useOperation';
 import { persistCaptionTagsForItems } from '../../services/caption/captionMutationService';
 import { changeDatasetTriggerWord } from '../../lib/triggerWordActions';
 import { TriggerWordInput } from '../ui/TriggerWordInput';
-import { setAssetsDatasetMembership } from '../../lib/assetActions';
 import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import { applyCharacterTraits } from '../../services/tagging/characterTraits';
 import { selectActiveCharacterTraits } from '../../stores/useProjectStore';
@@ -32,30 +30,27 @@ import {
   clearBuildShortlist,
   getActiveShortlist,
   getBuildAssetId,
-  getBuildAssetRevision,
   getBuildRecordForItem,
-  assertBuildSourceCurrent,
   getBuildCounts,
-  getBuildValidation,
   reconcileBuildSession,
   selectBuildQueue,
   nextBuildCursor,
   updateBuildDecision,
 } from '../../services/build/buildSessionService';
 import { getMinShortSide } from '../../services/quality/imageQuality';
-import { createBuildOutputAssetId, getBuildImageDigest, getBuildTransformGeometry, renderBuildTransform } from '../../services/build/buildTransformService';
-import { PROJECT_EDITS_DIRECTORY } from '../../services/project/projectLayoutService';
+import { getBuildTransformGeometry } from '../../services/build/buildTransformService';
 import { getBuildTriageCounts, selectAssemblyCandidates } from '../../services/build/buildTriageService';
 import { useDatasetQualityReport } from '../quality/useDatasetQualityReport';
 import { BuildQualityPanel } from './BuildQualityPanel';
 import { BuildProfileControls } from './BuildProfileControls';
 import { BuildStepper, BuildNextStageFooter } from './BuildStepper';
 import { BuildCaptionStage } from './BuildCaptionStage';
-import { parseTags, sameTags } from './buildCaptionTags';
+import { parseTags } from './buildCaptionTags';
 import { getBuildStageSummary, mergeBuildItems, selectBuildCandidates, selectBuildDatasetItems } from '../../lib/buildStageSummary';
 import { useQualityActions } from './useQualityActions';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import { useBuildAutoPipeline } from './useBuildAutoPipeline';
+import { useApplyMembership } from './useApplyMembership';
 import { resolveDatasetMembership } from '../../services/dataset/datasetMembershipResolver';
 import { BuildAutoSelectPanel } from './BuildAutoSelectPanel';
 import { BuildSelectStatus } from './BuildSelectStatus';
@@ -76,11 +71,6 @@ type Props = {
 };
 
 const itemName = (item: WorkspaceImage) => item.originalFileName || item.fileName;
-const currentRegisteredItem = (assetId: string): WorkspaceImage | undefined => {
-  const state = useProjectStore.getState();
-  return toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems))
-    .find((item) => getBuildAssetId(item) === assetId);
-};
 
 export function BuildWorkspace({ active, viewId, items, directory, onImportFiles, onRefresh, semanticEncoderFactory }: Props) {
   const root = useRef<HTMLDivElement>(null);
@@ -91,8 +81,6 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const dataset = useProjectStore((state) => state.dataset);
   const workspaceSettings = useProjectStore((state) => state.workspaceSettings);
   const updateSession = useProjectStore((state) => state.updateBuildSession);
-  const addDatasetItem = useProjectStore((state) => state.addDatasetItem);
-  const removeDatasetItem = useProjectStore((state) => state.removeDatasetItem);
   const notify = useUIStore((state) => state.addNotification);
   const taggingConfig = useProjectStore((state) => state.taggingConfig);
   const characterTraits = useProjectStore(selectActiveCharacterTraits);
@@ -303,175 +291,28 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
 
   const moveCursor = useCallback((step: number) => setCursor(Math.max(0, Math.min(queue.length - 1, cursorRef.current + step))), [queue.length, setCursor]);
 
-  const saveCaption = useCallback(async (item: WorkspaceImage, tags: string[], historyWriter: HistoryTransactionWriter) => {
-    if (item.kind === 'video' || sameTags(item.tags, tags)) return;
-    await persistCaptionTagsForItems({ items: [item], resolveTags: () => tags, directory, flush: flushProjectSave, historyWriter });
-  }, [directory]);
-
-  const createTransformedOutput = useCallback(async (item: WorkspaceImage, assetId: string, assertCurrent: () => void, historyWriter: HistoryTransactionWriter): Promise<string | undefined> => {
-    const recipe = reconciled.records[assetId]?.transform ?? reconciled.profile.transform;
-    if (!recipe || !item.sourceImageId || item.kind === 'video' || item.kind === 'psd') return undefined;
-    const digest = await getBuildImageDigest(item.imageData);
-    assertCurrent();
-    const outputId = createBuildOutputAssetId(assetId, digest, recipe);
-    const outputAssetId = `edited:${outputId}`;
-    const existing = currentRegisteredItem(outputAssetId);
-    if (existing) {
-      if (!sameTags(existing.tags, item.tags ?? [])) await saveCaption(existing, item.tags ?? [], historyWriter);
-      assertCurrent();
-      return outputAssetId;
-    }
-    const transformed = await renderBuildTransform(item.imageData, recipe);
-    assertCurrent();
-    const next: EditedAsset = {
-      id: outputId,
-      sourceImageId: item.sourceImageId,
-      ...transformed,
-      type: 'crop',
-      tags: item.tags,
-      imageDataPath: `${PROJECT_EDITS_DIRECTORY}/${outputId}.png`,
-      deleted: false,
-      createdAt: new Date(),
-    };
-    addDatasetItem(next);
-    historyWriter.push({
-      label: 'Create transformed output',
-      undo: () => removeDatasetItem(outputId),
-      redo: () => addDatasetItem(next),
-    });
-    await flushProjectSave();
-    assertCurrent();
-    return outputAssetId;
-  }, [addDatasetItem, reconciled.profile.transform, reconciled.records, removeDatasetItem, saveCaption]);
+  const { applyDecisions } = useApplyMembership({ directory, operation, busy, setBusy });
 
   /** Applies one decision per item inside a single history transaction (one Undo). */
   const commitDecisions = useCallback(async (entries: Array<{ item: WorkspaceImage; decision: BuildReviewDecision }>, provenance: 'manual' | 'auto' = 'manual', propagateError = false) => {
     if (!entries.length || busy) return;
-    flushCursor();
-    const targets = entries.map((entry) => entry.item);
-    const epoch = captureHistoryEpoch();
-    const before = useProjectStore.getState().buildSession;
-    const targetIds = targets.map(getBuildAssetId);
-    // A decision consumes the typed draft directly; a pending delayed write must not resurrect it afterwards.
-    const pending = pendingDraft.current;
-    if (pending && targetIds.includes(pending.id)) { clearTimeout(pending.timer); pendingDraft.current = null; }
-    const decisionById = new Map(entries.map((entry) => [getBuildAssetId(entry.item), entry.decision]));
-    const uniform = entries.every((entry) => entry.decision === entries[0].decision) ? entries[0].decision : undefined;
-    patchSession((value) => entries.reduce((next, { item, decision }) => updateBuildDecision(next, getBuildAssetId(item), decision, {
-      application: decision === 'accepted' ? 'pending' : 'idle', validation: 'pending', provenance,
-    }), value));
-    setBusy(true);
-    operation.start(undefined, targets.length);
-    try {
-      await runHistoryTransaction(`${uniform ? (uniform === 'accepted' ? 'Accept' : uniform === 'skipped' ? 'Skip' : 'Defer') : 'Review'} ${targets.length} item${targets.length === 1 ? '' : 's'}`, async (historyWriter) => {
-        let next = useProjectStore.getState().buildSession;
-        let activeAssetId: string | undefined;
-        // Plain membership moves of non-current items go through one batch (one registry write and Explorer pass) instead of one operation per file.
-        const batched = new Set<string>();
-        try {
-          const toAdd: WorkspaceImage[] = []; const toRemove: WorkspaceImage[] = [];
-          for (const { item, decision } of entries) {
-            if (item === current || item.kind === 'video') continue;
-            const assetId = getBuildAssetId(item);
-            const recipe = next.records[assetId]?.transform ?? next.profile.transform;
-            const previousOutputId = next.records[assetId]?.outputAssetId;
-            const outputItem = previousOutputId ? currentRegisteredItem(previousOutputId) : undefined;
-            if (decision === 'accepted') {
-              if (recipe && item.sourceImageId && item.kind !== 'psd') continue;
-              if (outputItem && isProjectDatasetPath(outputItem.assetPath)) toRemove.push(outputItem);
-              toAdd.push({ ...item, tags: item.tags ?? [] });
-            } else {
-              if (outputItem && isProjectDatasetPath(outputItem.assetPath)) toRemove.push(outputItem);
-              if (isProjectDatasetPath(item.assetPath)) toRemove.push(item);
-            }
-            batched.add(assetId);
-          }
-          if (toRemove.length) await setAssetsDatasetMembership(toRemove, false, historyWriter);
-          if (toAdd.length) await setAssetsDatasetMembership(toAdd, true, historyWriter);
-          for (const [index, { item, decision }] of entries.entries()) {
-            if (!isHistoryEpochCurrent(epoch)) throw new Error('The project changed while applying the review decision.');
-            const assetId = getBuildAssetId(item); activeAssetId = assetId;
-            const recipe = next.records[assetId]?.transform ?? next.profile.transform;
-            const assertCurrentAsset = () => {
-              assertBuildSourceCurrent(item, item.sourceImageId ? currentRegisteredItem(assetId) : item, recipe, isHistoryEpochCurrent(epoch));
-            };
-            const tags = item === current ? parseTags(draft) : item.tags ?? [];
-            assertCurrentAsset();
-            if (item === current && item.kind !== 'video') await saveCaption(item, tags, historyWriter);
-            assertCurrentAsset();
-            const revision = getBuildAssetRevision(item, tags, recipe);
-            const previousOutputId = next.records[assetId]?.outputAssetId;
-            const outputItem = previousOutputId ? currentRegisteredItem(previousOutputId) : undefined;
-            if (decision === 'accepted') {
-              if (item.kind === 'video') throw new Error('Save one or more frames before accepting a video.');
-              const outputAssetId = await createTransformedOutput({ ...item, tags }, assetId, assertCurrentAsset, historyWriter);
-              assertCurrentAsset();
-              if (!batched.has(assetId) && previousOutputId && previousOutputId !== outputAssetId) {
-                const oldOutput = currentRegisteredItem(previousOutputId);
-                if (oldOutput && isProjectDatasetPath(oldOutput.assetPath)) await setAssetsDatasetMembership([oldOutput], false, historyWriter);
-                assertCurrentAsset();
-              }
-              if (!outputAssetId && !batched.has(assetId)) await setAssetsDatasetMembership([{ ...item, tags }], true, historyWriter);
-              assertCurrentAsset();
-              const existingOutput = outputAssetId ? currentRegisteredItem(outputAssetId) : undefined;
-              if (outputAssetId && !existingOutput) throw new Error('The transformed output disappeared before it could be saved.');
-              if (existingOutput && !isProjectDatasetPath(existingOutput.assetPath)) await setAssetsDatasetMembership([existingOutput], true, historyWriter);
-              assertCurrentAsset();
-              if (outputAssetId && isProjectDatasetPath(item.assetPath)) await setAssetsDatasetMembership([item], false, historyWriter);
-              assertCurrentAsset();
-              const finalOutput = outputAssetId ? currentRegisteredItem(outputAssetId) : undefined;
-              const outputRevision = finalOutput ? getBuildAssetRevision(finalOutput, finalOutput.tags, recipe) : undefined;
-              next = updateBuildDecision(next, assetId, decision, {
-                application: 'applied', validation: getBuildValidation({ ...item, tags }, next.profile.captionRequired),
-                acceptedRevision: revision, revision, provenance, outputAssetId, outputRevision,
-                draft: undefined,
-              });
-            } else {
-              if (!batched.has(assetId) && outputItem && isProjectDatasetPath(outputItem.assetPath)) await setAssetsDatasetMembership([outputItem], false, historyWriter);
-              assertCurrentAsset();
-              if (!batched.has(assetId) && isProjectDatasetPath(item.assetPath)) await setAssetsDatasetMembership([item], false, historyWriter);
-              assertCurrentAsset();
-              next = updateBuildDecision(next, assetId, decision, { application: 'idle', validation: 'pending', outputAssetId: previousOutputId });
-            }
-            operation.progress(index + 1, targets.length);
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'The review decision could not be applied.';
-          next = targetIds.reduce((value, id) => id === activeAssetId
-            ? updateBuildDecision(value, id, decisionById.get(id)!, { application:'failed', validation:'error', error:message })
-            : before.records[id] ? { ...value, records:{ ...value.records, [id]:before.records[id] } } : value, next);
-          throw error;
-        } finally {
-          if (isHistoryEpochCurrent(epoch)) {
-            // Merge only the target records so concurrent triage and suggestion patches are not clobbered.
-            updateSession((latest) => ({
-              ...latest,
-              records: {
-                ...latest.records,
-                ...Object.fromEntries(targetIds.flatMap((id) => next.records[id] ? [[id, {
-                  ...next.records[id],
-                  ...(latest.records[id]?.triage ? { triage: latest.records[id]!.triage } : {}),
-                  ...(latest.records[id]?.proposal ? { proposal: latest.records[id]!.proposal } : {}),
-                }]] : [])),
-              },
-            }));
-            const after = next;
-            historyWriter.push({ label: 'Review decision', undo: () => updateSession(before), redo: () => updateSession(after) });
-          }
-        }
-      });
-      operation.finish('completed', `${targets.length} review decision${targets.length === 1 ? '' : 's'} applied`);
-      if (targets.length === 1 && isHistoryEpochCurrent(epoch)) patchSessionAndCursor((value) => {
-        const nextQueue = selectBuildQueue(value, candidates);
-        return { ...value, cursor: nextBuildCursor(queue, nextQueue, cursor, targetIds[0]) };
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'The review decision could not be applied.';
-      operation.finish('failed', message);
-      notify('error', message);
-      if (propagateError) throw error;
-    } finally { setBusy(false); }
-  }, [busy, candidates, createTransformedOutput, current, cursor, draft, flushCursor, notify, operation, patchSession, patchSessionAndCursor, projectId, queue, saveCaption, updateSession]);
+    await applyDecisions(entries.map((entry) => ({ ...entry, ...(entry.item === current ? { tags: parseTags(draft) } : {}) })), {
+      provenance, propagateError,
+      beforeStart: (targetIds) => {
+        flushCursor();
+        // A decision consumes the typed draft directly; a pending delayed write must not resurrect it afterwards.
+        const pending = pendingDraft.current;
+        if (pending && targetIds.includes(pending.id)) { clearTimeout(pending.timer); pendingDraft.current = null; }
+      },
+      onApplied: () => {
+        if (entries.length !== 1) return;
+        patchSessionAndCursor((value) => {
+          const nextQueue = selectBuildQueue(value, candidates);
+          return { ...value, cursor: nextBuildCursor(queue, nextQueue, cursor, getBuildAssetId(entries[0].item)) };
+        });
+      },
+    });
+  }, [applyDecisions, busy, candidates, current, cursor, draft, flushCursor, patchSessionAndCursor, queue]);
   const commitDecision = useCallback((decision: BuildReviewDecision, targets: WorkspaceImage[] = current ? [current] : [], provenance: 'manual' | 'auto' = 'manual', propagateError = false) =>
     commitDecisions(targets.map((item) => ({ item, decision })), provenance, propagateError), [commitDecisions, current]);
 
@@ -484,7 +325,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
   const sourceItems = useMemo(() => inboxItems.filter((item) => isInboxItemSelected(item, deselectedFolders)), [inboxItems, deselectedFolders]);
   const pipeline = useBuildAutoPipeline({
     active, busy, candidates, sources: sourceItems, effectiveItems, session: reconciled, targetModel,
-    patchSession, dataset, commitDecision, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory, characterTraits,
+    patchSession, dataset, commitDecision, applyDecisions, localTagger, taggingConfig, root, viewId, notify, encoderFactory: semanticEncoderFactory, characterTraits,
   });
   const shortlist = useMemo(() => getActiveShortlist(reconciled, candidates), [reconciled.auto, reconciled.records, reconciled.profile, candidates]);
   const shortlistedIds = useMemo(() => new Set(shortlist?.entries.map(({ entry }) => entry.id)), [shortlist]);
