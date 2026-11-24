@@ -234,6 +234,43 @@ try {
   // A folder missing from rows (created later) stays unselected when another folder is toggled.
   const withNew = folders.buildFolderRows(['inbox', 'inbox/a', 'inbox/b/c', 'inbox/new']);
   assert.deepEqual(folders.toggleSourceFolder(withNew, ['Project/inbox/a'], 'inbox/b'), ['Project/inbox/a', 'Project/inbox/b'], 'the new folder is not selected');
+  // Next UI Sources panel: folders of the Explorer tree (including empty ones) and the per-folder counts.
+  {
+    const dir = (path, children = []) => ({ path, kind: 'folder', children });
+    const file = (path) => ({ path, kind: 'file' });
+    const tree = dir('Project', [
+      dir('Project/inbox', [dir('Project/inbox/day1', [file('Project/inbox/day1/a.png')]), dir('Project/inbox/empty'), dir('Project/inbox/day1b'), file('Project/inbox/root.png')]),
+      dir('Project/dataset', [dir('Project/dataset/sub')]),
+      dir('Project/inbox-old'),
+    ]);
+    assert.deepEqual(folders.collectInboxFolders(tree), ['inbox', 'inbox/day1', 'inbox/empty', 'inbox/day1b'],
+      'inbox, its subfolders and empty folders; dataset/ and inbox-old are not inbox folders; files are skipped');
+    assert.deepEqual(folders.collectInboxFolders(null), []);
+    assert.deepEqual(folders.collectInboxFolders(undefined), []);
+    assert.deepEqual(folders.collectInboxFolders(dir('Project')), [], 'a project without inbox has no inbox folders');
+    assert.deepEqual(folders.collectInboxFolders({ path: 'Project/inbox', kind: 'file' }), [], 'a file named inbox is not a folder');
+
+    const img = (path, extra = {}) => ({ id: path, assetPath: path, fileName: path.split('/').pop(), kind: 'image', ...extra });
+    const items = [
+      img('Project/inbox/day1/a.png'), img('Project/inbox/day1/b.png'), img('Project/inbox/root.png'),
+      img('Project/inbox/clip.mp4', { kind: 'video' }), img('Project/dataset/d.png'), img('Project/dataset/clip2.mp4', { kind: 'video' }),
+    ];
+    const counted = folders.countInboxFolders(items, ['inbox', 'inbox/day1', 'inbox/empty']);
+    assert.deepEqual(counted.rows.map(({ path, count, depth }) => [path, count, depth]), [['inbox', 3, 0], ['inbox/day1', 2, 1], ['inbox/empty', 0, 1]],
+      'empty folders get a row with count 0; the root count includes subfolders; videos are not counted');
+    assert.equal(counted.inbox, 3); assert.equal(counted.dataset, 1, 'dataset counts images only');
+    assert.equal(counted.ticked, 3, 'undefined sources tick the whole inbox');
+    assert.equal(folders.countInboxFolders(items, [], []).ticked, 0, 'an empty sources list ticks nothing');
+    assert.equal(folders.countInboxFolders(items, [], ['Project/inbox/day1']).ticked, 2, 'only images of ticked folders');
+    assert.equal(folders.countInboxFolders(items, [], ['Project/inbox']).ticked, 3);
+    const noEmpty = folders.countInboxFolders(items);
+    assert.deepEqual(noEmpty.rows.map((row) => row.path), ['inbox', 'inbox/day1'], 'without the tree only folders with images appear');
+    const onlyEmpty = folders.countInboxFolders([], ['inbox', 'inbox/new']);
+    assert.deepEqual(onlyEmpty.rows.map(({ path, count }) => [path, count]), [['inbox', 0], ['inbox/new', 0]]);
+    assert.deepEqual([onlyEmpty.inbox, onlyEmpty.dataset, onlyEmpty.ticked], [0, 0, 0]);
+    const deep = folders.countInboxFolders([img('Project/inbox/a/b/c.png')], []);
+    assert.deepEqual(deep.rows.map(({ path, count }) => [path, count]), [['inbox', 1], ['inbox/a', 1], ['inbox/a/b', 1]], 'ancestors of an image folder get rows');
+  }
   console.log('Auto-select steps and inbox folder checks passed.');
 } finally {
   await rm(temp, { recursive: true, force: true });

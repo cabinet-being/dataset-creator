@@ -8,8 +8,48 @@ import JSZip from 'jszip';
 
 const temp = await mkdtemp(join(tmpdir(), 'ui-workflows-'));
 try {
-  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
+  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/lib/uiMode.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
   const module = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
+  // UI mode switch: ?ui= beats the stored setting, classic is the default, junk values are ignored.
+  const uiMode = await module('uiMode');
+  const { resolveUiMode, readUiMode, setUiMode, UI_MODE_STORAGE_KEY } = uiMode;
+  assert.equal(resolveUiMode('', null), 'classic', 'no URL parameter and no setting means classic');
+  assert.equal(resolveUiMode('', undefined), 'classic');
+  assert.equal(resolveUiMode('', 'next'), 'next', 'the stored setting applies without a URL parameter');
+  assert.equal(resolveUiMode('', 'classic'), 'classic');
+  assert.equal(resolveUiMode('?ui=next', null), 'next');
+  assert.equal(resolveUiMode('?ui=next', 'classic'), 'next', '?ui=next beats a stored classic');
+  assert.equal(resolveUiMode('?ui=classic', 'next'), 'classic', '?ui=classic beats a stored next');
+  assert.equal(resolveUiMode('?foo=1&ui=next', 'classic'), 'next', 'the parameter is found among others');
+  assert.equal(resolveUiMode('?ui=bogus', 'next'), 'next', 'an unknown ?ui= value falls through to the stored setting');
+  assert.equal(resolveUiMode('?ui=', null), 'classic'); assert.equal(resolveUiMode('?ui=NEXT', null), 'classic', 'values are case sensitive');
+  assert.equal(resolveUiMode('', 'bogus'), 'classic', 'an unknown stored value is ignored'); assert.equal(resolveUiMode('?ui=bogus', 'bogus'), 'classic');
+  {
+    const saved = { location: globalThis.location, localStorage: globalThis.localStorage, history: globalThis.history };
+    const store = new Map();
+    const fakeStorage = { getItem: key => store.has(key) ? store.get(key) : null, setItem: (key, value) => store.set(key, String(value)) };
+    const defineGlobal = (name, value) => Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+    try {
+      defineGlobal('localStorage', fakeStorage);
+      defineGlobal('location', { search: '?ui=next', href: 'http://localhost/?ui=next&keep=1' });
+      assert.equal(readUiMode(), 'next', 'readUiMode reads the live URL');
+      store.set(UI_MODE_STORAGE_KEY, 'classic');
+      assert.equal(readUiMode(), 'next', 'the URL still wins over the stored setting');
+      const replaced = []; let reloads = 0;
+      defineGlobal('history', { state: { a: 1 }, replaceState: (state, title, url) => replaced.push([state, String(url)]) });
+      setUiMode('classic', () => { reloads += 1; });
+      assert.equal(store.get(UI_MODE_STORAGE_KEY), 'classic', 'the choice is stored'); assert.equal(reloads, 1, 'the caller reloads once');
+      assert.deepEqual(replaced, [[{ a: 1 }, 'http://localhost/?keep=1']], 'the ?ui= parameter is dropped so it cannot override the choice; other parameters stay');
+      replaced.length = 0; defineGlobal('location', { search: '', href: 'http://localhost/' });
+      setUiMode('next', () => { reloads += 1; });
+      assert.deepEqual(replaced, [], 'no history change without a ?ui= parameter'); assert.equal(store.get(UI_MODE_STORAGE_KEY), 'next'); assert.equal(readUiMode(), 'next');
+      defineGlobal('localStorage', { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } });
+      assert.equal(readUiMode(), 'classic', 'unavailable storage falls back to classic');
+      assert.doesNotThrow(() => setUiMode('next', () => { reloads += 1; }), 'unavailable storage does not break the switch'); assert.equal(reloads, 3);
+    } finally {
+      for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete globalThis[name]; else defineGlobal(name, value); }
+    }
+  }
   const { getCaptionFragmentAtSelection, replaceCaptionFragment, getCaptionSuggestionMatches } = await module('captionEditor');
   assert.deepEqual(getCaptionFragmentAtSelection('cat, blue bird, dog', 9), {start:5,end:14,text:'blue bird'});
   assert.deepEqual(getCaptionFragmentAtSelection('cat, , dog', 5), {start:5,end:5,text:''});

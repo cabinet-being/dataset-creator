@@ -33,6 +33,7 @@ export default defineConfig({
         scope: fixture('scope'),
         ui: fixture('ui'),
         video: fixture('video'),
+        next: fixture('next'),
       },
     },
   },

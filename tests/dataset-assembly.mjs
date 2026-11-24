@@ -27,6 +27,8 @@ try {
       'src/lib/buildStageSummary.ts',
       'src/services/build/buildClusterService.ts',
       'src/services/quality/metrics/thresholds.ts',
+      'src/lib/imageStatusLabels.ts',
+      'src/next/board/frameEntries.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -48,6 +50,8 @@ try {
   const stageSummary = await import(pathToFileURL(join(temp, 'buildStageSummary.mjs')));
   const clusterSvc = await import(pathToFileURL(join(temp, 'buildClusterService.mjs')));
   const thresholds = await import(pathToFileURL(join(temp, 'thresholds.mjs')));
+  const statusLabels = await import(pathToFileURL(join(temp, 'imageStatusLabels.mjs')));
+  const frames = await import(pathToFileURL(join(temp, 'frameEntries.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/inbox/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -1208,6 +1212,143 @@ try {
       assert.ok(buildSession.selectBuildQueue({ ...t, filter: 'status-in-dataset' }, [frame, output]).map(buildSession.getBuildAssetId).includes('source:frame'));
       assert.ok(!buildSession.selectBuildQueue({ ...t, filter: 'status-inbox' }, [frame, output]).map(buildSession.getBuildAssetId).includes('source:frame'));
     }
+  }
+  // Next UI Board: status labels, filters, frame entries (grouping, order, counts) and keyboard cursor movement.
+  {
+    const NOW = '2026-11-20T00:00:00.000Z';
+    const rec = (id, extra = {}) => ({ assetId: `source:${id}`, decision: 'unreviewed', application: 'idle', validation: 'pending', revision: 'r', updatedAt: NOW, ...extra });
+    const tri = (group, revision, stage = 'quality', reasons = [{ code: 'x', message: 'x' }]) => ({ group, reasons, stage, revision, createdAt: NOW });
+    const { describeImageStatus, matchesBoardFilter, buildKeptDuplicateCounts, BOARD_FILTERS } = statusLabels;
+
+    // describeImageStatus: every branch.
+    assert.deepEqual([...BOARD_FILTERS], ['all', 'in', 'out', 'pinned', 'banned']);
+    const pinned = describeImageStatus({ kind: 'in', pinned: true });
+    assert.deepEqual([pinned.badge, pinned.tone, pinned.muted], ['Pinned', 'pinned', false]); assert.match(pinned.reason, /Pinned by you/);
+    const plain = describeImageStatus({ kind: 'in', pinned: false });
+    assert.deepEqual([plain.badge, plain.tone, plain.muted, plain.reason], ['In', 'in', false, 'In the dataset.']);
+    assert.equal(describeImageStatus({ kind: 'in', pinned: false }, { keptDuplicates: 0 }).reason, 'In the dataset.');
+    assert.equal(describeImageStatus({ kind: 'in', pinned: false }, { keptDuplicates: 1 }).reason, 'Best of its group: 1 similar frame was left out.');
+    assert.equal(describeImageStatus({ kind: 'in', pinned: false }, { keptDuplicates: 3 }).reason, 'Best of its group: 3 similar frames were left out.');
+    assert.equal(describeImageStatus({ kind: 'in', pinned: false }, { keptDuplicates: 3 }).badge, 'In', 'best of a group is still In');
+    assert.equal(describeImageStatus({ kind: 'in', pinned: true }, { keptDuplicates: 3 }).badge, 'Pinned', 'Pinned wins over Best of group');
+    const banned = describeImageStatus({ kind: 'out', reason: 'ban' });
+    assert.deepEqual([banned.badge, banned.tone, banned.muted], ['Banned', 'banned', true]);
+    const quality = (reasons) => describeImageStatus({ kind: 'out', reason: 'quality' }, { record: rec('q', { triage: tri('rejected', 'v', 'quality', reasons) }) });
+    assert.deepEqual([quality([]).badge, quality([]).tone, quality([]).muted], ['Out', 'out', true]);
+    assert.equal(quality([{ code: 'a', message: 'Too small' }, { code: 'b', message: 'Blurry' }]).reason, 'Quality: Too small; Blurry.');
+    assert.equal(quality([]).reason, 'Did not pass the quality check.');
+    assert.equal(quality([{ code: 'a', message: '' }]).reason, 'Did not pass the quality check.', 'empty messages are skipped');
+    assert.equal(describeImageStatus({ kind: 'out', reason: 'quality' }).reason, 'Did not pass the quality check.', 'no record at all');
+    const dup = { kind: 'out', reason: 'duplicate', of: 'source:keep', similarity: 0.974 };
+    assert.equal(describeImageStatus(dup, { nameOf: (id) => id === 'source:keep' ? 'keep.png' : undefined }).reason, 'Duplicate of keep.png (97% similar).');
+    assert.equal(describeImageStatus(dup, { nameOf: () => undefined }).reason, 'Duplicate of a better frame (97% similar).');
+    assert.equal(describeImageStatus({ kind: 'out', reason: 'duplicate' }).reason, 'Duplicate of a better frame.', 'no of, no similarity');
+    assert.equal(describeImageStatus({ kind: 'out', reason: 'duplicate', of: 'source:keep', similarity: 0 }, { nameOf: () => 'k.png' }).reason, 'Duplicate of k.png (0% similar).', 'zero similarity is still shown');
+    const notSelected = describeImageStatus({ kind: 'out', reason: 'not-selected' });
+    assert.deepEqual([notSelected.badge, notSelected.muted], ['Out', true]); assert.match(notSelected.reason, /^Not selected/);
+    assert.equal(describeImageStatus({ kind: 'inbox', needsFrames: true }).reason, 'Video: extract frames to use it.');
+    assert.equal(describeImageStatus({ kind: 'inbox', pending: true }).reason, 'Not analyzed yet.');
+    assert.equal(describeImageStatus({ kind: 'inbox', needsFrames: true, pending: true }).reason, 'Video: extract frames to use it.', 'needsFrames wins over pending');
+    const inboxLabel = describeImageStatus({ kind: 'inbox' });
+    assert.deepEqual([inboxLabel.badge, inboxLabel.tone, inboxLabel.muted, inboxLabel.reason], ['Inbox', 'inbox', false, 'Waiting for Assemble.']);
+    for (const status of [{ kind: 'in', pinned: false }, { kind: 'in', pinned: true }, { kind: 'out', reason: 'ban' }, { kind: 'out', reason: 'quality' }, dup, { kind: 'inbox' }]) {
+      assert.ok(describeImageStatus(status).badge.length > 0, 'the badge always carries text, not only colour');
+    }
+
+    // matchesBoardFilter.
+    const inStatus = { kind: 'in', pinned: false }, outStatus = { kind: 'out', reason: 'quality' }, inboxStatus = { kind: 'inbox' };
+    for (const status of [inStatus, outStatus, inboxStatus]) assert.equal(matchesBoardFilter('all', status, undefined), true);
+    assert.deepEqual([inStatus, outStatus, inboxStatus].map((status) => matchesBoardFilter('in', status, undefined)), [true, false, false]);
+    assert.deepEqual([inStatus, outStatus, inboxStatus].map((status) => matchesBoardFilter('out', status, undefined)), [false, true, false]);
+    assert.equal(matchesBoardFilter('pinned', { kind: 'in', pinned: true }, rec('p', { override: 'pin' })), true);
+    assert.equal(matchesBoardFilter('pinned', inStatus, rec('p')), false);
+    assert.equal(matchesBoardFilter('pinned', inStatus, undefined), false, 'no record means no override');
+    assert.equal(matchesBoardFilter('banned', { kind: 'out', reason: 'ban' }, rec('b', { override: 'ban' })), true);
+    assert.equal(matchesBoardFilter('banned', outStatus, rec('b', { override: 'pin' })), false);
+    assert.equal(matchesBoardFilter('pinned', outStatus, rec('b', { override: 'ban' })), false);
+
+    // buildKeptDuplicateCounts: reverse of assembly.of.
+    assert.equal(buildKeptDuplicateCounts({}).size, 0);
+    const kept = buildKeptDuplicateCounts({
+      'source:d1': rec('d1', { assembly: { outcome: 'duplicate', of: 'source:keep', revision: 'v' } }),
+      'source:d2': rec('d2', { assembly: { outcome: 'duplicate', of: 'source:keep', revision: 'v' } }),
+      'source:d3': rec('d3', { assembly: { outcome: 'duplicate', of: 'source:other', revision: 'v' } }),
+      'source:n1': rec('n1', { assembly: { outcome: 'not-selected', of: 'source:keep', revision: 'v' } }),
+      'source:d4': rec('d4', { assembly: { outcome: 'duplicate', revision: 'v' } }),
+      'source:x': rec('x'),
+    });
+    assert.deepEqual([...kept.entries()].sort(), [['source:keep', 2], ['source:other', 1]], 'only duplicate outcomes with an `of` are counted');
+
+    // buildFrameEntries: grouping, dataset first, natural folder order, session order, videos dropped, labels and counters.
+    const img = (id, path, extra = {}) => ({ id: `source:${id}`, sourceImageId: id, assetPath: path, fileName: path?.split('/').pop() ?? `${id}.png`, kind: 'image', byteSize: 5, modifiedAt: 1, ...extra });
+    const keep = img('keep', 'Project/dataset/keep.png'), pin = img('pin', 'Project/dataset/pin.png', { originalFileName: 'Pinned original.png' });
+    const d10 = img('d10', 'Project/inbox/day10/x.png'), d2a = img('d2a', 'Project/inbox/day2/a.png'), d2b = img('d2b', 'Project/inbox/day2/b.png');
+    const dupe = img('dupe', 'Project/inbox/day2/dupe.png'), bad = img('bad', 'Project/inbox/day2/bad.png'), ban = img('ban', 'Project/inbox/day2/ban.png');
+    const loose = img('loose', undefined), clip = img('clip', 'Project/inbox/clip.mp4', { kind: 'video' });
+    const all = [d10, d2b, dupe, d2a, bad, ban, loose, clip, pin, keep];
+    const revOf = (item) => buildSession.getBuildContentRevision(item, undefined);
+    const session = {
+      ...buildSession.createBuildSession(),
+      order: ['source:d2b', 'source:d2a', 'source:dupe', 'source:bad', 'source:ban', 'source:keep', 'source:pin'],
+      records: {
+        'source:pin': rec('pin', { override: 'pin' }),
+        'source:dupe': rec('dupe', { triage: tri('rejected', revOf(dupe), 'assembly'), assembly: { outcome: 'duplicate', of: 'source:keep', similarity: 0.9, revision: revOf(dupe) } }),
+        'source:bad': rec('bad', { triage: tri('rejected', revOf(bad), 'quality', [{ code: 'low', message: 'Too small' }]) }),
+        'source:ban': rec('ban', { override: 'ban' }),
+        'source:d2a': rec('d2a', { triage: tri('accepted', revOf(d2a)) }),
+      },
+    };
+    const entries = frames.buildFrameEntries(all, all, session);
+    assert.ok(!entries.some((entry) => entry.id === 'source:clip'), 'videos are excluded');
+    assert.deepEqual(entries.map((entry) => entry.folder), ['dataset', 'dataset', 'inbox/day2', 'inbox/day2', 'inbox/day2', 'inbox/day2', 'inbox/day2', 'inbox/day10', 'Unsorted'],
+      'dataset first, then folders in natural order (day2 before day10), items without a path last');
+    assert.deepEqual(entries.map((entry) => entry.id), ['source:keep', 'source:pin', 'source:d2b', 'source:d2a', 'source:dupe', 'source:bad', 'source:ban', 'source:d10', 'source:loose'],
+      'inside a folder the session order wins');
+    const by = Object.fromEntries(entries.map((entry) => [entry.id.replace('source:', ''), entry]));
+    assert.equal(by.keep.label.badge, 'In'); assert.equal(by.keep.label.reason, 'Best of its group: 1 similar frame was left out.', 'the kept frame knows how many duplicates it replaced');
+    assert.equal(by.pin.label.badge, 'Pinned'); assert.equal(by.pin.name, 'Pinned original.png', 'the display name prefers the original file name');
+    assert.equal(by.dupe.label.reason, 'Duplicate of keep.png (90% similar).', 'the kept frame is named through the merged items');
+    assert.equal(by.bad.label.reason, 'Quality: Too small.');
+    assert.equal(by.ban.label.badge, 'Banned');
+    assert.deepEqual(by.d2a.status, { kind: 'inbox' }); assert.deepEqual(by.d10.status, { kind: 'inbox', pending: true });
+    assert.equal(by.d2a.assetId, 'source:d2a'); assert.equal(by.d2a.item, d2a);
+    assert.deepEqual(frames.countBoardFilters(entries), { all: 9, in: 2, out: 3, pinned: 1, banned: 1 });
+    assert.deepEqual(frames.countBoardFilters([]), { all: 0, in: 0, out: 0, pinned: 0, banned: 0 });
+    const grouped = frames.groupFrameEntries(entries);
+    assert.deepEqual(grouped.map((group) => [group.key, group.label, group.items.length]), [['dataset', 'dataset', 2], ['inbox/day2', 'inbox/day2', 5], ['inbox/day10', 'inbox/day10', 1], ['Unsorted', 'Unsorted', 1]]);
+    assert.deepEqual(frames.groupFrameEntries([]), []);
+    assert.equal(frames.folderOfImage(loose), frames.UNSORTED_FOLDER);
+    // A filtered list keeps the group order and drops empty groups.
+    const onlyOut = frames.groupFrameEntries(entries.filter((entry) => matchesBoardFilter('out', entry.status, entry.record)));
+    assert.deepEqual(onlyOut.map((group) => [group.key, group.items.length]), [['inbox/day2', 3]]);
+    // A transformed output in dataset/ makes its source frame "In".
+    const outputItem = img('out2', 'Project/dataset/out2.png');
+    const src = img('src2', 'Project/inbox/src2.png');
+    const viaOutput = frames.buildFrameEntries([src], [src, outputItem], { ...buildSession.createBuildSession(), records: { 'source:src2': rec('src2', { outputAssetId: 'source:out2' }) } });
+    assert.deepEqual(viaOutput[0].status, { kind: 'in', pinned: false });
+
+    // moveFrameCursor: rows of `columns` tiles, group boundaries, a shorter last row.
+    const mkGroup = (key, count) => ({ key, label: key, items: Array.from({ length: count }, (_, index) => ({ id: `${key}${index}` })) });
+    const A = mkGroup('a', 5), B = mkGroup('b', 3), C = mkGroup('c', 1);
+    const move = (groups, from, direction, columns) => frames.moveFrameCursor(groups, from, direction, columns);
+    assert.equal(move([], 'a0', 'right', 2), null, 'no entries, no target');
+    assert.equal(move([A, B], 'b1', 'home', 2), 'a0'); assert.equal(move([A, B], 'a0', 'end', 2), 'b2');
+    assert.equal(move([A, B], null, 'down', 2), 'a0', 'no cursor starts at the first frame');
+    assert.equal(move([A, B], 'gone', 'left', 2), 'a0', 'an unknown cursor starts at the first frame');
+    assert.equal(move([A, B], 'a4', 'right', 2), 'b0', 'right crosses into the next group'); assert.equal(move([A, B], 'b0', 'left', 2), 'a4');
+    assert.equal(move([A, B], 'a0', 'left', 2), 'a0', 'left is clamped at the start'); assert.equal(move([A, B], 'b2', 'right', 2), 'b2', 'right is clamped at the end');
+    assert.equal(move([A, B], 'a0', 'down', 2), 'a2'); assert.equal(move([A, B], 'a1', 'down', 2), 'a3'); assert.equal(move([A, B], 'a2', 'down', 2), 'a4');
+    assert.equal(move([A, B], 'a3', 'down', 2), 'a4', 'a shorter last row: down goes to its last tile');
+    assert.equal(move([A, B], 'a4', 'down', 2), 'b0', 'down from the last row enters the next group in the same column');
+    assert.equal(move([A, C], 'a3', 'down', 2), 'a4'); assert.equal(move([A, C], 'a4', 'down', 2), 'c0'); assert.equal(move([[mkGroup('d', 4)][0], C], 'd3', 'down', 2), 'c0', 'a one-tile group is entered at its only tile');
+    assert.equal(move([A, B], 'b2', 'down', 2), 'b2', 'down at the very end stays'); assert.equal(move([A, B], 'b1', 'down', 2), 'b2', 'short last row of the last group');
+    assert.equal(move([A, B], 'a2', 'up', 2), 'a0'); assert.equal(move([A, B], 'a0', 'up', 2), 'a0', 'up at the very start stays');
+    assert.equal(move([A, B], 'b0', 'up', 2), 'a4', 'up enters the last row of the previous group'); assert.equal(move([A, B], 'b1', 'up', 2), 'a4', 'its short last row ends at the last tile');
+    assert.equal(move([A, B], 'b2', 'up', 2), 'b0');
+    const wide = mkGroup('w', 7);
+    assert.equal(move([wide, B], 'w5', 'down', 3), 'w6', 'columns=3: 5 -> 6 is the short last row'); assert.equal(move([wide, B], 'w2', 'down', 3), 'w5');
+    assert.equal(move([wide, B], 'b2', 'up', 3), 'w6', 'previous group last row starts at 6, column 2 is clamped');
+    assert.equal(move([A, B], 'a2', 'down', 1), 'a3', 'one column moves tile by tile'); assert.equal(move([A, B], 'a4', 'down', 1), 'b0'); assert.equal(move([A, B], 'b0', 'up', 1), 'a4');
   }
   console.log('dataset assembly contracts: ok');
 } finally {
