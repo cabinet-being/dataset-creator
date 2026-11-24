@@ -1,5 +1,6 @@
 import type { WorkspaceImage } from './workspaceImages';
 import { PROJECT_LAYOUT } from '../services/project/projectLayoutService';
+import { isProjectDatasetPath } from '../services/dataset/datasetFolderService';
 
 export type FolderRow = { path: string; name: string; depth: number; count: number };
 
@@ -61,4 +62,53 @@ export const toggleSourceFolder = (rows: FolderRow[], sources: readonly string[]
   const full = (path: string) => paths.filter((other) => isInFolder(path, other)).every((other) => selected.has(other));
   return paths.filter((path) => selected.has(path) && full(path)
     && !paths.some((other) => other !== path && isInFolder(other, path) && selected.has(other) && full(other)));
+};
+
+type FolderTreeNode = { path: string; kind: 'folder' | 'file'; children?: FolderTreeNode[] };
+
+/** Inbox folders of an Explorer tree (project-relative, for example `inbox/day1`), including empty ones and the inbox itself. */
+export const collectInboxFolders = (tree: FolderTreeNode | null | undefined): string[] => {
+  const root = INBOX_PREFIX.replace(/^Project\//, '').slice(0, -1);
+  const found: string[] = [];
+  const visit = (node: FolderTreeNode) => {
+    if (node.kind !== 'folder') return;
+    const path = node.path.replace(/^Project\//, '');
+    if (isInFolder(root, path)) found.push(path);
+    node.children?.forEach(visit);
+  };
+  if (tree) visit(tree);
+  return found;
+};
+
+export type InboxFolderCounts = {
+  /** Folder tree rows; `count` includes subfolders and is 0 for empty folders. */
+  rows: FolderRow[];
+  /** Images in the inbox, in the dataset/ folder, and in the ticked Sources. */
+  inbox: number;
+  dataset: number;
+  ticked: number;
+};
+
+/**
+ * Per-folder image counts for the Sources panel. `emptyFolders` are folders from the Explorer tree so folders
+ * without images still get a row. Videos are not counted: they need frames first.
+ */
+export const countInboxFolders = (items: readonly WorkspaceImage[], emptyFolders: readonly string[] = [], sources?: readonly string[]): InboxFolderCounts => {
+  const inboxItems = items.filter((item) => item.kind !== 'video' && isInboxItem(item));
+  const imageFolders = inboxItems.map(inboxFolderOf);
+  const rows = buildFolderRows([...imageFolders, ...emptyFolders]);
+  const counted = new Map<string, number>();
+  for (const folder of imageFolders) {
+    const parts = folder.split('/');
+    for (let length = 1; length <= parts.length; length += 1) {
+      const path = parts.slice(0, length).join('/');
+      counted.set(path, (counted.get(path) ?? 0) + 1);
+    }
+  }
+  return {
+    rows: rows.map((row) => ({ ...row, count: counted.get(row.path) ?? 0 })),
+    inbox: inboxItems.length,
+    dataset: items.filter((item) => item.kind !== 'video' && isProjectDatasetPath(item.assetPath)).length,
+    ticked: inboxItems.filter((item) => isInboxItemInSources(item, sources)).length,
+  };
 };

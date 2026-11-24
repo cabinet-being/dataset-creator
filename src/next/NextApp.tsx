@@ -1,12 +1,11 @@
-import { ArrowLeft } from 'lucide-react';
 import { ProjectSetupDialog } from '../components/ProjectSetupDialog';
 import { ProjectUpgradeDialog } from '../components/ProjectUpgradeDialog';
 import { PhotopeaPsdPreviewWorker } from '../components/photopea/PhotopeaFrame';
-import { Button } from '../components/ui/button';
 import { useCommandPalette } from '../components/workspace/Commands';
 import { AppShell } from '../components/workspace/AppShell';
 import { WorkspaceNotifications } from '../components/workspace/WorkspaceNotifications';
 import { WorkspaceStatusBar } from '../components/workspace/WorkspaceStatusBar';
+import { BoardScreen } from './screens/BoardScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
 import { useNextCommands } from './useNextCommands';
 import { useProjectRuntime } from './useProjectRuntime';
@@ -16,7 +15,7 @@ export default function NextApp() {
   const runtime = useProjectRuntime();
   const openCommands = useCommandPalette();
   useNextCommands(runtime, () => openCommands(true));
-  const { lifecycle, projectDirectoryHandle, projectDirectoryName, projectName, projectSave, workspaceImages, isProjectDirectoryBusy } = runtime;
+  const { lifecycle, projectDirectoryHandle, projectId, projectName, projectSave, isProjectDirectoryBusy } = runtime;
   const { projectSetup, layoutUpgrade } = lifecycle;
 
   return <AppShell
@@ -27,7 +26,7 @@ export default function NextApp() {
         ? <ProjectUpgradeDialog name={layoutUpgrade.name} plan={layoutUpgrade.plan} rawPlan={layoutUpgrade.rawPlan} blockedReason={layoutUpgrade.blockedReason} onComplete={layoutUpgrade.complete} />
         : null}
     backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
-    header={<header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
+    header={projectDirectoryHandle ? null : <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
       <h1 className="mr-auto text-base font-semibold tracking-tight">Dataset Creator</h1>
     </header>}
     footer={<WorkspaceStatusBar projectName={projectName} save={projectSave}
@@ -38,13 +37,7 @@ export default function NextApp() {
     </>}
   >
     {projectDirectoryHandle
-      ? <div data-next-app className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
-        <div className="space-y-1 text-center">
-          <h2 data-next-project-name className="text-xl font-semibold">{projectDirectoryName ?? projectName}</h2>
-          <p data-next-image-count className="text-sm text-muted-foreground">{workspaceImages.length} {workspaceImages.length === 1 ? 'image' : 'images'}</p>
-        </div>
-        <Button variant="outline" className="min-h-[44px]" disabled={isProjectDirectoryBusy} onClick={() => void runtime.closeProject()}><ArrowLeft className="h-4 w-4" />Projects</Button>
-      </div>
+      ? <div data-next-app className="flex min-h-0 flex-1 flex-col"><BoardScreen key={projectId} runtime={runtime} /></div>
       : <div data-next-app className="flex min-h-0 flex-1 flex-col"><ProjectsScreen runtime={runtime} /></div>}
   </AppShell>;
 }
