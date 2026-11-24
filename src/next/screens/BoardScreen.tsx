@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Settings } from 'lucide-react';
 import { useBuildModel } from '../../components/build/useBuildModel';
 import { useBuildClusters } from '../../components/build/useBuildClusters';
 import { useQualityActions } from '../../components/build/useQualityActions';
@@ -10,6 +10,7 @@ import { selectBuildDatasetItems } from '../../lib/buildStageSummary';
 import type { createSemanticFeatureEncoder } from '../../services/analysis/semanticFeatureService';
 import type { BuildSession } from '../../types';
 import { Button } from '../../components/ui/button';
+import { NextSettingsDialog } from '../board/NextSettingsDialog';
 import { PROJECT_TYPE_PROFILES, TARGET_MODEL_PRESETS } from '../../lib/projectProfiles';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { cn } from '../../lib/utils';
@@ -49,6 +50,7 @@ function BoardHeader({ runtime, assemble, mode, onModeChange }: { runtime: Runti
         {option === 'select' ? 'Select' : 'Caption'}</button>)}
     </div>
     {assemble}
+    <Button variant="outline" size="icon" className="h-11 w-11" aria-label="Settings" title="Settings" onClick={() => runtime.setSettingsOpen(true)}><Settings className="h-4 w-4" /></Button>
   </header>;
 }
 
@@ -132,6 +134,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     </div>}
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} pairCount={exportCount} report={quality.report} targetModel={targetModel}
       onExportComplete={plan => patchSession(session => ({ ...session, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} />
+    <NextSettingsDialog runtime={runtime} strictness={{ value: reconciled.profile.similarityStrictness ?? 'balanced', onChange: changeStrictness }} />
     {photopea && directory && <PhotopeaOverlay item={photopea} directory={directory} onClose={() => setPhotopea(null)} />}
     {video && directory && <VideoOverlay item={video} directory={directory} onClose={() => setVideo(null)}
       onSaved={() => runtime.explorerMutations.indexProjectWorkspaceAssets()} />}

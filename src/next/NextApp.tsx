@@ -6,6 +6,8 @@ import { AppShell } from '../components/workspace/AppShell';
 import { WorkspaceNotifications } from '../components/workspace/WorkspaceNotifications';
 import { WorkspaceStatusBar } from '../components/workspace/WorkspaceStatusBar';
 import type { createSemanticFeatureEncoder } from '../services/analysis/semanticFeatureService';
+import { NextSettingsDialog } from './board/NextSettingsDialog';
+import { Settings } from 'lucide-react';
 import { BoardScreen } from './screens/BoardScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
 import { useNextCommands } from './useNextCommands';
@@ -29,11 +31,14 @@ export default function NextApp({ encoderFactory }: { encoderFactory?: typeof cr
     backgroundTasks={<PhotopeaPsdPreviewWorker active={Boolean(projectDirectoryHandle)} />}
     header={projectDirectoryHandle ? null : <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
       <h1 className="mr-auto text-base font-semibold tracking-tight">Dataset Creator</h1>
+      <button type="button" aria-label="Settings" title="Settings" onClick={() => runtime.setSettingsOpen(true)}
+        className="flex h-11 w-11 items-center justify-center rounded-md border border-border hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Settings aria-hidden className="h-4 w-4" /></button>
     </header>}
     footer={<WorkspaceStatusBar projectName={projectName} save={projectSave}
       onFocusOperation={() => {}} onOutput={() => {}} onHelp={() => openCommands(true)} />}
     overlays={<>
       {runtime.localTaggerPicker.inputs}
+      {!projectDirectoryHandle && <NextSettingsDialog runtime={runtime} />}
       <WorkspaceNotifications />
     </>}
   >

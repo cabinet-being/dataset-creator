@@ -5,6 +5,8 @@ import type { BrickColumnCount, WorkspaceSettings } from '../../types';
 import { useLocalTaggerStore } from '../../stores/useLocalTaggerStore';
 import { WdTaggerDownloadPanel } from '../tagging/WdTaggerDownloadPanel';
 import { hasVideoModel } from '../../services/video/videoCache';
+import { SIMILARITY_STRICTNESS, type SimilarityStrictnessId } from '../../services/similarity/similarityLevels';
+import { readUiMode, setUiMode } from '../../lib/uiMode';
 
 type Props = {
   open: boolean; onOpenChange: (open: boolean) => void;
@@ -13,9 +15,13 @@ type Props = {
   settings: WorkspaceSettings; onSettingsChange: (settings: Partial<WorkspaceSettings>) => void;
   onPickTaggerFile: (kind: 'model' | 'tags') => void;
   onRestoreTaggerAccess: () => void;
-  onShortcuts: () => void; onOpenTool: (tool: 'tagging' | 'video') => void;
+  onShortcuts: () => void;
+  /** Absent in the next UI, which has no tool tabs: the tool shortcuts are then hidden. */
+  onOpenTool?: (tool: 'tagging' | 'video') => void;
+  /** Similarity strictness of the open project (`profile.similarityStrictness`); shown only when a project is open. */
+  strictness?: { value: SimilarityStrictnessId; onChange: (value: SimilarityStrictnessId) => void };
 };
-export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChange, density, onDensityChange, settings, onSettingsChange, onPickTaggerFile, onRestoreTaggerAccess, onShortcuts, onOpenTool }: Props) {
+export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChange, density, onDensityChange, settings, onSettingsChange, onPickTaggerFile, onRestoreTaggerAccess, onShortcuts, onOpenTool, strictness }: Props) {
   const taggerStatus = useLocalTaggerStore(state => state.status);
   const taggerMessage = useLocalTaggerStore(state => state.message);
   const savedFileNames = useLocalTaggerStore(state => state.savedFileNames);
@@ -27,6 +33,7 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
     return () => { cancelled = true; };
   }, [open]);
   const captionState = taggerStatus === 'running' ? 'Running' : taggerStatus === 'ready' ? 'Ready' : taggerStatus === 'loading' ? 'Connecting…' : taggerStatus === 'not-ready' ? 'Needs attention' : savedFileNames.model && savedFileNames.tags ? 'Saved files available' : 'Not configured';
+  const nextUi = readUiMode() === 'next';
   const closeThen = (action: () => void) => { onOpenChange(false); action(); };
   const control = 'rounded-md border border-border bg-background px-3 py-2 text-sm';
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal>
@@ -39,15 +46,25 @@ export function WorkspaceSettingsDialog({ open, onOpenChange, theme, onThemeChan
         <label className="grid gap-2 text-sm">Density<select className={control} value={density} onChange={event => onDensityChange(event.target.value)}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
       </div>
       <button className={`${control} mt-3`} onClick={() => closeThen(onShortcuts)}>Keyboard shortcuts</button>
+      <section className="mt-5 border-t border-border pt-4">
+        <h2 className="font-medium">Interface</h2>
+        {strictness && <label className="mt-3 grid gap-2 text-sm">Similarity strictness (this project)
+          <select aria-label="Similarity strictness" className={control} value={strictness.value} onChange={event => strictness.onChange(event.target.value as SimilarityStrictnessId)}>
+            {SIMILARITY_STRICTNESS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>}
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" role="switch" aria-label={nextUi ? 'Classic UI' : 'Try the new UI'} checked={false} onChange={() => setUiMode(nextUi ? 'classic' : 'next')} />
+          {nextUi ? 'Classic UI' : 'Try the new UI'}</label>
+        <p className="mt-1 text-xs text-muted-foreground">The page reloads when the interface changes.</p>
+      </section>
       <details className="mt-4 text-sm"><summary>Layout options</summary><label className="mt-3 grid gap-2">Masonry columns<select className={control} value={settings.brickColumnCount ?? 'auto'} onChange={event => onSettingsChange({ brickColumnCount: event.target.value === 'auto' ? 'auto' : Number(event.target.value) as BrickColumnCount })}>{['auto', 1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value === 'auto' ? 'Auto' : `${value} columns`}</option>)}</select></label></details>
       <section className="mt-5 border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Caption model</h2><span role="status" className="text-xs text-muted-foreground">{captionState}</span></div>
         {taggerStatus === 'not-ready' && <p className="mt-2 text-sm text-destructive">{taggerMessage}</p>}
         <WdTaggerDownloadPanel className="mt-3" />
         <div className="mt-3 space-y-3">{(['model', 'tags'] as const).map(kind => <div key={kind} className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-sm">{kind === 'model' ? 'model.onnx' : 'selected_tags.csv'}</p><p className="truncate text-xs text-muted-foreground">{savedFileNames[kind] ?? 'No file selected'}</p></div><button className={control} disabled={taggerStatus === 'running'} onClick={() => onPickTaggerFile(kind)}>Choose {kind}</button></div>)}</div>
-        <div className="mt-3 flex gap-2"><button className={control} disabled={!savedFileNames.model || !savedFileNames.tags || taggerStatus === 'loading' || taggerStatus === 'running'} onClick={onRestoreTaggerAccess}>Reconnect</button><button className={control} onClick={() => closeThen(() => onOpenTool('tagging'))}>Open Caption</button></div>
+        <div className="mt-3 flex gap-2"><button className={control} disabled={!savedFileNames.model || !savedFileNames.tags || taggerStatus === 'loading' || taggerStatus === 'running'} onClick={onRestoreTaggerAccess}>Reconnect</button>{onOpenTool && <button className={control} onClick={() => closeThen(() => onOpenTool('tagging'))}>Open Caption</button>}</div>
       </section>
-      <section className="mt-5 border-t border-border pt-4"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Image features model (DINOv2)</h2><span role="status" className="text-xs text-muted-foreground">{videoStatus}</span></div><p className="mt-2 text-xs text-muted-foreground">Local model used for image similarity, quality checks and video frame analysis.</p><button className={`${control} mt-3`} onClick={() => closeThen(() => onOpenTool('video'))}>Open Video Frames</button></section>
+      <section className="mt-5 border-t border-border pt-4"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">Image features model (DINOv2)</h2><span role="status" className="text-xs text-muted-foreground">{videoStatus}</span></div><p className="mt-2 text-xs text-muted-foreground">Local model used for image similarity, quality checks and video frame analysis.</p>{onOpenTool && <button className={`${control} mt-3`} onClick={() => closeThen(() => onOpenTool('video'))}>Open Video Frames</button>}</section>
     </Dialog.Content>
   </Dialog.Portal></Dialog.Root>;
 }

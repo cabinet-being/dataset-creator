@@ -19,6 +19,7 @@ export function useNextCommands(runtime: Runtime, openHelp: () => void) {
     { id: 'project.save', label: 'Save project', shortcut: 'Mod+S', shortcutEnabled: !photopeaOpen, allowInInput: true, disabled: noProject, reason: noProject ? 'Open a project directory first' : undefined, run: projectSave.retry },
     { id: 'project.new', label: 'New project', disabled: isProjectDirectoryBusy, run: lifecycle.handleNewProject },
     { id: 'project.open', label: 'Open project', disabled: isProjectDirectoryBusy, run: lifecycle.handleOpenProject },
+    { id: 'settings', label: 'Settings', run: () => runtime.setSettingsOpen(true) },
     { id: 'help', label: 'Keyboard shortcuts', run: openHelp },
     ...(['system', 'light', 'dark'] as const).map(mode => ({ id: `theme.${mode}`, label: `Theme: ${mode}`, run: () => appearance.setTheme(mode) })),
   ];
