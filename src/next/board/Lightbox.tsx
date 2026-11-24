@@ -1,0 +1,106 @@
+import { useEffect, useMemo, useRef } from 'react';
+import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { useEscapeToClose } from '../../hooks/useEscapeToClose';
+import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
+import { cn } from '../../lib/utils';
+import type { FrameEntry } from './frameEntries';
+import { StatusBadge } from './StatusBadge';
+
+const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const isTextField = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+
+const formatBytes = (bytes: number | undefined) => {
+  if (!bytes) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+/**
+ * Full-size view of one frame with its status and caption (read only). Arrow keys move through `entries`
+ * (the filtered grid order) and Escape closes; both listen only while the overlay is mounted and ignore text fields.
+ */
+export function Lightbox({ entries, index, onIndexChange, onClose }: {
+  entries: readonly FrameEntry[];
+  index: number;
+  onIndexChange: (index: number) => void;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDivElement>(null);
+  const entry = entries[index];
+  const last = entries.length - 1;
+
+  const current = useMemo(() => entry ? [entry.item] : [], [entry]);
+  const neighbours = useMemo(() => [entries[index - 1], entries[index + 1]].flatMap(neighbour => neighbour ? [neighbour.item] : []), [entries, index]);
+  const previews = useSizedPreviewUrls(current, 'large', { focusId: entry?.id, prefetch: neighbours });
+
+  // useEscapeToClose keeps the first callback, so route it through a ref to always close the current frame's grid state.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEscapeToClose(true, () => closeRef.current());
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key === 'ArrowLeft' && index > 0) { event.preventDefault(); onIndexChange(index - 1); }
+      if (event.key === 'ArrowRight' && index < last) { event.preventDefault(); onIndexChange(index + 1); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [index, last, onIndexChange]);
+
+  // Move focus into the overlay and give it back to the opener on close.
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog.current?.querySelector<HTMLElement>('[data-lightbox-close]')?.focus();
+    return () => opener?.focus({ preventScroll: true });
+  }, []);
+  const trapTab = (event: React.KeyboardEvent) => {
+    if (event.key !== 'Tab') return;
+    const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
+    if (!focusable.length) return;
+    const first = focusable[0]; const final = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); final.focus(); }
+    else if (!event.shiftKey && document.activeElement === final) { event.preventDefault(); first.focus(); }
+  };
+
+  if (!entry) return null;
+  const { item, label } = entry;
+  const url = previews[entry.id];
+  const size = [`${item.width} × ${item.height}`, formatBytes(item.byteSize)].filter(Boolean).join(' · ');
+  const caption = item.tags === undefined ? null : item.tags.join(', ');
+
+  return <div ref={dialog} role="dialog" aria-modal="true" aria-label={`Frame ${entry.name}`} data-lightbox onKeyDown={trapTab}
+    className="fixed inset-0 z-[2000] flex flex-col bg-background/95 text-foreground backdrop-blur-sm md:flex-row">
+    <div className="relative flex min-h-0 flex-1 items-center justify-center p-4" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
+      {url
+        ? <img data-lightbox-image src={url} alt={`${entry.name}: ${label.reason}`} className={cn('max-h-full max-w-full rounded-md object-contain', label.muted && 'opacity-70')} />
+        : <p className="text-sm text-muted-foreground">Loading preview…</p>}
+      <button type="button" aria-label="Previous frame" data-lightbox-prev disabled={index <= 0} onClick={() => onIndexChange(index - 1)}
+        className={cn('absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40', focusRing)}>
+        <ChevronLeft aria-hidden className="h-5 w-5" /></button>
+      <button type="button" aria-label="Next frame" data-lightbox-next disabled={index >= last} onClick={() => onIndexChange(index + 1)}
+        className={cn('absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40', focusRing)}>
+        <ChevronRight aria-hidden className="h-5 w-5" /></button>
+    </div>
+    <aside className="max-h-[45%] w-full shrink-0 space-y-4 overflow-auto border-t border-border bg-card p-4 md:max-h-none md:w-80 md:border-l md:border-t-0">
+      <div className="flex items-start gap-2">
+        <h2 data-lightbox-name className="min-w-0 flex-1 break-words text-base font-semibold">{entry.name}</h2>
+        <button type="button" aria-label="Close" data-lightbox-close onClick={onClose}
+          className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border hover:bg-secondary', focusRing)}>
+          <X aria-hidden className="h-5 w-5" /></button>
+      </div>
+      <p className="text-xs tabular-nums text-muted-foreground">{index + 1} / {entries.length}</p>
+      <dl className="space-y-3 text-sm">
+        <div><dt className="text-xs text-muted-foreground">Status</dt>
+          <dd className="mt-1 space-y-1"><StatusBadge label={label} /><p data-lightbox-reason>{label.reason}</p></dd></div>
+        <div><dt className="text-xs text-muted-foreground">Size</dt><dd data-lightbox-size>{size}</dd></div>
+        <div><dt className="text-xs text-muted-foreground">Folder</dt><dd data-lightbox-folder className="break-all">{entry.folder}</dd></div>
+        <div><dt className="text-xs text-muted-foreground">Caption</dt>
+          <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
+            {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd></div>
+      </dl>
+      <p className="text-xs text-muted-foreground">← → to browse · Esc to close</p>
+    </aside>
+  </div>;
+}

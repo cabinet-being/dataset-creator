@@ -8,6 +8,7 @@ import { cn } from '../../lib/utils';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { BuildSession } from '../../types';
 import { buildFrameEntries, countBoardFilters, groupFrameEntries, moveFrameCursor, type CursorMove, type FrameEntry } from './frameEntries';
+import { Lightbox } from './Lightbox';
 import { StatusBadge } from './StatusBadge';
 import { VirtualTileGrid } from './VirtualTileGrid';
 
@@ -28,21 +29,20 @@ type Props = {
   /** Starts a drag of inbox frames; the owner puts them into the Explorer drag state. */
   onDragFrames?: (items: WorkspaceImage[]) => void;
   onDragFramesEnd?: () => void;
-  /** Frame opened by click or Enter, with the current filtered order. */
-  onOpen?: (id: string, ordered: FrameEntry[]) => void;
 };
 
 /**
  * Frame grid of the Board: statuses computed once, folder groups, local filter chips, local selection and cursor.
  * Thumbnails exist only for the rendered window of the virtual grid.
  */
-export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, onDragFramesEnd, onOpen }: Props) {
+export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, onDragFramesEnd }: Props) {
   const [filter, setFilter] = useState<BoardFilter>('all');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [cursorId, setCursorId] = useState<string | null>(null);
   const [columns, setColumns] = useState(1);
   const [windowEntries, setWindowEntries] = useState<FrameEntry[]>([]);
   const [revealId, setRevealId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const focusAfterMove = useRef(false);
   const root = useRef<HTMLDivElement>(null);
 
@@ -67,6 +67,17 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
     return () => cancelAnimationFrame(frame);
   }, [cursorId, windowEntries]);
 
+  const openIndex = openId ? visible.findIndex(entry => entry.id === openId) : -1;
+  // A frame that leaves the filtered list while open (for example after a session change) closes the overlay.
+  useEffect(() => { if (openId && openIndex < 0) setOpenId(null); }, [openId, openIndex]);
+  const closeLightbox = useCallback(() => {
+    focusAfterMove.current = true;
+    setRevealId(openId);
+    setCursorId(openId);
+    setOpenId(null);
+  }, [openId]);
+  const showFrame = useCallback((index: number) => { const entry = visible[index]; if (entry) { setOpenId(entry.id); setCursorId(entry.id); } }, [visible]);
+
   const toggleSelected = (id: string) => setSelected(current => {
     const next = new Set(current);
     if (!next.delete(id)) next.add(id);
@@ -75,7 +86,7 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
 
   const onKeyDown = (event: KeyboardEvent) => {
     const move = MOVE_KEYS[event.key];
-    if (!move || isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (openId || !move || isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
     const next = moveFrameCursor(groups, tabStopId, move, columns);
     if (!next) return;
     event.preventDefault();
@@ -87,7 +98,7 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
   const onTileClick = (event: MouseEvent, entry: FrameEntry) => {
     setCursorId(entry.id);
     if (event.ctrlKey || event.metaKey || event.shiftKey) { toggleSelected(entry.id); return; }
-    onOpen?.(entry.id, visible);
+    setOpenId(entry.id);
   };
 
   const onDragStart = (event: DragEvent, entry: FrameEntry) => {
@@ -120,7 +131,7 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
         <Check aria-hidden className={cn('h-5 w-5 rounded-full p-0.5', isSelected ? 'bg-primary text-primary-foreground' : 'bg-background/80 text-muted-foreground')} />
       </button>
     </div>;
-  }, [thumbs, tabStopId, activeSelection, onOpen, visible, onDragFrames, onDragFramesEnd]);
+  }, [thumbs, tabStopId, activeSelection, visible, onDragFrames, onDragFramesEnd]);
 
   return <div ref={root} data-frame-grid className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
     <div role="group" aria-label="Filter frames" className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
@@ -140,5 +151,6 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
       </p>
       : <VirtualTileGrid groups={groups} getKey={getKey} renderTile={renderTile} onWindowChange={setWindowEntries}
         revealKey={revealId} onColumnsChange={setColumns} />}
+    {openIndex >= 0 && <Lightbox entries={visible} index={openIndex} onIndexChange={showFrame} onClose={closeLightbox} />}
   </div>;
 }
