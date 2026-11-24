@@ -223,6 +223,15 @@ const api = {
       records: Object.fromEntries(Object.values(state.buildSession.records).map(record => [nameOf(record.locator), { override: record.override, origin: record.origin, locator: record.locator }])),
     };
   },
+  /** Project settings as the store holds them (type, model, traits, the Build transform and the name). */
+  profile: () => {
+    const state = useProjectStore.getState();
+    return { name: state.name, projectType: state.projectType, targetModel: state.targetModel, characterTraits: state.characterTraits, transform: state.buildSession.profile.transform };
+  },
+  /** Gives the Build profile a transform recipe the settings presets do not describe. */
+  setTransform: (transform: unknown) => { useProjectStore.getState().updateBuildSession(session => ({ ...session, profile: { ...session.profile, transform: transform as never } })); },
+  /** Replaces the ticked sources of the profile. */
+  setSources: (sources: string[]) => { useProjectStore.getState().updateBuildSession(session => ({ ...session, profile: { ...session.profile, sources } })); },
   /** Every file of the project folder on disk (relative paths, without .datasetcreator). */
   files: () => listFiles(projectRoot!),
   /** The text of a project file, or null while it does not exist. */

@@ -84,6 +84,11 @@ test.describe('Edit in Photopea', () => {
   test('Escape closes only the overlay: the lightbox below keeps its frame', async ({ page }) => {
     await page.locator('[data-lightbox] [data-action="photopea"]').click();
     await expect(overlay(page)).toBeVisible();
+    // The editor takes keyboard focus for itself (CleanupTool.focusPhotopea) a moment after mounting, and a key pressed inside
+    // the cross-origin iframe never reaches the app. Wait for that focus move, then put focus back in the app. The race was in
+    // the test and is the same before step 5.0.
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('IFRAME');
+    await overlay(page).locator('[data-overlay-close]').focus();
     await page.keyboard.press('Escape');
     await expect(overlay(page)).toHaveCount(0);
     await expect(page.locator('[data-lightbox]')).toBeVisible();
