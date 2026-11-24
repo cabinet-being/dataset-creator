@@ -29,6 +29,7 @@ try {
       'src/services/quality/metrics/thresholds.ts',
       'src/lib/imageStatusLabels.ts',
       'src/next/board/frameEntries.ts',
+      'src/services/similarity/similarityLevels.ts',
     ],
     platform: 'node',
     output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' },
@@ -52,6 +53,7 @@ try {
   const thresholds = await import(pathToFileURL(join(temp, 'thresholds.mjs')));
   const statusLabels = await import(pathToFileURL(join(temp, 'imageStatusLabels.mjs')));
   const frames = await import(pathToFileURL(join(temp, 'frameEntries.mjs')));
+  const levels = await import(pathToFileURL(join(temp, 'similarityLevels.mjs')));
 
   const dataset = { assetIds: ['outside', 'group'], assetPaths: ['Project/inbox/direct.png'], psdAssetPaths: [], overwriteCaptions: true, captionOverrides: { 'source:outside': [] }, triggerWord: 'hero' };
   const item = (id, sourceImageId, assetPath, extra = {}) => ({ id, sourceImageId, assetPath, kind: 'image', imageData: new Blob(['x']), tags: ['hero', 'portrait'], ...extra });
@@ -443,6 +445,11 @@ try {
     assert.equal(def.profile.autoPipeline,true,'autoPipeline defaults on'); assert.equal(def.profile.minShortSide,undefined);
     assert.equal('minShortSide' in n.profile,false);
     assert.equal(buildSession.normalizeBuildSession(null).profile.autoPipeline ?? true,true);
+    // profile.similarityStrictness: known ids survive, anything else is dropped (absent = Balanced).
+    for (const id of ['strict','balanced','loose']) assert.equal(buildSession.normalizeBuildSession({...json,profile:{...json.profile,similarityStrictness:id}}).profile.similarityStrictness,id);
+    for (const bad of ['STRICT','duplicate','',null,3,{},['strict']]) assert.equal('similarityStrictness' in buildSession.normalizeBuildSession({...json,profile:{...json.profile,similarityStrictness:bad}}).profile,false,`unknown strictness ${JSON.stringify(bad)} is dropped`);
+    assert.equal('similarityStrictness' in buildSession.normalizeBuildSession({version:1}).profile,false);
+    assert.equal(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(buildSession.normalizeBuildSession({...json,profile:{...json.profile,similarityStrictness:'loose'}})))).profile.similarityStrictness,'loose','survives a JSON round trip');
   }
 
   // ---- Stage A: encodeAssemblyInputs ----
@@ -643,6 +650,28 @@ try {
       assert.ok(result.duplicates.filter((entry) => entry.against === 'shortlist').length >= 4, 'other pages are reported as duplicates of the pick');
     }
 
+    // duplicateThreshold (Strictness): the same pool gives more groups at Strict and fewer at Loose; the default is Balanced (0.93).
+    {
+      const levelCutoff = (id) => levels.getStrictnessThreshold(id, 'dinov2');
+      assert.equal(levelCutoff('balanced'), cutoff, 'Balanced is the former fixed 0.93');
+      assert.ok(levelCutoff('strict') > levelCutoff('balanced') && levelCutoff('balanced') > levelCutoff('loose'));
+      // a, b (cos 0.96 to a), c (cos 0.90 to a, 0.864 to b): between the three cutoffs. Plus two clearly different images.
+      const along = (axis, cos) => [[0, cos], [axis, Math.sqrt(1 - cos * cos)]];
+      const pool = () => [input('Project/inbox/a.png', [[0, 1]]), input('Project/inbox/b.png', along(1, 0.96)), input('Project/inbox/c.png', along(2, 0.9)),
+        input('Project/inbox/x.png', [[40, 1]]), input('Project/inbox/y.png', [[41, 1]])];
+      const counts = async (threshold) => (await shortlist.buildShortlist({ baseline: [], candidates: pool(), needed: 'auto', duplicateThreshold: threshold })).items.length;
+      assert.equal(await counts(levelCutoff('strict')), 5, 'Strict: nothing is a duplicate');
+      assert.equal(await counts(levelCutoff('balanced')), 4, 'Balanced: b is a duplicate of a');
+      assert.equal(await counts(levelCutoff('loose')), 3, 'Loose: a, b, c are one group');
+      assert.equal(await counts(undefined), await counts(cutoff), 'omitted threshold = the former fixed cutoff');
+      const loose = await shortlist.buildShortlist({ baseline: [], candidates: pool(), needed: 'auto', duplicateThreshold: levelCutoff('loose') });
+      assert.equal(loose.duplicates.filter((entry) => entry.against === 'shortlist').length, 2);
+      // A Dataset item takes part in the same cutoff.
+      const base = input('Project/dataset/base.png', [[0, 1]]);
+      const against = async (id) => (await shortlist.buildShortlist({ baseline: [base], candidates: [pool()[2]], needed: 'auto', duplicateThreshold: levelCutoff(id) })).items.length;
+      assert.deepEqual([await against('strict'), await against('balanced'), await against('loose')], [1, 1, 0], 'c is only a duplicate of the Dataset item at Loose');
+    }
+
     // A candidate >= 0.93 similar to a Dataset item is never shortlisted.
     {
       const base = input('Project/dataset/base.png', [[0, 1]]);
@@ -688,6 +717,17 @@ try {
 
     // Pass 2.
     const narrowItems = (rows) => rows.map(([name, tags], n) => ({ asset: input(`Project/inbox/${name}.png`, [[n, 1]]), tags }));
+    {
+      const levelCutoff = (id) => levels.getStrictnessThreshold(id, 'dinov2');
+      const along = (axis, cos) => [[0, cos], [axis, Math.sqrt(1 - cos * cos)]];
+      const rows = () => [['a', [[0, 1]]], ['b', along(1, 0.96)], ['c', along(2, 0.9)], ['x', [[40, 1]]]]
+        .map(([name, parts]) => ({ asset: input(`Project/inbox/${name}.png`, parts), tags: [] }));
+      const kept = async (id) => (await shortlist.narrowShortlist({ baseline: [], items: rows(), target: 4, duplicateThreshold: levelCutoff(id) })).items.length;
+      const [strict, balanced, loose] = [await kept('strict'), await kept('balanced'), await kept('loose')];
+      assert.ok(strict > balanced && balanced > loose, `narrow: Strict ${strict} > Balanced ${balanced} > Loose ${loose}`);
+      const fixed = await shortlist.narrowShortlist({ baseline: [], items: rows(), target: 4 });
+      assert.equal(fixed.items.length, balanced, 'narrow without a threshold = Balanced');
+    }
     {
       const rows = [['a', ['solo', 'smile']], ['b', ['solo', 'smile']], ['c', ['solo', 'smile']], ['d', ['solo', 'smile', 'rare_hat']], ['e', ['solo', 'smile', 'rare scarf']], ['f', ['solo', 'smile']]];
       const result = await shortlist.narrowShortlist({ baseline: [], items: narrowItems(rows), target: 2 });
@@ -1326,6 +1366,40 @@ try {
     const src = img('src2', 'Project/inbox/src2.png');
     const viaOutput = frames.buildFrameEntries([src], [src, outputItem], { ...buildSession.createBuildSession(), records: { 'source:src2': rec('src2', { outputAssetId: 'source:out2' }) } });
     assert.deepEqual(viaOutput[0].status, { kind: 'in', pinned: false });
+
+    // isDatasetEntry: membership is the physical path.
+    assert.deepEqual(entries.filter(frames.isDatasetEntry).map((entry) => entry.id), ['source:keep', 'source:pin']);
+    assert.equal(frames.isDatasetEntry(by.loose), false, 'no path is not Dataset');
+    // overrideKeyAction: the key sets the override, or clears it when every entry already has it.
+    {
+      const one = (key) => frames.overrideKeyAction([by.pin], key);
+      assert.equal(one('pin'), 'clear'); assert.equal(one('ban'), 'ban');
+      assert.equal(frames.overrideKeyAction([by.ban], 'ban'), 'clear'); assert.equal(frames.overrideKeyAction([by.ban], 'pin'), 'pin');
+      assert.equal(frames.overrideKeyAction([by.pin, by.d2a], 'pin'), 'pin', 'a mixed selection sets');
+      assert.equal(frames.overrideKeyAction([by.pin, by.ban], 'pin'), 'pin');
+      assert.equal(frames.overrideKeyAction([by.pin, by.pin], 'pin'), 'clear');
+      assert.equal(frames.overrideKeyAction([], 'pin'), 'pin', 'nothing to clear');
+    }
+    // groupFrameEntriesByClusters: themes, else repeats, rest last; entry order is kept inside a group.
+    {
+      const cluster = (id, memberIds) => ({ id, memberIds });
+      const names = (groups) => groups.map((group) => [group.key, group.label, group.items.map((entry) => entry.id.replace('source:', ''))]);
+      const themed = frames.groupFrameEntriesByClusters(entries, {
+        themes: [cluster('t1', ['source:d2a', 'source:keep']), cluster('t2', ['source:bad'])],
+        nearDuplicateGroups: [cluster('n1', ['source:dupe', 'source:ban'])],
+      });
+      assert.deepEqual(names(themed), [['t1', 'Theme 1', ['keep', 'd2a']], ['t2', 'Theme 2', ['bad']], ['unclustered', 'Other frames', ['pin', 'd2b', 'dupe', 'ban', 'd10', 'loose']]],
+        'themes win over repeats; order inside a group follows the entries');
+      const repeats = frames.groupFrameEntriesByClusters(entries, { themes: [], nearDuplicateGroups: [cluster('n1', ['source:dupe', 'source:ban'])] });
+      assert.deepEqual(names(repeats).map(([key, label]) => [key, label]), [['n1', 'Repeats 1'], ['unclustered', 'Other frames']]);
+      assert.deepEqual(names(repeats)[0][2], ['dupe', 'ban']);
+      // An id in two clusters lands in the first; a cluster with no visible member is dropped and numbering keeps the cluster index.
+      const skipped = frames.groupFrameEntriesByClusters(entries.slice(0, 3), { themes: [cluster('gone', ['source:nope']), cluster('t2', ['source:keep', 'source:pin']), cluster('t3', ['source:keep', 'source:d2b'])], nearDuplicateGroups: [] });
+      assert.deepEqual(names(skipped), [['t2', 'Theme 2', ['keep', 'pin']], ['t3', 'Theme 3', ['d2b']]]);
+      // Nothing clustered: one group "All frames"; nothing to show: no groups.
+      assert.deepEqual(names(frames.groupFrameEntriesByClusters(entries.slice(0, 2), { themes: [], nearDuplicateGroups: [] })), [['unclustered', 'All frames', ['keep', 'pin']]]);
+      assert.deepEqual(frames.groupFrameEntriesByClusters([], { themes: [cluster('t1', ['source:keep'])], nearDuplicateGroups: [] }), []);
+    }
 
     // moveFrameCursor: rows of `columns` tiles, group boundaries, a shorter last row.
     const mkGroup = (key, count) => ({ key, label: key, items: Array.from({ length: count }, (_, index) => ({ id: `${key}${index}` })) });

@@ -290,6 +290,7 @@ try {
     const axis = (list, type, id, extra = {}) => metrics.measureProfileCoverage({ items: list, projectType: type, ...extra }).find((metric) => metric.id === `axis-${id}`);
     const bucketOf = (metric, id) => metric.buckets.find((bucket) => bucket.id === id);
     const n = cfg.minItems + 12;
+    const list0 = (count) => Array.from({ length: count }, (_, index) => index);
 
     // Per-profile axis sets.
     const ids = (type) => metrics.measureProfileCoverage({ items: mk(n), projectType: type }).map((metric) => metric.id.replace('axis-', ''));
@@ -335,6 +336,23 @@ try {
       const metric = axis(list, 'general', 'orientation');
       assert.deepEqual(['portrait', 'square', 'landscape'].map((id) => bucketOf(metric, id).count), [6, 9, 6]);
       assert.equal(metric.unlabeled, 0);
+    }
+
+    // QualityBucket.ids: exactly the files counted in each bucket; unlabeled files are in none.
+    {
+      const list = mk(9, (index) => ({ width: [1000, 1500, 1000][index % 3], height: [1500, 1000, 1000][index % 3] }));
+      const metric = axis(list, 'general', 'orientation');
+      for (const id of ['portrait', 'square', 'landscape']) assert.equal(bucketOf(metric, id).ids.length, bucketOf(metric, id).count, `${id}: ids match count`);
+      assert.deepEqual(bucketOf(metric, 'portrait').ids, ['f-0.png', 'f-3.png', 'f-6.png']);
+      assert.deepEqual(bucketOf(metric, 'landscape').ids, ['f-1.png', 'f-4.png', 'f-7.png']);
+      assert.deepEqual(bucketOf(metric, 'square').ids, ['f-2.png', 'f-5.png', 'f-8.png']);
+      assert.deepEqual(metric.buckets.flatMap((bucket) => bucket.ids).sort(), list.map((entry) => entry.id).sort(), 'every file is in exactly one bucket');
+      const empty = axis(mk(n, () => ({ width: 1000, height: 100 })), 'style', 'aspect');
+      assert.deepEqual(empty.buckets.filter((bucket) => bucket.count === 0).map((bucket) => bucket.ids), empty.buckets.filter((bucket) => bucket.count === 0).map(() => []), 'empty buckets have ids: []');
+      assert.equal(bucketOf(empty, 'other').ids.length, n);
+      // Tag axes too: ids follow the same assignment as count.
+      const framing = axis(mk(n, (index) => ({ tags: [index % 2 ? 'close-up' : 'full body'] })), 'character', 'framing');
+      assert.deepEqual(bucketOf(framing, 'close').ids, list0(n).filter((index) => index % 2).map((index) => `f-${index}.png`));
     }
 
     // Aspect buckets for sd15 vs sdxl and the "other" bucket.
