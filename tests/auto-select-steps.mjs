@@ -192,6 +192,48 @@ try {
   assert.equal(folders.isInboxItemSelected(item('Project/inbox/a/x.png'), new Set()), true);
   assert.equal(folders.isInboxItemSelected(item('Project/inbox/a/x.png'), new Set(['inbox/a'])), false);
   assert.equal(folders.isInboxItemSelected(item('Project/inbox/a/x.png'), new Set(['inbox'])), true);
+
+  // Build Sources helpers.
+  assert.equal(folders.inboxFolderOfPath('Project/inbox/day1/a.png'), 'Project/inbox/day1');
+  assert.equal(folders.inboxFolderOfPath('Project/inbox/a.png'), 'Project/inbox');
+  assert.equal(folders.inboxFolderOfPath('inbox/day1/deep/a.png'), 'Project/inbox/day1/deep', 'the Project/ prefix is optional');
+  assert.equal(folders.inboxFolderOfPath('./inbox/a.png'), 'Project/inbox');
+  assert.equal(folders.inboxFolderOfPath('Project\\inbox\\day1\\a.png'), 'Project/inbox/day1', 'backslashes are normalised');
+  for (const outside of ['Project/dataset/a.png', 'Project/inbox2/a.png', 'Project/other/inbox/a.png', '', undefined]) assert.equal(folders.inboxFolderOfPath(outside), undefined, `${outside} is outside the inbox`);
+
+  assert.equal(folders.isInboxFolderInSources('Project/inbox/a', undefined), true, 'no sources means the whole inbox');
+  assert.equal(folders.isInboxFolderInSources('inbox/new', undefined), true);
+  assert.equal(folders.isInboxFolderInSources('Project/inbox/a', []), false, 'an empty list selects nothing');
+  assert.equal(folders.isInboxFolderInSources('Project/inbox/b/c', ['Project/inbox/b']), true, 'a listed ancestor selects subfolders');
+  assert.equal(folders.isInboxFolderInSources('inbox/b/c', ['inbox/b']), true, 'explorer paths with or without Project/ are equal');
+  assert.equal(folders.isInboxFolderInSources('Project/inbox/bb', ['Project/inbox/b']), false, 'a sibling with the same prefix is not selected');
+  assert.equal(folders.isInboxFolderInSources('Project/inbox', ['Project/inbox/b']), false, 'a parent is not selected by its child');
+  const inboxItem = (path) => ({ assetPath: path });
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/a/x.png'), undefined), true);
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/a/x.png'), ['Project/inbox/a']), true);
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/b/x.png'), ['Project/inbox/a']), false);
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/x.png'), ['Project/inbox/a']), false, 'an image in the inbox root is not in a subfolder');
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/x.png'), ['Project/inbox']), true);
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/dataset/x.png'), ['Project/inbox']), false, 'outside the inbox is never in sources');
+  // A folder created after sources were chosen is not selected; without sources it is.
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/new/x.png'), ['Project/inbox/a', 'Project/inbox/b']), false);
+  assert.equal(folders.isInboxItemInSources(inboxItem('Project/inbox/new/x.png'), undefined), true);
+
+  const srcRows = folders.buildFolderRows(['inbox', 'inbox/a', 'inbox/b/c']);
+  const sourcesOnly = ['Project/inbox/a'];
+  let toggled = folders.toggleSourceFolder(srcRows, undefined, 'inbox/a');
+  assert.deepEqual(toggled, ['Project/inbox/b'], 'unchecking a folder from "all" lists the remaining topmost folders (root images drop out)');
+  toggled = folders.toggleSourceFolder(srcRows, toggled, 'inbox/a');
+  assert.deepEqual(toggled, ['Project/inbox/a', 'Project/inbox/b'], 'checking it again adds it');
+  assert.deepEqual(folders.toggleSourceFolder(srcRows, undefined, 'inbox'), [], 'unchecking the root clears everything');
+  assert.deepEqual(folders.toggleSourceFolder(srcRows, [], 'inbox'), ['Project/inbox'], 'checking the root selects everything as one folder');
+  assert.deepEqual(folders.toggleSourceFolder(srcRows, sourcesOnly, 'Project/inbox/b'), ['Project/inbox/a', 'Project/inbox/b'], 'subfolders follow their parent');
+  assert.deepEqual(folders.toggleSourceFolder(srcRows, ['Project/inbox/b'], 'inbox/b/c'), [], 'unchecking the only child of a selected parent unselects the parent too');
+  assert.deepEqual(folders.toggleSourceFolder(srcRows, ['Project/inbox/a', 'Project/inbox/b'], 'Project/inbox/b'), ['Project/inbox/a'], 'unchecking a parent unchecks its subfolders');
+  assert.deepEqual(sourcesOnly, ['Project/inbox/a'], 'input list is not mutated');
+  // A folder missing from rows (created later) stays unselected when another folder is toggled.
+  const withNew = folders.buildFolderRows(['inbox', 'inbox/a', 'inbox/b/c', 'inbox/new']);
+  assert.deepEqual(folders.toggleSourceFolder(withNew, ['Project/inbox/a'], 'inbox/b'), ['Project/inbox/a', 'Project/inbox/b'], 'the new folder is not selected');
   console.log('Auto-select steps and inbox folder checks passed.');
 } finally {
   await rm(temp, { recursive: true, force: true });

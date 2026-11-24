@@ -369,7 +369,10 @@ try {
     assert.equal(cs2.records['source:a'].triage,undefined,'proposals with a foreign revision are dropped on reconcile');
     assert.deepEqual(triage.selectAssemblyCandidates(withDs,[dsItem,b,a,c]).map(buildSession.getBuildAssetId),['source:a'],'only quality-accepted, unreviewed, non-Dataset');
     const asm = triage.applyAssemblyTriage(cs,{selected:[{key:'k:a',reason:'g'}],duplicatePairs:[],rejectedCandidates:[],stoppedBecause:'x'},keyMap,NOW);
-    assert.deepEqual(triage.selectAssemblyCandidates(asm,[a]),[],'assembly-stage triage is not a candidate');
+    assert.equal(asm.records['source:a'].triage.stage,'assembly');
+    assert.deepEqual(triage.selectAssemblyCandidates(asm,[a]).map(buildSession.getBuildAssetId),['source:a'],'frames from the previous Assemble (assembly-stage triage) return to the pool');
+    const asmRejected = triage.applyAssemblyTriage(cs,{selected:[],duplicatePairs:[{kept:'k:a',rejected:'k:b',kind:'near',similarity:0.9}],rejectedCandidates:[{path:'k:c',reason:'not-selected'}],stoppedBecause:'target-reached'},keyMap,NOW);
+    assert.deepEqual(triage.selectAssemblyCandidates(asmRejected,[b,c]).map(buildSession.getBuildAssetId),['source:b','source:c'],'previous duplicate and not-selected outcomes are candidates again');
     const k1 = triage.createAssemblyKey(10,[a,b],cs), k2 = triage.createAssemblyKey(10,[b,a],cs);
     assert.equal(k1,k2); assert.notEqual(k1,triage.createAssemblyKey(11,[a,b],cs));
     assert.notEqual(k1,triage.createAssemblyKey(10,[a],cs));
@@ -1007,6 +1010,204 @@ try {
     assert.equal(session.auto.shortlist.mode, 'auto'); assert.equal(session.auto.shortlist.poolCount, 4); assert.equal(session.auto.shortlist.entries.length, 1);
     assert.equal(buildSession.clearBuildShortlist(session).profile.sizeMode, 'auto');
     assert.equal(buildSession.clearBuildShortlist(session).auto.shortlist, undefined);
+  }
+  {
+    // Unified image status (stage 1): migration, getImageStatus, reconcile, path moves, pool and filters.
+    const NOW = '2026-11-20T00:00:00.000Z';
+    const mk = (id, path = `Project/inbox/${id}.png`, extra = {}) => item(`source:${id}`, id, path, { byteSize: 5, modifiedAt: 1, ...extra });
+    const rec = (id, extra = {}) => ({ assetId: `source:${id}`, decision: 'unreviewed', application: 'idle', validation: 'pending', revision: 'r', updatedAt: NOW, ...extra });
+    const tri = (group, revision, stage = 'quality') => ({ group, reasons: [{ code: 'quality-ok', message: 'x' }], stage, revision, createdAt: NOW });
+
+    // 1. v1 -> v2 migration.
+    {
+      const v1 = { ...buildSession.createBuildSession(), version: 1, records: {
+        'source:skip': rec('skip', { decision: 'skipped' }),
+        'source:manual': rec('manual', { decision: 'accepted', provenance: 'manual' }),
+        'source:auto': rec('auto', { decision: 'accepted', provenance: 'auto' }),
+        'source:noprov': rec('noprov', { decision: 'accepted' }),
+        'source:defer': rec('defer', { decision: 'deferred' }),
+        'source:new': rec('new'),
+      } };
+      const m = buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(v1)));
+      assert.equal(m.version, 2);
+      assert.equal(m.records['source:skip'].override, 'ban', 'skipped -> ban');
+      assert.equal(m.records['source:manual'].override, 'pin', 'manual accepted -> pin');
+      for (const id of ['auto', 'noprov', 'defer', 'new']) assert.equal(m.records[`source:${id}`].override, undefined, `${id} gets no override`);
+      assert.equal(m.records['source:skip'].decision, 'skipped', 'decision is not changed');
+      assert.equal(m.records['source:manual'].decision, 'accepted');
+      assert.equal(m.records['source:auto'].decision, 'accepted');
+      // v2 is never migrated again: clearing the override must stick.
+      const cleared = { ...m, records: { ...m.records, 'source:skip': (({ override, ...rest }) => (void override, rest))(m.records['source:skip']), 'source:manual': (({ override, ...rest }) => (void override, rest))(m.records['source:manual']) } };
+      const again = buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(cleared)));
+      assert.equal(again.records['source:skip'].override, undefined, 'a cleared ban is not restored');
+      assert.equal(again.records['source:manual'].override, undefined, 'a cleared pin is not restored');
+      assert.equal(again.records['source:skip'].decision, 'skipped');
+      // v2 keeps valid overrides, drops bogus ones and invalid assembly outcomes.
+      const v2 = { ...m, records: { 'source:a': rec('a', { override: 'ban', assembly: { outcome: 'duplicate', revision: 'x' } }), 'source:b': rec('b', { override: 'bogus', assembly: { outcome: 'weird', revision: 'x' }, origin: 7 }) } };
+      const n = buildSession.normalizeBuildSession(JSON.parse(JSON.stringify(v2)));
+      assert.equal(n.records['source:a'].override, 'ban'); assert.equal(n.records['source:a'].assembly.outcome, 'duplicate');
+      assert.equal(n.records['source:b'].override, undefined); assert.equal(n.records['source:b'].assembly, undefined); assert.equal(n.records['source:b'].origin, undefined);
+      assert.equal(buildSession.normalizeBuildSession({ ...v2, version: 3 }).version, 2, 'an unknown version falls back to defaults');
+      assert.deepEqual(buildSession.normalizeBuildSession({ ...v2, version: 3 }).records, {});
+      assert.deepEqual(buildSession.normalizeBuildSession({ ...v2, profile: { ...v2.profile, sources: ['Project/inbox/a', 'Project/inbox/a', '', 5] } }).profile.sources, ['Project/inbox/a']);
+      assert.equal(buildSession.normalizeBuildSession(v2).profile.sources, undefined);
+    }
+
+    // 2. getImageStatus: every branch.
+    {
+      const inbox = mk('i');
+      const rev = buildSession.getBuildContentRevision(inbox, undefined);
+      const status = (record, it = inbox, out) => buildSession.getImageStatus(record, it, out);
+      assert.deepEqual(status(undefined), { kind: 'inbox', pending: true }, 'no record, no verdict');
+      assert.deepEqual(status(rec('i')), { kind: 'inbox', pending: true });
+      assert.deepEqual(status(rec('i', { triage: tri('accepted', rev) })), { kind: 'inbox' });
+      assert.deepEqual(status(rec('i', { triage: tri('needs-decision', rev) })), { kind: 'inbox' });
+      assert.deepEqual(status(rec('i', { override: 'ban', triage: tri('accepted', rev) })), { kind: 'out', reason: 'ban' });
+      assert.deepEqual(status(rec('i', { override: 'ban' })), { kind: 'out', reason: 'ban' }, 'ban needs no verdict');
+      assert.deepEqual(status(rec('i', { triage: tri('rejected', rev) })), { kind: 'out', reason: 'quality' });
+      assert.deepEqual(status(rec('i', { override: 'pin', triage: tri('rejected', rev) })), { kind: 'inbox' }, 'pin overrides a quality rejection');
+      const dupAssembly = { outcome: 'duplicate', of: 'source:keep', similarity: 0.97, revision: rev };
+      const asmTriage = tri('rejected', rev, 'assembly');
+      assert.deepEqual(status(rec('i', { triage: asmTriage, assembly: dupAssembly })), { kind: 'out', reason: 'duplicate', of: 'source:keep', similarity: 0.97 });
+      assert.deepEqual(status(rec('i', { triage: asmTriage, assembly: { outcome: 'not-selected', revision: rev } })), { kind: 'out', reason: 'not-selected' }, 'no `of` for not-selected');
+      assert.deepEqual(status(rec('i', { triage: asmTriage, assembly: { outcome: 'duplicate', revision: rev } })), { kind: 'out', reason: 'duplicate' }, 'duplicate without of/similarity');
+      assert.deepEqual(status(rec('i', { triage: asmTriage, assembly: { ...dupAssembly, revision: 'old' } })), { kind: 'inbox' }, 'stale assembly (revision mismatch) is inbox');
+      assert.deepEqual(status(rec('i', { override: 'pin', triage: asmTriage, assembly: dupAssembly })), { kind: 'inbox' }, 'a pin ignores the assembly outcome');
+      assert.deepEqual(status(rec('i', { triage: tri('accepted', rev, 'assembly') })), { kind: 'inbox' }, 'a selected image has no outcome');
+      const video = { ...mk('v', 'Project/inbox/v.mp4'), kind: 'video' };
+      assert.deepEqual(status(rec('v', { triage: tri('accepted', rev) }), video), { kind: 'inbox', needsFrames: true });
+      assert.deepEqual(status(undefined, video), { kind: 'inbox', needsFrames: true });
+      assert.deepEqual(status(rec('v', { override: 'ban' }), video), { kind: 'out', reason: 'ban' }, 'ban is checked before video');
+      const inDs = mk('d', 'Project/dataset/d.png');
+      assert.deepEqual(status(undefined, inDs), { kind: 'in', pinned: false });
+      assert.deepEqual(status(rec('d', { override: 'pin' }), inDs), { kind: 'in', pinned: true });
+      assert.deepEqual(status(rec('d', { override: 'ban' }), inDs), { kind: 'in', pinned: false }, 'dataset membership wins over ban');
+      assert.deepEqual(status(rec('i', { override: 'pin' }), inbox, mk('o', 'Project/dataset/o.png')), { kind: 'in', pinned: true }, 'an output in dataset/ makes the frame in');
+      assert.deepEqual(status(rec('i'), inbox, mk('o', 'Project/inbox/o.png')), { kind: 'inbox', pending: true }, 'an output outside dataset/ does not');
+    }
+
+    // 3. reconcile: stale assembly dropped, origin recorded.
+    {
+      const x = mk('x', 'Project/inbox/day1/x.png'), y = mk('y', 'Project/inbox/y.png'), z = mk('z', 'Project/other/z.png');
+      let s = buildSession.reconcileBuildSession(buildSession.createBuildSession(), [x, y, z], NOW);
+      assert.equal(s.records['source:x'].origin, 'Project/inbox/day1', 'new record in inbox gets an origin');
+      assert.equal(s.records['source:y'].origin, 'Project/inbox');
+      assert.equal(s.records['source:z'].origin, undefined, 'outside the inbox: no origin');
+      const revX = buildSession.getBuildContentRevision(x, undefined);
+      s = { ...s, records: { ...s.records, 'source:x': { ...s.records['source:x'], triage: tri('rejected', revX, 'assembly'), assembly: { outcome: 'not-selected', revision: revX } } } };
+      assert.equal(buildSession.reconcileBuildSession(s, [x, y, z], NOW), s, 'a fresh assembly outcome keeps session identity');
+      const changed = buildSession.reconcileBuildSession(s, [{ ...x, byteSize: 999, modifiedAt: 9 }, y, z], NOW);
+      assert.equal(changed.records['source:x'].assembly, undefined, 'content change drops the stale assembly outcome');
+      assert.equal(changed.records['source:x'].triage, undefined);
+      assert.equal(changed.records['source:x'].origin, 'Project/inbox/day1', 'origin survives');
+      // An old record without origin gets it; moving into dataset/ keeps the remembered origin.
+      const legacy = { ...s, records: { ...s.records, 'source:y': (({ origin, ...rest }) => (void origin, rest))(s.records['source:y']) } };
+      assert.equal(buildSession.reconcileBuildSession(legacy, [x, y, z], NOW).records['source:y'].origin, 'Project/inbox');
+      const inDataset = buildSession.reconcileBuildSession(s, [{ ...x, assetPath: 'Project/dataset/x.png' }, y, z], NOW);
+      assert.equal(inDataset.records['source:x'].origin, 'Project/inbox/day1', 'moving to dataset/ keeps the origin');
+      assert.equal(inDataset.records['source:x'].locator, 'Project/dataset/x.png');
+      const moved = buildSession.reconcileBuildSession(s, [{ ...x, assetPath: 'Project/inbox/day2/x.png' }, y, z], NOW);
+      assert.equal(moved.records['source:x'].origin, 'Project/inbox/day2', 'a move inside the inbox updates the origin');
+    }
+
+    // 4. path moves: locator, origin, profile.sources.
+    {
+      const x = mk('x', 'Project/inbox/day1/x.png'), y = mk('y', 'Project/inbox/day2/y.png');
+      let s = buildSession.reconcileBuildSession(buildSession.createBuildSession(), [x, y], NOW);
+      s = { ...s, profile: { ...s.profile, sources: ['Project/inbox/day1', 'Project/inbox/day2'] } };
+      const moved = buildSession.applyBuildSessionPathMoves(s, [{ from: 'Project/inbox/day1', to: 'Project/inbox/monday' }]);
+      assert.equal(moved.records['source:x'].locator, 'Project/inbox/monday/x.png');
+      assert.equal(moved.records['source:x'].origin, 'Project/inbox/monday');
+      assert.equal(moved.records['source:y'].origin, 'Project/inbox/day2'); assert.equal(moved.records['source:y'], s.records['source:y'], 'untouched record keeps identity');
+      assert.deepEqual(moved.profile.sources, ['Project/inbox/monday', 'Project/inbox/day2']);
+      assert.deepEqual(s.profile.sources, ['Project/inbox/day1', 'Project/inbox/day2'], 'input is not mutated');
+      const merged = buildSession.applyBuildSessionPathMoves(s, [{ from: 'Project/inbox/day2', to: 'Project/inbox/day1' }]);
+      assert.deepEqual(merged.profile.sources, ['Project/inbox/day1'], 'sources are de-duplicated after a move');
+      // Sources only changed (no record touched), and a move that touches nothing.
+      const onlySources = buildSession.applyBuildSessionPathMoves({ ...s, records: {} }, [{ from: 'Project/inbox/day1', to: 'Project/inbox/q' }]);
+      assert.equal(onlySources.profile.sources[0], 'Project/inbox/q');
+      assert.equal(buildSession.applyBuildSessionPathMoves(s, [{ from: 'Project/nothing', to: 'Project/else' }]), s);
+      const noSources = buildSession.applyBuildSessionPathMoves(buildSession.reconcileBuildSession(buildSession.createBuildSession(), [x], NOW), [{ from: 'Project/inbox/day1', to: 'Project/inbox/q' }]);
+      assert.equal(noSources.profile.sources, undefined, 'absent sources stay absent');
+      assert.equal(noSources.records['source:x'].origin, 'Project/inbox/q');
+    }
+
+    // 7. Pool, baseline and key.
+    {
+      const a = mk('a'), b = mk('b'), c = mk('c'), d = mk('d'), e = mk('e'), v = { ...mk('v', 'Project/inbox/v.mp4'), kind: 'video' };
+      const ds = mk('ds', 'Project/dataset/ds.png'), p = mk('p'), prej = mk('prej'), asmItem = mk('asm');
+      const all = [a, b, c, d, e, v, ds, p, prej, asmItem];
+      let s = buildSession.reconcileBuildSession(buildSession.createBuildSession(), all, NOW);
+      const R = (it) => buildSession.getBuildContentRevision(it, undefined);
+      const setRec = (id, extra) => { s = { ...s, records: { ...s.records, [`source:${id}`]: { ...s.records[`source:${id}`], ...extra } } }; };
+      setRec('a', { triage: tri('accepted', R(a)) });
+      setRec('b', { triage: tri('accepted', R(b)), override: 'ban' });
+      setRec('c', { triage: tri('rejected', R(c)) });
+      setRec('d', { triage: tri('needs-decision', R(d)) });
+      setRec('e'); // no verdict
+      setRec('v', { triage: tri('accepted', R(v)) });
+      setRec('ds', { triage: tri('accepted', R(ds)) });
+      setRec('p', { triage: tri('accepted', R(p)), override: 'pin' });
+      setRec('prej', { triage: tri('rejected', R(prej)), override: 'pin' });
+      setRec('asm', { triage: tri('rejected', R(asmItem), 'assembly'), assembly: { outcome: 'duplicate', of: 'source:a', similarity: 0.9, revision: R(asmItem) } });
+      const ids = (list) => list.map(buildSession.getBuildAssetId);
+      assert.deepEqual(ids(triage.selectAssemblyCandidates(s, all)), ['source:a', 'source:d', 'source:asm'],
+        'no ban, quality-rejected, video, no verdict, dataset or pinned; assembly-stage frames come back');
+      assert.deepEqual(ids(triage.selectAssemblyCandidates(s, [asmItem])), ['source:asm']);
+      assert.deepEqual(ids(triage.selectAssemblyBaseline(s, [ds], all)), ['source:ds', 'source:p', 'source:prej'], 'baseline = dataset + pinned');
+      assert.deepEqual(ids(triage.selectAssemblyBaseline(s, [], [a, b])), [], 'no members, nothing pinned');
+      const pinnedVideo = { ...v };
+      setRec('v', { override: 'pin' });
+      assert.deepEqual(ids(triage.selectAssemblyBaseline(s, [ds], [pinnedVideo, a])), ['source:ds'], 'a pinned video is not baseline');
+      const pinnedInDs = mk('pd', 'Project/dataset/pd.png'); s = buildSession.reconcileBuildSession(s, [...all, pinnedInDs], NOW); setRec('pd', { override: 'pin' });
+      assert.deepEqual(ids(triage.selectAssemblyBaseline(s, [ds, pinnedInDs], [pinnedInDs])), ['source:ds', 'source:pd'], 'a pinned member is counted once');
+
+      const pool = triage.selectAssemblyCandidates(s, all);
+      const base0 = triage.selectAssemblyBaseline(s, [ds], all);
+      const key = triage.createAssemblyKey('auto', pool, s, base0);
+      assert.equal(key, triage.createAssemblyKey('auto', [...pool].reverse(), s, [...base0].reverse()), 'order does not matter');
+      assert.notEqual(key, triage.createAssemblyKey(10, pool, s, base0));
+      const withOverride = { ...s, records: { ...s.records, 'source:a': { ...s.records['source:a'], override: 'pin' } } };
+      assert.notEqual(key, triage.createAssemblyKey('auto', pool, withOverride, base0), 'an override change changes the key');
+      const banned = { ...s, records: { ...s.records, 'source:a': { ...s.records['source:a'], override: 'ban' } } };
+      assert.notEqual(triage.createAssemblyKey('auto', pool, withOverride, base0), triage.createAssemblyKey('auto', pool, banned, base0), 'pin and ban differ');
+      assert.notEqual(key, triage.createAssemblyKey('auto', pool, s, [ds, p]), 'a baseline change changes the key');
+      assert.notEqual(key, triage.createAssemblyKey('auto', pool, s, []), 'dropping the baseline changes the key');
+      assert.equal(triage.createAssemblyKey(10, [a], s), triage.createAssemblyKey(10, [a], s, []), 'baseline is optional');
+    }
+
+    // 8. status-* filters in selectBuildQueue.
+    {
+      const inb = mk('inb'), out = mk('out'), qrej = mk('qrej'), ban = mk('ban'), pin = mk('pin'), ds = mk('ds', 'Project/dataset/ds.png'), pinDs = mk('pds', 'Project/dataset/pds.png'), asmOut = mk('asmo'), fresh = mk('fresh');
+      const all = [inb, qrej, ban, pin, ds, pinDs, asmOut, fresh];
+      let s = buildSession.reconcileBuildSession(buildSession.createBuildSession(), all, NOW);
+      const R = (it) => buildSession.getBuildContentRevision(it, undefined);
+      const setRec = (id, extra) => { s = { ...s, records: { ...s.records, [`source:${id}`]: { ...s.records[`source:${id}`], ...extra } } }; };
+      setRec('inb', { triage: tri('accepted', R(inb)) });
+      setRec('qrej', { triage: tri('rejected', R(qrej)) });
+      setRec('ban', { override: 'ban' });
+      setRec('pin', { override: 'pin', triage: tri('rejected', R(pin)) });
+      setRec('pds', { override: 'pin' });
+      setRec('asmo', { triage: tri('rejected', R(asmOut), 'assembly'), assembly: { outcome: 'not-selected', revision: R(asmOut) } });
+      void out;
+      const q = (filter) => buildSession.selectBuildQueue({ ...s, filter }, all).map(buildSession.getBuildAssetId);
+      assert.deepEqual(q('status-inbox'), ['source:inb', 'source:pin', 'source:fresh']);
+      assert.deepEqual(q('status-out'), ['source:qrej', 'source:ban', 'source:asmo']);
+      assert.deepEqual(q('status-in-dataset'), ['source:ds', 'source:pds']);
+      assert.deepEqual(q('status-pinned'), ['source:pin', 'source:pds']);
+      assert.deepEqual(q('status-banned'), ['source:ban']);
+      assert.equal(q('all').length, all.length);
+      for (const filter of ['status-inbox', 'status-out', 'status-in-dataset', 'status-pinned', 'status-banned']) {
+        assert.equal(buildSession.normalizeBuildSession(JSON.parse(JSON.stringify({ ...s, filter }))).filter, filter, `${filter} survives normalize`);
+      }
+      assert.equal(buildSession.normalizeBuildSession({ ...s, filter: 'status-bogus' }).filter, 'all');
+      // A transformed output in dataset/ makes its frame "in".
+      const frame = mk('frame'), output = mk('out2', 'Project/dataset/out2.png');
+      let t = buildSession.reconcileBuildSession(buildSession.createBuildSession(), [frame, output], NOW);
+      t = { ...t, records: { ...t.records, 'source:frame': { ...t.records['source:frame'], outputAssetId: 'source:out2' } } };
+      assert.ok(buildSession.selectBuildQueue({ ...t, filter: 'status-in-dataset' }, [frame, output]).map(buildSession.getBuildAssetId).includes('source:frame'));
+      assert.ok(!buildSession.selectBuildQueue({ ...t, filter: 'status-inbox' }, [frame, output]).map(buildSession.getBuildAssetId).includes('source:frame'));
+    }
   }
   console.log('dataset assembly contracts: ok');
 } finally {
