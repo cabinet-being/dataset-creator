@@ -8,7 +8,7 @@ import JSZip from 'jszip';
 
 const temp = await mkdtemp(join(tmpdir(), 'ui-workflows-'));
 try {
-  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/lib/uiMode.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
+  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/lib/uiMode.ts', 'src/next/board/captionEntries.ts', 'src/services/export/exportResize.ts', 'src/next/board/toolOverlays.tsx'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
   const module = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
   // UI mode switch: ?ui= beats the stored setting, classic is the default, junk values are ignored.
   const uiMode = await module('uiMode');
@@ -433,6 +433,60 @@ try {
   await useHistoryStore.getState().redo();
   assert.equal(await readText(captionAssets,'two.txt'),'');
   assert.equal(captionFlushes,3,'Save runs for edit, undo and redo');
+  {
+    // applyCaptionTagBatch / persistCaptionBatch: one undo step each; tags compare case-insensitively; a missing caption (undefined) is not an empty one ([]).
+    const { applyCaptionTagBatch, persistCaptionBatch } = await module('captionMutationService');
+    const batchDirectory = directory('caption-batch'); const batchAssets = await batchDirectory.getDirectoryHandle('assets', { create: true });
+    for (const name of ['a', 'b', 'c']) await write(batchAssets, `${name}.psd`, new Blob([name]));
+    await write(batchAssets, 'a.txt', 'Red, blue\n'); await write(batchAssets, 'b.txt', '');
+    const frame = (name, tags) => ({ id: `asset:Project/assets/${name}.psd`, sourceImageId: '', assetPath: `Project/assets/${name}.psd`, fileName: `${name}.psd`, kind: 'psd', tags });
+    const batchItems = [frame('a', ['Red', 'blue']), frame('b', []), frame('c', undefined)];
+    const read = async name => { try { return await readText(batchAssets, name); } catch (error) { if (error.name === 'NotFoundError') return null; throw error; } };
+    const restored = async () => { assert.equal(await read('a.txt'), 'Red, blue\n'); assert.equal(await read('b.txt'), ''); assert.equal(await read('c.txt'), null, 'a caption that was missing is missing again'); };
+    useProjectStore.setState({ id: 'caption-batch-test' }); useHistoryStore.setState({ past: [], future: [] });
+    const flushes = []; const flush = async () => { flushes.push(1); };
+    const last = () => useHistoryStore.getState().past.at(-1);
+
+    assert.equal(await applyCaptionTagBatch({ items: batchItems, tags: ['BLUE', 'new'], mode: 'add', directory: batchDirectory, flush }), 3);
+    assert.equal(await read('a.txt'), 'Red, BLUE, new\n', 'add drops the same tag in another case, then appends the given spelling');
+    assert.equal(await read('b.txt'), 'BLUE, new\n', 'an empty caption receives the tags');
+    assert.equal(await read('c.txt'), 'BLUE, new\n', 'a missing caption becomes a caption file');
+    assert.equal(useHistoryStore.getState().past.length, 1, 'the whole batch is one undo step'); assert.equal(last().label, 'Add caption tags');
+    await useHistoryStore.getState().undo(); await restored(); assert.equal(useHistoryStore.getState().past.length, 0);
+    await useHistoryStore.getState().redo(); assert.equal(await read('c.txt'), 'BLUE, new\n');
+    await useHistoryStore.getState().undo(); await restored();
+
+    assert.equal(await applyCaptionTagBatch({ items: batchItems, tags: ['red'], mode: 'add', directory: batchDirectory, flush }), 3);
+    assert.equal(await read('a.txt'), 'blue, red\n', 'adding an existing tag moves it to the end with the new spelling'); assert.equal(last().label, 'Add caption tag', 'singular label for one tag');
+    await useHistoryStore.getState().undo(); await restored();
+
+    // Remove ignores case, leaves other tags, touches nothing when there is nothing to remove, and does not count unchanged captions.
+    assert.equal(await applyCaptionTagBatch({ items: [batchItems[0], batchItems[1]], tags: ['RED'], mode: 'remove', directory: batchDirectory, flush }), 1, 'the [] caption has nothing to remove and is not rewritten');
+    assert.equal(await read('a.txt'), 'blue\n'); assert.equal(await read('b.txt'), ''); assert.equal(last().label, 'Remove caption tag');
+    await useHistoryStore.getState().undo(); await restored();
+    const before = useHistoryStore.getState().past.length;
+    assert.equal(await applyCaptionTagBatch({ items: [batchItems[0], batchItems[1]], tags: ['absent'], mode: 'remove', directory: batchDirectory, flush }), 0);
+    assert.equal(useHistoryStore.getState().past.length, before, 'removing a tag nobody has adds no undo step'); await restored();
+    assert.equal(await applyCaptionTagBatch({ items: [batchItems[0]], tags: ['Red', 'BLUE'], mode: 'remove', directory: batchDirectory, flush }), 1);
+    assert.equal(await read('a.txt'), '', 'removing every tag leaves an empty caption file, not a missing one'); assert.equal(last().label, 'Remove caption tags');
+    await useHistoryStore.getState().undo(); await restored();
+
+    // Missing versus empty: removing from a missing caption writes an empty caption file (the service compares undefined with []), which the Board avoids by only passing frames that have the tag.
+    assert.equal(await applyCaptionTagBatch({ items: [batchItems[2]], tags: ['x'], mode: 'remove', directory: batchDirectory, flush }), 1);
+    assert.equal(await read('c.txt'), '', 'undefined -> [] counts as a change');
+    await useHistoryStore.getState().undo(); await restored();
+
+    const written = await persistCaptionBatch('Auto-caption', { items: batchItems, resolveTags: item => item.fileName === 'a.psd' ? item.tags : ['model', 'tags'], directory: batchDirectory, flush });
+    assert.equal(written, 2, 'a caption that does not change is not written'); assert.equal(last().label, 'Auto-caption');
+    assert.equal(await read('a.txt'), 'Red, blue\n'); assert.equal(await read('b.txt'), 'model, tags\n'); assert.equal(await read('c.txt'), 'model, tags\n');
+    await useHistoryStore.getState().undo(); await restored();
+    assert.equal(await persistCaptionBatch('Edit caption', { items: [batchItems[1]], resolveTags: () => [], directory: batchDirectory, flush }), 0, '[] over [] is no change');
+    assert.equal(await persistCaptionBatch('Edit caption', { items: [batchItems[2]], resolveTags: () => [], directory: batchDirectory, flush }), 1, '[] over a missing caption creates an empty caption');
+    assert.equal(await read('c.txt'), ''); assert.equal(last().label, 'Edit caption');
+    await useHistoryStore.getState().undo(); await restored();
+    assert.ok(flushes.length > 0, 'saves are flushed');
+    useHistoryStore.setState({ past: [], future: [] });
+  }
   const { writeProjectDirectoryChanges, readProjectDirectory, createProjectDirectory } = await module('projectDirectoryService');
   const projectDirectory = directory('snapshot-project');
   const initialProject = useProjectStore.getState();
@@ -594,6 +648,86 @@ try {
   await write(data, 'linked.jpg.manifest.json', 'broken JSON');
   assert.equal((await buildExportPlan({ ...args, scope: 'directory', directory: root })).entries.length, 2, 'Dataset export reads TXT files only, so a broken sidecar cannot affect it');
   await assert.rejects(buildExportPlan({ ...args, scope: 'directory', directory: { getDirectoryHandle: async () => { throw new DOMException('Read denied', 'NotAllowedError'); } } }), /Read denied/);
+
+  // Stage 4 of the next UI: caption entries, batch caption tag edits, export resize and the video destination folder.
+  {
+    const { getCaptionState, idsBetween, planProposalApply } = await module('captionEntries');
+    assert.equal(getCaptionState({ tags: undefined }), 'missing'); assert.equal(getCaptionState({}), 'missing');
+    assert.equal(getCaptionState({ tags: [] }), 'empty', '[] is an empty caption, not a missing one'); assert.equal(getCaptionState({ tags: ['a'] }), 'tagged');
+    const ids = ['a', 'b', 'c', 'd', 'e'];
+    assert.deepEqual(idsBetween(ids, 'b', 'd'), ['b', 'c', 'd']); assert.deepEqual(idsBetween(ids, 'd', 'b'), ['b', 'c', 'd'], 'a backwards range keeps list order');
+    assert.deepEqual(idsBetween(ids, 'c', 'c'), ['c']); assert.deepEqual(idsBetween(ids, null, 'c'), ['c'], 'no anchor selects the target only');
+    assert.deepEqual(idsBetween(ids, 'zzz', 'c'), ['c'], 'an anchor that left the list selects the target only'); assert.deepEqual(idsBetween(ids, 'a', 'zzz'), [], 'an unknown target selects nothing');
+    assert.deepEqual(idsBetween([], null, 'a'), []);
+    const frames = [{ id: 'tagged', tags: ['old'] }, { id: 'empty', tags: [] }, { id: 'missing' }, { id: 'none-suggested', tags: undefined }, { id: 'trigger-only' }];
+    const suggestions = { tagged: ['new1', 'new2'], empty: ['e1'], missing: ['m1', 'M2'], 'trigger-only': ['Hero'], 'none-suggested': [] };
+    const proposal = item => suggestions[item.id] ?? [];
+    assert.deepEqual(planProposalApply(frames, proposal, false).map(entry => [entry.item.id, entry.tags]), [['empty', ['e1']], ['missing', ['m1', 'M2']], ['trigger-only', ['Hero']]],
+      'without overwrite a frame with a caption is skipped; [] and a missing caption count as no caption; no suggestion means no entry');
+    assert.deepEqual(planProposalApply(frames, proposal, true).map(entry => entry.item.id), ['tagged', 'empty', 'missing', 'trigger-only'], 'overwrite replaces existing captions too');
+    assert.deepEqual(planProposalApply(frames, proposal, true, ' hero ').find(entry => entry.item.id === 'trigger-only'), undefined, 'a suggestion that is only the trigger word is dropped (case and spaces ignored)');
+    assert.deepEqual(planProposalApply(frames, () => ['Hero', 'x'], true, 'hero').map(entry => entry.tags), [['x'], ['x'], ['x'], ['x'], ['x']], 'the trigger word is never part of the tags');
+    assert.deepEqual(planProposalApply([], proposal, true), []);
+
+    const { resolveExportResize, canResizeExportImage, describeExportResize } = await module('exportResize');
+    const longest = side => ({ kind: 'longest', side });
+    assert.deepEqual(resolveExportResize(200, 100, longest(100)), { width: 100, height: 50 });
+    assert.deepEqual(resolveExportResize(100, 200, longest(100)), { width: 50, height: 100 });
+    assert.deepEqual(resolveExportResize(1000, 333, longest(100)), { width: 100, height: 33 });
+    assert.deepEqual(resolveExportResize(1, 1000, longest(10)), { width: 1, height: 10 }, 'a side never rounds below one pixel');
+    assert.equal(resolveExportResize(100, 100, longest(100)), null, 'an image that already fits is unchanged'); assert.equal(resolveExportResize(50, 80, longest(100)), null, 'no upscaling');
+    assert.equal(resolveExportResize(300, 100, longest(1000)), null);
+    for (const side of [0, -5, Number.NaN]) assert.equal(resolveExportResize(200, 100, longest(side)), null, `side ${side} resizes nothing`);
+    for (const [w, h] of [[0, 10], [10, 0], [-1, 5], [Number.NaN, 5]]) assert.equal(resolveExportResize(w, h, longest(5)), null, `size ${w}x${h} is ignored`);
+    const bucket = model => ({ kind: 'bucket', model });
+    assert.deepEqual(resolveExportResize(1024, 1024, bucket('sd15')), { width: 512, height: 512 });
+    assert.deepEqual(resolveExportResize(800, 600, bucket('sd15')), { width: 576, height: 432 }, '4:3 fits the 576x448 bucket');
+    assert.deepEqual(resolveExportResize(600, 800, bucket('sd15')), { width: 432, height: 576 }, 'portrait fits the 448x576 bucket');
+    assert.equal(resolveExportResize(512, 512, bucket('sd15')), null); assert.equal(resolveExportResize(400, 300, bucket('sd15')), null, 'smaller than its bucket stays as it is');
+    assert.deepEqual(resolveExportResize(3000, 3000, bucket('sdxl')), { width: 1024, height: 1024 });
+    assert.deepEqual(resolveExportResize(2688, 1536, bucket('flux')), { width: 1344, height: 768 }, 'a wide frame picks the 1344x768 bucket');
+    assert.equal(resolveExportResize(2000, 2000, bucket('nope')), null, 'an unknown model resizes nothing');
+    assert.equal(describeExportResize(longest(768)), 'longest side 768px'); assert.equal(describeExportResize(bucket('sd15')), 'SD 1.5 buckets');
+    for (const name of ['a.png', 'A.PNG', 'dir/x.jpg', 'x.JPEG', 'x.webp']) assert.equal(canResizeExportImage(name), true, name);
+    for (const name of ['x.gif', 'x.bmp', 'x.psd', 'x', 'x.png.bak', 'x.constructor', 'x.toString', '']) assert.equal(canResizeExportImage(name), false, `"${name}"`);
+
+    // Fingerprint: the oracle below is the formula from before resize existed.
+    const { createExportPlanFingerprint } = await module('exportPlan');
+    const hex = digest => Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    const sha = async data => hex(await crypto.subtle.digest('SHA-256', typeof data === 'string' ? new TextEncoder().encode(data) : data));
+    const entry = { imageName: 'a.png', textName: 'a.txt', caption: 'x', blob: new Blob(['PNG'], { type: 'image/png' }), source: 'a.png', textContent: 'x\n' };
+    const legacy = async (scope, entries) => {
+      const compact = [scope];
+      for (const item of entries) compact.push([[item.imageName, item.textName, item.caption, item.source, item.blob.type, item.blob.size, item.conversion ?? '', ...(item.textContent === undefined ? [] : [item.textContent])], await sha(JSON.stringify([await sha(await item.blob.arrayBuffer())]))]);
+      return sha(JSON.stringify(compact));
+    };
+    const plain = await createExportPlanFingerprint('dataset', [entry]);
+    assert.equal(plain, await legacy('dataset', [entry]), 'a plan without resize keeps the fingerprint it had before');
+    assert.equal(await createExportPlanFingerprint('dataset', [entry], undefined), plain);
+    const resized = await createExportPlanFingerprint('dataset', [entry], longest(1024));
+    assert.notEqual(resized, plain, 'resize changes the fingerprint');
+    assert.equal(resized, await createExportPlanFingerprint('dataset', [entry], longest(1024)), 'the same resize is stable');
+    assert.notEqual(resized, await createExportPlanFingerprint('dataset', [entry], longest(512)), 'another side is another plan');
+    assert.notEqual(await createExportPlanFingerprint('dataset', [entry], bucket('sd15')), await createExportPlanFingerprint('dataset', [entry], bucket('sdxl')), 'another model is another plan');
+    const planArgs = { scope: 'workspace', dataset: { ...dataset, triggerWord: '' }, blacklist: [], items: [
+      { id: 'source:p', sourceImageId: 'p', kind: 'image', fileName: 'p.png', imageData: new Blob(['P'], { type: 'image/png' }), tags: ['t'] },
+      { id: 'source:g', sourceImageId: 'g', kind: 'image', fileName: 'g.gif', imageData: new Blob(['G'], { type: 'image/gif' }), tags: ['t'] }] };
+    const unresized = await buildExportPlan(planArgs);
+    const withResize = await buildExportPlan({ ...planArgs, resize: longest(256) });
+    assert.equal('resize' in unresized, false, 'no resize key without the option'); assert.deepEqual(withResize.resize, longest(256));
+    assert.notEqual(withResize.fingerprint, unresized.fingerprint);
+    assert.deepEqual(unresized.warnings, []); assert.deepEqual(withResize.warnings, ['g.gif is exported without resizing: only PNG, JPEG and WebP can be resized.'], 'only formats that cannot be resized are warned about');
+
+    const { videoFramesDestination } = await module('toolOverlays');
+    assert.equal(videoFramesDestination('clip.mp4'), 'Project/inbox/clip'); assert.equal(videoFramesDestination('My Holiday.v2.webm'), 'Project/inbox/My Holiday.v2');
+    assert.equal(videoFramesDestination('.hidden.mp4'), 'Project/inbox/hidden', 'a leading dot would make a hidden folder'); assert.equal(videoFramesDestination('...mov'), 'Project/inbox/video');
+    assert.equal(videoFramesDestination('a/b\\c:d*e?f"g<h>i|j.mp4'), 'Project/inbox/a_b_c_d_e_f_g_h_i_j', 'characters that are not allowed in a name become underscores');
+    assert.equal(videoFramesDestination('bad\u0001name.mp4'), 'Project/inbox/bad_name');
+    assert.equal(videoFramesDestination(''), 'Project/inbox/video'); assert.equal(videoFramesDestination('.mp4'), 'Project/inbox/video', 'an empty name falls back to "video"');
+    assert.equal(videoFramesDestination('   .mp4'), 'Project/inbox/video'); assert.equal(videoFramesDestination('  spaced name .mov'), 'Project/inbox/spaced name');
+    assert.equal(videoFramesDestination('Клип.mp4'), 'Project/inbox/Клип', 'Unicode names are kept'); assert.equal(videoFramesDestination('no-extension'), 'Project/inbox/no-extension');
+    assert.equal(videoFramesDestination(`${'x'.repeat(200)}.mp4`).split('/').pop().length, 80, 'long names are cut to 80 characters');
+  }
 
   // Exercise the Photopea protocol and cancellation without an external service.
   const messages = new Set(); let iframe; let removed = false; const posted = [];

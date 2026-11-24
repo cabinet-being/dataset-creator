@@ -14,6 +14,9 @@ import { useHistoryStore } from '../src/stores/useHistoryStore';
 import { hexDigest, SEMANTIC_FEATURE_MODEL, type createSemanticFeatureEncoder } from '../src/services/analysis/semanticFeatureService';
 import { writeImageFeature } from '../src/services/analysis/semanticFeatureCache';
 import { setVideoMeta } from '../src/services/video/videoCache';
+import { useDocumentStateStore } from '../src/stores/useDocumentStateStore';
+import JSZip from 'jszip';
+import { BufferTarget, CanvasSource, Output, WebMOutputFormat } from 'mediabunny';
 import '../src/index.css';
 
 // Only the folder picker is substituted (an OPFS directory); Open, New, recent projects, Board, Sources, grid and
@@ -70,9 +73,42 @@ const textured = (width: number, height: number, seed: number) => {
   return new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/png'));
 };
 
-type Kind = 'sources' | 'grid' | 'big' | 'assemble';
-// Project-relative file paths per fixture kind. `emptyFolders` are created on disk without images.
-const LAYOUTS: Record<Kind, { files: string[]; emptyFolders: string[] }> = {
+// A tiny WebM (4 frames of 160x90) for the Video Frames overlay; the encoder is the browser's own VP8.
+const makeWebm = async () => {
+  const canvas = new OffscreenCanvas(160, 90); const context = canvas.getContext('2d')!;
+  const target = new BufferTarget();
+  const output = new Output({ format: new WebMOutputFormat(), target });
+  const source = new CanvasSource(canvas, { codec: 'vp8', bitrate: 500_000 });
+  output.addVideoTrack(source);
+  await output.start();
+  for (let index = 0; index < 4; index += 1) {
+    context.fillStyle = ['#d32f2f', '#1565c0', '#16a34a', '#c026d3'][index]; context.fillRect(0, 0, 160, 90);
+    context.fillStyle = '#ffffff'; context.fillRect(10 + index * 30, 20, 40, 50);
+    await source.add(index * 0.1, 0.1);
+  }
+  await output.finalize(); source.close();
+  return new Blob([target.buffer!], { type: 'video/webm' });
+};
+
+type Kind = 'sources' | 'grid' | 'big' | 'assemble' | 'caption' | 'advice' | 'export' | 'video';
+// Project-relative file paths per fixture kind. `emptyFolders` are created on disk without images; `captions` are TXT files written next to them.
+const LAYOUTS: Record<Kind, { files: string[]; emptyFolders: string[]; captions?: Record<string, string>; size?: [number, number]; trigger?: string }> = {
+  // Caption mode: c1-c3 tagged, c4 an empty caption file, c5 no caption file, inbox/i1 is not in the dataset.
+  caption: {
+    files: ['dataset/c1.png', 'dataset/c2.png', 'dataset/c3.png', 'dataset/c4.png', 'dataset/c5.png', 'inbox/i1.png'], emptyFolders: [], trigger: 'hero',
+    captions: { 'dataset/c1.txt': 'hero, red hair, smile', 'dataset/c2.txt': 'hero, Red Hair, hat', 'dataset/c3.txt': 'hero, red hair', 'dataset/c4.txt': '', 'inbox/i1.txt': 'hero, red hair' },
+  },
+  // The common-tags advice of a character project: "red hair" is in every caption.
+  advice: {
+    files: ['dataset/m1.png', 'dataset/m2.png', 'dataset/m3.png'], emptyFolders: [], trigger: 'hero',
+    captions: { 'dataset/m1.txt': 'hero, red hair, smile', 'dataset/m2.txt': 'hero, red hair, hat', 'dataset/m3.txt': 'hero, red hair' },
+  },
+  // Export: 64x40 frames (resize has something to shrink); e3 has no caption file.
+  export: {
+    files: ['dataset/e1.png', 'dataset/e2.png', 'dataset/e3.png', 'inbox/x1.png'], emptyFolders: [], size: [64, 40], trigger: 'hero',
+    captions: { 'dataset/e1.txt': 'hero, one', 'dataset/e2.txt': 'hero, two' },
+  },
+  video: { files: ['inbox/shot.png'], emptyFolders: [] },
   sources: { files: ['inbox/day1/a.png', 'inbox/day1/b.png', 'inbox/c.png', 'dataset/d.png'], emptyFolders: ['inbox/empty', 'inbox/other'] },
   grid: {
     files: ['dataset/in1.png', 'dataset/pin1.png', 'inbox/q1.png', 'inbox/dup1.png', 'inbox/ns1.png', 'inbox/ban1.png', 'inbox/new1.png'],
@@ -84,6 +120,34 @@ const LAYOUTS: Record<Kind, { files: string[]; emptyFolders: string[] }> = {
 };
 
 let parent: FileSystemDirectoryHandle | undefined;
+let projectRoot: FileSystemDirectoryHandle | undefined;
+let exportTarget: FileSystemDirectoryHandle | undefined;
+const bitmapControl: { gate: Promise<void> | null; release: (() => void) | null } = { gate: null, release: null };
+const projectWrites: number[] = [];
+let dropFake: (() => void) | undefined;
+
+const listFiles = async (directory: FileSystemDirectoryHandle, prefix = ''): Promise<string[]> => {
+  const found: string[] = [];
+  for await (const [name, handle] of (directory as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()) {
+    if (name === '.datasetcreator') continue;
+    if (handle.kind === 'directory') found.push(...await listFiles(handle as FileSystemDirectoryHandle, `${prefix}${name}/`)); else found.push(`${prefix}${name}`);
+  }
+  return found.sort();
+};
+const fileAt = async (directory: FileSystemDirectoryHandle, path: string) => {
+  const parts = path.split('/'); const name = parts.pop()!;
+  let current = directory;
+  for (const part of parts) current = await current.getDirectoryHandle(part);
+  return (await current.getFileHandle(name)).getFile();
+};
+const writeAt = async (directory: FileSystemDirectoryHandle, path: string, data: Blob | string) => {
+  const parts = path.split('/'); const name = parts.pop()!;
+  let current = directory;
+  for (const part of parts) current = await current.getDirectoryHandle(part, { create: true });
+  const writable = await (await current.getFileHandle(name, { create: true })).createWritable();
+  await writable.write(data); await writable.close();
+};
+const sizeOf = async (blob: Blob) => { const bitmap = await createImageBitmap(blob); const size = { width: bitmap.width, height: bitmap.height }; bitmap.close(); return size; };
 
 const api = {
   /** The next folder picker returns a fresh empty OPFS parent (New project flow). */
@@ -101,11 +165,14 @@ const api = {
     const directory = await uniqueDirectory(`next-${kind}`);
     // The Assemble fixture targets SD 1.5 (minimum short side 512 px), so real frames stay small; its Size is Auto.
     const project = createProject(projectName, 'character', kind === 'assemble' ? 'sd15' : 'sdxl');
+    if (layout.trigger) project.dataset = { ...project.dataset, triggerWord: layout.trigger };
+    // Export is offered after an Assemble: the Export fixture is a project that was assembled before.
+    if (kind === 'export') project.buildSession = { ...createBuildSession(), auto: { assembledAt: new Date().toISOString() } };
     if (kind === 'assemble') project.buildSession = { ...createBuildSession(), profile: { ...createBuildSession().profile, sizeMode: 'auto' } };
     const sources = await Promise.all(layout.files.map(async (path, index) => {
       // tiny.png is portrait (200x300) and below the minimum; every other Assemble frame is a 512x512 square.
-      const [width, height] = kind !== 'assemble' ? [8, 8] : nameOf(path) === 'tiny.png' ? [200, 300] : [512, 512];
-      const source = createSourceImage(kind === 'assemble' ? await textured(width, height, index) : await png(index), nameOf(path), width, height);
+      const [width, height] = kind !== 'assemble' ? layout.size ?? [8, 8] : nameOf(path) === 'tiny.png' ? [200, 300] : [512, 512];
+      const source = createSourceImage(kind === 'assemble' || layout.size ? await textured(width, height, index) : await png(index), nameOf(path), width, height);
       source.originalFilePath = path;
       // Health reads image features from the cache: seed it, so the real model is never needed.
       if (kind === 'assemble') writeImageFeature(`${await hexDigest(source.originalFile)}:${SEMANTIC_FEATURE_MODEL.visual}`, ASSEMBLE_VECTORS[nameOf(path)]);
@@ -117,6 +184,9 @@ const api = {
       let current = directory;
       for (const part of folder.split('/')) current = await current.getDirectoryHandle(part, { create: true });
     }
+    for (const [path, text] of Object.entries(layout.captions ?? {})) await writeAt(directory, path, text);
+    if (kind === 'video') await writeAt(directory, 'inbox/clip.webm', await makeWebm());
+    projectRoot = directory;
     pickerWindow.showDirectoryPicker = async () => directory as unknown as ProjectDirectoryHandle;
     return directory.name;
   },
@@ -149,9 +219,75 @@ const api = {
       sources: state.buildSession.profile.sources,
       strictness: state.buildSession.profile.similarityStrictness,
       assembledAt: state.buildSession.auto?.assembledAt,
+      lastExport: state.buildSession.lastExport,
       records: Object.fromEntries(Object.values(state.buildSession.records).map(record => [nameOf(record.locator), { override: record.override, origin: record.origin, locator: record.locator }])),
     };
   },
+  /** Every file of the project folder on disk (relative paths, without .datasetcreator). */
+  files: () => listFiles(projectRoot!),
+  /** The text of a project file, or null while it does not exist. */
+  readText: async (path: string) => { try { return await (await fileAt(projectRoot!, path)).text(); } catch (error) { if ((error as DOMException).name === 'NotFoundError') return null; throw error; } },
+  imageSize: async (path: string) => sizeOf(await fileAt(projectRoot!, path)),
+  /** Entries of a ZIP in the project folder: name, text of a .txt, size of an image. */
+  zipEntries: async (path: string) => {
+    const zip = await JSZip.loadAsync(await (await fileAt(projectRoot!, path)).arrayBuffer());
+    const result: { name: string; text?: string; width?: number; height?: number }[] = [];
+    for (const name of Object.keys(zip.files).sort()) {
+      if (zip.files[name].dir) continue;
+      result.push(name.endsWith('.txt') ? { name, text: await zip.files[name].async('string') } : { name, ...await sizeOf(new Blob([await zip.files[name].async('arraybuffer')])) });
+    }
+    return result;
+  },
+  /** The next folder picker returns a fresh empty OPFS folder (Export to a folder). */
+  useExportFolder: async () => {
+    exportTarget = await uniqueDirectory('next-export');
+    pickerWindow.showDirectoryPicker = async () => exportTarget as unknown as ProjectDirectoryHandle;
+  },
+  exportFolderFiles: async () => {
+    const result: { name: string; text?: string; width?: number; height?: number }[] = [];
+    for (const name of await listFiles(exportTarget!)) {
+      const file = await fileAt(exportTarget!, name);
+      result.push(name.endsWith('.txt') ? { name, text: await file.text() } : { name, ...await sizeOf(file) });
+    }
+    return result;
+  },
+  /** Model suggestions by file name; the revision is copied from the record, so they are not stale. */
+  seedProposals: async (spec: Record<string, string[]>) => {
+    const recordOf = (name: string) => Object.values(useProjectStore.getState().buildSession.records).find(record => nameOf(record.locator) === name);
+    const deadline = Date.now() + 15_000;
+    while (!Object.keys(spec).every(name => recordOf(name)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    useProjectStore.getState().updateBuildSession(session => {
+      const records = { ...session.records };
+      for (const [name, tags] of Object.entries(spec)) {
+        const record = recordOf(name);
+        if (!record) throw new Error(`No record for ${name}`);
+        records[record.assetId] = { ...record, proposal: { tags, revision: record.revision ?? '' } };
+      }
+      return { ...session, records };
+    });
+  },
+  /** Holds image decoding of the export resize until `releaseBitmaps` (the export then stays in progress). */
+  holdBitmaps: () => {
+    if (bitmapControl.gate) return;
+    const original = window.createImageBitmap.bind(window) as (...args: unknown[]) => Promise<ImageBitmap>;
+    bitmapControl.gate = new Promise<void>(resolve => { bitmapControl.release = resolve; });
+    (window as unknown as { createImageBitmap: unknown }).createImageBitmap = async (...args: unknown[]) => { await bitmapControl.gate; return original(...args); };
+  },
+  releaseBitmaps: () => { bitmapControl.release?.(); },
+  /** Counts the writes of project.json from now on (a manifest save). */
+  spyProjectWrites: () => {
+    if (projectWrites.length) return;
+    projectWrites.push(0);
+    const original = FileSystemFileHandle.prototype.createWritable;
+    FileSystemFileHandle.prototype.createWritable = function (this: FileSystemFileHandle, ...args) { if (this.name === 'project.json') projectWrites[0] += 1; return original.apply(this, args); };
+  },
+  projectWrites: () => projectWrites[0] ?? 0,
+  /** A project change that the autosave would write after its delay. */
+  touch: () => useProjectStore.getState().updateBuildSession(session => ({ ...session, cursor: session.cursor + 1 })),
+  documentViews: () => Object.keys(useDocumentStateStore.getState().documents),
+  /** Pretends the editor of a view holds a document (the Photopea overlay does that once Photopea has loaded). */
+  fakeDocument: (viewId: string) => { dropFake?.(); dropFake = useDocumentStateStore.getState().register(viewId, { dirty: false, check: async () => false }); },
+  dropFakeDocument: () => { dropFake?.(); dropFake = undefined; },
   paths: () => {
     const state = useProjectStore.getState();
     return toWorkspaceImages(Object.values(state.sourceImages), Object.values(state.datasetItems)).map(item => item.assetPath);

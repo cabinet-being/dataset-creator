@@ -2,9 +2,9 @@ import type { Page } from '@playwright/test';
 import { expect } from './fixtures';
 
 // Helpers for tests/next-browser.tsx (the real NextApp over OPFS with a substituted folder picker).
-export type Kind = 'sources' | 'grid' | 'big' | 'assemble';
+export type Kind = 'sources' | 'grid' | 'big' | 'assemble' | 'caption' | 'advice' | 'export' | 'video';
 export type Status = 'pin' | 'ban' | 'quality' | 'not-selected' | { duplicateOf: string };
-export type SessionView = { sources?: string[]; strictness?: string; assembledAt?: string; records: Record<string, { override?: string; origin?: string; locator?: string }> };
+export type SessionView = { sources?: string[]; strictness?: string; assembledAt?: string; lastExport?: { fingerprint: string; completedAt: string; entries: number }; records: Record<string, { override?: string; origin?: string; locator?: string }> };
 
 export const next = <T, A = undefined>(page: Page, run: (api: Record<string, (...args: never[]) => unknown>, arg: A) => T | Promise<T>, arg?: A) =>
   page.evaluate(`(${run.toString()})(window.__next, ${JSON.stringify(arg ?? null)})`) as Promise<T>;

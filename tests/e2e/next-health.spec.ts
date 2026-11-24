@@ -155,4 +155,18 @@ test.describe('theme grouping', () => {
     if (await page.locator('[data-grouping="folders"]').count()) await page.locator('[data-grouping="folders"]').click();
     await expect.poll(() => headers(page)).toEqual(['inbox/shots 13']);
   });
+
+  test('Mod+Z of Assemble removes the Themes/Folders switch and the grid is grouped by folders again (stale clusters are dropped)', async ({ page }) => {
+    await assembled(page);
+    await expect(page.locator('[data-grouping="themes"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
+    expect(await headers(page)).toEqual(['Theme 1 3', 'Theme 2 2', 'Other frames 8']);
+    await undoOnce(page);
+    await expect(page.locator('[data-grouping]'), 'no clusters, no switch').toHaveCount(0, { timeout: 15_000 });
+    await expect.poll(() => headers(page), { timeout: 15_000 }).toEqual(['inbox/shots 13']);
+    // Assembling again brings the themes back.
+    await page.locator('[data-assemble-button]').click();
+    await expect(page.locator('[data-reassemble]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-grouping="themes"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
+    await expect.poll(() => headers(page), { timeout: 15_000 }).toEqual(['Theme 1 3', 'Theme 2 2', 'Other frames 8']);
+  });
 });
