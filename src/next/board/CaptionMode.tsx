@@ -133,7 +133,7 @@ export function CaptionMode({ runtime, candidates, effectiveItems, session, pipe
       const changed = await persistCaptionBatch('Auto-caption', { items: plan.map(entry => entry.item), resolveTags: item => byId.get(item.id) ?? item.tags ?? [], directory, flush: flushProjectSave });
       notify('success', `${changed} caption${changed === 1 ? '' : 's'} written from model suggestions. Ctrl+Z undoes it.`);
     }, 'Could not apply the suggestions.');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [directory, items, notify, overwrite, proposalFor, saving, triggerWord]);
   const applyLatest = useRef(applySuggestions);
   applyLatest.current = applySuggestions;
@@ -180,7 +180,7 @@ export function CaptionMode({ runtime, candidates, effectiveItems, session, pipe
         <Check aria-hidden className={cn('h-5 w-5 rounded-full p-0.5', isSelected ? 'bg-primary text-primary-foreground' : 'bg-background/80 text-muted-foreground')} />
       </button>
     </div>;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [thumbs, activeSelection, triggerWord, entries]);
 
   const openIndex = openId ? entries.findIndex(entry => entry.id === openId) : -1;

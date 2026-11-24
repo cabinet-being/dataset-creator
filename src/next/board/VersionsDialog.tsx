@@ -11,7 +11,7 @@ export function VersionsDialog({ runtime }: { runtime: ReturnType<typeof useProj
   const { lifecycle, versionsOpen, setVersionsOpen, isProjectDirectoryBusy } = runtime;
   const { projectVersions, currentProjectVersionId, newVersionName, setNewVersionName } = lifecycle;
   const { openProjectVersions } = lifecycle;
-  useEffect(() => { if (versionsOpen) void openProjectVersions(); }, [versionsOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (versionsOpen) void openProjectVersions(); }, [versionsOpen]);  
   const ordered = [...projectVersions].reverse();
   return <Dialog.Root open={versionsOpen} onOpenChange={setVersionsOpen}>
     <Dialog.Portal>

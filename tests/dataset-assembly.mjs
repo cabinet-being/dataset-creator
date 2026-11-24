@@ -138,11 +138,8 @@ try {
   const assemblyItem = (path, semantic, quality = 1) => ({ item: item(`asset:${path}`, '', path), feature: semantic, caption: semantic.caption, quality });
   const baseline = assemblyItem('Project/private/front.png', feature('front', [1, 0], 'front portrait', ['front', 'portrait']));
   const back = assemblyItem('Project/inbox/back.png', feature('back', [0, 1], 'back view', ['back', 'view']));
-  const backDuplicate = assemblyItem('Project/inbox/z-back-copy.png', feature('back', [0, 1], 'duplicate words', ['duplicate']));
-  const similarFront = assemblyItem('Project/inbox/front-2.png', feature('front-2', [0.99, 0.01], 'front portrait', ['front', 'portrait']));
   const metrics = coverage.measureCoverage([assembly.coverageAsset?.(baseline) ?? { key: 'front', feature: baseline.feature }], [{ key: 'front', feature: baseline.feature }, { key: 'back', feature: back.feature }]);
   assert.ok(metrics.total > 0 && metrics.total < 1);
-  const datasetForAssembly = { ...dataset, id: 'global' };
   // Signal weights must not change when the first caption enters the selection.
   const blank = assemblyItem('blank.png', feature('blank', [1, 0], ''));
   const topics = [0, 1, 2].map(index => assemblyItem(`topic-${index}.png`, {
