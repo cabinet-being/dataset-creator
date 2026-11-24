@@ -137,7 +137,7 @@ export const selectAssemblyCandidates = <T extends BuildCandidate>(session: Buil
       && record.triage?.stage === 'quality' && record.triage.group !== 'rejected' && !isProjectDatasetPath(item.assetPath))
     .map(({ item }) => item);
 
-export const createAssemblyKey = (target: number, items: BuildCandidate[], session: BuildSession): string =>
+export const createAssemblyKey = (target: number | 'auto', items: BuildCandidate[], session: BuildSession): string =>
   `${target}|${items.map((item) => {
     const assetId = getBuildAssetId(item);
     return `${assetId}:${session.records[assetId]?.triage?.revision ?? session.records[assetId]?.revision ?? ''}`;

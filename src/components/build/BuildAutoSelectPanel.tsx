@@ -11,6 +11,11 @@ type Props = {
   derived: AutoSelectSteps;
   datasetCount: number;
   target: number;
+  /** Auto mode: no target size; one image per group of similar ones. */
+  auto: boolean;
+  /** Images compared when the candidate list was made. */
+  comparedAtFind?: number;
+  onAutoChange: (auto: boolean) => void;
   onTargetChange: (target: number) => void;
   folderRows: FolderRow[];
   deselectedFolders: ReadonlySet<string>;
@@ -49,8 +54,8 @@ const plural = (count: number, one: string, many = `${one}s`) => `${count} ${cou
 
 /** The single entry point for automatic selection in Build → Select: four numbered steps, only the current one expanded. */
 export function BuildAutoSelectPanel(props: Props) {
-  const { derived, datasetCount, target, busy } = props;
-  const [expanded, setExpanded] = useState(datasetCount < target);
+  const { derived, datasetCount, target, auto, busy } = props;
+  const [expanded, setExpanded] = useState(auto || datasetCount < target);
   // A step the user opened explicitly; otherwise the first ready or running step is the open one.
   const [openId, setOpenId] = useState<AutoSelectStepId | null>(null);
   const [showSkipped, setShowSkipped] = useState(false);
@@ -69,9 +74,9 @@ export function BuildAutoSelectPanel(props: Props) {
   // Collapse once the Dataset reaches the target, and after the picks were added (the candidate list is gone afterwards).
   const wasBelowTarget = useRef(datasetCount < target);
   useEffect(() => {
-    if (wasBelowTarget.current && datasetCount >= target) setExpanded(false);
+    if (!auto && wasBelowTarget.current && datasetCount >= target) setExpanded(false);
     wasBelowTarget.current = datasetCount < target;
-  }, [datasetCount, target]);
+  }, [datasetCount, target, auto]);
   const applying = useRef(false);
   useEffect(() => {
     if (pick.state === 'running' && hasPicks) applying.current = true;
@@ -80,11 +85,20 @@ export function BuildAutoSelectPanel(props: Props) {
 
   const folderCount = props.folderRows.filter((row) => !props.deselectedFolders.has(row.path)).length;
   const folderLabel = props.deselectedFolders.size === 0 ? (props.folderRows.length <= 1 ? props.folderRows[0]?.name ?? 'inbox' : 'all folders') : plural(folderCount, 'folder');
+  const compared = props.comparedAtFind || find.counts.found + find.counts.duplicates;
   const found = find.counts.found; const duplicates = find.counts.duplicates; const unreadable = find.counts.unreadable;
-  const findDone = found > 0
+  const findDone = found > 0 && auto
+    ? [`${plural(compared, 'image')} → ${plural(found, 'group')}`, duplicates > 0 && `${duplicates} similar skipped`, unreadable > 0 && `${unreadable} unreadable`].filter(Boolean).join(' · ')
+    : found > 0
     ? [plural(found, 'candidate'), duplicates > 0 && `${plural(duplicates, 'near-duplicate')} skipped`, unreadable > 0 && `${unreadable} unreadable`].filter(Boolean).join(' · ')
     : 'All candidates have already been reviewed';
 
+  const explanation = (id: AutoSelectStepId) => auto
+    ? id === 'sources' ? 'Choose the inbox folders to pick images from. The Dataset gets one image from each group of similar images.'
+      : id === 'find' ? 'Groups similar images and keeps one representative of each. Nothing is added yet.'
+      : id === 'describe' ? 'Optional: suggests tags for the candidates with a local caption model so they can be compared by content.'
+      : 'Orders the representatives by how much variety they add, then adds them all in one step.'
+    : EXPLANATIONS[id];
   const reason = (step: AutoSelectStep) => step.reason && <p data-testid={`auto-step-${step.id}-reason`} className={`text-xs ${step.state === 'locked' ? 'text-amber-800 dark:text-amber-200' : 'text-muted-foreground'}`}>{step.reason}</p>;
   const runningLine = (label: string) => <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{label}{progress}<button type="button" className="underline" onClick={props.onCancel}>Cancel</button></span>;
 
@@ -101,7 +115,7 @@ export function BuildAutoSelectPanel(props: Props) {
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs">{line}</div>
         {toggle}
       </div>
-      {open && <div className="mt-1.5 space-y-1.5 pl-8"><p className="text-xs text-muted-foreground">{EXPLANATIONS[step.id]}</p>{controls}</div>}
+      {open && <div className="mt-1.5 space-y-1.5 pl-8"><p className="text-xs text-muted-foreground">{explanation(step.id)}</p>{controls}</div>}
     </li>;
   };
 
@@ -120,18 +134,23 @@ export function BuildAutoSelectPanel(props: Props) {
     <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} className="flex items-center gap-2 text-left">
         {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}<Sparkles className="h-4 w-4 text-primary" />Auto-select
-        <span className="text-xs font-normal text-muted-foreground">Dataset {datasetCount} of {target}</span>
+        <span className="text-xs font-normal text-muted-foreground">{auto ? `Dataset ${datasetCount} · auto` : `Dataset ${datasetCount} of ${target}`}</span>
       </button>
       {!expanded && <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">· Next: {next}</span>}
     </div>
     {expanded && <div className="mt-1.5 max-h-[35vh] space-y-2 overflow-auto">
       <ol className="space-y-1.5">
         {stepShell(sources, 0,
-          sources.state === 'done' ? <span>{folderLabel} · {plural(sources.counts.images, 'image')} · target {target}</span> : reason(sources),
+          sources.state === 'done' ? <span>{folderLabel} · {plural(sources.counts.images, 'image')} · {auto ? 'auto' : `target ${target}`}</span> : reason(sources),
           <>
             <div className="text-xs"><FolderChecklist rows={props.folderRows} deselected={props.deselectedFolders} onToggle={props.onToggleFolder} label="Source folders" emptyText="No images in the inbox." testId="auto-source-folders" /></div>
             <p className="text-xs text-muted-foreground" data-testid="auto-source-counts">{plural(sources.counts.images, 'image')} · {sources.counts.analyzed} analyzed</p>
-            <label className="flex items-center gap-2 text-xs">Target: <input type="number" min={0} aria-label="Target" value={target} onChange={(event) => props.onTargetChange(Math.max(0, Number(event.target.value) || 0))} className="w-20 rounded border border-border bg-background px-2 py-1" /> images in the Dataset</label>
+            <div role="radiogroup" aria-label="Size mode" className="flex items-center gap-2 text-xs">Size:
+              <button type="button" role="radio" aria-checked={auto} className={auto ? primary : secondary} disabled={busy || anyRunning} onClick={() => props.onAutoChange(true)}>Auto</button>
+              <button type="button" role="radio" aria-checked={!auto} className={!auto ? primary : secondary} disabled={busy || anyRunning} onClick={() => props.onAutoChange(false)}>Target</button>
+              {auto && <span className="text-muted-foreground">One image per group of similar images; no target size.</span>}
+            </div>
+            {!auto && <label className="flex items-center gap-2 text-xs">Target: <input type="number" min={0} aria-label="Target" value={target} onChange={(event) => props.onTargetChange(Math.max(0, Number(event.target.value) || 0))} className="w-20 rounded border border-border bg-background px-2 py-1" /> images in the Dataset</label>}
             {sources.state !== 'done' && reason(sources)}
           </>)}
         {stepShell(find, 1,

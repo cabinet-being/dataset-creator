@@ -27,8 +27,10 @@ export type ShortlistCluster = { id: string; size: number; quota: number; select
 export type ShortlistResult = {
   /** Wanted shortlist size (before clamping to the eligible pool). */
   requested: number;
-  /** Number of images the Dataset still needs. */
+  /** Number of images the Dataset still needs (0 in Auto mode, which has no target). */
   needed: number;
+  /** `auto`: one representative per group of similar images, no size limit. */
+  mode?: 'auto';
   baselineCount: number;
   poolCount: number;
   eligibleCount: number;
@@ -95,8 +97,47 @@ export const planShortlistClusters = (shortlistSize: number, poolSize: number) =
   return Math.max(1, Math.min(poolSize, Math.max(low, Math.min(high, Math.round(1.5 * Math.sqrt(shortlistSize))))));
 };
 
+/**
+ * Lazy greedy (CELF) over a monotone submodular gain: a candidate's last score is an upper bound of its current one,
+ * so only the candidates whose bound can still win are recomputed. Winners and tie-breaks (lowest `stableKey` within
+ * 1e-12) match a full scan, but most rounds recompute a handful of candidates instead of all of them.
+ */
+const createLazyGreedy = (indexes: readonly number[], total: number, score: (index: number) => { score: number; gain: number }, keyOf: (index: number) => string) => {
+  const bound = new Float64Array(total).fill(Infinity);
+  const gains = new Float64Array(total);
+  const stamp = new Int32Array(total).fill(-1);
+  let epoch = 0;
+  return {
+    /** Call after the selection state changed (a pick was made). */
+    invalidate: () => { epoch += 1; },
+    async pick(isCandidate: (index: number) => boolean, slice: () => Promise<void>): Promise<{ index: number; score: number; gain: number } | null> {
+      for (;;) {
+        let freshBest = -Infinity; let staleTop = -1; let staleBound = -Infinity;
+        for (const index of indexes) {
+          if (!isCandidate(index)) continue;
+          if (stamp[index] === epoch) { if (bound[index] > freshBest) freshBest = bound[index]; }
+          else if (bound[index] > staleBound) { staleBound = bound[index]; staleTop = index; }
+        }
+        if (staleTop >= 0 && staleBound >= freshBest - 1e-12) {
+          const value = score(staleTop);
+          bound[staleTop] = value.score; gains[staleTop] = value.gain; stamp[staleTop] = epoch;
+          await slice();
+          continue;
+        }
+        let pick = -1; let pickScore = -Infinity;
+        for (const index of indexes) {
+          if (!isCandidate(index) || stamp[index] !== epoch) continue;
+          const value = bound[index];
+          if (value > pickScore + 1e-12 || (Math.abs(value - pickScore) <= 1e-12 && pick >= 0 && keyOf(index).localeCompare(keyOf(pick)) < 0)) { pick = index; pickScore = value; }
+        }
+        return pick < 0 ? null : { index: pick, score: pickScore, gain: gains[pick] };
+      }
+    },
+  };
+};
+
 export async function buildShortlist(options: {
-  baseline: AssemblyInputAsset[]; candidates: AssemblyInputAsset[]; needed: number; factor?: number;
+  baseline: AssemblyInputAsset[]; candidates: AssemblyInputAsset[]; needed: number | 'auto'; factor?: number;
   signal?: AbortSignal; onProgress?: (progress: ShortlistProgress) => void;
 }): Promise<ShortlistResult> {
   const slice = createSlicer(options.signal);
@@ -127,50 +168,57 @@ export async function buildShortlist(options: {
     else { alive[index] = 1; eligibleCount += 1; }
     await slice();
   }
-  const requested = getShortlistSize(options.needed, options.factor);
+  const auto = options.needed === 'auto';
+  const requested = auto ? eligibleCount : getShortlistSize(options.needed as number, options.factor);
   const size = Math.min(requested, eligibleCount);
-  const empty: ShortlistResult = { requested, needed: options.needed, baselineCount, poolCount: sorted.length, eligibleCount, items: [], duplicates, clusters: [] };
+  const empty: ShortlistResult = { requested, needed: auto ? 0 : options.needed as number, ...(auto ? { mode: 'auto' as const } : {}), baselineCount, poolCount: sorted.length, eligibleCount, items: [], duplicates, clusters: [] };
   if (size <= 0) return empty;
 
-  options.onProgress?.({ phase: 'clustering', completed: 0, total: eligibleCount });
   const eligible = Array.from({ length: total - baselineCount }, (_, index) => baselineCount + index).filter((index) => alive[index]);
-  const groups = (await clusterBySimilarity(eligible, matrix, total, planShortlistClusters(size, eligible.length), slice))
-    .map((members) => ({ members, medoidKey: stableKey(assets[findMedoid(members, matrix, total)]) }))
-    .sort((left, right) => right.members.length - left.members.length || left.medoidKey.localeCompare(right.medoidKey));
-  const weightSum = groups.reduce((sum, group) => sum + Math.sqrt(group.members.length), 0);
-  const clusters: ShortlistCluster[] = groups.map((group, index) => ({
-    id: `c${index + 1}`, size: group.members.length, quota: Math.max(1, Math.ceil(size * Math.sqrt(group.members.length) / weightSum)), selected: 0,
-  }));
+  // Auto mode has no quotas: every group of similar images is represented once, so the greedy loop runs until nobody is left.
+  let clusters: ShortlistCluster[] = [];
   const clusterOf = new Int32Array(total).fill(-1);
-  groups.forEach((group, index) => group.members.forEach((member) => { clusterOf[member] = index; }));
+  if (!auto) {
+    options.onProgress?.({ phase: 'clustering', completed: 0, total: eligibleCount });
+    const groups = (await clusterBySimilarity(eligible, matrix, total, planShortlistClusters(size, eligible.length), slice))
+      .map((members) => ({ members, medoidKey: stableKey(assets[findMedoid(members, matrix, total)]) }))
+      .sort((left, right) => right.members.length - left.members.length || left.medoidKey.localeCompare(right.medoidKey));
+    const weightSum = groups.reduce((sum, group) => sum + Math.sqrt(group.members.length), 0);
+    clusters = groups.map((group, index) => ({
+      id: `c${index + 1}`, size: group.members.length, quota: Math.max(1, Math.ceil(size * Math.sqrt(group.members.length) / weightSum)), selected: 0,
+    }));
+    groups.forEach((group, index) => group.members.forEach((member) => { clusterOf[member] = index; }));
+  }
 
+  const greedy = createLazyGreedy(eligible, total, (index) => {
+    let gain = 0;
+    for (let target = 0; target < total; target += 1) { const delta = matrix[index * total + target] - best[target]; if (delta > 0) gain += delta; }
+    gain /= total;
+    // Quality only nudges: it decides between near-equal gains and never overrides coverage.
+    return { gain, score: gain * (1 + 0.15 * (assets[index].quality ?? 0.5)) };
+  }, (index) => stableKey(assets[index]));
   const items: ShortlistItem[] = [];
   // Round 2 only runs when duplicates and quotas leave the shortlist short: quotas are doubled, the cutoff stays.
-  for (let round = 1; round <= 2 && items.length < size; round += 1) {
+  for (let round = 1; round <= (auto ? 1 : 2) && items.length < size; round += 1) {
     while (items.length < size) {
-      let pick = -1; let pickScore = -Infinity; let pickGain = 0;
-      for (const index of eligible) {
-        if (!alive[index] || clusters[clusterOf[index]].selected >= clusters[clusterOf[index]].quota * round) continue;
-        let gain = 0;
-        for (let target = 0; target < total; target += 1) { const delta = matrix[index * total + target] - best[target]; if (delta > 0) gain += delta; }
-        gain /= total;
-        // Quality only nudges: it decides between near-equal gains and never overrides coverage.
-        const score = gain * (1 + 0.15 * (assets[index].quality ?? 0.5));
-        if (score > pickScore + 1e-12 || (Math.abs(score - pickScore) <= 1e-12 && pick >= 0 && stableKey(assets[index]).localeCompare(stableKey(assets[pick])) < 0)) { pick = index; pickScore = score; pickGain = gain; }
-        await slice();
-      }
-      if (pick < 0) break;
-      const cluster = clusters[clusterOf[pick]];
-      cluster.selected += 1; alive[pick] = 0;
+      const found = await greedy.pick((index) => alive[index] === 1 && (auto || clusters[clusterOf[index]].selected < clusters[clusterOf[index]].quota * round), slice);
+      if (!found) break;
+      const { index: pick, gain: pickGain } = found;
+      const cluster = auto ? null : clusters[clusterOf[pick]];
+      if (cluster) cluster.selected += 1;
+      alive[pick] = 0;
       for (let target = 0; target < total; target += 1) best[target] = Math.max(best[target], matrix[pick * total + target]);
+      let skipped = 0;
       for (const index of eligible) {
         if (!alive[index]) continue;
         const similarity = assets[index].feature.imageHash === assets[pick].feature.imageHash ? 1 : matrix[pick * total + index];
-        if (similarity >= threshold) { alive[index] = 0; duplicate(index, pick, similarity, 'shortlist'); }
+        if (similarity >= threshold) { alive[index] = 0; skipped += 1; duplicate(index, pick, similarity, 'shortlist'); }
       }
+      greedy.invalidate();
       items.push({
-        key: stableKey(assets[pick]), path: pathOf(assets[pick]), item: assets[pick].item, cluster: cluster.id, gain: pickGain, rank: items.length + 1,
-        reason: `Cluster ${cluster.id} (${cluster.size} similar, quota ${cluster.quota}): +${(pickGain * 100).toFixed(1)}% coverage`,
+        key: stableKey(assets[pick]), path: pathOf(assets[pick]), item: assets[pick].item, cluster: cluster ? cluster.id : `g${items.length + 1}`, gain: pickGain, rank: items.length + 1,
+        reason: cluster ? `Cluster ${cluster.id} (${cluster.size} similar, quota ${cluster.quota}): +${(pickGain * 100).toFixed(1)}% coverage`
+          : skipped ? `Group of ${skipped + 1} similar` : 'Unique image',
       });
       options.onProgress?.({ phase: 'selecting', completed: items.length, total: size });
     }
@@ -229,26 +277,26 @@ export async function narrowShortlist(options: {
   }
   const items: NarrowedItem[] = [];
   const want = Math.max(0, Math.min(options.target, entries.length));
+  const narrowIndexes = Array.from({ length: total - baselineCount }, (_, index) => baselineCount + index);
+  const greedy = createLazyGreedy(narrowIndexes, total, (index) => {
+    let tagGain = 0;
+    for (const tag of tagSets[index - baselineCount]) { const weight = weights.get(tag); if (weight) tagGain += weight * 0.5 ** ((counts.get(tag) ?? 0) + 1); }
+    let visualGain = 0;
+    for (let target = 0; target < total; target += 1) { const delta = matrix[index * total + target] - best[target]; if (delta > 0) visualGain += delta; }
+    const gain = tagGain / weightTotal + NARROW_VISUAL_WEIGHT * (visualGain / total);
+    return { gain, score: gain * (1 + 0.05 * (assets[index].quality ?? 0.5)) };
+  }, (index) => stableKey(assets[index]));
   while (items.length < want) {
-    let pick = -1; let pickScore = -Infinity; let pickGain = 0;
-    for (let index = baselineCount; index < total; index += 1) {
-      if (!alive[index]) continue;
-      let tagGain = 0;
-      for (const tag of tagSets[index - baselineCount]) { const weight = weights.get(tag); if (weight) tagGain += weight * 0.5 ** ((counts.get(tag) ?? 0) + 1); }
-      let visualGain = 0;
-      for (let target = 0; target < total; target += 1) { const delta = matrix[index * total + target] - best[target]; if (delta > 0) visualGain += delta; }
-      const gain = tagGain / weightTotal + NARROW_VISUAL_WEIGHT * (visualGain / total);
-      const quality = assets[index].quality ?? 0.5;
-      const score = gain * (1 + 0.05 * quality);
-      if (score > pickScore + 1e-12 || (Math.abs(score - pickScore) <= 1e-12 && pick >= 0 && stableKey(assets[index]).localeCompare(stableKey(assets[pick])) < 0)) { pick = index; pickScore = score; pickGain = gain; }
-      await slice();
-    }
+    const found = await greedy.pick((index) => alive[index] === 1, slice);
+    const pick = found ? found.index : -1;
+    const pickGain = found ? found.gain : 0;
     if (pick < 0) break;
     alive[pick] = 0;
     const newTags = [...tagSets[pick - baselineCount]].filter((tag) => weights.has(tag) && !counts.get(tag));
     for (const tag of tagSets[pick - baselineCount]) if (weights.has(tag)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
     for (let target = 0; target < total; target += 1) best[target] = Math.max(best[target], matrix[pick * total + target]);
     for (let index = baselineCount; index < total; index += 1) if (alive[index] && matrix[pick * total + index] >= threshold) { alive[index] = 0; duplicate(index, pick, matrix[pick * total + index], 'shortlist'); }
+    greedy.invalidate();
     items.push({
       key: stableKey(assets[pick]), path: pathOf(assets[pick]), item: assets[pick].item, gain: pickGain, rank: items.length + 1, newTags,
       reason: newTags.length ? `Adds ${newTags.slice(0, 3).join(', ')}` : 'Adds visual variety',
@@ -261,7 +309,7 @@ export async function narrowShortlist(options: {
 
 /** Encodes `items` (baseline first) and runs pass 1. Items that cannot be read are reported through `onSkip`, never abort the run. */
 export async function computeShortlist(options: {
-  baselineItems: WorkspaceImage[]; poolItems: WorkspaceImage[]; needed: number; triggerWord: string;
+  baselineItems: WorkspaceImage[]; poolItems: WorkspaceImage[]; needed: number | 'auto'; triggerWord: string;
   encoder: { encode(item: WorkspaceImage, caption: string): Promise<SemanticFeature> };
   qualityOf?: (item: WorkspaceImage) => number | undefined;
   signal?: AbortSignal; onEncodeProgress?: (completed: number, total: number) => void; onProgress?: (progress: ShortlistProgress) => void;

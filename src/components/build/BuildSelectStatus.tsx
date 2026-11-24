@@ -4,6 +4,8 @@ import { Settings } from 'lucide-react';
 type Props = {
   datasetCount: number;
   target: number;
+  /** Auto mode has no target: only the Dataset size is shown. */
+  auto?: boolean;
   /** Images still waiting for the quality analysis. */
   analysisLeft: number;
   analysisRunning: boolean;
@@ -17,11 +19,11 @@ type Props = {
 };
 
 /** One status line for Select: Dataset size, analysis progress with Pause/Resume, errors, and the settings popover. */
-export function BuildSelectStatus({ datasetCount, target, analysisLeft, analysisRunning, analysisPaused, onPause, onResume, errors, onShowErrors, settings }: Props) {
+export function BuildSelectStatus({ datasetCount, target, auto, analysisLeft, analysisRunning, analysisPaused, onPause, onResume, errors, onShowErrors, settings }: Props) {
   return <div data-testid="build-select-status" className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2 text-xs">
     <p role="status" className="flex flex-wrap items-center gap-1">
-      <strong>Dataset {datasetCount} / {target}</strong>
-      <span>· {Math.max(0, target - datasetCount)} to add</span>
+      <strong>{auto ? `Dataset ${datasetCount}` : `Dataset ${datasetCount} / ${target}`}</strong>
+      {!auto && <span>· {Math.max(0, target - datasetCount)} to add</span>}
       {analysisLeft > 0 && <span className="text-muted-foreground">· {analysisPaused ? 'Analysis paused' : 'Analyzing'} {analysisLeft} left</span>}
       {analysisRunning && <button type="button" className="underline" onClick={onPause}>Pause</button>}
       {analysisPaused && <button type="button" className="underline" onClick={onResume}>Resume</button>}

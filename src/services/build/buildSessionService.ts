@@ -31,7 +31,7 @@ export const BUILD_STAGES: readonly BuildStage[] = ['add', 'select', 'caption', 
 export const createBuildSession = (): BuildSession => ({
   version: 1,
   stage: 'add',
-  profile: { target: 60, reviewMode: 'every-item', captionRequired: true },
+  profile: { target: 60, reviewMode: 'every-item', captionRequired: true, sizeMode: 'auto' },
   cursor: 0,
   filter: 'all',
   order: [],
@@ -88,6 +88,7 @@ export const normalizeBuildSession = (value: unknown): BuildSession => {
       captionRequired: input.profile?.captionRequired !== false,
       transform: input.profile?.transform,
       autoPipeline: input.profile?.autoPipeline !== false,
+      ...(input.profile?.sizeMode === 'auto' ? { sizeMode: 'auto' as const } : {}),
     },
     cursor: Math.max(0, Math.floor(Number(input.cursor) || 0)),
     filter,
@@ -272,7 +273,7 @@ export const getActiveShortlist = <T extends BuildCandidate>(session: BuildSessi
 
 export const createBuildShortlist = (
   session: BuildSession,
-  result: { needed: number; requested: number; duplicates: number; items: Array<{ item: BuildCandidate; cluster: string; gain: number; rank: number }> },
+  result: { needed: number; requested: number; duplicates: number; mode?: 'auto'; poolCount?: number; items: Array<{ item: BuildCandidate; cluster: string; gain: number; rank: number }> },
   now = new Date().toISOString()
 ): BuildSession => ({
   ...session,
@@ -280,6 +281,7 @@ export const createBuildShortlist = (
     ...session.auto, assembledAt: now, assemblyError: undefined,
     shortlist: {
       createdAt: now, needed: result.needed, size: result.requested, duplicatesRejected: result.duplicates,
+      ...(result.mode ? { mode: result.mode } : {}), ...(result.poolCount !== undefined ? { poolCount: result.poolCount } : {}),
       entries: result.items.flatMap(({ item, cluster, gain, rank }) => {
         const id = getBuildAssetId(item); const record = session.records[id];
         return record ? [{ id, revision: getBuildContentRevision(item, record.transform ?? session.profile.transform), cluster, gain, rank }] : [];

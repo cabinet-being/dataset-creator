@@ -14,6 +14,8 @@ export type AutoSelectInput = {
   poolSize: number;
   datasetCount: number;
   target: number;
+  /** Auto mode: no target size; one image per group of similar ones. */
+  auto?: boolean;
   /** A candidate list exists in the session, even if all its images were since decided by hand. */
   hasCandidates: boolean;
   /** Candidates still waiting for a decision. */
@@ -51,7 +53,8 @@ const plural = (count: number, one: string, many = `${one}s`) => `${count} ${cou
 
 /** Pure derivation of the guided Auto-select panel; nothing here touches the session. */
 export function getAutoSelectSteps(input: AutoSelectInput): AutoSelectSteps {
-  const needed = Math.max(0, input.target - input.datasetCount);
+  const auto = !!input.auto;
+  const needed = auto ? 0 : Math.max(0, input.target - input.datasetCount);
   const undescribed = Math.max(0, input.candidates - input.described);
   const otherTask = input.taskRunning;
   const busyReason = 'Another task is running';
@@ -70,7 +73,7 @@ export function getAutoSelectSteps(input: AutoSelectInput): AutoSelectSteps {
   else if (input.hasCandidates) find = { id: 'find', state: 'done', counts: findCounts };
   else {
     const reason = !sourcesDone ? 'No images in the selected folders'
-      : needed === 0 ? `The Dataset already has ${input.datasetCount} of ${input.target} images`
+      : !auto && needed === 0 ? `The Dataset already has ${input.datasetCount} of ${input.target} images`
       : input.pendingAnalysis > 0 ? `Waiting for quality analysis (${input.pendingAnalysis} left)`
       : otherTask ? busyReason
       : input.poolSize === 0 ? 'No usable images in the selected folders'
@@ -86,15 +89,15 @@ export function getAutoSelectSteps(input: AutoSelectInput): AutoSelectSteps {
   else if (otherTask) describe = { id: 'describe', state: 'locked', reason: busyReason, counts: describeCounts };
   else describe = { id: 'describe', state: 'ready', counts: describeCounts };
 
-  const pickCount = Math.min(needed, input.candidates);
+  const pickCount = auto ? input.candidates : Math.min(needed, input.candidates);
   const pickCounts = { picks: input.picks, pickCount, undescribed, needed };
   let pick: AutoSelectStep;
   if (input.task === 'pick' || input.task === 'apply') pick = { id: 'pick', state: 'running', counts: pickCounts };
   else if (exhausted) pick = { id: 'pick', state: 'done', counts: pickCounts };
   else if (!input.hasCandidates) pick = { id: 'pick', state: 'locked', reason: 'Find candidates first', counts: pickCounts };
-  else if (needed === 0) pick = { id: 'pick', state: 'locked', reason: 'Target reached', counts: pickCounts };
+  else if (!auto && needed === 0) pick = { id: 'pick', state: 'locked', reason: 'Target reached', counts: pickCounts };
   else if (input.picks > 0) pick = { id: 'pick', state: 'done', counts: pickCounts };
-  else if (input.described === 0) pick = { id: 'pick', state: 'locked', reason: 'Describe candidates first', counts: pickCounts };
+  else if (!auto && input.described === 0) pick = { id: 'pick', state: 'locked', reason: 'Describe candidates first', counts: pickCounts };
   else if (otherTask) pick = { id: 'pick', state: 'locked', reason: busyReason, counts: pickCounts };
   else pick = {
     id: 'pick', state: 'ready', counts: pickCounts,

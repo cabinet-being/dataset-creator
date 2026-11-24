@@ -219,6 +219,8 @@ export interface BuildPreparationProfile {
   /** Legacy: read only to migrate to `ProjectState.targetModel`; no longer written. */
   minShortSide?: number;
   autoPipeline?: boolean;
+  /** Auto-select without a target size: one image per group of similar ones. Absent means Target mode (older sessions). */
+  sizeMode?: 'auto';
 }
 
 export type BuildReviewView = 'list' | 'grid' | 'clusters';
@@ -256,6 +258,10 @@ export interface BuildShortlist {
   /** Wanted shortlist size (the entries may be fewer when the pool is small). */
   size: number;
   duplicatesRejected: number;
+  /** `auto`: made without a target size. */
+  mode?: 'auto';
+  /** Images that were compared (the Find pool), used to explain Auto results. */
+  poolCount?: number;
   entries: BuildShortlistEntry[];
   /** Pass-2 result: Build asset ids to add, in rank order. */
   narrowed?: { createdAt: string; target: number; ids: string[] };

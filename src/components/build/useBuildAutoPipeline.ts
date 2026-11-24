@@ -282,16 +282,17 @@ export function useBuildAutoPipeline(input: Input) {
     const pool = selectAssemblyCandidates(startSession, sources);
     if (!pool.length) { latest.current.notify('info', 'No analyzed images are available in the selected folders yet.'); return; }
     const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
+    const auto = startSession.profile.sizeMode === 'auto';
     const needed = Math.max(0, startSession.profile.target - baseline.length);
-    if (!needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
-    const assemblyKey = createAssemblyKey(startSession.profile.target, pool, startSession);
+    if (!auto && !needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
+    const assemblyKey = createAssemblyKey(auto ? 'auto' : startSession.profile.target, pool, startSession);
     assemblyOperation.start(() => cancel());
     let result: ShortlistResult | null = null;
     const unreadable: SkippedAssemblyItem[] = [];
     try {
       await withEncoder(ctx, assemblyOperation, async (encoder) => {
         result = await computeShortlist({
-          baselineItems: baseline, poolItems: pool, needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(startSession),
+          baselineItems: baseline, poolItems: pool, needed: auto ? 'auto' : needed, triggerWord: dataset.triggerWord, encoder, signal: ctx.signal, qualityOf: qualityOf(startSession),
           onEncodeProgress: (completed, count) => { assemblyOperation.progress(completed, count, 'Understanding images'); setProgress({ completed, total: count }); },
           onProgress: ({ phase, completed, total: count }) => { setProgress({ completed, total: count }); assemblyOperation.progress(completed, count, phase === 'selecting' ? 'Choosing varied candidates' : 'Comparing images'); },
           onSkip: (entry) => unreadable.push(entry),
@@ -312,7 +313,7 @@ export function useBuildAutoPipeline(input: Input) {
     const done = result as ShortlistResult | null;
     if (!done) return;
     latest.current.patchSession((value) => {
-      const next = createBuildShortlist(value, { needed: done.needed, requested: done.requested, duplicates: done.duplicates.length, items: done.items }, new Date().toISOString());
+      const next = createBuildShortlist(value, { needed: done.needed, requested: done.requested, duplicates: done.duplicates.length, items: done.items, mode: done.mode, poolCount: done.poolCount }, new Date().toISOString());
       return { ...next, filter: 'shortlisted', cursor: 0, auto: { ...next.auto, assemblyKey } };
     });
     assemblyOperation.finish('completed', `${done.items.length} candidate${done.items.length === 1 ? '' : 's'} found`);
@@ -331,7 +332,8 @@ export function useBuildAutoPipeline(input: Input) {
     const active = getActiveShortlist(startSession, candidates);
     if (!active?.entries.length) { latest.current.notify('info', 'There are no candidates to pick from.'); return; }
     const baseline = resolveDatasetMembership(dataset, effectiveItems).effective;
-    const needed = Math.max(0, startSession.profile.target - baseline.length);
+    const auto = startSession.profile.sizeMode === 'auto';
+    const needed = auto ? active.entries.length : Math.max(0, startSession.profile.target - baseline.length);
     if (!needed) { latest.current.notify('info', 'The Dataset already reached its target size.'); return; }
     assemblyOperation.start(() => cancel());
     let result: NarrowResult | null = null;

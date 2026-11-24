@@ -499,7 +499,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     pendingAnalysis: sourceItems.filter((item) => { const record = reconciled.records[getBuildAssetId(item)]; return record?.decision === 'unreviewed' && !record.triage; }).length,
     analysisPaused: pipeline.paused,
     poolSize: selectAssemblyCandidates(reconciled, sourceItems).length,
-    datasetCount, target: reconciled.profile.target,
+    datasetCount, target: reconciled.profile.target, auto: reconciled.profile.sizeMode === 'auto',
     hasCandidates: !!reconciled.auto?.shortlist,
     candidates: shortlist?.entries.length ?? 0,
     described: (shortlist?.entries.length ?? 0) - undescribedCandidates.length,
@@ -624,7 +624,14 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
     : stage === 'check' ? <section aria-label="Dataset quality" className="min-h-0 flex-1 overflow-auto p-4"><BuildQualityPanel testId="build-quality-panel" report={quality.report} features={quality.features} datasetCount={quality.datasetItems.length} labelFor={quality.labelFor} onSelectId={selectQualityItem} onAction={qualityActions.apply} canApply={qualityActions.canApply} /></section>
     : stage === 'export' ? <div className="min-h-0 flex-1 overflow-auto"><ExportTool active={active} fixedSource="dataset" onExportComplete={(plan) => patchSession((value) => ({ ...value, lastExport: { fingerprint: plan.fingerprint, completedAt: new Date().toISOString(), entries: plan.entries.length } }))} /></div>
     : <>
-      <BuildAutoSelectPanel derived={autoSelect} datasetCount={datasetCount} target={reconciled.profile.target}
+      <BuildAutoSelectPanel derived={autoSelect} datasetCount={datasetCount} target={reconciled.profile.target} auto={reconciled.profile.sizeMode === 'auto'} comparedAtFind={reconciled.auto?.shortlist?.poolCount}
+        onAutoChange={(auto) => patchSession((value) => {
+          if ((value.profile.sizeMode === 'auto') === auto) return value;
+          const { sizeMode: _removed, ...profile } = value.profile;
+          void _removed;
+          // A candidate list made in the other mode no longer fits: Find has to run again.
+          return clearBuildShortlist({ ...value, profile: auto ? { ...profile, sizeMode: 'auto' } : profile });
+        })}
         onTargetChange={(target) => patchSession((value) => ({ ...value, profile: { ...value.profile, target } }))}
         folderRows={folderRows} deselectedFolders={deselectedFolders} onToggleFolder={(folder) => setDeselectedFolders((value) => toggleFolderSelection(folderRows, value, folder))}
         analysisPaused={pipeline.paused} onResumeAnalysis={pipeline.resume} progress={pipeline.progress}
@@ -633,7 +640,7 @@ export function BuildWorkspace({ active, viewId, items, directory, onImportFiles
         onFind={() => pipeline.startShortlist()} onDescribe={() => pipeline.startTagging(undescribedCandidates)} onPick={() => pipeline.startNarrow()}
         onApply={() => pipeline.startApplyNarrowed(shortlist?.narrowed ?? [])} onCancel={pipeline.cancel}
         onShowCandidates={() => setFilter('shortlisted')} onReviewPicks={() => setFilter('picked')} onStartOver={startOver} />
-      <BuildSelectStatus datasetCount={datasetCount} target={reconciled.profile.target}
+      <BuildSelectStatus datasetCount={datasetCount} target={reconciled.profile.target} auto={reconciled.profile.sizeMode === 'auto'}
         analysisLeft={triageCounts.pending} analysisRunning={pipeline.phase === 'triage'} analysisPaused={pipeline.paused && pipeline.phase === 'idle'} onPause={pipeline.cancel} onResume={pipeline.resume}
         errors={counts.errors} onShowErrors={() => setFilter('errors')}
         settings={<>
