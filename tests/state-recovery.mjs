@@ -9,7 +9,7 @@ import { build } from 'rolldown';
 const temp = await mkdtemp(join(tmpdir(), 'state-recovery-'));
 after(() => rm(temp, { recursive: true, force: true }));
 await build({
-  input: ['src/services/project/saveQueue.ts', 'src/services/project/saveSession.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/stores/useInspectorSelectionStore.ts'],
+  input: ['src/services/project/saveQueue.ts', 'src/services/project/saveSession.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts'],
   platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' },
 });
 const load = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
@@ -191,27 +191,4 @@ test('compound undo stops remaining steps after a project switch during an await
   useProjectStore.setState({ id:'other-project' });
   gate.resolve(); await undo;
   assert.deepEqual(called, ['first'], 'the next step is skipped once the project epoch changes between awaits');
-});
-
-
-test('inspector selection follows its owner without late cleanup clearing the next view', async () => {
-  const { useInspectorSelectionStore } = await load('useInspectorSelectionStore');
-  const store = useInspectorSelectionStore;
-  store.getState().resetForProject('inspector-test-a');
-  const first = { title: 'First', items: [] };
-  const second = { title: 'Second', items: [] };
-  store.getState().setSelection('view-a', first);
-  store.getState().setSelection('view-b', second);
-  store.getState().clearSelection('view-a');
-  assert.equal(store.getState().activeOwnerId, 'view-b');
-  assert.equal(store.getState().selections['view-b'], second);
-  assert.equal(store.getState().selections['view-a'], undefined);
-  store.getState().resetForProject('inspector-test-b');
-  assert.equal(store.getState().activeOwnerId, null);
-  assert.deepEqual(store.getState().selections, {});
-  store.getState().setSelection('view-b', second);
-  store.getState().resetForProject('inspector-test-b');
-  assert.equal(store.getState().selections['view-b'], second);
-  store.getState().clearSelection('view-b');
-  assert.equal(store.getState().activeOwnerId, null);
 });

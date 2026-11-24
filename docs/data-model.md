@@ -1,6 +1,6 @@
 # Дані, файли та збереження
 
-Основні типи визначені в [`entities.ts`](../src/types/entities.ts). Серіалізатори — у [`projectDirectoryService.ts`](../src/services/project/projectDirectoryService.ts) та [`projectFileService.ts`](../src/services/project/projectFileService.ts). Не використовуйте приклади документації як заміну цим контрактам.
+Основні типи визначені в [`entities.ts`](../src/types/entities.ts). Серіалізатори — у [`projectDirectoryService.ts`](../src/services/project/projectDirectoryService.ts). Не використовуйте приклади документації як заміну цим контрактам.
 
 ## Сутності
 
@@ -109,4 +109,4 @@ Blob URL живе лише в поточній сесії. Він не є шля
 
 Versions зберігає іменовані ZIP-знімки (`.datasetcreator/versions/snapshots/`, індекс `versions/index.json`) та зв’язок із батьківською версією; відкриваються через File → Versions. Знімок не включає службові `cache`, `journal`, `versions`, `backup`, `exports/` і `.git`; перед відновленням копії замінюваних файлів кладуться в `backup/restore`. Відновлення змінює файли поточної папки; UI має враховувати незбережені документи та помилки відновлення. Не плутайте це з Undo/Redo окремої дії.
 
-`projectFileService.ts` також підтримує архівний формат `.dcproj`. Наявність цього сервісу не означає, що основний UI відкриття папки використовує архів. Для міграції архіву без project type потрібні resolver типу та writable handle оригінального архіву.
+Архівний формат `.dcproj` не підтримується: його сервіс видалено як мертвий код.

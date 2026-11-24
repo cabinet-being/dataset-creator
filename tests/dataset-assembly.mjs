@@ -11,7 +11,6 @@ try {
     input: [
       'src/services/caption/captionResolver.ts',
       'src/services/dataset/datasetMembershipResolver.ts',
-      'src/services/dataset/sharedCandidateService.ts',
       'src/services/project/assetRegistryService.ts',
       'src/services/dataset/coverageService.ts',
       'src/services/dataset/datasetAssemblyService.ts',
@@ -36,7 +35,6 @@ try {
   });
   const caption = await import(pathToFileURL(join(temp, 'captionResolver.mjs')));
   const membership = await import(pathToFileURL(join(temp, 'datasetMembershipResolver.mjs')));
-  const shared = await import(pathToFileURL(join(temp, 'sharedCandidateService.mjs')));
   const registryService = await import(pathToFileURL(join(temp, 'assetRegistryService.mjs')));
   const coverage = await import(pathToFileURL(join(temp, 'coverageService.mjs')));
   const assembly = await import(pathToFileURL(join(temp, 'datasetAssemblyService.mjs')));
@@ -144,13 +142,6 @@ try {
   const registryDir = directory([['assets.json', file('assets.json', JSON.stringify(registry), 'application/json')]]);
   const root = directory([['inbox', sharedDir], ['.datasetcreator', registryDir]]);
   await registryService.loadAssetRegistry(root); // Dimensions come from the registry, so no image decoder is needed.
-  const scan = await shared.scanSharedCandidates(root);
-  assert.equal(scan.sharedAvailable, true);
-  assert.equal(scan.candidates.length, 2, 'Caption .txt files are not listed as candidates');
-  const sceneCandidate = scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/scene.png');
-  assert.deepEqual(sceneCandidate.tags, ['back view'], 'The caption comes from the TXT next to the image');
-  assert.equal(scan.candidates.find((candidate) => candidate.assetPath === 'Project/inbox/nocaption.png').tags, undefined, 'An image without a TXT has no caption');
-  assert.equal(scan.skipped.some((entry) => entry.reason === 'video'), true);
 
   const vector = (...values) => new Float32Array(values);
   const feature = (hash, image, caption, contexts = []) => ({ imageHash: hash, image: vector(...image), text: vector(...image), caption, contexts });

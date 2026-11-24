@@ -2,7 +2,6 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import NextApp from '../src/next/NextApp';
 import { CommandProvider } from '../src/components/workspace/Commands';
-import { InspectorProvider } from '../src/components/workspace/InspectorHost';
 import { createProject, createSourceImage } from '../src/types';
 import { createBuildSession } from '../src/services/build/buildSessionService';
 import { createProjectDirectory, type ProjectDirectoryHandle } from '../src/services/project/projectDirectoryService';
@@ -328,5 +327,5 @@ const api = {
 (window as unknown as Record<string, unknown>).__next = api;
 
 const root = createRoot(document.getElementById('root')!);
-root.render(<React.StrictMode><CommandProvider><InspectorProvider><NextApp encoderFactory={fakeEncoderFactory} /></InspectorProvider></CommandProvider></React.StrictMode>);
+root.render(<React.StrictMode><CommandProvider><NextApp encoderFactory={fakeEncoderFactory} /></CommandProvider></React.StrictMode>);
 import.meta.hot?.dispose(() => { root.unmount(); pickerWindow.showDirectoryPicker = originalPicker; });

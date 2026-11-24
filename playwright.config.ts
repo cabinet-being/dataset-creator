@@ -25,7 +25,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { browserName: 'chromium', headless: true } }],
   webServer: {
     command: `npx vite preview --config vite.browser.config.ts --host 127.0.0.1 --port ${port} --strictPort`,
-    url: `http://127.0.0.1:${port}/tests/explorer-browser.html`,
+    url: `http://127.0.0.1:${port}/tests/next-browser.html`,
     reuseExistingServer: !ci,
     timeout: 60_000,
   },

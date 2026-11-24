@@ -13,7 +13,6 @@ try {
       metrics: 'src/services/quality/metrics/index.ts',
       coverage: 'src/services/dataset/coverageService.ts',
       vectorMath: 'src/services/quality/metrics/vectorMath.ts',
-      component: 'src/components/quality/QualityReport.tsx',
       adapter: 'src/services/quality/datasetQualityInput.ts',
       similarityLevels: 'src/services/similarity/similarityLevels.ts',
       imageQuality: 'src/services/quality/imageQuality.ts',
@@ -27,7 +26,6 @@ try {
   const metrics = await import(pathToFileURL(resolve(temp, 'metrics.mjs')));
   const coverage = await import(pathToFileURL(resolve(temp, 'coverage.mjs')));
   const { symmetricEigenvalues } = await import(pathToFileURL(resolve(temp, 'vectorMath.mjs')));
-  const { QualityReport } = await import(pathToFileURL(resolve(temp, 'component.mjs')));
 
   const adapter = await import(pathToFileURL(resolve(temp, 'adapter.mjs')));
   const { PROFILE_RULES, TARGET_MODEL_PRESETS } = await import(pathToFileURL(resolve(temp, 'presets.mjs')));
@@ -228,16 +226,6 @@ try {
       assert.ok(['ok', 'warn', 'fail'].includes(metric.status), metric.id);
       assert.ok(metric.explanation.length > 0 && /[a-z]/i.test(metric.explanation) && !/[а-яіїєґ]/i.test(metric.explanation), `${metric.id} has an English explanation`);
     }
-
-    const { createElement } = await import('react');
-    const { renderToStaticMarkup } = await import('react-dom/server');
-    const html = renderToStaticMarkup(createElement(QualityReport, { report: failed, labelFor: (id) => `file:${id}`, onAction: () => {} }));
-    assert.match(html, /data-readiness="fail"/);
-    assert.match(html, /Not ready/);
-    assert.match(html, /data-metric="trigger" data-status="fail"/);
-    assert.match(html, /file:item-0/, 'Action ids are rendered through labelFor');
-    assert.match(html, /12 more/, 'Long action lists are collapsed');
-    assert.match(html, /Apply/);
   }
 
   // Build adapter: workspace data -> QualityReportInput.

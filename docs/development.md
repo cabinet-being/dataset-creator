@@ -37,7 +37,7 @@
 | Відновлення після помилок, concurrent saves, історія та операції | `npm run test:state-recovery` |
 | Рівні схожості DINOv2, Strictness, пороги, кластеризація Build | `npm run test:similarity` (потік перегляду кластерів — `tests/e2e/build-clusters.spec.ts` у `npm run test:browser`) |
 | Перевірене завантаження моделей (розмір, SHA-256, DINOv2, WD-тегер) | `npm run test:model-download` |
-| Кроки панелі Auto-select (`getAutoSelectSteps`, стани й причини блокування) | `npm run test:auto-select` (UI-потік — `tests/e2e/build-shortlist.spec.ts`, `build-assembly-dialog.spec.ts`) |
+| Папки inbox і Sources | `npm run test:inbox-folders` (папки inbox; кроки Auto-select видалено разом зі старим UI) |
 | Тегер у воркері: перевірка моделі, відкат WebGPU, помилки пам’яті | `npm run test:tagger-worker` |
 | Метрики звіту якості Dataset (пороги, Vendi, покриття, готовність) | `npm run test:quality-metrics` |
 

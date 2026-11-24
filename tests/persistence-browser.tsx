@@ -12,6 +12,7 @@ import { toWorkspaceImages } from '../src/lib/workspaceImages';
 import { buildExportPlan, exportPlanAsZip, exportPlanToDirectory } from '../src/services/export/exportPlan';
 import { readCaptionFile, writeCaptionFile } from '../src/services/caption/captionFileService';
 import JSZip from 'jszip';
+import { checkDatasetFolder } from './dataset-folder-checks';
 import '../src/index.css';
 
 const KEY = 'dataset-creator-persistence-fixture';
@@ -143,7 +144,8 @@ function Harness() {
     <p>Synthetic images in an isolated browser filesystem folder. This does not access your project folders.</p>
     <div className="flex gap-3"><button disabled={busy} className="rounded border px-3 py-2" onClick={()=>run(write)}>Write fixture</button>
     <button disabled={busy} className="rounded border px-3 py-2" onClick={()=>run(async()=>add(await verify(await getFixture())))}>Reopen saved fixture</button>
-    <button disabled={busy} className="rounded border px-3 py-2" onClick={()=>run(async()=>add(await verifyVersions(await getFixture())))}>Check version restore</button></div>
+    <button disabled={busy} className="rounded border px-3 py-2" onClick={()=>run(async()=>add(await verifyVersions(await getFixture())))}>Check version restore</button>
+    <button disabled={busy} className="rounded border px-3 py-2" onClick={()=>run(async()=>add(await checkDatasetFolder()))}>Run Dataset folder regressions</button></div>
     <p role="status">{busy ? 'Running' : 'Idle'}</p>
     <ol>{messages.map((message,index)=><li key={index}>{message}</li>)}</ol>
   </main>;

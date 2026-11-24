@@ -8,7 +8,7 @@ import JSZip from 'jszip';
 
 const temp = await mkdtemp(join(tmpdir(), 'ui-workflows-'));
 try {
-  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/datasetBoard.ts', 'src/lib/commandRegistry.ts', 'src/lib/workspaceNavigation.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/lib/legacyStorageCleanup.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/next/board/captionEntries.ts', 'src/services/export/exportResize.ts', 'src/next/board/toolOverlays.tsx'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
+  await build({ input: ['src/lib/workspaceToolScope.ts', 'src/lib/projectCategories.ts', 'src/lib/datasetAssets.ts', 'src/services/project/saveSession.ts', 'src/lib/workspaceFileTabs.ts', 'src/stores/useDocumentStateStore.ts', 'src/lib/assetActions.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/caption/captionMutationService.ts', 'src/services/caption/captionFileService.ts', 'src/lib/commandRegistry.ts', 'src/lib/keyboard.ts', 'src/lib/responsiveWorkspace.ts', 'src/lib/viewportGeometry.ts', 'src/lib/workspaceLayout.ts', 'src/lib/captionEditor.ts', 'src/lib/legacyStorageCleanup.ts', 'src/services/project/saveQueue.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/services/import/importService.ts', 'src/stores/useOperationStore.ts', 'src/stores/useHistoryStore.ts', 'src/stores/useProjectStore.ts', 'src/next/board/captionEntries.ts', 'src/services/export/exportResize.ts', 'src/next/board/toolOverlays.tsx'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs' } });
   const module = name => import(pathToFileURL(join(temp, `${name}.mjs`)));
   {
     const { cleanupLegacyStorage } = await module('legacyStorageCleanup');
@@ -139,19 +139,6 @@ try {
   const unregisterUnavailable = documentStore.register('unavailable', {dirty:false, check:async () => {throw new Error('Editor did not respond');}});
   await assert.rejects(checkDirtyDocuments(['unavailable']), /did not respond/, 'An unresponsive iframe cannot be assumed saved');
   unregisterReplacement(); unregisterSecond(); unregisterUnavailable();
-  const { datasetBoardItems } = await module('datasetBoard');
-  const boardFixture = [
-    { id: 'source:one', fileName: 'z.png', originalFileName: 'Photo 2.png', kind: 'image', tags: ['original'], width: 200, height: 100 },
-    { id: 'source:two', fileName: 'a.png', originalFileName: 'Photo 10.png', kind: 'image', tags: ['fallback'], width: 1000, height: 100 },
-    { id: 'asset:Project/test.psd', fileName: 'test.psd', kind: 'psd', tags: ['disk'], width: 100, height: 200 },
-  ];
-  const boardDataset = { triggerWord: '' };
-  const boardBefore = JSON.stringify(boardFixture);
-  const projected = datasetBoardItems(boardFixture, boardDataset, 'captioned');
-  assert.deepEqual(projected.map(item => item.tags), [['original'], ['fallback'], ['disk']], 'Dataset cards read the caption owned by each asset');
-  assert.deepEqual(datasetBoardItems(boardFixture, boardDataset, 'aspect').map(item => item.width / item.height), [0.5, 2, 10], 'Aspect ordering must compare dimensions numerically');
-  assert.deepEqual(datasetBoardItems(boardFixture, boardDataset, 'name').map(item => item.tags), [['original'], ['fallback'], ['disk']]);
-  assert.equal(JSON.stringify(boardFixture), boardBefore, 'Dataset sorting must not mutate asset captions');
   const { createCommandRegistry } = await module('commandRegistry');
   const commands = createCommandRegistry(); let activeDocument = 'first'; let saves = []; let busy = false;
   let changes = 0; const unsubscribeCommands = commands.subscribe(() => changes++);
@@ -166,28 +153,6 @@ try {
   assert.deepEqual(saves, ['first', 'second']); assert.equal(commands.commands().length, 1);
   removeSecond(); assert.throws(() => commands.run('document.save'), /unavailable/); assert.ok(changes >= 6);
   unsubscribeCommands();
-  const { readWorkspaceLocation, writeWorkspaceLocation } = await module('workspaceNavigation');
-  let href = 'https://example.test/app?filter=keep&tool=review#assets';
-  const entries = []; let index = -1;
-  const history = { state: { other: 'preserve' },
-    pushState(state, _, url) { this.state = state; href = new URL(url, href).href; entries.splice(++index); entries.push({state, href}); },
-    replaceState(state, _, url) { this.state = state; href = new URL(url, href).href; if (index < 0) index = 0; entries[index] = {state, href}; },
-  };
-  writeWorkspaceLocation(history, href, { projectId: 'one', viewId: 'tool:review' }, 'review', 'replace');
-  writeWorkspaceLocation(history, href, { projectId: 'one', viewId: 'dataset:global' }, null, 'push');
-  assert.equal(href, 'https://example.test/app?filter=keep#assets');
-  assert.equal(entries.length, 2); assert.equal(history.state.other, 'preserve');
-  writeWorkspaceLocation(history, href, { projectId: 'one', viewId: 'dataset:global' }, null, 'push');
-  assert.equal(entries.length, 2, 'Repeated renders and focus do not add history entries');
-  writeWorkspaceLocation(history, href, { projectId: 'one', viewId: 'file:Project/test.png' }, null, 'push');
-  assert.equal(entries.length, 3, 'Distinct file views have history even without tool URLs');
-  index--; history.state = entries[index].state; href = entries[index].href;
-  assert.deepEqual(readWorkspaceLocation(history.state), {projectId: 'one', viewId: 'dataset:global'});
-  writeWorkspaceLocation(history, href, { projectId: 'one', viewId: 'dataset:global' }, null, 'replace');
-  assert.equal(entries.length, 3, 'Restoring Back retains the Forward entry');
-  writeWorkspaceLocation(history, href, { projectId: 'two', viewId: null }, null, 'push');
-  assert.deepEqual(readWorkspaceLocation(history.state), {projectId: 'two', viewId: null});
-  assert.equal(readWorkspaceLocation({ datasetCreatorView: { projectId: 'one', viewId: {} } }), null);
   const { measureResponsiveWorkspace } = await module('responsiveWorkspace');
   const { migrateDockLayout } = await module('workspaceLayout');
   const desktopLayout = migrateDockLayout({ bottomPanelOpen: false }, ['tool:review', 'tool:tagging'], 1280, 720);

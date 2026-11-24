@@ -14,12 +14,11 @@ globalThis.Image = class {
 
 const temp = await mkdtemp(join(tmpdir(), 'project-types-'));
 try {
-  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetBoard.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectFileService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/project/assetRegistryService.ts', 'src/lib/workspaceImages.ts', 'src/services/build/buildSessionService.ts', 'src/services/export/datasetExportService.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
+  await build({ input: ['src/lib/explorerTreeUpdates.ts', 'src/lib/datasetAssets.ts', 'src/services/project/explorerFileService.ts', 'src/services/dataset/datasetFolderService.ts', 'src/types/index.ts', 'src/lib/projectProfiles.ts', 'src/lib/workspaceFileAssets.ts', 'src/services/project/projectDirectoryService.ts', 'src/services/project/projectLayoutService.ts', 'src/services/project/projectVersionService.ts', 'src/services/project/layoutMigrationService.ts', 'src/services/project/assetIndexService.ts', 'src/services/project/assetRegistryService.ts', 'src/lib/workspaceImages.ts', 'src/services/build/buildSessionService.ts', 'src/services/export/datasetExportService.ts', 'src/services/export/exportPlan.ts', 'src/services/export/exportService.ts', 'src/stores/useProjectStore.ts', 'src/stores/useUIStore.ts'], platform: 'node', output: { dir: temp, format: 'esm', entryFileNames: '[name].mjs', chunkFileNames: '[name]-[hash].mjs' } });
   const { getUniqueExplorerName, deleteExplorerEntry, renameExplorerEntry, copyExplorerEntry, moveExplorerEntries, readExplorerDirectory, copyExplorerEntries, duplicateExplorerEntries, ExplorerBatchError } = await import(pathToFileURL(join(temp, 'explorerFileService.mjs')));
   const { createProject, createSourceImage, createEditedAsset } = await import(pathToFileURL(join(temp, 'index.mjs')));
   const { resolveProjectType, PROJECT_TYPE_PROFILES } = await import(pathToFileURL(join(temp, 'projectProfiles.mjs')));
   const { createProjectDirectory, readProjectDirectory, writeProjectDirectoryChanges, clearProjectDirectory, listProjectDirectoryClearTargets, countProjectDirectoryFiles } = await import(pathToFileURL(join(temp, 'projectDirectoryService.mjs')));
-  const { createProjectFileBlob, readProjectFile } = await import(pathToFileURL(join(temp, 'projectFileService.mjs')));
   const { useProjectStore } = await import(pathToFileURL(join(temp, 'useProjectStore.mjs')));
   const { useUIStore } = await import(pathToFileURL(join(temp, 'useUIStore.mjs')));
   const { addItemsToDatasetFolder, removeItemsFromDatasetFolder, reverseDatasetFolderChanges, isProjectDatasetPath } = await import(pathToFileURL(join(temp, 'datasetFolderService.mjs')));
@@ -36,7 +35,6 @@ try {
   const { getBuildAssetRevision } = await import(pathToFileURL(join(temp, 'buildSessionService.mjs')));
   const { loadAssetRegistry, commitAssetRegistry, moveAssetRegistryPaths, removeAssetRegistryPaths, createEmptyAssetRegistry } = await import(pathToFileURL(join(temp, 'assetRegistryService.mjs')));
   const { sortExplorerNodes, sanitizeExplorerTree, buildEmptyExplorerTree } = await import(pathToFileURL(join(temp, 'explorerTreeUpdates.mjs')));
-  const { orderDatasetBoardItems, datasetBoardItems } = await import(pathToFileURL(join(temp, 'datasetBoard.mjs')));
   const { collectWorkspaceFileAssets, updateWorkspaceFileAssetCache } = await import(pathToFileURL(join(temp, 'workspaceFileAssets.mjs')));
   // In-memory File System Access handles exercise the real directory serializer and reader.
   function directory(name = 'test') {
@@ -447,13 +445,6 @@ try {
     assert.equal(reopenedDirectoryProject.projectType, type);
     assert.equal(reopenedDirectoryProject.buildSession.profile.target,42);
     assert.equal(reopenedDirectoryProject.buildSession.records['source:stable'].acceptedRevision,'r1');
-    const blob = await createProjectFileBlob(project);
-    const bytes = await blob.arrayBuffer(); // JSZip's Node adapter accepts buffers, browser adapter accepts Files.
-    const zip = await JSZip.loadAsync(bytes);
-    assert.equal(JSON.parse(await zip.file('manifest.json').async('string')).project.projectType, type);
-    const reopenedArchiveProject = await readProjectFile(bytes);
-    assert.equal(reopenedArchiveProject.projectType, type);
-    assert.equal(reopenedArchiveProject.buildSession.profile.reviewMode,'uncertain-only');
   }
   const layoutProject = createProject('Structured project', 'character');
   layoutProject.dataset.triggerWord = 'trigger';
@@ -466,10 +457,6 @@ try {
   }
   assert.equal(await readDatasetManifest(layoutDirectory), null);
   assert.equal((await readManifest(layoutDirectory)).project.dataset.triggerWord, 'trigger');
-  const globalDatasetZip = await JSZip.loadAsync(await (await createProjectFileBlob(layoutProject)).arrayBuffer());
-  assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.datasets, undefined);
-  assert.equal(globalDatasetZip.file('dataset.json'), null);
-  assert.equal(JSON.parse(await globalDatasetZip.file('manifest.json').async('string')).project.dataset.triggerWord, 'trigger');
   const migrationDirectory = directory();
   const legacySource = {...createSourceImage(new Blob(['legacy source'], { type:'image/png' }), 'legacy.png', 32, 24),
     originalFilePath:'src/shared/legacy.png'};
@@ -546,16 +533,6 @@ try {
     const project={...createProject('Legacy exclusions','character'),sourceImages:{[source.id]:source}};
     await createProjectDirectory(root,project);
     await toLegacyLayout(root);
-    const archive=await JSZip.loadAsync(await (await createProjectFileBlob({...project,sourceImages:{[source.id]:{...source,originalFile:await source.originalFile.arrayBuffer()}}})).arrayBuffer());
-    const archiveMetadata=JSON.parse(await archive.file('dataset/legacy.png.manifest.json').async('string'));
-    archive.file('dataset/legacy.png.manifest.json',JSON.stringify({...archiveMetadata,excludedFromDataset:true}));
-    archive.file('inbox/legacy.png','unrelated archive file');
-    const restoredArchive=await readProjectFile(await archive.generateAsync({type:'nodebuffer'}));
-    assert.equal(restoredArchive.sourceImages[source.id].originalFilePath,'inbox/legacy 2.png','Old ZIP exclusions are materialized as shared paths too');
-    assert.equal(await restoredArchive.sourceImages[source.id].originalFile.text(),'legacy pixels');
-    const newArchive=await JSZip.loadAsync(await (await createProjectFileBlob({...restoredArchive,sourceImages:{[source.id]:{...restoredArchive.sourceImages[source.id],originalFile:await restoredArchive.sourceImages[source.id].originalFile.arrayBuffer()}}})).arrayBuffer());
-    assert.equal(newArchive.file('dataset/legacy.png'),null);
-    assert.equal(await newArchive.file('inbox/legacy 2.png').async('string'),'legacy pixels');
     const data=await root.getDirectoryHandle('dataset');
     const shared=await (await root.getDirectoryHandle('src',{create:true})).getDirectoryHandle('shared',{create:true});
     await shared.getFileHandle('legacy.png',{create:true}); // Existing file must survive the collision.
@@ -707,8 +684,6 @@ try {
     await createProjectDirectory(modelDir, createProject(`Model ${model}`, 'general', model));
     assert.equal((await readManifest(modelDir)).project.targetModel, model, `${model} is written to the directory manifest`);
     assert.equal((await readProjectDirectory(modelDir)).targetModel, model, `${model} round-trips through a directory`);
-    const zipped = await readProjectFile(await (await createProjectFileBlob(createProject(`Zip ${model}`, 'general', model))).arrayBuffer());
-    assert.equal(zipped.targetModel, model, `${model} round-trips through a zip`);
   }
   for (const [legacyMin, expected] of [[512, 'sd15'], [1024, 'sdxl'], [768, 'sdxl'], [undefined, 'sdxl']]) {
     const migDir = directory();
@@ -719,26 +694,6 @@ try {
     await writeManifest(migDir, migManifest);
     assert.equal((await readProjectDirectory(migDir)).targetModel, expected, `legacy minShortSide ${legacyMin} -> ${expected}`);
   }
-  const zip = await JSZip.loadAsync(await (await createProjectFileBlob(createProject('Legacy zip', 'character'))).arrayBuffer());
-  const manifest = JSON.parse(await zip.file('manifest.json').async('string'));
-  delete manifest.project.projectType;
-  delete manifest.project.targetModel;
-  zip.file('manifest.json', JSON.stringify(manifest));
-  zip.file('unrelated.txt', 'preserve me');
-  const bytes = await zip.generateAsync({ type: 'uint8array' });
-  let zipPrompts = 0;
-  const openedZip = await readProjectFile(bytes, { selectProjectType: async () => { zipPrompts++; return 'concept'; } });
-  assert.equal(openedZip.projectType, 'general', 'A zip without projectType opens as general without a handle');
-  assert.equal(openedZip.targetModel, 'sdxl');
-  assert.equal(zipPrompts, 0, 'A zip without projectType does not prompt');
-  assert.equal((await readProjectFile(bytes)).projectType, 'general');
-  const legacyZipManifest = JSON.parse(await zip.file('manifest.json').async('string'));
-  legacyZipManifest.project.buildSession = { profile: { minShortSide: 512 } };
-  zip.file('manifest.json', JSON.stringify(legacyZipManifest));
-  assert.equal((await readProjectFile(await zip.generateAsync({ type: 'uint8array' }))).targetModel, 'sd15', 'Legacy 512 in a zip migrates to sd15');
-  legacyZipManifest.project.projectType = 'invalid';
-  zip.file('manifest.json', JSON.stringify(legacyZipManifest));
-  await assert.rejects(readProjectFile(await zip.generateAsync({ type: 'uint8array' })), /Unsupported project type/);
   assert.ok(PROJECT_TYPE_PROFILES.general, 'general is a project type profile');
   assert.equal(createProject('Default type').projectType, 'general', 'general is the default type');
   assert.equal(createProject('Default model').targetModel, 'sdxl');
@@ -775,22 +730,6 @@ try {
     assert.equal(sanitizeExplorerTree({ name: 'sources', path: 'Project', kind: 'folder' }).name, 'sources', 'The Project root is kept regardless of name');
     assert.equal(sanitizeExplorerTree({ name: 'f', path: 'Project/f', kind: 'file' }).children, undefined, 'Nodes without children stay without children');
 
-    const image = (id, extra = {}) => ({ id, sourceImageId: id, kind: 'image', fileName: `${id}.png`, width: 100, height: 100, ...extra });
-    const video = (name, extra = {}) => ({ id: `asset:${name}`, sourceImageId: '', kind: 'video', fileName: name, assetPath: `dataset/${name}`, width: 100, height: 100, ...extra });
-    const items = [image('c'), video('b.mp4'), image('a')];
-    assert.deepEqual(orderDatasetBoardItems(items, ['image:a', 'image:c'], ['a', 'c']).map((entry) => entry.id), ['a', 'c', 'asset:b.mp4'], 'Explicit order wins; items missing from it (video) are appended in input order');
-    assert.deepEqual(orderDatasetBoardItems(items, ['file:dataset/b.mp4', 'image:gone', 'image:c'], ['a', 'c']).map((entry) => entry.id), ['asset:b.mp4', 'c', 'a'], 'Stale keys are ignored and a file key is honored');
-    assert.deepEqual(orderDatasetBoardItems([image('a'), image('a')], ['image:a'], ['a']).map((entry) => entry.id), ['a'], 'Items sharing one key collapse to a single entry');
-    assert.deepEqual(orderDatasetBoardItems([], ['image:a'], ['a']), []);
-    assert.deepEqual(orderDatasetBoardItems(items, undefined, []).map((entry) => entry.id), ['asset:b.mp4', 'c', 'a'], 'Without assetIds only path-backed items are ordered; image items follow in input order');
-
-    const sortable = [image('i10', { fileName: 'img10.png', tags: ['x'], width: 200 }), image('i2', { fileName: 'img2.png', tags: ['x', 'y'], width: 50 }), video('v.mp4', { width: 100 })];
-    const names = (mode) => datasetBoardItems(sortable, {}, mode).map((entry) => entry.id);
-    assert.deepEqual(names('name'), ['i2', 'i10', 'asset:v.mp4'], 'Name sort is numeric');
-    assert.deepEqual(names('type'), ['i2', 'i10', 'asset:v.mp4'], 'Type sort groups image before video');
-    assert.deepEqual(names('captioned'), ['i2', 'i10', 'asset:v.mp4'], 'Most tags first');
-    assert.deepEqual(names('aspect'), ['i2', 'asset:v.mp4', 'i10'], 'Aspect sort is ascending width/height');
-    assert.deepEqual(sortable.map((entry) => entry.id), ['i10', 'i2', 'asset:v.mp4'], 'datasetBoardItems does not mutate its input');
   }
   {
     // Folder takeover safety: real Git repositories survive clearing; version snapshots skip .git/.cache.

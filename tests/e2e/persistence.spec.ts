@@ -15,3 +15,10 @@ test('project persistence survives reload and version restore', async ({ page })
   await expect(page.getByRole('listitem').filter({ hasText: /^PASS: version restore/ })).toHaveCount(1);
   await expect(page.getByRole('listitem').filter({ hasText: /^FAIL:/ })).toHaveCount(0);
 });
+
+test('Dataset folder regressions (membership by path, export plan, removed files)', async ({ page }) => {
+  await page.goto('/tests/persistence-browser.html');
+  await page.getByRole('button', { name: 'Run Dataset folder regressions' }).click();
+  await expect(page.getByRole('listitem').filter({ hasText: /^PASS:/ })).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.getByRole('listitem').filter({ hasText: /^FAIL:/ })).toHaveCount(0);
+});
