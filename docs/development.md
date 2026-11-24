@@ -9,7 +9,7 @@
 | `npm run dev` | Vite dev server |
 | `npm run build` | TypeScript і production-збірка в `dist/` |
 | `npm run preview` | Перегляд зібраного застосунку |
-| `npm test` | Усі одинадцять офлайн-наборів, зупинка після першої помилки |
+| `npm test` | Усі тринадцять офлайн-наборів, зупинка після першої помилки |
 | `npm run lint` | ESLint 9 (flat config `eslint.config.js`), без попереджень |
 | `npm run test:ci` | По черзі: lint, перевірка документації, усі тести, build, браузерні сценарії |
 | `npm run test:docs` | Тест валідатора та перевірка посилань, шляхів і npm-команд у документації |
@@ -31,12 +31,12 @@
 | Риси персонажа й правила тегера | `npm run test:character-traits` |
 | Вибір кадрів, індекс, скасування, fingerprints, запис PNG | `npm run test:video-frames` |
 | Команди, підписи, імпорт/експорт, save queue, навігація | `npm run test:ui-workflows` |
-| Кандидати, coverage, формування Dataset, міграція підписів | `npm run test:dataset-assembly` |
+| Кандидати, coverage, Assemble, статуси кадрів і міграція сесії v1 → v2, міграція підписів | `npm run test:dataset-assembly` |
 | Прев’ю, blob URL, snapshots, дозволи, збереження й відновлення локального тегера, класифікація файлів | `npm run test:service-boundaries` |
 | Відновлення після помилок, concurrent saves, історія та операції | `npm run test:state-recovery` |
-| Рівні схожості DINOv2, Strictness, пороги, кластеризація Build | `npm run test:similarity` (потік перегляду кластерів — `tests/e2e/build-clusters.spec.ts` у `npm run test:browser`) |
+| Рівні схожості DINOv2, Strictness, пороги, кластеризація | `npm run test:similarity` (групування за темами на Board — `tests/e2e/next-grid.spec.ts` і `next-assemble.spec.ts` у `npm run test:browser`) |
 | Перевірене завантаження моделей (розмір, SHA-256, DINOv2, WD-тегер) | `npm run test:model-download` |
-| Папки inbox і Sources | `npm run test:inbox-folders` (папки inbox; кроки Auto-select видалено разом зі старим UI) |
+| Папки inbox і Sources | `npm run test:inbox-folders` (дерево папок inbox, вибір джерел, лічильники; замінює колишній `auto-select`) |
 | Тегер у воркері: перевірка моделі, відкат WebGPU, помилки пам’яті | `npm run test:tagger-worker` |
 | Метрики звіту якості Dataset (пороги, Vendi, покриття, готовність) | `npm run test:quality-metrics` |
 
@@ -46,9 +46,20 @@
 
 ## Межі автоматизації
 
-Браузерні сценарії запускає Playwright (Chromium) над `vite preview`; конфігурація — `playwright.config.ts`, специфікації — `tests/e2e/`. Стенди збираються з `vite.browser.config.ts` (explorer, export, persistence, caption, caption-editor, build, inspector, project-switch, tagger-restore, scope, ui, video) із `react-dom/profiling`, щоб `<Profiler>` рахував рендери. Етапи Build, Project home, Grid і етап Caption покривають `tests/e2e/build-stages.spec.ts` і `build-grid.spec.ts`; перемикання проєктів — `project-switch.spec.ts`; пропозиції тегів на етапі Caption (кнопка Suggest tags) — `build-caption-suggest.spec.ts`. Специфікація `tests/e2e/explorer-mutations.spec.ts` покриває rename, нову папку, copy/paste, duplicate, delete і клавіатуру Explorer. Спільна guard-fixture (`tests/e2e/fixtures.ts`) провалює тест на `pageerror`, `console.error` і зовнішні запити; виняток — корінь iframe Photopea, який монтує App.
+Браузерні сценарії запускає Playwright (Chromium) над `vite preview`; конфігурація — `playwright.config.ts`, специфікації — `tests/e2e/`. Стенди збираються з `vite.browser.config.ts` у `dist/browser-fixtures/`:
 
-Поза типовим прогоном лишаються сценарії з тегами `@network` (живий експорт Photopea, справжня DINOv2 з Hugging Face; можливе звіряння маніфесту WD-тегера з Hugging Face; потребують мережі) і `@slow` (one-hour video; тривалі). Стенди document (iframe Photopea) і workspace (потрібен dev server застосунку) пропущені з поясненням у `tests/e2e/skipped.spec.ts`. Сценарій `tests/e2e/tagger-download.spec.ts` перевіряє завантаження WD-тегера на mock-відповіді, без мережі. Стенд tagger-restore перевіряє збереження назв і байтів копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle. Export і caption стенди працюють із фізичним членством у `dataset/`.
+| Стенд | Що перевіряє |
+| --- | --- |
+| `next` (`next-browser.html`) | Єдиний інтерфейс: екрани Projects і Board (`tests/e2e/next-*.spec.ts`: проєкт, Sources, сітка, lightbox, Assemble, членство, Health, Caption, Export включно з офлайн-PSD, файли, налаштування, оверлеї, перемикання проєктів, застарілі ключі localStorage, проєкт v1) |
+| `persistence` | Збереження проєкту після перезавантаження, відновлення версії, регресії фізичного членства Dataset (`dataset-folder-checks.tsx`) |
+| `caption-editor` | Редактор підписів |
+| `video` | Video Frames: VFR/повернуті відео, кеш, збереження кадрів |
+| `tagger-restore`, `tagger-download` | Збереження/відновлення файлів тегера; завантаження WD-тегера на mock-відповіді |
+| `semantic-cache` | Постійний кеш ознак зображень |
+
+Збирання йде з `react-dom/profiling`, щоб `<Profiler>` рахував рендери. Спільна guard-fixture (`tests/e2e/fixtures.ts`) провалює тест на `pageerror`, `console.error` і зовнішні запити; виняток — корінь iframe Photopea, який монтує застосунок. Допоміжні кроки Board для специфікацій — `tests/e2e/nextFlow.ts`. На слабких машинах запускайте Playwright з меншою кількістю воркерів, наприклад `npx playwright test --workers=2`, а збирання й браузерний прогін — лише послідовно: паралельно вони можуть вичерпати пам’ять.
+
+Поза типовим прогоном лишаються сценарії з тегами `@network` (живий експорт Photopea, справжня DINOv2 з Hugging Face; можливе звіряння маніфесту WD-тегера з Hugging Face; потребують мережі) і `@slow` (one-hour video; тривалі). Сценарій `tests/e2e/tagger-download.spec.ts` перевіряє завантаження WD-тегера на mock-відповіді, без мережі. Стенд tagger-restore перевіряє збереження назв і байтів копій `File` в IndexedDB після перезавантаження; він не запускає модель і не перевіряє повторний запит дозволу до native handle.
 
 Окремо перевіряйте native file picker, відновлення збережених ONNX/CSV після перезавантаження та повторний дозвіл браузера, живий Photopea, фактичний ONNX inference, клавіатуру, фокус, zoom та доступність. Сценарії `@network` залежать від мережі, частина відеоперевірок завантажує модель і залежить від GPU/кодеків. [Історичний UI-звіт](../tests/ui-validation.md) містить відтворювані сценарії та їхні обмеження. Наявні тести не дають виміряного відсотка покриття всього коду.
 
