@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Inbox, Pin, Ban, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Inbox, Pin, Ban, Pencil, X } from 'lucide-react';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 import { CaptionEditor } from '../../components/caption/CaptionEditor';
 import { parseTags, sameTags } from '../../components/build/buildCaptionTags';
@@ -9,6 +9,7 @@ import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { isDatasetEntry, overrideKeyAction, type FrameEntry } from './frameEntries';
 import type { BoardActions } from './useBoardPipeline';
 import { StatusBadge } from './StatusBadge';
+import { useBoardTools } from './toolOverlays';
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -63,6 +64,7 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
 }) {
   const dialog = useRef<HTMLDivElement>(null);
   const entry = entries[index];
+  const tools = useBoardTools();
   const last = entries.length - 1;
   const pendingSave = useRef<(() => Promise<void>) | null>(null);
   // Navigation first persists the unsaved caption draft of the shown frame.
@@ -92,7 +94,7 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
   useEscapeToClose(true, () => closeRef.current());
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (isTextField(event.target) || (event.target instanceof Element && event.target.closest('[data-tool-overlay]')) || event.altKey || event.ctrlKey || event.metaKey) return;
       if (event.key === 'ArrowLeft' && index > 0) { event.preventDefault(); goRef.current(index - 1); }
       if (event.key === 'ArrowRight' && index < last) { event.preventDefault(); goRef.current(index + 1); }
       if ((event.key === 'p' || event.key === 'P' || event.key === 'b' || event.key === 'B') && !event.repeat) {
@@ -155,6 +157,9 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
             : <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
               {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd>}</div>
       </dl>
+      {tools && <button type="button" data-action="photopea" onClick={() => tools.editInPhotopea(item)}
+        className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary', focusRing)}>
+        <Pencil aria-hidden className="h-4 w-4" />Edit in Photopea</button>}
       {actions && <div data-lightbox-actions className="space-y-2">
         <button type="button" data-action="pin" disabled={actions.busy} aria-keyshortcuts="P" onClick={() => choose('pin')}
           className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>

@@ -78,6 +78,8 @@ type CleanupToolProps = {
   projectDirectoryHandle?: ProjectDirectoryHandle | null;
   onSelectImage?: (imageId: string) => void;
   onOpenProjectFile?: (path: string) => void;
+  /** Called after the edited image was written and the document has no further unsaved changes. */
+  onSaved?: () => void;
 };
 
 export const CleanupTool = ({
@@ -87,6 +89,7 @@ export const CleanupTool = ({
   projectDirectoryHandle = null,
   onSelectImage,
   onOpenProjectFile,
+  onSaved,
 }: CleanupToolProps = {}) => {
   const rootRef = useRef<HTMLDivElement>(null);
   const writeOperation = useOperation('Save edited image', rootRef, 'tool:clean');
@@ -353,7 +356,7 @@ export const CleanupTool = ({
         addNotification('success', saveCopy ? 'Saved edited copy' : 'Saved edited image');
         const stillDirty = await documentState.saved(saveCopy);
         if (stillDirty) setEditorStatus(saveCopy ? 'Copy saved. Original has unsaved changes.' : 'Saved. New changes remain unsaved.');
-        else closeEditor();
+        else { closeEditor(); onSaved?.(); }
       } catch (error) {
         writeOperation.finish('failed', error instanceof Error ? error.message : 'Failed to save edited image');
         console.error('Failed to save edited image:', error);
@@ -366,7 +369,7 @@ export const CleanupTool = ({
         phaseRef.current = 'idle';
       }
     },
-    [addDatasetItem, addNotification, closeEditor, updateDatasetItem, updateSourceImage, writeOperation, documentState]
+    [addDatasetItem, addNotification, closeEditor, onSaved, updateDatasetItem, updateSourceImage, writeOperation, documentState]
   );
 
   const requestPhotopeaSave = useCallback((saveCopy: boolean) => {

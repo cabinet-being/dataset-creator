@@ -1,6 +1,9 @@
 import { createContext, useContext, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
+import { CleanupTool } from '../../components/tools/CleanupTool';
 import { VideoFramesTool } from '../../components/tools/VideoFramesTool';
+import { checkDirtyDocuments } from '../../stores/useDocumentStateStore';
+import { useUIStore } from '../../stores/useUIStore';
 import { hasBusyVideoTasks } from '../../services/video/videoClient';
 import { PROJECT_LAYOUT } from '../../services/project/projectLayoutService';
 import type { ProjectDirectoryHandle } from '../../services/project/projectDirectoryService';
@@ -9,8 +12,11 @@ import { cn } from '../../lib/utils';
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
+/** Dock view id of the Photopea overlay: the document-state tracking and the Mod+S exception use it. */
+export const PHOTOPEA_OVERLAY_VIEW = 'next:photopea';
+
 /** Opens the full-screen tools of the Board; absent outside the Board, so the matching buttons are hidden. */
-export type BoardTools = { openVideo: (item: WorkspaceImage) => void };
+export type BoardTools = { editInPhotopea: (item: WorkspaceImage) => void; openVideo: (item: WorkspaceImage) => void };
 export const BoardToolsContext = createContext<BoardTools | null>(null);
 export const useBoardTools = () => useContext(BoardToolsContext);
 
@@ -53,5 +59,24 @@ export function VideoOverlay({ item, directory, onClose, onSaved }: { item: Work
   return <Overlay label={`Video frames: ${item.fileName}`} onRequestClose={requestClose}>
     <VideoFramesTool tabId={`next:video:${item.id}`} projectDirectoryHandle={directory} file={item.imageData} fileName={item.fileName}
       defaultDestination={videoFramesDestination(item.fileName)} onSaved={onSaved} />
+  </Overlay>;
+}
+
+/** Photopea over the Board for one frame; closing asks about an unsaved document, a successful save closes it. */
+export function PhotopeaOverlay({ item, directory, onClose }: { item: WorkspaceImage; directory: ProjectDirectoryHandle; onClose: () => void }) {
+  const notify = useUIStore(state => state.addNotification);
+  const requestClose = async () => {
+    try {
+      const dirty = await checkDirtyDocuments([PHOTOPEA_OVERLAY_VIEW]);
+      if (dirty.length && !window.confirm('Close this image with unsaved changes?')) return;
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not verify unsaved changes');
+      return;
+    }
+    onClose();
+  };
+  const refreshPreviews = useUIStore(state => state.refreshAssetPreviews);
+  return <Overlay label={`Edit in Photopea: ${item.fileName}`} onRequestClose={() => void requestClose()} viewId={PHOTOPEA_OVERLAY_VIEW}>
+    <CleanupTool singleFileMode selectedImageId={item.id} projectDirectoryHandle={directory} onSaved={() => { refreshPreviews(); onClose(); }} />
   </Overlay>;
 }
