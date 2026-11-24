@@ -19,7 +19,7 @@ import { clearLegacyExclusionAtPath } from '../services/project/legacyDatasetExc
 import type { ProjectDirectoryHandle } from '../services/project/projectDirectoryService';
 import { getImportFilesFromDataTransfer, createImportBatcher, importImageFiles, pickImportDirectory, pickImportFiles, type ImportInputFile, type ImportImagesOptions, type ImportImagesResult } from '../services/import/importService';
 import { createOperationLogger } from '../services/logging/applicationLog';
-import { applyBuildSessionPathMoves } from '../services/build/buildSessionService';
+import { applyBuildSessionPathMoves, removeBuildSessionSources } from '../services/build/buildSessionService';
 import { indexProjectAssets } from '../services/project/assetIndexService';
 import { moveAssetRegistryPaths, removeAssetRegistryPaths } from '../services/project/assetRegistryService';
 import {
@@ -327,6 +327,7 @@ export function useExplorerMutations({
       ...previousEdited.filter(item => removedSourceIds.includes(item.sourceImageId)).map(item => `edited:${item.id}`),
     ]);
     const explorerPaths = entries.map(entry => entry.path);
+    updateBuildSession((session) => removeBuildSessionSources(session, explorerPaths));
     const isDeletedExplorerPath = (path: string) => explorerPaths.some(root => path === root || path.startsWith(`${root}/`));
     const keepViews = (tabs: WorkspaceTab[]) => tabs
       .filter(tab => !isFileBackedTab(tab) || !explorerPaths.some(path => tab.path === path || tab.path.startsWith(`${path}/`)))

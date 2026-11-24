@@ -56,9 +56,6 @@ test.describe('Delete a folder in Sources', () => {
   });
 
   test('a deleted folder does not stay in profile.sources', async ({ page }) => {
-    // Known defect (step 5.0): deleting a folder leaves its path in profile.sources, only moves/renames rewrite it
-    // (applyExplorerPathMoves in buildSessionService). Remove test.fail() when the path is dropped.
-    test.fail();
     await next(page, api => { (api.setSources as (sources: string[]) => void)(['Project/inbox/day1', 'Project/inbox/other']); return null; });
     expect((await sessionOf(page)).sources).toEqual(['Project/inbox/day1', 'Project/inbox/other']);
     answerConfirm(page, true);

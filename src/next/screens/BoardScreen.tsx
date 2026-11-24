@@ -87,10 +87,11 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
   const changeStrictness = useCallback((strictness: SimilarityStrictnessId) => patchSession((session: BuildSession) =>
     session.profile.similarityStrictness === strictness ? session : { ...session, profile: { ...session.profile, similarityStrictness: strictness } }), [patchSession]);
 
-  // A new target model changes the size rule: quality verdicts that were only proposals are dropped (decisions and Assemble results stay).
+  // A new target model changes the size rule: quality verdicts that were only proposals are dropped and the Assemble result is reset (decisions stay).
   const clearQualityTriage = useCallback(() => patchSession(session => ({
     ...session,
     records: Object.fromEntries(Object.entries(session.records).map(([id, record]) => [id, record.decision === 'unreviewed' && record.triage?.stage === 'quality' ? { ...record, triage: undefined } : record])),
+    auto: undefined,
   })), [patchSession]);
 
   // Health and the theme grouping need image features: they are computed only after the first Assemble.

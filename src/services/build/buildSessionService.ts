@@ -408,6 +408,14 @@ export const applyBuildSessionPathMoves = (session: BuildSession, moves: Explore
     ? { ...session, records, ...(sourcesChanged ? { profile: { ...session.profile, sources: [...new Set(sources)] } } : {}) } : session;
 };
 
+/** Drops deleted folders (and anything under them) from the Sources the session was built from. */
+export const removeBuildSessionSources = (session: BuildSession, deletedPaths: string[]): BuildSession => {
+  const sources = session.profile.sources;
+  if (!sources) return session;
+  const kept = sources.filter((path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)));
+  return kept.length === sources.length ? session : { ...session, profile: { ...session.profile, sources: kept } };
+};
+
 export const getBuildValidation = (item: BuildCandidate, captionRequired: boolean): BuildValidationStatus => {
   if (item.kind === 'video') return 'pending';
   if (captionRequired && !(item.tags?.length)) return 'pending';
