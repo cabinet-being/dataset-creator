@@ -16,6 +16,9 @@ import type { useProjectRuntime } from '../useProjectRuntime';
 
 const VIEW_ID = 'next-board';
 
+/** Membership actions the grid and the lightbox call; each one is a single Undo step (owned by `useApplyMembership`). */
+export type BoardActions = Pick<ReturnType<typeof useApplyMembership>, 'pinImages' | 'banImages' | 'clearOverride' | 'returnToInbox'> & { busy: boolean };
+
 type Input = {
   runtime: ReturnType<typeof useProjectRuntime>;
   model: ReturnType<typeof useBuildModel>;
@@ -53,8 +56,11 @@ export function useBoardPipeline({ runtime, model, busy, setBusy, root, encoderF
     && isInboxItemInSources(item, sources) && reconciled.records[getBuildAssetId(item)]?.decision !== 'skipped'), [candidates, reconciled.records, sources]);
 
   const pipeline = useBuildAutoPipeline({
-    active: true, busy, candidates, sources: sourceItems, effectiveItems, session: reconciled, targetModel, patchSession, dataset,
+    // No background triage: Assemble runs the quality check itself, so statuses change only when the user asks.
+    active: false, busy, candidates, sources: sourceItems, effectiveItems, session: reconciled, targetModel, patchSession, dataset,
     commitDecision, applyDecisions, localTagger, taggingConfig, root, viewId: VIEW_ID, notify, encoderFactory, characterTraits,
   });
-  return { ...membership, pipeline, sourceItems };
+  const { pinImages, banImages, clearOverride, returnToInbox } = membership;
+  const actions = useMemo<BoardActions>(() => ({ pinImages, banImages, clearOverride, returnToInbox, busy }), [banImages, busy, clearOverride, pinImages, returnToInbox]);
+  return { actions, pipeline, sourceItems };
 }

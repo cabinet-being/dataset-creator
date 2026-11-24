@@ -2,6 +2,7 @@ import { describeImageStatus, buildKeptDuplicateCounts, matchesBoardFilter, type
 import { getWorkspaceDisplayName, type WorkspaceImage } from '../../lib/workspaceImages';
 import { getBuildAssetId, getBuildRecordForItem, getImageStatus, type ImageStatus } from '../../services/build/buildSessionService';
 import type { BuildReviewRecord, BuildSession } from '../../types';
+import { isProjectDatasetPath } from '../../services/dataset/datasetFolderService';
 import type { TileGroup } from './VirtualTileGrid';
 
 /** One frame of the Board with its status, computed once. */
@@ -93,3 +94,13 @@ export const moveFrameCursor = (groups: readonly TileGroup<FrameEntry>[], curren
   const lastRowStart = Math.floor((previous.items.length - 1) / columns) * columns;
   return previous.items[Math.min(lastRowStart + column, previous.items.length - 1)].id;
 };
+
+/** Frame files that live in `dataset/` (membership is the physical path). */
+export const isDatasetEntry = (entry: FrameEntry): boolean => isProjectDatasetPath(entry.item.assetPath);
+
+/**
+ * What the P and B keys do for `entries`: setting the override, or removing it when every entry already has it
+ * (so pressing the key again undoes the last choice).
+ */
+export const overrideKeyAction = (entries: readonly FrameEntry[], key: 'pin' | 'ban'): 'pin' | 'ban' | 'clear' =>
+  entries.length > 0 && entries.every(entry => entry.record?.override === key) ? 'clear' : key;

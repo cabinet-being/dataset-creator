@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Inbox, Pin, Ban, X } from 'lucide-react';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { cn } from '../../lib/utils';
-import type { FrameEntry } from './frameEntries';
+import { isDatasetEntry, overrideKeyAction, type FrameEntry } from './frameEntries';
+import type { BoardActions } from './useBoardPipeline';
 import { StatusBadge } from './StatusBadge';
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -21,15 +22,26 @@ const formatBytes = (bytes: number | undefined) => {
  * Full-size view of one frame with its status and caption (read only). Arrow keys move through `entries`
  * (the filtered grid order) and Escape closes; both listen only while the overlay is mounted and ignore text fields.
  */
-export function Lightbox({ entries, index, onIndexChange, onClose }: {
+export function Lightbox({ entries, index, onIndexChange, onClose, actions }: {
   entries: readonly FrameEntry[];
   index: number;
   onIndexChange: (index: number) => void;
   onClose: () => void;
+  /** Pin, Ban, Clear and Return for the shown frame; absent means a read-only overlay. */
+  actions?: BoardActions;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
   const entry = entries[index];
   const last = entries.length - 1;
+
+  // P and B toggle Pin and Ban of the shown frame; the handler reads the latest frame and actions through a ref.
+  const choose = (key: 'pin' | 'ban') => {
+    if (!actions || actions.busy || !entry) return;
+    const action = overrideKeyAction([entry], key);
+    void (action === 'clear' ? actions.clearOverride([entry.item]) : action === 'pin' ? actions.pinImages([entry.item]) : actions.banImages([entry.item]));
+  };
+  const chooseRef = useRef(choose);
+  chooseRef.current = choose;
 
   const current = useMemo(() => entry ? [entry.item] : [], [entry]);
   const neighbours = useMemo(() => [entries[index - 1], entries[index + 1]].flatMap(neighbour => neighbour ? [neighbour.item] : []), [entries, index]);
@@ -44,6 +56,10 @@ export function Lightbox({ entries, index, onIndexChange, onClose }: {
       if (isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
       if (event.key === 'ArrowLeft' && index > 0) { event.preventDefault(); onIndexChange(index - 1); }
       if (event.key === 'ArrowRight' && index < last) { event.preventDefault(); onIndexChange(index + 1); }
+      if ((event.key === 'p' || event.key === 'P' || event.key === 'b' || event.key === 'B') && !event.repeat) {
+        event.preventDefault();
+        chooseRef.current(event.key.toLowerCase() === 'p' ? 'pin' : 'ban');
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -97,7 +113,18 @@ export function Lightbox({ entries, index, onIndexChange, onClose }: {
           <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
             {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd></div>
       </dl>
-      <p className="text-xs text-muted-foreground">← → to browse · Esc to close</p>
+      {actions && <div data-lightbox-actions className="space-y-2">
+        <button type="button" data-action="pin" disabled={actions.busy} aria-keyshortcuts="P" onClick={() => choose('pin')}
+          className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>
+          <Pin aria-hidden className="h-4 w-4" />{entry.record?.override === 'pin' ? 'Unpin' : 'Pin — always include'}<kbd className="ml-auto text-xs text-muted-foreground">P</kbd></button>
+        <button type="button" data-action="ban" disabled={actions.busy} aria-keyshortcuts="B" onClick={() => choose('ban')}
+          className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>
+          <Ban aria-hidden className="h-4 w-4" />{entry.record?.override === 'ban' ? 'Unban' : isDatasetEntry(entry) ? 'Remove from dataset' : 'Ban — never include'}<kbd className="ml-auto text-xs text-muted-foreground">B</kbd></button>
+        {isDatasetEntry(entry) && <button type="button" data-action="return" disabled={actions.busy} onClick={() => void actions.returnToInbox([entry.item])}
+          className={cn('flex min-h-[44px] w-full items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>
+          <Inbox aria-hidden className="h-4 w-4" />Return to inbox</button>}
+      </div>}
+      <p className="text-xs text-muted-foreground">← → to browse · {actions ? 'P pin · B ban · ' : ''}Esc to close</p>
     </aside>
   </div>;
 }

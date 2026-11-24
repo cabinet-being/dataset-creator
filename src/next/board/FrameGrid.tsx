@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
-import { Check, ImageIcon } from 'lucide-react';
+import { Ban, Check, ImageIcon, Inbox, Pin, PinOff } from 'lucide-react';
 import { BOARD_FILTERS, matchesBoardFilter, type BoardFilter } from '../../lib/imageStatusLabels';
 import { INBOX_PREFIX } from '../../lib/inboxFolders';
 import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { cn } from '../../lib/utils';
 import type { WorkspaceImage } from '../../lib/workspaceImages';
 import type { BuildSession } from '../../types';
-import { buildFrameEntries, countBoardFilters, groupFrameEntries, moveFrameCursor, type CursorMove, type FrameEntry } from './frameEntries';
+import { buildFrameEntries, countBoardFilters, groupFrameEntries, isDatasetEntry, moveFrameCursor, overrideKeyAction, type CursorMove, type FrameEntry } from './frameEntries';
 import { Lightbox } from './Lightbox';
 import { StatusBadge } from './StatusBadge';
+import type { BoardActions } from './useBoardPipeline';
 import { VirtualTileGrid } from './VirtualTileGrid';
 
 const FILTER_LABELS: Record<BoardFilter, string> = { all: 'All', in: 'In', out: 'Out', pinned: 'Pinned', banned: 'Banned' };
@@ -26,6 +27,8 @@ type Props = {
   /** Every merged image; resolves transformed outputs. */
   effectiveItems: readonly WorkspaceImage[];
   session: BuildSession;
+  /** Pin, Ban, Clear and Return; absent means the grid only browses. */
+  actions?: BoardActions;
   /** Starts a drag of inbox frames; the owner puts them into the Explorer drag state. */
   onDragFrames?: (items: WorkspaceImage[]) => void;
   onDragFramesEnd?: () => void;
@@ -35,7 +38,7 @@ type Props = {
  * Frame grid of the Board: statuses computed once, folder groups, local filter chips, local selection and cursor.
  * Thumbnails exist only for the rendered window of the virtual grid.
  */
-export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, onDragFramesEnd }: Props) {
+export function FrameGrid({ candidates, effectiveItems, session, actions, onDragFrames, onDragFramesEnd }: Props) {
   const [filter, setFilter] = useState<BoardFilter>('all');
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [cursorId, setCursorId] = useState<string | null>(null);
@@ -84,7 +87,25 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
     return next;
   });
 
+  // Targets of a membership action: the selection, else the frame under the cursor.
+  const cursorEntry = visible.find(entry => entry.id === tabStopId);
+  const actionTargets = useMemo(() => activeSelection.size ? visible.filter(entry => activeSelection.has(entry.id)) : cursorEntry ? [cursorEntry] : [], [activeSelection, cursorEntry, visible]);
+  const act = (kind: 'pin' | 'ban' | 'clear' | 'return', targets: readonly FrameEntry[]) => {
+    if (!actions || actions.busy || !targets.length) return;
+    const items = targets.map(entry => entry.item);
+    setSelected(new Set());
+    void (kind === 'pin' ? actions.pinImages(items) : kind === 'ban' ? actions.banImages(items) : kind === 'clear' ? actions.clearOverride(items) : actions.returnToInbox(items));
+  };
+
   const onKeyDown = (event: KeyboardEvent) => {
+    const hotkey = event.key.toLowerCase();
+    if (actions && !openId && (hotkey === 'p' || hotkey === 'b') && !event.repeat && !isTextField(event.target) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      const key = hotkey === 'p' ? 'pin' : 'ban';
+      event.preventDefault();
+      const action = overrideKeyAction(actionTargets, key);
+      act(action, actionTargets);
+      return;
+    }
     const move = MOVE_KEYS[event.key];
     if (openId || !move || isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
     const next = moveFrameCursor(groups, tabStopId, move, columns);
@@ -145,12 +166,24 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
         {activeSelection.size} selected · Clear
       </button>}
     </div>
+    {actions && activeSelection.size > 0 && <div role="toolbar" aria-label="Actions for selected frames" data-bulk-actions className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      {([
+        ['pin', 'Pin', Pin, actionTargets.length > 0],
+        ['ban', 'Ban', Ban, actionTargets.length > 0],
+        ['clear', 'Clear override', PinOff, actionTargets.some(entry => entry.record?.override)],
+        ['return', 'Return to inbox', Inbox, actionTargets.some(isDatasetEntry)],
+      ] as const).map(([kind, label, Icon, applicable]) => <button key={kind} type="button" data-bulk-action={kind} disabled={actions.busy || !applicable}
+        onClick={() => act(kind, kind === 'return' ? actionTargets.filter(isDatasetEntry) : kind === 'clear' ? actionTargets.filter(entry => entry.record?.override) : actionTargets)}
+        className={cn('inline-flex min-h-[44px] items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50', focusRing)}>
+        <Icon aria-hidden className="h-4 w-4" />{label}
+      </button>)}
+    </div>}
     {visible.length === 0
       ? <p data-grid-empty className="m-6 rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
         {entries.length === 0 ? 'No images yet. Drop files or folders into Sources.' : 'No frames match this filter.'}
       </p>
       : <VirtualTileGrid groups={groups} getKey={getKey} renderTile={renderTile} onWindowChange={setWindowEntries}
         revealKey={revealId} onColumnsChange={setColumns} />}
-    {openIndex >= 0 && <Lightbox entries={visible} index={openIndex} onIndexChange={showFrame} onClose={closeLightbox} />}
+    {openIndex >= 0 && <Lightbox entries={visible} index={openIndex} onIndexChange={showFrame} onClose={closeLightbox} actions={actions} />}
   </div>;
 }

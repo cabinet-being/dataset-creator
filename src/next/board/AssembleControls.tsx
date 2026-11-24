@@ -9,7 +9,7 @@ type Pipeline = ReturnType<typeof useBuildAutoPipeline>;
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const STEP_LABELS: Record<BuildAssemblyStep, string> = {
-  understanding: 'Understanding images', similarity: 'Comparing images', selecting: 'Choosing the best of each group', applying: 'Adding to the dataset',
+  triage: 'Checking quality', understanding: 'Understanding images', similarity: 'Comparing images', selecting: 'Choosing the best of each group', applying: 'Adding to the dataset',
 };
 
 /** Text of what the pipeline is doing now, or null when idle. */

@@ -51,7 +51,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
   const { effectiveItems, candidates, reconciled, patchSession } = model;
   const sources = reconciled.profile.sources;
   const setSources = useCallback((next: string[]) => patchSession(session => ({ ...session, profile: { ...session.profile, sources: next } })), [patchSession]);
-  const { pipeline, sourceItems } = useBoardPipeline({ runtime, model, busy, setBusy, root, encoderFactory });
+  const { actions, pipeline, sourceItems } = useBoardPipeline({ runtime, model, busy, setBusy, root, encoderFactory });
   const exportCount = useMemo(() => selectBuildDatasetItems(effectiveItems).length, [effectiveItems]);
 
   const changeSizeMode = useCallback((mode: 'auto' | 'target', target?: number) => patchSession((session: BuildSession) => {
@@ -76,7 +76,7 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
       <SourcesPanel runtime={runtime} items={effectiveItems} sources={sources} onSourcesChange={setSources} />
       <main data-board-grid className="flex min-h-[320px] min-w-0 flex-1 flex-col">
         <AssembleSummary session={reconciled} />
-        <FrameGrid candidates={candidates} effectiveItems={effectiveItems} session={reconciled} onDragFrames={dragFrames} onDragFramesEnd={endFrameDrag} />
+        <FrameGrid candidates={candidates} effectiveItems={effectiveItems} session={reconciled} actions={actions} onDragFrames={dragFrames} onDragFramesEnd={endFrameDrag} />
       </main>
       {/* The Health column (step 3.3) goes here. */}
     </div>

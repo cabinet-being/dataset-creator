@@ -24,7 +24,7 @@ import type { ApplyMembershipOptions, MembershipEntry } from './useApplyMembersh
 
 export type BuildAutoPipelinePhase = 'idle' | 'triage' | 'assembly' | 'tagging';
 /** Finer step of a running assembly, for progress text. */
-export type BuildAssemblyStep = 'understanding' | 'similarity' | 'selecting' | 'applying';
+export type BuildAssemblyStep = 'triage' | 'understanding' | 'similarity' | 'selecting' | 'applying';
 
 type Input = {
   active: boolean;
@@ -171,6 +171,7 @@ export function useBuildAutoPipeline(input: Input) {
     const targets = selectTriageTargets(startSession, candidates).filter((item) => !attempted.current.has(triageKey(startSession, item, startModel)));
     if (!targets.length) return;
     triageOperation.start(() => cancel(), targets.length);
+    setStep('triage');
     const targetIds = new Set(targets.map(getBuildAssetId));
     const digests = new Map<string, string>();
     let flushReceived = () => {};
