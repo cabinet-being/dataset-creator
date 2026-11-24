@@ -41,8 +41,10 @@ export const buildFrameEntries = (candidates: readonly WorkspaceImage[], effecti
       label: describeImageStatus(status, { record, keptDuplicates: kept.get(assetId), nameOf }) };
   });
   const groupRank = (folder: string) => folder === 'dataset' || folder.startsWith('dataset/') ? 0 : 1;
+  // Session position first (same as the Build queue); frames without a position follow in natural name order.
+  const rank = (entry: FrameEntry) => position.get(entry.assetId) ?? Number.MAX_SAFE_INTEGER;
   return entries.sort((left, right) => groupRank(left.folder) - groupRank(right.folder) || naturalCompare(left.folder, right.folder)
-    || (position.get(left.assetId) ?? Infinity) - (position.get(right.assetId) ?? Infinity) || naturalCompare(left.name, right.name));
+    || rank(left) - rank(right) || naturalCompare(left.name, right.name));
 };
 
 export const countBoardFilters = (entries: readonly FrameEntry[]): Record<BoardFilter, number> => {
