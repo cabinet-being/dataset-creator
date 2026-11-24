@@ -24,7 +24,7 @@ const formatBytes = (bytes: number | undefined) => {
 /** Caption editing in the lightbox (Caption mode): `onSave` writes through the caption mutation service. */
 export type LightboxCaptionEditor = { onSave: (item: WorkspaceImage, tags: string[]) => Promise<void>; suggestions?: string[] };
 
-function CaptionField({ item, editor }: { item: WorkspaceImage; editor: LightboxCaptionEditor }) {
+function CaptionField({ item, editor, pendingSave }: { item: WorkspaceImage; editor: LightboxCaptionEditor; pendingSave: React.MutableRefObject<(() => Promise<void>) | null> }) {
   const saved = item.tags;
   const [draft, setDraft] = useState(saved?.join(', ') ?? '');
   const [saving, setSaving] = useState(false);
@@ -36,6 +36,9 @@ function CaptionField({ item, editor }: { item: WorkspaceImage; editor: Lightbox
     setSaving(true);
     try { await editor.onSave(item, tags); } finally { setSaving(false); }
   };
+  // Lets the lightbox save an unsaved draft before it moves to another frame.
+  pendingSave.current = changed && !saving ? save : null;
+  useEffect(() => () => { pendingSave.current = null; }, [pendingSave]);
   return <div data-lightbox-caption-editor className="space-y-2"
     onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save(); } }}>
     <CaptionEditor value={draft} onChange={setDraft} suggestions={editor.suggestions} rows={6} disabled={saving} ariaLabel="Caption" placeholder="tag one, tag two" />
@@ -61,6 +64,14 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
   const dialog = useRef<HTMLDivElement>(null);
   const entry = entries[index];
   const last = entries.length - 1;
+  const pendingSave = useRef<(() => Promise<void>) | null>(null);
+  // Navigation first persists the unsaved caption draft of the shown frame.
+  const go = (target: number) => {
+    const save = pendingSave.current;
+    if (save) void save().then(() => onIndexChange(target)); else onIndexChange(target);
+  };
+  const goRef = useRef(go);
+  goRef.current = go;
 
   // P and B toggle Pin and Ban of the shown frame; the handler reads the latest frame and actions through a ref.
   const choose = (key: 'pin' | 'ban') => {
@@ -82,8 +93,8 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTextField(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
-      if (event.key === 'ArrowLeft' && index > 0) { event.preventDefault(); onIndexChange(index - 1); }
-      if (event.key === 'ArrowRight' && index < last) { event.preventDefault(); onIndexChange(index + 1); }
+      if (event.key === 'ArrowLeft' && index > 0) { event.preventDefault(); goRef.current(index - 1); }
+      if (event.key === 'ArrowRight' && index < last) { event.preventDefault(); goRef.current(index + 1); }
       if ((event.key === 'p' || event.key === 'P' || event.key === 'b' || event.key === 'B') && !event.repeat) {
         event.preventDefault();
         chooseRef.current(event.key.toLowerCase() === 'p' ? 'pin' : 'ban');
@@ -91,7 +102,7 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [index, last, onIndexChange]);
+  }, [index, last]);
 
   // Move focus into the overlay. On close the grid puts focus on the frame shown last (the opener is not restored here,
   // because focusing it would move the grid cursor back to the frame the overlay was opened from).
@@ -117,10 +128,10 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
       {url
         ? <img data-lightbox-image src={url} alt={`${entry.name}: ${label.reason}`} className={cn('max-h-full max-w-full rounded-md object-contain', label.muted && 'opacity-70')} />
         : <p className="text-sm text-muted-foreground">Loading preview…</p>}
-      <button type="button" aria-label="Previous frame" data-lightbox-prev disabled={index <= 0} onClick={() => onIndexChange(index - 1)}
+      <button type="button" aria-label="Previous frame" data-lightbox-prev disabled={index <= 0} onClick={() => go(index - 1)}
         className={cn('absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40', focusRing)}>
         <ChevronLeft aria-hidden className="h-5 w-5" /></button>
-      <button type="button" aria-label="Next frame" data-lightbox-next disabled={index >= last} onClick={() => onIndexChange(index + 1)}
+      <button type="button" aria-label="Next frame" data-lightbox-next disabled={index >= last} onClick={() => go(index + 1)}
         className={cn('absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40', focusRing)}>
         <ChevronRight aria-hidden className="h-5 w-5" /></button>
     </div>
@@ -140,7 +151,7 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions, capt
         <div><dt className="text-xs text-muted-foreground">Caption</dt>
           {captionEditor
             ? <dd className="mt-1">{caption === null && <p data-lightbox-caption className="mb-1 text-muted-foreground">No caption yet</p>}
-              <CaptionField key={`${entry.id}:${caption ?? ''}`} item={item} editor={captionEditor} /></dd>
+              <CaptionField key={`${entry.id}:${caption ?? ''}`} item={item} editor={captionEditor} pendingSave={pendingSave} /></dd>
             : <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
               {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd>}</div>
       </dl>
