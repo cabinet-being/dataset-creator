@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Inbox, Pin, Ban, X } from 'lucide-react';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose';
+import { CaptionEditor } from '../../components/caption/CaptionEditor';
+import { parseTags, sameTags } from '../../components/build/buildCaptionTags';
 import { useSizedPreviewUrls } from '../../lib/previewUrlCache';
 import { cn } from '../../lib/utils';
+import type { WorkspaceImage } from '../../lib/workspaceImages';
 import { isDatasetEntry, overrideKeyAction, type FrameEntry } from './frameEntries';
 import type { BoardActions } from './useBoardPipeline';
 import { StatusBadge } from './StatusBadge';
@@ -18,17 +21,42 @@ const formatBytes = (bytes: number | undefined) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 };
 
+/** Caption editing in the lightbox (Caption mode): `onSave` writes through the caption mutation service. */
+export type LightboxCaptionEditor = { onSave: (item: WorkspaceImage, tags: string[]) => Promise<void>; suggestions?: string[] };
+
+function CaptionField({ item, editor }: { item: WorkspaceImage; editor: LightboxCaptionEditor }) {
+  const saved = item.tags;
+  const [draft, setDraft] = useState(saved?.join(', ') ?? '');
+  const [saving, setSaving] = useState(false);
+  const tags = parseTags(draft);
+  // A new caption is "different" from a missing one: saving an empty draft over a missing caption creates an empty caption file.
+  const changed = saved === undefined ? true : !sameTags(saved, tags);
+  const save = async () => {
+    if (saving || !changed) return;
+    setSaving(true);
+    try { await editor.onSave(item, tags); } finally { setSaving(false); }
+  };
+  return <div data-lightbox-caption-editor className="space-y-2"
+    onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save(); } }}>
+    <CaptionEditor value={draft} onChange={setDraft} suggestions={editor.suggestions} rows={6} disabled={saving} ariaLabel="Caption" placeholder="tag one, tag two" />
+    <button type="button" data-lightbox-caption-save disabled={saving || !changed} onClick={() => void save()}
+      className={cn('min-h-[44px] rounded-md bg-primary px-4 text-sm text-primary-foreground disabled:opacity-40', focusRing)}>Save caption</button>
+  </div>;
+}
+
 /**
  * Full-size view of one frame with its status and caption (read only). Arrow keys move through `entries`
  * (the filtered grid order) and Escape closes; both listen only while the overlay is mounted and ignore text fields.
  */
-export function Lightbox({ entries, index, onIndexChange, onClose, actions }: {
+export function Lightbox({ entries, index, onIndexChange, onClose, actions, captionEditor }: {
   entries: readonly FrameEntry[];
   index: number;
   onIndexChange: (index: number) => void;
   onClose: () => void;
   /** Pin, Ban, Clear and Return for the shown frame; absent means a read-only overlay. */
   actions?: BoardActions;
+  /** Makes the caption editable (Caption mode). */
+  captionEditor?: LightboxCaptionEditor;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
   const entry = entries[index];
@@ -110,8 +138,11 @@ export function Lightbox({ entries, index, onIndexChange, onClose, actions }: {
         <div><dt className="text-xs text-muted-foreground">Size</dt><dd data-lightbox-size>{size}</dd></div>
         <div><dt className="text-xs text-muted-foreground">Folder</dt><dd data-lightbox-folder className="break-all">{entry.folder}</dd></div>
         <div><dt className="text-xs text-muted-foreground">Caption</dt>
-          <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
-            {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd></div>
+          {captionEditor
+            ? <dd className="mt-1">{caption === null && <p data-lightbox-caption className="mb-1 text-muted-foreground">No caption yet</p>}
+              <CaptionField key={`${entry.id}:${caption ?? ''}`} item={item} editor={captionEditor} /></dd>
+            : <dd data-lightbox-caption className={cn('whitespace-pre-wrap break-words', !caption && 'text-muted-foreground')}>
+              {caption === null ? 'No caption yet' : caption || 'Empty caption'}</dd>}</div>
       </dl>
       {actions && <div data-lightbox-actions className="space-y-2">
         <button type="button" data-action="pin" disabled={actions.busy} aria-keyshortcuts="P" onClick={() => choose('pin')}

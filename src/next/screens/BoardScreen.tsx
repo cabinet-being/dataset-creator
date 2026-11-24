@@ -17,6 +17,7 @@ import { cn } from '../../lib/utils';
 import { getMinShortSide } from '../../services/quality/imageQuality';
 import { useProjectStore } from '../../stores/useProjectStore';
 import { AssembleControls, AssembleSummary } from '../board/AssembleControls';
+import { CaptionMode } from '../board/CaptionMode';
 import { FrameGrid } from '../board/FrameGrid';
 import { HealthPanel } from '../board/HealthPanel';
 import { useBoardPipeline } from '../board/useBoardPipeline';
@@ -27,7 +28,9 @@ type Runtime = ReturnType<typeof useProjectRuntime>;
 
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
-function BoardHeader({ runtime, assemble }: { runtime: Runtime; assemble: React.ReactNode }) {
+export type BoardMode = 'select' | 'caption';
+
+function BoardHeader({ runtime, assemble, mode, onModeChange }: { runtime: Runtime; assemble: React.ReactNode; mode: BoardMode; onModeChange: (mode: BoardMode) => void }) {
   const projectType = useProjectStore(state => state.projectType);
   const targetModel = useProjectStore(state => state.targetModel);
   const { isProjectDirectoryBusy } = runtime;
@@ -40,9 +43,9 @@ function BoardHeader({ runtime, assemble }: { runtime: Runtime; assemble: React.
       {PROJECT_TYPE_PROFILES[projectType]?.label ?? projectType} · {TARGET_MODEL_PRESETS[targetModel]?.label ?? targetModel} · min {getMinShortSide(targetModel)} px
     </span>
     <div role="group" aria-label="Mode" className="ml-auto flex overflow-hidden rounded-md border border-border">
-      <button type="button" aria-pressed="true" data-mode="select" className={cn('min-h-[44px] bg-primary px-4 text-sm font-medium text-primary-foreground', focusRing)}>Select</button>
-      <button type="button" aria-pressed="false" data-mode="caption" disabled title="Available in a later step"
-        className={cn('min-h-[44px] px-4 text-sm text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60', focusRing)}>Caption</button>
+      {(['select', 'caption'] as const).map(option => <button key={option} type="button" aria-pressed={mode === option} data-mode={option} onClick={() => onModeChange(option)}
+        className={cn('min-h-[44px] px-4 text-sm', mode === option ? 'bg-primary font-medium text-primary-foreground' : 'text-muted-foreground hover:bg-secondary', focusRing)}>
+        {option === 'select' ? 'Select' : 'Caption'}</button>)}
     </div>
     {assemble}
   </header>;
@@ -52,6 +55,7 @@ function BoardHeader({ runtime, assemble }: { runtime: Runtime; assemble: React.
 export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; encoderFactory?: typeof createSemanticFeatureEncoder }) {
   const root = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<BoardMode>('select');
   const notify = useUIStore(state => state.addNotification);
   const model = useBuildModel(runtime.workspaceReviewItems, { writeBack: true, busy: busy || runtime.isProjectDirectoryBusy });
   const { effectiveItems, candidates, reconciled, patchSession } = model;
@@ -108,8 +112,10 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
     onExport={() => notify('info', 'The export dialog arrives in the next step.')} />;
 
   return <div ref={root} data-board className="flex min-h-0 flex-1 flex-col">
-    <BoardHeader runtime={runtime} assemble={assemble} />
-    <div className="flex min-h-0 flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
+    <BoardHeader runtime={runtime} assemble={assemble} mode={mode} onModeChange={setMode} />
+    {mode === 'caption'
+      ? <CaptionMode runtime={runtime} candidates={candidates} effectiveItems={effectiveItems} session={reconciled} pipeline={pipeline} patchSession={patchSession} report={quality.report} />
+      : <div className="flex min-h-0 flex-1 flex-col overflow-auto md:flex-row md:overflow-hidden">
       <SourcesPanel runtime={runtime} items={effectiveItems} sources={sources} onSourcesChange={setSources} />
       <main data-board-grid className="flex min-h-[320px] min-w-0 flex-1 flex-col">
         <AssembleSummary session={reconciled} />
@@ -117,6 +123,6 @@ export function BoardScreen({ runtime, encoderFactory }: { runtime: Runtime; enc
       </main>
       <HealthPanel assembled={assembled} report={quality.report} datasetCount={quality.datasetItems.length} features={quality.features}
         onShowIds={showIds} onApplyAction={(hint, action) => void qualityActions.apply(hint, action)} canApplyAction={qualityActions.canApply} />
-    </div>
+    </div>}
   </div>;
 }
