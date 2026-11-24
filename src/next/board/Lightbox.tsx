@@ -49,12 +49,9 @@ export function Lightbox({ entries, index, onIndexChange, onClose }: {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [index, last, onIndexChange]);
 
-  // Move focus into the overlay and give it back to the opener on close.
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialog.current?.querySelector<HTMLElement>('[data-lightbox-close]')?.focus();
-    return () => opener?.focus({ preventScroll: true });
-  }, []);
+  // Move focus into the overlay. On close the grid puts focus on the frame shown last (the opener is not restored here,
+  // because focusing it would move the grid cursor back to the frame the overlay was opened from).
+  useEffect(() => { dialog.current?.querySelector<HTMLElement>('[data-lightbox-close]')?.focus(); }, []);
   const trapTab = (event: React.KeyboardEvent) => {
     if (event.key !== 'Tab') return;
     const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];

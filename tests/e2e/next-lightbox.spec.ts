@@ -86,7 +86,6 @@ test('Escape and the close button close the overlay and focus returns to the til
 // shown when the overlay closes. Instead Lightbox's unmount focuses the original opener (its `opener?.focus()`), and the grid's
 // focus effect does not re-run because cursorId already equals the shown frame. Remove test.fail() when this is settled.
 test('after browsing with arrows, Escape puts focus on the frame that was shown last', async ({ page }) => {
-  test.fail(true, 'DEFECT: focus returns to the opener tile, not to the frame shown when the overlay closed');
   const order = await names(page);
   await tileButton(page, order[1]).click();
   await page.keyboard.press('ArrowRight');

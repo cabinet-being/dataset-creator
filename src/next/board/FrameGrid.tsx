@@ -65,7 +65,7 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
       if (tile) { tile.focus({ preventScroll: true }); focusAfterMove.current = false; }
     });
     return () => cancelAnimationFrame(frame);
-  }, [cursorId, windowEntries]);
+  }, [cursorId, windowEntries, openId]);
 
   const openIndex = openId ? visible.findIndex(entry => entry.id === openId) : -1;
   // A frame that leaves the filtered list while open (for example after a session change) closes the overlay.
@@ -76,7 +76,7 @@ export function FrameGrid({ candidates, effectiveItems, session, onDragFrames, o
     setCursorId(openId);
     setOpenId(null);
   }, [openId]);
-  const showFrame = useCallback((index: number) => { const entry = visible[index]; if (entry) { setOpenId(entry.id); setCursorId(entry.id); } }, [visible]);
+  const showFrame = useCallback((index: number) => { const entry = visible[index]; if (entry) { setOpenId(entry.id); setCursorId(entry.id); setRevealId(entry.id); } }, [visible]);
 
   const toggleSelected = (id: string) => setSelected(current => {
     const next = new Set(current);
